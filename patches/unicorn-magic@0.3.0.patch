@@ -1,0 +1,19 @@
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -10,11 +10,13 @@
+ 	"exports": {
+ 		"node": {
+ 			"types": "./node.d.ts",
+-			"import": "./node.js"
++			"import": "./node.js",
++			"default": "./node.js"
+ 		},
+ 		"default": {
+ 			"types": "./default.d.ts",
+-			"import": "./default.js"
++			"import": "./default.js",
++			"default": "./default.js"
+ 		}
+ 	},
+ 	"sideEffects": false,
