@@ -628,7 +628,7 @@ function operatorApprovalRemediation(
       return [
         {
           code: "inspect_state_integrity",
-          text: "Run aether doctor and inspect the shared state database before requesting the action again.",
+          text: "Run aether vitals and inspect the shared state database before requesting the action again.",
         },
       ];
     default:
@@ -775,7 +775,7 @@ function projectCorruptOperatorApprovalReceipt(
     remediation: [
       {
         code: "inspect_state_integrity",
-        text: "Run aether doctor and inspect the shared state database before trusting this approval.",
+        text: "Run aether vitals and inspect the shared state database before trusting this approval.",
       },
     ],
   };

@@ -349,7 +349,7 @@ function copyRowsToState(params: MigrationSnapshot): AuthRows {
       }
       if (conflicts.length > 0) {
         throw new Error(
-          `shared auth rows conflict with the relocation target: ${conflicts.join("; ")}. Back up source ${JSON.stringify(params.sourcePath)} and target ${JSON.stringify(targetDatabasePath)} with Aether stopped. Preserve target-only profiles, copy missing source profiles into the target, and reconcile differing entries/metadata/state locally; then rerun aether doctor --fix. No auth rows were changed.`,
+          `shared auth rows conflict with the relocation target: ${conflicts.join("; ")}. Back up source ${JSON.stringify(params.sourcePath)} and target ${JSON.stringify(targetDatabasePath)} with Aether stopped. Preserve target-only profiles, copy missing source profiles into the target, and reconcile differing entries/metadata/state locally; then rerun aether vitals --fix. No auth rows were changed.`,
         );
       }
       if (params.sourceRows.store && !target.store) {

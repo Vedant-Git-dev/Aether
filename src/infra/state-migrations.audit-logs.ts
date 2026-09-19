@@ -475,13 +475,13 @@ async function migrateLegacyAuditLogSource(params: {
       if (!scrubbedRecords.ok) {
         warnings.push(...scrubbedRecords.warnings);
         warnings.push(
-          `Retained uncheckpointed ${params.source.label} recovery archive; rerun aether doctor --fix`,
+          `Retained uncheckpointed ${params.source.label} recovery archive; rerun aether vitals --fix`,
         );
         return result(false);
       }
       if (scrubbedRecords.records.length !== 0) {
         warnings.push(
-          `A legacy ${params.source.label} writer appended during recovery; rerun aether doctor --fix to import the retained rows`,
+          `A legacy ${params.source.label} writer appended during recovery; rerun aether vitals --fix to import the retained rows`,
         );
         return result(false);
       }
@@ -542,13 +542,13 @@ async function migrateLegacyAuditLogSource(params: {
     if (!scrubbedRecords.ok) {
       warnings.push(...scrubbedRecords.warnings);
       warnings.push(
-        `Retained uncheckpointed ${params.source.label} recovery archive; rerun aether doctor --fix`,
+        `Retained uncheckpointed ${params.source.label} recovery archive; rerun aether vitals --fix`,
       );
       return result(false);
     }
     if (scrubbedRecords.records.length !== 0) {
       warnings.push(
-        `A legacy ${params.source.label} writer appended during migration; rerun aether doctor --fix to import the retained rows`,
+        `A legacy ${params.source.label} writer appended during migration; rerun aether vitals --fix to import the retained rows`,
       );
       return result(false);
     }
@@ -577,7 +577,7 @@ async function migrateLegacyAuditLogSource(params: {
     }
     if ((await root.exists(sourceRelativePath)) && !params.recreatedSourceScheduled) {
       warnings.push(
-        `An old writer recreated ${params.source.label} at ${params.source.logicalSourcePath}; rerun aether doctor --fix to import the retained rows`,
+        `An old writer recreated ${params.source.label} at ${params.source.logicalSourcePath}; rerun aether vitals --fix to import the retained rows`,
       );
     }
     return result(checkpointed);

@@ -632,7 +632,7 @@ export async function updateGitCheckout(params: {
       );
       if (!doctorEntryExists) {
         steps.push({
-          name: "aether doctor entry",
+          name: "aether vitals entry",
           command: `verify ${doctorEntry}`,
           cwd: gitRoot,
           durationMs: 0,

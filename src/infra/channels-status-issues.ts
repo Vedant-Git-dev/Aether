@@ -41,7 +41,7 @@ function collectGenericRuntimeStatusIssues(
         kind: "runtime",
         message:
           "Channel cannot admit inbound events; its durable ingress queue is unavailable. Outbound may still work.",
-        fix: "check aether logs for the ingress failure, then rerun aether doctor",
+        fix: "check aether logs for the ingress failure, then rerun aether vitals",
       });
       continue;
     }

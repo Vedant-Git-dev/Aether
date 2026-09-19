@@ -316,7 +316,7 @@ export function markPackagePostInstallDoctorAdvisory<
   ) {
     return step;
   }
-  const repairGuidance = "Run aether doctor --fix to finish deferred repairs.";
+  const repairGuidance = "Run aether vitals --fix to finish deferred repairs.";
   const deferredWarnings =
     result.status === "advisory"
       ? normalizeUpdatePostInstallDoctorWarnings(result.advisory.details).map(

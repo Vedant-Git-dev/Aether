@@ -104,7 +104,7 @@ export function normalizeFallbackFailureReason(
     case "global install verify":
     case "global install swap":
       return "global-install-failed";
-    case "aether doctor":
+    case "aether vitals":
       return "doctor-failed";
     case "post-install verification":
       return "runtime-verification-failed";

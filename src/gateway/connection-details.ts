@@ -111,7 +111,7 @@ export function buildGatewayConnectionDetailsWithResolvers(
         allowPrivateWs
           ? undefined
           : "Break-glass (trusted private networks only): set AETHER_ALLOW_INSECURE_PRIVATE_WS=1",
-        "Doctor: aether doctor --fix",
+        "Doctor: aether vitals --fix",
         "Docs: https://docs.aether.ai/gateway/remote",
       ].join("\n"),
     );

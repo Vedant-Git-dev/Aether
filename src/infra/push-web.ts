@@ -74,7 +74,7 @@ function assertLegacyWebPushMigrationComplete(baseDir?: string): void {
   });
   if (pendingLegacyPath) {
     throw new Error(
-      `legacy Web Push state requires migration; run \`aether doctor --fix\` before using Web Push`,
+      `legacy Web Push state requires migration; run \`aether vitals --fix\` before using Web Push`,
     );
   }
 }

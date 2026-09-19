@@ -12,7 +12,7 @@ import type {
 type NoticeSource = { notices?: readonly string[] } | undefined;
 
 const STARTUP_MIGRATION_FOLLOW_UP =
-  'Run "aether doctor --fix" against the same state/config, then restart the gateway.';
+  'Run "aether vitals --fix" against the same state/config, then restart the gateway.';
 
 export function formatStartupMigrationFailure(errors: readonly string[]): string {
   return [

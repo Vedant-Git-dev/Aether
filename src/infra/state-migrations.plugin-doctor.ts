@@ -326,7 +326,7 @@ export async function runPostSessionPluginDoctorStateRepairs(params: {
           ...warnings,
           ...plans.flatMap((plan) => plan.preview),
           ...(plans.length
-            ? ['Run "aether doctor --fix" to repair plugin session ownership.']
+            ? ['Run "aether vitals --fix" to repair plugin session ownership.']
             : []),
         ],
       };

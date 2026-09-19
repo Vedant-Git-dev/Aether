@@ -721,7 +721,7 @@ function formatGatewayCloseError(
       "\n- Gateway not yet ready to accept connections (retry after a moment)" +
       "\n- TLS mismatch (connecting with ws:// to a wss:// gateway, or vice versa)" +
       "\n- Gateway process stopped or became unreachable (confirm it is still running)" +
-      "\nRun `aether doctor` for diagnostics.";
+      "\nRun `aether vitals` for diagnostics.";
   }
   return message;
 }

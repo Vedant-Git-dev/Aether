@@ -178,7 +178,7 @@ export async function migrateLegacySessions(
   }
   if (detected.sessions.targetStoreAliases.hasFinalSymlink) {
     warnings.push(
-      `Deferred legacy session migration in final-component symlink store ${detected.sessions.targetStorePath}; configure one canonical session.store path, then rerun aether doctor --fix`,
+      `Deferred legacy session migration in final-component symlink store ${detected.sessions.targetStorePath}; configure one canonical session.store path, then rerun aether vitals --fix`,
     );
     return { changes, warnings };
   }
@@ -296,7 +296,7 @@ export async function migrateLegacySessions(
       }
     } else {
       warnings.push(
-        `Target sessions store unreadable; left untouched to avoid overwriting at ${detected.sessions.targetStorePath}. Run aether doctor --fix to archive it and retry the legacy merge.`,
+        `Target sessions store unreadable; left untouched to avoid overwriting at ${detected.sessions.targetStorePath}. Run aether vitals --fix to archive it and retry the legacy merge.`,
       );
     }
   }
@@ -309,7 +309,7 @@ export async function migrateLegacySessions(
     const normalized = normalizeMergedSessionStore(merged, targetKeys);
     if (normalized.rejectedProtectedKeyCount > 0) {
       warnings.push(
-        `Refused legacy session migration because normalization rejected ${normalized.rejectedProtectedKeyCount} existing target session ${normalized.rejectedProtectedKeyCount === 1 ? "key" : "keys"}; left ${detected.sessions.targetStorePath} and ${detected.sessions.legacyStorePath} in place. Repair the conflicting rows, then rerun aether doctor --fix.`,
+        `Refused legacy session migration because normalization rejected ${normalized.rejectedProtectedKeyCount} existing target session ${normalized.rejectedProtectedKeyCount === 1 ? "key" : "keys"}; left ${detected.sessions.targetStorePath} and ${detected.sessions.legacyStorePath} in place. Repair the conflicting rows, then rerun aether vitals --fix.`,
       );
       return { changes, warnings };
     }

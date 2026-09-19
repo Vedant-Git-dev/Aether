@@ -84,7 +84,7 @@ type WorkspaceReceiptDatabase = Pick<DB, "migration_sources">;
 function receiptMoveFailure(sourcePath: string, reason: string): Error {
   return new Error(
     `Cannot move workspace migration history at ${sourcePath}: ${reason}. ` +
-      "Preserve the workspace and database, finish or repair the pending migration with aether doctor --fix, then retry the workspace move.",
+      "Preserve the workspace and database, finish or repair the pending migration with aether vitals --fix, then retry the workspace move.",
   );
 }
 

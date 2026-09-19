@@ -195,7 +195,7 @@ export function renderUpdateRunReport(
       : run.status === "failed" && repairStopReason === "repair-requires-config-change"
         ? nextAction
           ? "Rehearsal config changes were not promoted. Review the named top-level keys before continuing recovery."
-          : "Rehearsal config changes were not promoted. Review the named top-level keys, then run aether doctor --fix under your own authority, or aether triage."
+          : "Rehearsal config changes were not promoted. Review the named top-level keys, then run aether vitals --fix under your own authority, or aether triage."
         : undefined;
   const hints =
     run.status === "running"

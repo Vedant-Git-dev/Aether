@@ -362,7 +362,7 @@ function formatLegacyWorkspaceReadWarning(
 ): string {
   return formatDoctorStateRepairFailure(
     `Failed reading legacy workspace state at ${source.sourcePath}: ${formatErrorMessage(error)}`,
-    "Stop the Gateway. Restore this source or its .doctor-importing claim from a verified backup, or rename the unreadable source or claim with a .rejected-<timestamp> suffix to retain its bytes if its setup/attestation history can be discarded. Then rerun aether doctor --fix against the same state/config.",
+    "Stop the Gateway. Restore this source or its .doctor-importing claim from a verified backup, or rename the unreadable source or claim with a .rejected-<timestamp> suffix to retain its bytes if its setup/attestation history can be discarded. Then rerun aether vitals --fix against the same state/config.",
   );
 }
 

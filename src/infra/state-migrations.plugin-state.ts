@@ -538,7 +538,7 @@ export async function runLegacyMigrationPlans(
               incompleteSources.add(plan.sourcePath);
               warnings.push(
                 ...cleanupWarnings.map(
-                  (warning) => `Run aether doctor --fix to retry legacy cleanup. ${warning}`,
+                  (warning) => `Run aether vitals --fix to retry legacy cleanup. ${warning}`,
                 ),
               );
             } else {

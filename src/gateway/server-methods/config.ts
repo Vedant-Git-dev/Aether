@@ -984,7 +984,7 @@ export const configHandlers: GatewayRequestHandlers = {
         undefined,
         errorShape(
           ErrorCodes.INVALID_REQUEST,
-          `${summarizeConfigValidationIssues(snapshot.issues)}; fix (aether doctor) before patching`,
+          `${summarizeConfigValidationIssues(snapshot.issues)}; fix (aether vitals) before patching`,
           { details: { issues: snapshot.issues } },
         ),
       );

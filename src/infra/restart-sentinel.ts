@@ -59,7 +59,7 @@ export function formatDoctorNonInteractiveHint(
   env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
 ): string {
   return `Recommended follow-up: run ${formatCliCommand(
-    "aether doctor --non-interactive",
+    "aether vitals --non-interactive",
     env,
   )} in a terminal or approvals-capable Aether surface.`;
 }

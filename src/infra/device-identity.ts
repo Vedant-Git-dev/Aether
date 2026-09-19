@@ -60,7 +60,7 @@ function assertNoPendingLegacyIdentity(options: DeviceIdentityStoreOptions): voi
     pathMayExistSync(legacyPath)
   ) {
     throw new Error(
-      `Legacy device identity exists at ${legacyPath}. Run "aether doctor --fix" before starting the gateway or connecting this client.`,
+      `Legacy device identity exists at ${legacyPath}. Run "aether vitals --fix" before starting the gateway or connecting this client.`,
     );
   }
 }

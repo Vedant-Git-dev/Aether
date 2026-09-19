@@ -424,7 +424,7 @@ export async function migrateLegacyNodeHostConfig(params: {
     label: "legacy node-host state",
     releaseLabel: "Node-host",
     errorLabel: "Failed reading legacy node-host state",
-    retryGuidance: "Stop the Gateway and node host, then run `aether doctor --fix` again.",
+    retryGuidance: "Stop the Gateway and node host, then run `aether vitals --fix` again.",
     run: async (env) => {
       const stateRoot = await root(params.stateDir, {
         hardlinks: "reject",

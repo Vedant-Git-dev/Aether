@@ -70,7 +70,7 @@ export type { SystemAgentChatSession };
 
 /**
  * `aether.chat` lets clients (macOS app onboarding, future UIs) run the
- * same conversational setup as `aether setup`. Structured setup owns
+ * same conversational setup as `aether ignite`. Structured setup owns
  * the pre-inference phase; a new chat session starts only after a live model
  * turn succeeds.
  *
@@ -259,7 +259,7 @@ export const systemAgentHandlers: GatewayRequestHandlers = {
               const snapshot = await setupShared.readSetupConfigFileSnapshot();
               if (!snapshot.valid) {
                 throw new Error(
-                  "Config is invalid. Run `aether doctor` before preparing a model.",
+                  "Config is invalid. Run `aether vitals` before preparing a model.",
                 );
               }
               // Match the classic wizard: mutate the authored shape, not runtimeConfig,
@@ -291,7 +291,7 @@ export const systemAgentHandlers: GatewayRequestHandlers = {
               });
               if (!prepared || prepared.retrySelection) {
                 throw new Error(
-                  `Provider setup resolution failed for "${params.authChoice}". Run \`aether doctor --fix\`, restart the Gateway, and try again.`,
+                  `Provider setup resolution failed for "${params.authChoice}". Run \`aether vitals --fix\`, restart the Gateway, and try again.`,
                 );
               }
               signal.throwIfAborted();

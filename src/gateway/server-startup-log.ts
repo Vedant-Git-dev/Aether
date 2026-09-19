@@ -280,7 +280,7 @@ function formatConfiguredChannelMissingOwnerStartupWarning(entry: {
   const reasons = normalizeSortedUniqueStringEntries(entry.blockedReasons).join(", ");
   return (
     `configured channel warning: channels.${channelId} is configured but no channel plugin ` +
-    `is installed or loadable (${reasons}). Run \`aether doctor --fix\` or install the ` +
+    `is installed or loadable (${reasons}). Run \`aether vitals --fix\` or install the ` +
     "channel plugin before relying on this channel."
   );
 }

@@ -1,7 +1,7 @@
 // Resume post-core plugin convergence after a gateway control-plane git/source
 // update.
 //
-// `runGatewayUpdate` (git mode) runs `aether doctor --fix` with
+// `runGatewayUpdate` (git mode) runs `aether vitals --fix` with
 // `AETHER_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE=1`, which makes the doctor
 // pass DEFER configured-plugin repair to a later convergence step (see
 // `shouldDeferConfiguredPluginInstallRepair`). The `aether update` CLI resumes

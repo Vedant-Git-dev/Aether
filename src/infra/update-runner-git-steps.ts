@@ -46,7 +46,7 @@ export async function runGitDoctorStep(params: {
   step: (name: string, argv: string[], cwd: string, env?: NodeJS.ProcessEnv) => RunStepOptions;
 }) {
   const options = params.step(
-    "aether doctor",
+    "aether vitals",
     [
       params.nodePath,
       params.entryPath,

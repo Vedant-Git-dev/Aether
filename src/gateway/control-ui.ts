@@ -227,7 +227,7 @@ function respondControlUiAssetsUnavailable(
   const message = options?.preparing
     ? "Control UI assets are being prepared. Try again shortly."
     : options?.failed
-      ? "Control UI assets could not be prepared. Check the Gateway logs or run `aether doctor --fix`."
+      ? "Control UI assets could not be prepared. Check the Gateway logs or run `aether vitals --fix`."
       : options?.configuredRootPath
         ? `Control UI assets not found at ${options.configuredRootPath}. Build them with \`pnpm ui:build\` (auto-installs UI deps), or update gateway.controlUi.root.`
         : CONTROL_UI_ASSETS_MISSING_MESSAGE;
