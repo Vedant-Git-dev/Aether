@@ -1,0 +1,47 @@
+{
+  "name": "@aether/tokenjuice",
+  "version": "2026.9.4",
+  "description": "Aether tokenjuice exec output compaction plugin",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aether/aether"
+  },
+  "type": "module",
+  "dependencies": {
+    "tokenjuice": "0.8.1"
+  },
+  "peerDependencies": {
+    "aether": ">=2026.9.4"
+  },
+  "peerDependenciesMeta": {
+    "aether": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@aether/plugin-sdk": "workspace:*",
+    "aether": "workspace:*"
+  },
+  "aether": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "install": {
+      "clawhubSpec": "clawhub:@aether/tokenjuice",
+      "npmSpec": "@aether/tokenjuice",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.5.28"
+    },
+    "compat": {
+      "pluginApi": ">=2026.9.4"
+    },
+    "build": {
+      "aetherVersion": "2026.9.4",
+      "bundledDist": false
+    },
+    "release": {
+      "publishToClawHub": true,
+      "publishToNpm": true
+    }
+  }
+}

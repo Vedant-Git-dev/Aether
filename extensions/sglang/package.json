@@ -1,0 +1,15 @@
+{
+  "name": "@aether/sglang-provider",
+  "version": "2026.9.4",
+  "private": true,
+  "description": "Aether SGLang provider plugin",
+  "type": "module",
+  "devDependencies": {
+    "@aether/plugin-sdk": "workspace:*"
+  },
+  "aether": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

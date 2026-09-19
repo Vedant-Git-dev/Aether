@@ -1,0 +1,36 @@
+{
+  "name": "@aether/tencent-provider",
+  "version": "2026.9.4",
+  "description": "Aether Tencent Cloud provider plugin (TokenHub + Token Plan)",
+  "type": "module",
+  "devDependencies": {
+    "@aether/plugin-sdk": "workspace:*"
+  },
+  "aether": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "setupEntry": "./setup-api.ts",
+    "install": {
+      "clawhubSpec": "clawhub:@aether/tencent-provider",
+      "npmSpec": "@aether/tencent-provider",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.6.9"
+    },
+    "compat": {
+      "pluginApi": ">=2026.9.4"
+    },
+    "build": {
+      "aetherVersion": "2026.9.4",
+      "bundledDist": false
+    },
+    "release": {
+      "publishToClawHub": true,
+      "publishToNpm": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aether/aether"
+  }
+}

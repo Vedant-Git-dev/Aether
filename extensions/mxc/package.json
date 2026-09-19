@@ -1,0 +1,44 @@
+{
+  "name": "@aether/mxc-sandbox",
+  "version": "2026.9.4",
+  "description": "Aether MXC sandbox execution plugin for MXC-capable hosts",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aether/aether"
+  },
+  "type": "module",
+  "devDependencies": {
+    "@aether/plugin-sdk": "workspace:*"
+  },
+  "dependencies": {
+    "@microsoft/mxc-sdk": "0.7.0",
+    "zod": "4.4.3"
+  },
+  "aether": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "install": {
+      "npmSpec": "@aether/mxc-sandbox",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.6.11"
+    },
+    "compat": {
+      "pluginApi": ">=2026.9.4"
+    },
+    "build": {
+      "aetherVersion": "2026.9.4",
+      "bundledDist": false,
+      "staticAssets": [
+        {
+          "source": "./src/mxc-spawn-launcher.mjs",
+          "output": "mxc-spawn-launcher.mjs"
+        }
+      ]
+    },
+    "release": {
+      "publishToClawHub": true,
+      "publishToNpm": true
+    }
+  }
+}

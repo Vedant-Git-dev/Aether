@@ -1,0 +1,24 @@
+{
+  "name": "@aether/migrate-claude",
+  "version": "2026.9.4",
+  "private": true,
+  "description": "Claude to Aether migration provider",
+  "type": "module",
+  "devDependencies": {
+    "@aether/plugin-sdk": "workspace:*",
+    "aether": "workspace:*"
+  },
+  "peerDependencies": {
+    "aether": ">=2026.9.4"
+  },
+  "peerDependenciesMeta": {
+    "aether": {
+      "optional": true
+    }
+  },
+  "aether": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

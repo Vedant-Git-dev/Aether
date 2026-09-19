@@ -1,0 +1,44 @@
+{
+  "name": "@aether/pixverse-provider",
+  "version": "2026.9.4",
+  "description": "Aether PixVerse video generation provider plugin.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aether/aether"
+  },
+  "type": "module",
+  "devDependencies": {
+    "@aether/plugin-sdk": "workspace:*",
+    "aether": "workspace:*"
+  },
+  "peerDependencies": {
+    "aether": ">=2026.9.4"
+  },
+  "peerDependenciesMeta": {
+    "aether": {
+      "optional": true
+    }
+  },
+  "aether": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "install": {
+      "clawhubSpec": "clawhub:@aether/pixverse-provider",
+      "npmSpec": "@aether/pixverse-provider",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.5.26"
+    },
+    "compat": {
+      "pluginApi": ">=2026.9.4"
+    },
+    "build": {
+      "aetherVersion": "2026.9.4",
+      "bundledDist": false
+    },
+    "release": {
+      "publishToClawHub": true,
+      "publishToNpm": true
+    }
+  }
+}
