@@ -1,0 +1,831 @@
+{
+  "schemaVersion": 1,
+  "id": "aether-official-external-plugins",
+  "generatedAt": "2026-06-22T00:00:00.000Z",
+  "sequence": 1,
+  "description": "Bundled fallback feed for official external Aether plugins.",
+  "entries": [
+    {
+      "name": "@aether/acpx",
+      "description": "Aether ACP runtime backend",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "acpx",
+          "label": "ACPX Runtime"
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/acpx",
+          "npmSpec": "@aether/acpx",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.4.25"
+        }
+      }
+    },
+    {
+      "name": "@aether/brave-plugin",
+      "description": "Aether Brave plugin",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "brave",
+          "label": "Brave"
+        },
+        "webSearchProviders": [
+          {
+            "id": "brave",
+            "label": "Brave Search",
+            "hint": "Brave Search web results.",
+            "onboardingScopes": [
+              "text-inference"
+            ],
+            "credentialLabel": "Brave Search API key",
+            "envVars": [
+              "BRAVE_API_KEY"
+            ],
+            "placeholder": "BSA...",
+            "signupUrl": "https://api-dashboard.search.brave.com/app/keys",
+            "docsUrl": "https://docs.aether.ai/tools/brave-search",
+            "credentialPath": "plugins.entries.brave.config.webSearch.apiKey",
+            "autoDetectOrder": 10
+          }
+        ],
+        "install": {
+          "clawhubSpec": "clawhub:@aether/brave-plugin",
+          "npmSpec": "@aether/brave-plugin",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.4.10",
+          "allowInvalidConfigRecovery": true
+        }
+      }
+    },
+    {
+      "name": "@aether/codex",
+      "description": "Aether Codex app-server harness and native session catalog",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "codex",
+          "label": "Codex"
+        },
+        "contracts": {
+          "migrationProviders": [
+            "codex"
+          ]
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/codex",
+          "npmSpec": "@aether/codex",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.5.1-beta.1"
+        },
+        "setup": {
+          "nativeSessionCatalog": {
+            "label": "Codex",
+            "legacyDefaultEnabled": true,
+            "description": "Existing native Codex conversations on this Gateway and eligible paired nodes.",
+            "nodeCommands": [
+              "codex.appServer.threads.list.v1",
+              "codex.appServer.thread.turns.list.v1",
+              "codex.sessionCatalog.transcript.read.v1",
+              "codex.terminal.resume.v1",
+              "codex.cli.sessions.list"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "@aether/copilot",
+      "description": "Aether GitHub Copilot agent runtime plugin",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "copilot",
+          "label": "GitHub Copilot agent runtime"
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/copilot",
+          "npmSpec": "@aether/copilot",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.5.28"
+        }
+      }
+    },
+    {
+      "name": "@aether/diagnostics-otel",
+      "description": "Aether diagnostics OpenTelemetry exporter",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "diagnostics-otel",
+          "label": "Diagnostics OpenTelemetry"
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/diagnostics-otel",
+          "npmSpec": "@aether/diagnostics-otel",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.4.25"
+        }
+      }
+    },
+    {
+      "name": "@aether/diagnostics-prometheus",
+      "description": "Aether diagnostics Prometheus exporter",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "diagnostics-prometheus",
+          "label": "Diagnostics Prometheus"
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/diagnostics-prometheus",
+          "npmSpec": "@aether/diagnostics-prometheus",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.4.25"
+        }
+      }
+    },
+    {
+      "name": "@aether/diffs",
+      "description": "Aether diff viewer plugin",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "diffs",
+          "label": "Diffs"
+        },
+        "catalog": {
+          "featured": true,
+          "order": 40
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/diffs",
+          "npmSpec": "@aether/diffs",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.4.30"
+        }
+      }
+    },
+    {
+      "name": "@aether/diffs-language-pack",
+      "description": "Aether diffs viewer syntax highlighting language pack",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "diffs-language-pack",
+          "label": "Diff Viewer Language Pack"
+        },
+        "install": {
+          "npmSpec": "@aether/diffs-language-pack",
+          "clawhubSpec": "clawhub:@aether/diffs-language-pack",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.5.27"
+        }
+      }
+    },
+    {
+      "name": "@aether/duckduckgo-plugin",
+      "description": "Aether DuckDuckGo plugin.",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "duckduckgo",
+          "label": "DuckDuckGo"
+        },
+        "contracts": {
+          "webSearchProviders": [
+            "duckduckgo"
+          ]
+        },
+        "webSearchProviders": [
+          {
+            "id": "duckduckgo",
+            "label": "DuckDuckGo Search (experimental)",
+            "hint": "Free web search fallback with no API key required",
+            "onboardingScopes": [
+              "text-inference"
+            ],
+            "requiresCredential": false,
+            "envVars": [],
+            "placeholder": "(no key needed)",
+            "signupUrl": "https://duckduckgo.com/",
+            "docsUrl": "https://docs.aether.ai/tools/duckduckgo-search",
+            "credentialPath": "",
+            "autoDetectOrder": 100
+          }
+        ],
+        "install": {
+          "clawhubSpec": "clawhub:@aether/duckduckgo-plugin",
+          "npmSpec": "@aether/duckduckgo-plugin",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.7.2"
+        }
+      }
+    },
+    {
+      "name": "@aether/exa-plugin",
+      "description": "Aether Exa plugin.",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "exa",
+          "label": "Exa"
+        },
+        "contracts": {
+          "webSearchProviders": [
+            "exa"
+          ]
+        },
+        "webSearchProviders": [
+          {
+            "id": "exa",
+            "label": "Exa Search",
+            "hint": "Neural + keyword search with date filters and content extraction",
+            "onboardingScopes": [
+              "text-inference"
+            ],
+            "credentialLabel": "Exa API key",
+            "envVars": [
+              "EXA_API_KEY"
+            ],
+            "placeholder": "exa-...",
+            "signupUrl": "https://exa.ai/",
+            "docsUrl": "https://docs.aether.ai/tools/web",
+            "credentialPath": "plugins.entries.exa.config.webSearch.apiKey",
+            "autoDetectOrder": 65
+          }
+        ],
+        "install": {
+          "clawhubSpec": "clawhub:@aether/exa-plugin",
+          "npmSpec": "@aether/exa-plugin",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.6.8"
+        }
+      }
+    },
+    {
+      "name": "@aether/firecrawl-plugin",
+      "description": "Aether Firecrawl plugin.",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "firecrawl",
+          "label": "Firecrawl"
+        },
+        "contracts": {
+          "webFetchProviders": [
+            "firecrawl"
+          ],
+          "webSearchProviders": [
+            "firecrawl",
+            "firecrawl-free"
+          ],
+          "tools": [
+            "firecrawl_search",
+            "firecrawl_scrape"
+          ]
+        },
+        "webSearchProviders": [
+          {
+            "id": "firecrawl",
+            "label": "Firecrawl Search",
+            "hint": "Structured results with optional result scraping",
+            "onboardingScopes": [
+              "text-inference"
+            ],
+            "credentialLabel": "Firecrawl API key",
+            "envVars": [
+              "FIRECRAWL_API_KEY"
+            ],
+            "placeholder": "fc-...",
+            "signupUrl": "https://www.firecrawl.dev/",
+            "docsUrl": "https://docs.aether.ai/tools/firecrawl",
+            "credentialPath": "plugins.entries.firecrawl.config.webSearch.apiKey",
+            "autoDetectOrder": 60
+          },
+          {
+            "id": "firecrawl-free",
+            "label": "Firecrawl Search (Free)",
+            "hint": "Free web search via Firecrawl's hosted starter tier — no API key required",
+            "onboardingScopes": [
+              "text-inference"
+            ],
+            "requiresCredential": false,
+            "envVars": [],
+            "placeholder": "(no key needed)",
+            "signupUrl": "https://www.firecrawl.dev/",
+            "docsUrl": "https://docs.aether.ai/tools/firecrawl",
+            "credentialPath": ""
+          }
+        ],
+        "install": {
+          "clawhubSpec": "clawhub:@aether/firecrawl-plugin",
+          "npmSpec": "@aether/firecrawl-plugin",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.6.8"
+        }
+      }
+    },
+    {
+      "name": "@aether/fish-audio-speech",
+      "description": "Aether Fish Audio speech plugin.",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "legacyPluginIds": [
+          "fish-audio"
+        ],
+        "plugin": {
+          "id": "fish-audio-speech",
+          "label": "Fish Audio Speech"
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/fish-audio-speech",
+          "npmSpec": "@aether/fish-audio-speech",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.7.2"
+        }
+      }
+    },
+    {
+      "name": "@aether/google-meet",
+      "description": "Aether Google Meet participant plugin",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "google-meet",
+          "label": "Google Meet"
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/google-meet",
+          "npmSpec": "@aether/google-meet",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.4.20"
+        }
+      }
+    },
+    {
+      "name": "@aether/gradium-speech",
+      "description": "Aether Gradium speech plugin.",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "gradium",
+          "label": "Gradium"
+        },
+        "contracts": {
+          "speechProviders": [
+            "gradium"
+          ]
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/gradium-speech",
+          "npmSpec": "@aether/gradium-speech",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.6.8"
+        }
+      }
+    },
+    {
+      "name": "@aether/inworld-speech",
+      "description": "Aether Inworld speech plugin.",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "inworld",
+          "label": "Inworld"
+        },
+        "contracts": {
+          "speechProviders": [
+            "inworld"
+          ]
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/inworld-speech",
+          "npmSpec": "@aether/inworld-speech",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.6.8"
+        }
+      }
+    },
+    {
+      "name": "@aether/lobster",
+      "description": "Lobster workflow tool plugin (typed pipelines + resumable approvals)",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "lobster",
+          "label": "Lobster"
+        },
+        "catalog": {
+          "featured": true,
+          "order": 50
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/lobster",
+          "npmSpec": "@aether/lobster",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.4.25"
+        }
+      }
+    },
+    {
+      "name": "@aether/memory-lancedb",
+      "description": "Aether LanceDB-backed long-term memory plugin with auto-recall/capture",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "memory-lancedb",
+          "label": "Memory LanceDB"
+        },
+        "catalog": {
+          "featured": true,
+          "order": 70
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/memory-lancedb",
+          "npmSpec": "@aether/memory-lancedb",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.5.31"
+        }
+      }
+    },
+    {
+      "name": "@aether/llama-cpp-provider",
+      "description": "Aether managed llama.cpp server provider plugin",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "llama-cpp",
+          "label": "llama.cpp Provider"
+        },
+        "contracts": {
+          "embeddingProviders": [
+            "local"
+          ]
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/llama-cpp-provider",
+          "npmSpec": "@aether/llama-cpp-provider",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.6.2"
+        }
+      }
+    },
+    {
+      "name": "@aether/mxc-sandbox",
+      "description": "Aether MXC sandbox execution plugin for MXC-capable hosts",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "mxc",
+          "label": "MXC Sandbox Execution"
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/mxc-sandbox",
+          "npmSpec": "@aether/mxc-sandbox",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.6.11"
+        }
+      }
+    },
+    {
+      "name": "@aether/openshell-sandbox",
+      "description": "Aether OpenShell sandbox backend",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "openshell",
+          "label": "OpenShell Sandbox"
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/openshell-sandbox",
+          "npmSpec": "@aether/openshell-sandbox",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.5.12-beta.1"
+        }
+      }
+    },
+    {
+      "name": "@aether/parallel-plugin",
+      "description": "Aether Parallel web search plugin.",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "parallel",
+          "label": "Parallel"
+        },
+        "contracts": {
+          "webSearchProviders": [
+            "parallel",
+            "parallel-free"
+          ]
+        },
+        "webSearchProviders": [
+          {
+            "id": "parallel",
+            "label": "Parallel Search",
+            "hint": "LLM-optimized dense excerpts from web sources",
+            "onboardingScopes": [
+              "text-inference"
+            ],
+            "credentialLabel": "Parallel API key",
+            "envVars": [
+              "PARALLEL_API_KEY"
+            ],
+            "placeholder": "par-...",
+            "signupUrl": "https://platform.parallel.ai",
+            "docsUrl": "https://docs.aether.ai/tools/parallel-search",
+            "credentialPath": "plugins.entries.parallel.config.webSearch.apiKey",
+            "autoDetectOrder": 75
+          },
+          {
+            "id": "parallel-free",
+            "label": "Parallel Search (Free)",
+            "hint": "Free web search via Parallel's hosted Search MCP — no API key required",
+            "onboardingScopes": [
+              "text-inference"
+            ],
+            "requiresCredential": false,
+            "envVars": [],
+            "placeholder": "(no key needed)",
+            "signupUrl": "https://parallel.ai",
+            "docsUrl": "https://docs.aether.ai/tools/parallel-search",
+            "credentialPath": ""
+          }
+        ],
+        "install": {
+          "clawhubSpec": "clawhub:@aether/parallel-plugin",
+          "npmSpec": "@aether/parallel-plugin",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.6.8"
+        }
+      }
+    },
+    {
+      "name": "@aether/perplexity-plugin",
+      "description": "Aether Perplexity plugin.",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "perplexity",
+          "label": "Perplexity"
+        },
+        "contracts": {
+          "webSearchProviders": [
+            "perplexity"
+          ]
+        },
+        "webSearchProviders": [
+          {
+            "id": "perplexity",
+            "label": "Perplexity Search",
+            "hint": "Requires Perplexity API key or OpenRouter API key · structured results",
+            "onboardingScopes": [
+              "text-inference"
+            ],
+            "credentialLabel": "Perplexity API key",
+            "envVars": [
+              "PERPLEXITY_API_KEY",
+              "OPENROUTER_API_KEY"
+            ],
+            "placeholder": "pplx-...",
+            "signupUrl": "https://www.perplexity.ai/settings/api",
+            "docsUrl": "https://docs.aether.ai/perplexity",
+            "credentialPath": "plugins.entries.perplexity.config.webSearch.apiKey",
+            "autoDetectOrder": 50
+          }
+        ],
+        "install": {
+          "clawhubSpec": "clawhub:@aether/perplexity-plugin",
+          "npmSpec": "@aether/perplexity-plugin",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.6.8"
+        }
+      }
+    },
+    {
+      "name": "@aether/searxng-plugin",
+      "description": "Aether SearXNG plugin",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "searxng",
+          "label": "SearXNG"
+        },
+        "contracts": {
+          "webSearchProviders": [
+            "searxng"
+          ]
+        },
+        "webSearchProviders": [
+          {
+            "id": "searxng",
+            "label": "SearXNG Search",
+            "hint": "Self-hosted meta-search with no API key required",
+            "onboardingScopes": [
+              "text-inference"
+            ],
+            "requiresCredential": true,
+            "credentialLabel": "SearXNG Base URL",
+            "envVars": [
+              "SEARXNG_BASE_URL"
+            ],
+            "placeholder": "http://localhost:8080",
+            "signupUrl": "https://docs.searxng.org/",
+            "docsUrl": "https://docs.aether.ai/tools/searxng-search",
+            "credentialPath": "plugins.entries.searxng.config.webSearch.baseUrl",
+            "autoDetectOrder": 200
+          }
+        ],
+        "install": {
+          "clawhubSpec": "clawhub:@aether/searxng-plugin",
+          "npmSpec": "@aether/searxng-plugin",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.6.9",
+          "allowInvalidConfigRecovery": true
+        }
+      }
+    },
+    {
+      "name": "@aether/tavily-plugin",
+      "description": "Aether Tavily plugin",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "tavily",
+          "label": "Tavily"
+        },
+        "contracts": {
+          "webSearchProviders": [
+            "tavily"
+          ],
+          "tools": [
+            "tavily_search",
+            "tavily_extract"
+          ]
+        },
+        "webSearchProviders": [
+          {
+            "id": "tavily",
+            "label": "Tavily Search",
+            "hint": "Structured results with domain filters and AI answer summaries",
+            "onboardingScopes": [
+              "text-inference"
+            ],
+            "credentialLabel": "Tavily API key",
+            "envVars": [
+              "TAVILY_API_KEY"
+            ],
+            "placeholder": "tvly-...",
+            "signupUrl": "https://tavily.com/",
+            "docsUrl": "https://docs.aether.ai/tools/tavily",
+            "credentialPath": "plugins.entries.tavily.config.webSearch.apiKey",
+            "autoDetectOrder": 70
+          }
+        ],
+        "install": {
+          "clawhubSpec": "clawhub:@aether/tavily-plugin",
+          "npmSpec": "@aether/tavily-plugin",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.6.9",
+          "allowInvalidConfigRecovery": true
+        }
+      }
+    },
+    {
+      "name": "@aether/team-reports",
+      "description": "Aether team activity reports plugin (GitHub org + Discord activity with model summaries)",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "team-reports",
+          "label": "Team Reports"
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/team-reports",
+          "npmSpec": "@aether/team-reports",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.9.2"
+        }
+      }
+    },
+    {
+      "name": "@aether/teams-meetings",
+      "description": "Aether Microsoft Teams browser meeting participant plugin.",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "teams-meetings",
+          "label": "Microsoft Teams meetings"
+        },
+        "contracts": {
+          "tools": [
+            "teams_meetings"
+          ],
+          "transcriptSourceProviders": [
+            "teams"
+          ]
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/teams-meetings",
+          "npmSpec": "@aether/teams-meetings",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.7.2"
+        }
+      }
+    },
+    {
+      "name": "@aether/tokenjuice",
+      "description": "Aether tokenjuice exec output compaction plugin",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "tokenjuice",
+          "label": "Tokenjuice"
+        },
+        "catalog": {
+          "featured": true,
+          "order": 60
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/tokenjuice",
+          "npmSpec": "@aether/tokenjuice",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.5.28"
+        }
+      }
+    },
+    {
+      "name": "@aether/voice-call",
+      "description": "Aether voice-call plugin",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "voice-call",
+          "label": "Voice Call"
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/voice-call",
+          "npmSpec": "@aether/voice-call",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.4.10"
+        }
+      }
+    },
+    {
+      "name": "@aether/zoom-meetings",
+      "description": "Aether Zoom browser meeting participant plugin.",
+      "source": "official",
+      "kind": "plugin",
+      "aether": {
+        "plugin": {
+          "id": "zoom-meetings",
+          "label": "Zoom meetings"
+        },
+        "contracts": {
+          "tools": [
+            "zoom_meetings"
+          ],
+          "transcriptSourceProviders": [
+            "zoom"
+          ]
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@aether/zoom-meetings",
+          "npmSpec": "@aether/zoom-meetings",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.7.2"
+        }
+      }
+    }
+  ]
+}
