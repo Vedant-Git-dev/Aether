@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { asRecord } from "@openclaw/normalization-core/record-coerce";
-import { readNonEmptyStringPreservingWhitespace as readNonEmptyString } from "@openclaw/normalization-core/string-coerce";
+import { asRecord } from "@aether/normalization-core/record-coerce";
+import { readNonEmptyStringPreservingWhitespace as readNonEmptyString } from "@aether/normalization-core/string-coerce";
 import { EventHub } from "./event-hub.js";
 import { normalizeGatewayEvent } from "./normalize.js";
 import {

@@ -1,4 +1,4 @@
-import type { AssistantMessage, Model, ProviderReplayState } from "@openclaw/llm-core";
+import type { AssistantMessage, Model, ProviderReplayState } from "@aether/llm-core";
 import { resolveNewestAnthropicCompaction } from "./anthropic-compaction-replay.js";
 import { resolveAnthropicServerCompactionPlan } from "./anthropic-payload-policy.js";
 import {

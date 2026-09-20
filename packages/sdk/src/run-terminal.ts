@@ -3,9 +3,9 @@ import {
   isDefinitiveRunLifecycle,
   resolveAgentRunLifecycleTerminalFacts,
   resolveAgentRunWaitTerminalFacts,
-} from "@openclaw/normalization-core/agent-run-terminal-outcome";
-import { asRecord } from "@openclaw/normalization-core/record-coerce";
-import { readNonEmptyStringPreservingWhitespace } from "@openclaw/normalization-core/string-coerce";
+} from "@aether/normalization-core/agent-run-terminal-outcome";
+import { asRecord } from "@aether/normalization-core/record-coerce";
+import { readNonEmptyStringPreservingWhitespace } from "@aether/normalization-core/string-coerce";
 import type { JsonObject, AetherEventType, RunResult, RunTimestamp } from "./types.js";
 
 const SDK_STATUS_BY_TERMINAL_CLASSIFICATION = {

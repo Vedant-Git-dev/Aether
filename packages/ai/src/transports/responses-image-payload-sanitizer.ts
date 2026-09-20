@@ -3,8 +3,8 @@
  * are replaced with text placeholders so the request remains valid and
  * auditable.
  */
-import { sanitizeInlineImageDataUrl as sanitizeSharedInlineImageDataUrl } from "@openclaw/media-core/inline-image-data-url";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { sanitizeInlineImageDataUrl as sanitizeSharedInlineImageDataUrl } from "@aether/media-core/inline-image-data-url";
+import { isRecord } from "@aether/normalization-core/record-coerce";
 
 const IMAGE_OMITTED_TEXT = "omitted image payload: invalid inline image data";
 

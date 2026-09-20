@@ -1,5 +1,5 @@
 // Vector normalization helpers used before embedding similarity search.
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { asOptionalRecord } from "@aether/normalization-core/record-coerce";
 
 /** Validate provider embeddings and restore their original request order. */
 export function readEmbeddingVectors(

@@ -13,9 +13,9 @@ export {
   DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS,
   resolveSafeTimeoutDelayMs,
 } from "./timeouts.js";
-export * from "@openclaw/gateway-protocol/client-info";
-export * from "@openclaw/gateway-protocol/connect-error-details";
-export * from "@openclaw/gateway-protocol/gateway-error-details";
-export * from "@openclaw/gateway-protocol/startup-unavailable";
-export * from "@openclaw/gateway-protocol/version";
-export type { ConnectParams, ErrorShape, EventFrame, HelloOk } from "@openclaw/gateway-protocol";
+export * from "@aether/gateway-protocol/client-info";
+export * from "@aether/gateway-protocol/connect-error-details";
+export * from "@aether/gateway-protocol/gateway-error-details";
+export * from "@aether/gateway-protocol/startup-unavailable";
+export * from "@aether/gateway-protocol/version";
+export type { ConnectParams, ErrorShape, EventFrame, HelloOk } from "@aether/gateway-protocol";

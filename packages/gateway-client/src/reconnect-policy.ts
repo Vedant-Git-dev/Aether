@@ -2,7 +2,7 @@ import {
   ConnectErrorDetailCodes,
   readConnectErrorDetailCode,
   readPairingConnectErrorDetails,
-} from "@openclaw/gateway-protocol/connect-error-details";
+} from "@aether/gateway-protocol/connect-error-details";
 
 const NON_RECOVERABLE_AUTH_ERRORS = new Set<string>([
   ConnectErrorDetailCodes.AUTH_TOKEN_MISSING,

@@ -1,4 +1,4 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { isRecord } from "@aether/normalization-core/record-coerce";
 import { getAiTransportHost } from "../host.js";
 
 type ReplayMessage = {

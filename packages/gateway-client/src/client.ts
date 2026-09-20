@@ -5,21 +5,21 @@ import {
   GATEWAY_CLIENT_NAMES,
   type GatewayClientMode,
   type GatewayClientName,
-} from "@openclaw/gateway-protocol/client-info";
+} from "@aether/gateway-protocol/client-info";
 import {
   ConnectErrorDetailCodes,
   readConnectErrorDetailCode,
-} from "@openclaw/gateway-protocol/connect-error-details";
-import type { ConnectParams, EventFrame, HelloOk } from "@openclaw/gateway-protocol/frame-guards";
-import { resolveGatewayStartupRetryAfterMs } from "@openclaw/gateway-protocol/startup-unavailable";
+} from "@aether/gateway-protocol/connect-error-details";
+import type { ConnectParams, EventFrame, HelloOk } from "@aether/gateway-protocol/frame-guards";
+import { resolveGatewayStartupRetryAfterMs } from "@aether/gateway-protocol/startup-unavailable";
 import {
   MIN_CLIENT_PROTOCOL_VERSION,
   MIN_NODE_PROTOCOL_VERSION,
   MIN_PROBE_PROTOCOL_VERSION,
   PROTOCOL_VERSION,
-} from "@openclaw/gateway-protocol/version";
-import { redactSensitiveUrlLikeString } from "@openclaw/net-policy/redact-sensitive-url";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+} from "@aether/gateway-protocol/version";
+import { redactSensitiveUrlLikeString } from "@aether/net-policy/redact-sensitive-url";
+import { isRecord } from "@aether/normalization-core/record-coerce";
 import {
   isSensitiveUrlQueryParamName,
   normalizeTlsFingerprint,

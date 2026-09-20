@@ -1,4 +1,4 @@
-import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
+import { resolveIntegerOption } from "@aether/normalization-core/number-coercion";
 import { avoidTrailingHighSurrogateBreak } from "./chunk-text.js";
 import { annotateAssistantTranscriptRoleMessageBoundary } from "./ir-annotations.js";
 import { mergeAnnotationSpans, mergeStyleSpans } from "./ir-spans.js";

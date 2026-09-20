@@ -1,5 +1,5 @@
 {
-  "name": "@openclaw/terminal-core",
+  "name": "@aether/terminal-core",
   "version": "0.0.0-private",
   "private": true,
   "files": [
@@ -102,7 +102,7 @@
   },
   "dependencies": {
     "@clack/prompts": "1.7.0",
-    "@openclaw/normalization-core": "workspace:*",
+    "@aether/normalization-core": "workspace:*",
     "chalk": "6.0.0",
     "string-width": "8.2.2"
   }

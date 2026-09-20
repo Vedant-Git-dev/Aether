@@ -1,5 +1,5 @@
-import { normalizeAgentId } from "@openclaw/normalization-core/agent-id";
-import { normalizeNullableString } from "@openclaw/normalization-core/string-coerce";
+import { normalizeAgentId } from "@aether/normalization-core/agent-id";
+import { normalizeNullableString } from "@aether/normalization-core/string-coerce";
 import {
   isReservedSessionRest,
   normalizeControlUiBasePath,

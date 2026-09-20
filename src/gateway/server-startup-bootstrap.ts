@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { getActiveBackgroundExecSessionCount } from "../agents/bash-process-registry.js";
 import { getActiveEmbeddedRunCount } from "../agents/embedded-agent-runner/active-run-projections.js";
+import { advancePreparedModelRuntimeConfig } from "../agents/prepared-model-runtime.js";
 import { getTotalPendingReplies } from "../auto-reply/reply/dispatcher-registry.js";
 import { isRestartEnabled } from "../config/commands.flags.js";
 import {
@@ -13,6 +14,7 @@ import {
   getRuntimeConfigSourceSnapshot,
   readConfigFileSnapshot,
   readConfigFileSnapshotWithPluginMetadata,
+  registerRuntimeConfigSnapshotReplacementListener,
   setAppliedRuntimeConfigSnapshot,
 } from "../config/io.js";
 import { normalizeStateDirEnv } from "../config/paths.js";
@@ -74,6 +76,24 @@ function publishGatewayPluginRuntimeConfigAtStartup(params: {
   setAppliedRuntimeConfigSnapshot(params.runtimeConfig, params.sourceConfig);
 }
 
+let preparedRuntimeConfigFollowerRegistered = false;
+
+/**
+ * Keeps published prepared model runtime owners stamped with the config the runtime actually
+ * holds. Later snapshot replacements (secrets activation, managed reload commits) install an
+ * equivalent resolved config; without this follow, every strict catalog read on the reply
+ * path sees a replaced-config mismatch and fails channel dispatches.
+ */
+function registerPreparedRuntimeConfigFollower(): void {
+  if (preparedRuntimeConfigFollowerRegistered) {
+    return;
+  }
+  preparedRuntimeConfigFollowerRegistered = true;
+  registerRuntimeConfigSnapshotReplacementListener((config) =>
+    advancePreparedModelRuntimeConfig(config),
+  );
+}
+
 export async function prepareGatewayServerBootstrap(input: {
   port: number;
   opts: GatewayServerOptions;
@@ -83,6 +103,7 @@ export async function prepareGatewayServerBootstrap(input: {
   formatRuntimeGatewayAuthTokenWarning: () => string;
 }) {
   const { port, opts, log, logSecrets, loadWorkerEnvironmentStartupModule } = input;
+  registerPreparedRuntimeConfigFollower();
   const { assertConfiguredWorkspaceStateReady } = await import("../agents/workspace-state-dirs.js");
   // Derive defaults and admit exactly the snapshot that bootstrap will consume.
   process.env.AETHER_GATEWAY_PORT = String(port);

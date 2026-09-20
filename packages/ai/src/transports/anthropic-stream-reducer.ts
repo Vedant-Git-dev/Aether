@@ -1,10 +1,10 @@
-import type { AssistantMessage, AssistantMessageEvent, Model } from "@openclaw/llm-core";
-import { appendAssistantThinking } from "@openclaw/llm-core/event-stream";
+import type { AssistantMessage, AssistantMessageEvent, Model } from "@aether/llm-core";
+import { appendAssistantThinking } from "@aether/llm-core/event-stream";
 import {
   asRecord,
   asOptionalObjectRecord,
   readStringField,
-} from "@openclaw/normalization-core/record-coerce";
+} from "@aether/normalization-core/record-coerce";
 import { calculateCost } from "../model-utils.js";
 import type { AnthropicOptions } from "../provider-options.js";
 import { mapAnthropicStopReason } from "../providers/anthropic-model-contract.js";

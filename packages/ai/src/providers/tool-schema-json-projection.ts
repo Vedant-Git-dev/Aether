@@ -1,5 +1,5 @@
 import { types as utilTypes } from "node:util";
-import { isRecord as isJsonObject } from "@openclaw/normalization-core/record-coerce";
+import { isRecord as isJsonObject } from "@aether/normalization-core/record-coerce";
 
 /** JSON-safe schema value used when projecting runtime tool parameters. */
 export type RuntimeToolInputSchemaJson =

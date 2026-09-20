@@ -3,12 +3,12 @@
  * Handles local JSON Schema refs, OpenAPI nullable syntax, top-level unions,
  * and provider-specific unsupported keyword stripping.
  */
-import { isRecord as isSchemaRecord } from "@openclaw/normalization-core/record-coerce";
-import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import { isRecord as isSchemaRecord } from "@aether/normalization-core/record-coerce";
+import { normalizeLowercaseStringOrEmpty } from "@aether/normalization-core/string-coerce";
 import {
   normalizeStringEntries,
   uniqueValues,
-} from "@openclaw/normalization-core/string-normalization";
+} from "@aether/normalization-core/string-normalization";
 import type { TSchema } from "typebox";
 import { cleanSchemaForGemini } from "./clean-for-gemini.js";
 import { cleanSchemaForLlamacppGbnf } from "./clean-for-llamacpp-gbnf.js";

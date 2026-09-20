@@ -1,4 +1,4 @@
-import type { AssistantMessage, AssistantMessageEvent, Model } from "@openclaw/llm-core";
+import type { AssistantMessage, AssistantMessageEvent, Model } from "@aether/llm-core";
 import { createZeroUsage } from "../usage.test-support.js";
 import {
   processResponsesStream as processTransportStream,

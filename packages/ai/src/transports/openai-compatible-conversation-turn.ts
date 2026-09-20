@@ -4,7 +4,7 @@
  * Some providers reject requests without a non-empty user/assistant turn; this
  * helper checks the loose message payload shape before transport submission.
  */
-import { hasNonEmptyString } from "@openclaw/normalization-core/string-coerce";
+import { hasNonEmptyString } from "@aether/normalization-core/string-coerce";
 
 function hasNonEmptyContentPart(part: unknown): boolean {
   if (!part || typeof part !== "object") {

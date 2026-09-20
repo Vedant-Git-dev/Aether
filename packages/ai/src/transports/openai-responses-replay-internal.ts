@@ -1,5 +1,5 @@
-import type { Model } from "@openclaw/llm-core";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import type { Model } from "@aether/llm-core";
+import { isRecord } from "@aether/normalization-core/record-coerce";
 import type { ResponseInput } from "openai/resources/responses/responses.js";
 import type { OpenAIResponsesCompactionRejection } from "../provider-options.js";
 import type { createOpenAIResponsesClient } from "./openai-responses-client.js";

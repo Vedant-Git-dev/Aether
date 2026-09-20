@@ -1,5 +1,5 @@
-import { asFiniteNumber, asSafeIntegerInRange } from "@openclaw/normalization-core/number-coercion";
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { asFiniteNumber, asSafeIntegerInRange } from "@aether/normalization-core/number-coercion";
+import { normalizeOptionalString } from "@aether/normalization-core/string-coerce";
 
 function readMetaValue<T>(
   meta: Record<string, unknown> | null | undefined,

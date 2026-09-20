@@ -1,5 +1,5 @@
 import type { Tool as AnthropicTool } from "@anthropic-ai/sdk/resources/messages.js";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { isRecord } from "@aether/normalization-core/record-coerce";
 import type { AnthropicOptions } from "../provider-options.js";
 import { sortPromptCacheToolsByName } from "../utils/prompt-cache-stability.js";
 import { projectRuntimeToolInputSchema } from "./tool-schema-json-projection.js";

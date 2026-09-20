@@ -1,5 +1,5 @@
 {
-  "name": "@openclaw/media-generation-core",
+  "name": "@aether/media-generation-core",
   "version": "0.0.0-private",
   "private": true,
   "files": [
@@ -9,7 +9,7 @@
   "main": "./dist/index.mjs",
   "types": "./dist/index.d.mts",
   "dependencies": {
-    "@openclaw/normalization-core": "workspace:*"
+    "@aether/normalization-core": "workspace:*"
   },
   "exports": {
     ".": {

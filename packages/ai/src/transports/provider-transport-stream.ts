@@ -3,7 +3,7 @@
  *
  * Routes models that need Aether-managed proxy/TLS/local-service semantics onto built-in transport implementations.
  */
-import type { Api, Model, StreamFn } from "@openclaw/llm-core";
+import type { Api, Model, StreamFn } from "@aether/llm-core";
 import { getAiTransportHost } from "../host.js";
 import { createAnthropicMessagesTransportStreamFn } from "./anthropic-transport-stream.js";
 import { createOpenAICompletionsTransportStreamFn } from "./openai-completions-transport.js";

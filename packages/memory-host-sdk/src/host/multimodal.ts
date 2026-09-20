@@ -1,4 +1,4 @@
-import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import { normalizeLowercaseStringOrEmpty } from "@aether/normalization-core/string-coerce";
 
 // Multimodal memory settings and file classification helpers.
 

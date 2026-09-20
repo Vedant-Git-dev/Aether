@@ -6,7 +6,7 @@
  * package and managed transports from drifting on token buckets, service-tier pricing, or future
  * terminal-event semantics.
  */
-import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
+import { asFiniteNumber } from "@aether/normalization-core/number-coercion";
 import type OpenAI from "openai";
 import type { StopReason, Usage } from "../types.js";
 

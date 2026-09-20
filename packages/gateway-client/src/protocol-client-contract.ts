@@ -1,5 +1,5 @@
 // Wire-client contract types shared by GatewayProtocolClient and its adapters.
-import type { ErrorShape, EventFrame, HelloOk } from "@openclaw/gateway-protocol";
+import type { ErrorShape, EventFrame, HelloOk } from "@aether/gateway-protocol";
 import type { GatewayProtocolRequestTiming } from "./pending-request.js";
 import type { GatewayProtocolRequestError } from "./protocol-request.js";
 

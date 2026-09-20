@@ -1,4 +1,4 @@
-import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { truncateUtf16Safe } from "@aether/normalization-core/utf16-slice";
 import type {
   ChatCompletionAssistantMessageParam,
   ChatCompletionContentPart,

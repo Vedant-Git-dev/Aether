@@ -1,4 +1,4 @@
-import { truncateCodePoints } from "@openclaw/normalization-core/code-points";
+import { truncateCodePoints } from "@aether/normalization-core/code-points";
 import { isNativeOpenAIEndpoint } from "../transports/openai-completions-compat.js";
 import type { CacheRetention, Model, OpenAICompletionsCompat } from "../types.js";
 

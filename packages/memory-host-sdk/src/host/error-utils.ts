@@ -1,4 +1,4 @@
-import { formatErrorMessage as formatSharedErrorMessage } from "@openclaw/normalization-core/error-coercion";
+import { formatErrorMessage as formatSharedErrorMessage } from "@aether/normalization-core/error-coercion";
 // Import the canonical redactor directly, not via aether-runtime-io: that
 // facade pulls the full core runtime (execa reach), and this module sits in the
 // memory-core doctor contract closure, which the build guards keep execa-free.

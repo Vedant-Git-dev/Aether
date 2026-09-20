@@ -1,5 +1,5 @@
 // Overflow helpers classify provider overflow errors and retryable responses.
-import { isProviderRefusalAssistantError } from "@openclaw/llm-core/diagnostics";
+import { isProviderRefusalAssistantError } from "@aether/llm-core/diagnostics";
 import type { AssistantMessage } from "../types.js";
 
 const CONFIGURED_CONTEXT_SIZE_OVERFLOW_RE =

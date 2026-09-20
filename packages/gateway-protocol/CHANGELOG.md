@@ -1,4 +1,4 @@
-# Changelog — @openclaw/gateway-protocol
+# Changelog — @aether/gateway-protocol
 
 Wire-protocol and schema contracts for the Aether Gateway (WebSocket JSON-RPC-style
 frames, handshake, and method/event payload schemas). Protocol version is negotiated

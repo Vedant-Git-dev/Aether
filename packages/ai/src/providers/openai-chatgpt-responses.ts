@@ -4,8 +4,8 @@ import type * as NodeZlib from "node:zlib";
 import {
   extractErrorCodeOrErrno,
   toErrorObject,
-} from "@openclaw/normalization-core/error-coercion";
-import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
+} from "@aether/normalization-core/error-coercion";
+import { resolveTimerTimeoutMs } from "@aether/normalization-core/number-coercion";
 import type {
   Tool as OpenAITool,
   ResponseCreateParamsStreaming,

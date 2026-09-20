@@ -1,4 +1,4 @@
-import { isRecord as isSchemaRecord } from "@openclaw/normalization-core/record-coerce";
+import { isRecord as isSchemaRecord } from "@aether/normalization-core/record-coerce";
 
 /** llama.cpp rejects grammar repetitions whose expanded rule count reaches 2000. */
 export const LLAMACPP_GBNF_MAX_REPETITION_THRESHOLD = 2000;

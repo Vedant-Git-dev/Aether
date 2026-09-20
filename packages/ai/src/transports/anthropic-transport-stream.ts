@@ -4,14 +4,14 @@ import type {
   Model,
   SimpleStreamOptions,
   StreamFn,
-} from "@openclaw/llm-core";
-import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
+} from "@aether/llm-core";
+import { toErrorObject } from "@aether/normalization-core/error-coercion";
 /**
  * Native Anthropic Messages streaming transport.
  * Converts Aether contexts/tools into Anthropic payloads, streams SSE events
  * back into runtime output blocks, and applies provider request policy.
  */
-import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import { normalizeLowercaseStringOrEmpty } from "@aether/normalization-core/string-coerce";
 import { getEnvApiKey } from "../env-api-keys.js";
 import { getAiTransportHost } from "../host.js";
 import type { AnthropicOptions } from "../provider-options.js";

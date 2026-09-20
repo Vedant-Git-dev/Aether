@@ -1,4 +1,4 @@
-import type { ErrorShape } from "@openclaw/gateway-protocol";
+import type { ErrorShape } from "@aether/gateway-protocol";
 
 const gatewayResponseErrors = new WeakSet<Error>();
 

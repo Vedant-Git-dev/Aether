@@ -1,14 +1,14 @@
 // Keep the runtime class on the public package specifier so Aether and
 // external consumers share one constructor identity.
-import { EventStream as LlmEventStream } from "@openclaw/ai/event-stream";
+import { EventStream as LlmEventStream } from "@aether/ai/event-stream";
 import type {
   AssistantMessage,
   EventStream,
   ToolResultMessage,
   EventStream as SourceEventStream,
-} from "@openclaw/llm-core";
-import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+} from "@aether/llm-core";
+import { coerceErrorMessage } from "@aether/normalization-core/error-coercion";
+import { asOptionalRecord } from "@aether/normalization-core/record-coerce";
 import {
   streamAgentResponse,
   type AgentEventSink,

@@ -46,6 +46,7 @@ export {
   getRuntimeConfigSnapshotMetadata,
   getRuntimeConfigSourceSnapshot,
   registerManagedRuntimeConfigWriteOwner,
+  registerRuntimeConfigSnapshotReplacementListener,
   resetConfigRuntimeState,
   resolveRuntimeConfigCacheKey,
   selectApplicableRuntimeConfig,

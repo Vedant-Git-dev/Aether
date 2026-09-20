@@ -1,5 +1,5 @@
 {
-  "name": "@openclaw/gateway-client",
+  "name": "@aether/gateway-client",
   "version": "2026.9.4",
   "description": "Reference WebSocket client for the Aether Gateway protocol",
   "keywords": [
@@ -65,12 +65,12 @@
     "build": "tsdown src/index.ts src/browser.ts src/readiness.ts src/scope-upgrade.ts src/timeouts.ts src/websocket-data.ts --no-config --platform node --format esm --dts --out-dir dist --clean"
   },
   "dependencies": {
-    "@openclaw/gateway-protocol": "workspace:*",
+    "@aether/gateway-protocol": "workspace:*",
     "ipaddr.js": "2.5.0",
     "ws": "8.21.3"
   },
   "devDependencies": {
-    "@openclaw/normalization-core": "workspace:*"
+    "@aether/normalization-core": "workspace:*"
   },
   "engines": {
     "node": ">=22.19.0"

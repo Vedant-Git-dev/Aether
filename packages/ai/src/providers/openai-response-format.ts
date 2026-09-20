@@ -1,4 +1,4 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { isRecord } from "@aether/normalization-core/record-coerce";
 
 const JSON_SCHEMA_RESPONSE_FORMAT_NAME = "aether_response";
 const OLLAMA_CLOUD_ORIGIN = "https://ollama.com";

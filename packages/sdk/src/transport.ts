@@ -1,4 +1,4 @@
-import { GatewayClient, type GatewayClientOptions } from "@openclaw/gateway-client";
+import { GatewayClient, type GatewayClientOptions } from "@aether/gateway-client";
 import { EventHub } from "./event-hub.js";
 import type {
   ConnectableAetherTransport,
@@ -63,7 +63,7 @@ function toGatewayEvent(event: unknown): GatewayEvent {
   };
 }
 
-/** Connectable SDK transport backed by @openclaw/gateway-client. */
+/** Connectable SDK transport backed by @aether/gateway-client. */
 export class GatewayClientTransport implements ConnectableAetherTransport {
   private readonly eventsHub = new EventHub<GatewayEvent>({
     replayLimit: RAW_EVENT_REPLAY_LIMIT,

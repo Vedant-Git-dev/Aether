@@ -1,5 +1,5 @@
-import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
-import { avoidTrailingHighSurrogateBreak } from "@openclaw/normalization-core/utf16-slice";
+import { resolveIntegerOption } from "@aether/normalization-core/number-coercion";
+import { avoidTrailingHighSurrogateBreak } from "@aether/normalization-core/utf16-slice";
 
 export { avoidTrailingHighSurrogateBreak };
 

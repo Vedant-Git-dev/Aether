@@ -3,7 +3,7 @@
 // the embedding application (Aether core installs its implementations via
 // configureAiTransportHost); the library defaults below are inert so external
 // consumers get safe, dependency-free behavior without wiring anything.
-import type { Api, Context, Model, StreamFn } from "@openclaw/llm-core";
+import type { Api, Context, Model, StreamFn } from "@aether/llm-core";
 import type { ApiRegistry } from "./api-registry.js";
 import { transformMessages } from "./transcript-transform.js";
 

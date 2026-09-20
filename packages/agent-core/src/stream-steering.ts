@@ -1,4 +1,4 @@
-import type { StreamOptions, UserMessage } from "@openclaw/llm-core";
+import type { StreamOptions, UserMessage } from "@aether/llm-core";
 import { getInternalSteeringQueueObserver } from "./internal-hooks.js";
 import type { AgentLoopConfig } from "./types.js";
 

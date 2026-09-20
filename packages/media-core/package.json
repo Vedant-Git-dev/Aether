@@ -1,5 +1,5 @@
 {
-  "name": "@openclaw/media-core",
+  "name": "@aether/media-core",
   "version": "0.0.0-private",
   "private": true,
   "files": [
@@ -66,7 +66,7 @@
     }
   },
   "dependencies": {
-    "@openclaw/normalization-core": "workspace:*",
+    "@aether/normalization-core": "workspace:*",
     "file-type": "22.0.2"
   },
   "scripts": {

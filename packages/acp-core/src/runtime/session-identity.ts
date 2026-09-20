@@ -1,4 +1,4 @@
-import { normalizeOptionalString as normalizeText } from "@openclaw/normalization-core/string-coerce";
+import { normalizeOptionalString as normalizeText } from "@aether/normalization-core/string-coerce";
 import type { SessionAcpIdentity, SessionAcpIdentitySource, SessionAcpMeta } from "../types.js";
 import type { AcpRuntimeHandle, AcpRuntimeStatus } from "./types.js";
 

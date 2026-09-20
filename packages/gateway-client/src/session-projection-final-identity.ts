@@ -1,7 +1,7 @@
 /** Terminal identity rules used to reconcile live and durable assistant projections. */
 
-import { asNullableRecord as readRecord } from "@openclaw/normalization-core/record-coerce";
-import { stableStringify } from "@openclaw/normalization-core/stable-stringify";
+import { asNullableRecord as readRecord } from "@aether/normalization-core/record-coerce";
+import { stableStringify } from "@aether/normalization-core/stable-stringify";
 import {
   hasDisplayableSessionMessage,
   readSessionMessageDisplayContent,

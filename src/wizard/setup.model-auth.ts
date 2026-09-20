@@ -7,6 +7,10 @@ import {
   resolveOnboardingSetupTarget,
 } from "../commands/onboard-agent-target.js";
 import type { AuthChoice, OnboardOptions } from "../commands/onboard-types.js";
+import {
+  normalizeAgentModelRefForConfig,
+  resolveAgentModelPrimaryValue,
+} from "../config/model-input.js";
 import type { AetherConfig } from "../config/types.aether.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -255,10 +259,8 @@ export async function runSetupModelAuthStep(params: {
       break;
     }
 
-    const [
-      { prepareAuthChoice, resolvePreferredProviderForAuthChoice, warnIfModelConfigLooksOff },
-      { promptDefaultModel },
-    ] = await Promise.all([loadAuthChoiceModule(), loadModelPickerModule()]);
+    const { prepareAuthChoice, resolvePreferredProviderForAuthChoice, warnIfModelConfigLooksOff } =
+      await loadAuthChoiceModule();
     prompter.disableBackNavigation?.();
     const agentScopedModels = nextConfig.agents?.ownership === "explicit";
     let authResult: PreparedAuthChoiceResult;
@@ -271,7 +273,10 @@ export async function runSetupModelAuthStep(params: {
         agentId: target.agentId,
         agentDir: params.agentDir ?? target.agentDir,
         workspaceDir: target.workspaceDir,
-        setDefaultModel: true,
+        // Interactive setup never silently adopts the plugin's recommended
+        // model; it prefills the model-name prompt instead. Flag-driven
+        // automation (--auth-choice) keeps the silent apply contract.
+        setDefaultModel: !authChoiceFromPrompt,
         preserveExistingDefaultModel: true,
         env,
         opts: {
@@ -304,9 +309,10 @@ export async function runSetupModelAuthStep(params: {
       }
       break;
     }
-    if (authResult.agentModelOverride) {
-      nextConfig = applyOnboardingPrimaryModel(nextConfig, target, authResult.agentModelOverride);
-    }
+    // With setDefaultModel disabled the provider plugin returns its
+    // recommendation here instead of applying it. It prefills the model-name
+    // prompt; only a non-prompting path falls back to a silent apply.
+    const suggestedModel = authResult.agentModelOverride;
 
     const authChoiceModelSelectionPolicy = await resolveAuthChoiceModelSelectionPolicy({
       authChoice,
@@ -319,25 +325,41 @@ export async function runSetupModelAuthStep(params: {
       (authChoiceModelSelectionPolicy.promptWhenAuthChoiceProvided &&
         (!params.preserveExistingModelSelection ||
           !authChoiceModelSelectionPolicy.allowKeepCurrent));
+    if (!shouldPromptModelSelection && suggestedModel) {
+      nextConfig = applyOnboardingPrimaryModel(nextConfig, target, suggestedModel);
+    }
     if (shouldPromptModelSelection) {
-      const modelSelection = await promptDefaultModel({
-        config: nextConfig,
-        prompter,
-        allowKeep: authChoiceModelSelectionPolicy?.allowKeepCurrent ?? true,
-        ignoreAllowlist: true,
-        includeProviderPluginSetups: true,
-        preferredProvider: authChoiceModelSelectionPolicy?.preferredProvider,
-        browseCatalogOnDemand: true,
-        agentId: target.agentId,
-        agentDir: target.agentDir,
-        workspaceDir: target.workspaceDir,
-        runtime,
+      // Simple explicit model entry: the user types the model name and the
+      // system uses it with the provider that was just authenticated. The
+      // provider's recommendation (when one exists) prefills the input.
+      const preferredProvider = authChoiceModelSelectionPolicy?.preferredProvider;
+      const hasConfiguredModel = Boolean(
+        resolveAgentModelPrimaryValue(nextConfig.agents?.defaults?.model),
+      );
+      const modelInput = await prompter.text({
+        message: preferredProvider
+          ? t("wizard.model.providerModelPrompt", { provider: preferredProvider })
+          : t("wizard.model.defaultModel"),
+        initialValue: suggestedModel,
+        placeholder: preferredProvider
+          ? t("wizard.model.providerModelPlaceholder", { provider: preferredProvider })
+          : "provider/model",
+        // Blank keeps the existing model; fresh setups must enter one.
+        validate: hasConfiguredModel
+          ? undefined
+          : (value) => (value.trim() ? undefined : t("common.required")),
       });
-      if (modelSelection.config) {
-        nextConfig = modelSelection.config;
-      }
-      if (modelSelection.model) {
-        nextConfig = applyOnboardingPrimaryModel(nextConfig, target, modelSelection.model);
+      const typedModel = (modelInput ?? "").trim();
+      if (typedModel) {
+        const modelRef =
+          preferredProvider && !typedModel.includes("/")
+            ? `${preferredProvider}/${typedModel}`
+            : typedModel;
+        nextConfig = applyOnboardingPrimaryModel(
+          nextConfig,
+          target,
+          normalizeAgentModelRefForConfig(modelRef),
+        );
       }
     }
 

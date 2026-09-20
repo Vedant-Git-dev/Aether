@@ -1,4 +1,4 @@
-import { expectDefined } from "@openclaw/normalization-core";
+import { expectDefined } from "@aether/normalization-core";
 import MarkdownIt, { type MarkdownIt as MarkdownItParser, type StateInline } from "markdown-it";
 
 export type MarkdownImageSpan = {

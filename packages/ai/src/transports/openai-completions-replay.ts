@@ -1,5 +1,5 @@
-import type { Context, Model } from "@openclaw/llm-core";
-import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
+import type { Context, Model } from "@aether/llm-core";
+import { uniqueStrings } from "@aether/normalization-core/string-normalization";
 import {
   isGoogleGemini3FlashModel,
   isGoogleGemini3ProModel,

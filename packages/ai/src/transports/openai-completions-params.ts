@@ -1,4 +1,4 @@
-import type { CacheRetention, Context, Model } from "@openclaw/llm-core";
+import type { CacheRetention, Context, Model } from "@aether/llm-core";
 import { convertMessages, hasToolCallHistory } from "../openai-completions-messages.js";
 import type { OpenAICompletionsOptions } from "../provider-options.js";
 import { resolveCacheRetention } from "../providers/cache-retention.js";

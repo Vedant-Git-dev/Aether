@@ -1,4 +1,4 @@
-import { readNonBlankString } from "@openclaw/normalization-core/string-coerce";
+import { readNonBlankString } from "@aether/normalization-core/string-coerce";
 import { isProtocolRecord } from "./protocol-value-normalization.js";
 
 /** Structured ClawHub trust details carried in gateway error payloads. */

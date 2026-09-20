@@ -1,4 +1,4 @@
-import { normalizeNullableString } from "@openclaw/normalization-core/string-coerce";
+import { normalizeNullableString } from "@aether/normalization-core/string-coerce";
 import type { AssistantMessageDiagnostic } from "../types.js";
 
 type AnthropicRefusalOutput = {

@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { note as clackNote } from "@clack/prompts";
-import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import { normalizeLowercaseStringOrEmpty } from "@aether/normalization-core/string-coerce";
 import { iterateGraphemes, visibleWidth } from "./ansi.js";
 import { stylePromptTitle } from "./prompt-style.js";
 

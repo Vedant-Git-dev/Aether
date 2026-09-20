@@ -1,4 +1,4 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { isRecord } from "@aether/normalization-core/record-coerce";
 import { DEEPSEEK_DSML_MARKERS, DEEPSEEK_DSML_MARKER_PATTERN } from "./deepseek-dsml-grammar.js";
 import { measureUtf8AppendBytes } from "./openai-transport-shared.js";
 

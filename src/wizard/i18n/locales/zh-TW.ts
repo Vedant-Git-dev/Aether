@@ -321,7 +321,7 @@ export const zh_TW = {
       detecting: "正在尋找你已使用的 AI…",
       existingModelKept:
         "已設定的預設模型保持不變。請在下方選擇如何繼續——重試、連接其他提供商，或離開。此檢查在工作區之外執行，因此工作區外掛提供的模型可能在這裡失敗，但在 agent 中仍可正常運作。",
-      escapeHatches: "如需完整的分步精靈，請執行 `aether awaken --classic`。",
+      escapeHatches: "如需完整的分步精靈，請直接執行 `aether awaken`（不加參數）。",
       failureAuth: "認證失敗。請重新登入或檢查 key。",
       failureBilling: "此模型或帳號尚未啟用計費。",
       failureFormat: "模型沒有傳回可用的回覆。",

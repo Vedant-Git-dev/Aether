@@ -1,6 +1,6 @@
-import type { AssistantMessage, Model } from "@openclaw/llm-core";
-import { stableStringify } from "@openclaw/normalization-core";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import type { AssistantMessage, Model } from "@aether/llm-core";
+import { stableStringify } from "@aether/normalization-core";
+import { isRecord } from "@aether/normalization-core/record-coerce";
 import type { ResponseInput } from "openai/resources/responses/responses.js";
 import { sha256Hex } from "./transport-utils.js";
 

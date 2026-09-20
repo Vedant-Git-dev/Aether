@@ -4,7 +4,7 @@
  * These details cross client/server boundaries, so readers normalize untrusted
  * payloads before using them in reconnect decisions or user-facing messages.
  */
-import { normalizeOptionalTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
+import { normalizeOptionalTrimmedStringList } from "@aether/normalization-core/string-normalization";
 import {
   isProtocolRecord,
   normalizeOptionalProtocolString,

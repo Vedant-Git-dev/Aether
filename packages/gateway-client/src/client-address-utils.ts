@@ -2,7 +2,7 @@ import {
   normalizeIpAddress,
   parseCanonicalIpAddress,
   type ParsedIpAddress,
-} from "@openclaw/net-policy/ip";
+} from "@aether/net-policy/ip";
 
 export function normalizeGatewayErrorText(value: unknown): string {
   return typeof value === "string" ? value.trim().toLowerCase() : "";

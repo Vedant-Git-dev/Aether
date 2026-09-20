@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { normalizeOptionalString } from "@aether/normalization-core/string-coerce";
 import { formatErrorMessage } from "./error-utils.js";
 import { resolveSqliteVecPlatformVariant } from "./sqlite-vec-platform-variant.js";
 

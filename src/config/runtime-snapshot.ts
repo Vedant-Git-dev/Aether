@@ -128,6 +128,34 @@ const managedRuntimeConfigWriteOwners = new Map<
 >();
 const runtimeConfigWriteListeners = new Set<(event: RuntimeConfigWriteNotification) => void>();
 const runtimeConfigSnapshotPreparers = new Set<(config: AetherConfig) => void>();
+const runtimeConfigSnapshotReplacementListeners = new Set<
+  (config: AetherConfig, previousConfig: AetherConfig) => void
+>();
+
+/**
+ * Notifies retained runtime owners when the active runtime snapshot is replaced with a
+ * different object, so owners stamped with the previous snapshot can follow the new one.
+ * Fires only on replacement; the initial snapshot installation has no owners to advance.
+ */
+export function registerRuntimeConfigSnapshotReplacementListener(
+  listener: (config: AetherConfig, previousConfig: AetherConfig) => void,
+): () => void {
+  runtimeConfigSnapshotReplacementListeners.add(listener);
+  return () => runtimeConfigSnapshotReplacementListeners.delete(listener);
+}
+
+function notifyRuntimeConfigSnapshotReplacementListeners(
+  config: AetherConfig,
+  previousConfig: AetherConfig,
+): void {
+  for (const listener of runtimeConfigSnapshotReplacementListeners) {
+    try {
+      listener(config, previousConfig);
+    } catch {
+      // Best-effort follower notification; snapshot replacement must still complete.
+    }
+  }
+}
 
 function stableConfigStringify(value: unknown): string {
   if (value === null || typeof value !== "object") {
@@ -183,6 +211,7 @@ export function setRuntimeConfigSnapshot(
   config: AetherConfig,
   sourceConfig?: AetherConfig,
 ): void {
+  const previousConfig = runtimeConfigSnapshot !== config ? runtimeConfigSnapshot : null;
   const factSource = getConfigResolutionFacts(config) !== null ? config : (sourceConfig ?? config);
   copyConfigResolutionFacts(factSource, config);
   for (const prepare of runtimeConfigSnapshotPreparers) {
@@ -192,6 +221,9 @@ export function setRuntimeConfigSnapshot(
   runtimeConfigSnapshot = config;
   runtimeConfigSourceSnapshot = sourceConfig ?? null;
   runtimeConfigSnapshotMetadata = createRuntimeConfigSnapshotMetadata(config, sourceConfig);
+  if (previousConfig) {
+    notifyRuntimeConfigSnapshotReplacementListeners(config, previousConfig);
+  }
 }
 
 export function registerRuntimeConfigSnapshotPreparer(

@@ -408,11 +408,28 @@ export async function loadProviderScopedThinkingCatalog(params: {
 }): Promise<ModelCatalogEntry[]> {
   const request = { ...params, readOnly: true };
   const publishedOwner = getPreparedModelCatalogOwnerSnapshot(request);
-  const owner = (await resolveReadOnlyPublishedModelCatalogOwner(request, "exact"))?.snapshot;
-  const catalog = owner
-    ? (publishedOwner ? await materializeRequestedModelCatalog(owner, true, undefined) : owner)
-        .modelCatalog
-    : { entries: [], routeVariants: [] };
+  // This is a turn-path capability probe, not a publication owner. When the runtime snapshot
+  // was replaced after the owner was published (secrets activation, managed commits) the exact
+  // policy rejects an equivalent-but-rebuilt config; degrade to the caller's own scoped
+  // catalog instead of failing every channel dispatch at this check.
+  const ownerResult = await resolveReadOnlyPublishedModelCatalogOwner(request, "exact").then(
+    (resolved) => ({ owner: resolved?.snapshot, mismatch: false }),
+    (error: unknown) => {
+      if (!(error instanceof PreparedModelCatalogConfigReplacedError)) {
+        throw error;
+      }
+      return { owner: undefined as PreparedModelRuntimeSnapshot | undefined, mismatch: true };
+    },
+  );
+  const catalog: ModelCatalogSnapshot = ownerResult.owner
+    ? (
+        publishedOwner
+          ? await materializeRequestedModelCatalog(ownerResult.owner, true, undefined)
+          : ownerResult.owner
+      ).modelCatalog
+    : ownerResult.mismatch
+      ? await loadScopedReadOnlyModelCatalog(request)
+      : { entries: [], routeVariants: [] };
   const agentId = params.agentId ?? resolveAmbientOwnerAgentId(params.config);
   const { augmentModelCatalogWithAgentHarness } = await import("./harness/model-catalog.js");
   const snapshot = await augmentModelCatalogWithAgentHarness({

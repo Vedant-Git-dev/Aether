@@ -1,6 +1,6 @@
-import type { ImageContent, Message, TextContent } from "@openclaw/llm-core";
-import { parseDateStringTimestampMs as parseSessionTimestampMs } from "@openclaw/normalization-core/number-coercion";
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import type { ImageContent, Message, TextContent } from "@aether/llm-core";
+import { parseDateStringTimestampMs as parseSessionTimestampMs } from "@aether/normalization-core/number-coercion";
+import { asOptionalRecord } from "@aether/normalization-core/record-coerce";
 import type {
   AgentMessage,
   BashExecutionMessage,

@@ -1,4 +1,4 @@
-export { readAssistantThinkingAppend } from "@openclaw/llm-core/event-stream";
+export { readAssistantThinkingAppend } from "@aether/llm-core/event-stream";
 export * from "../providers/simple-options.js";
 export * from "../providers/tool-result-text.js";
 export * from "../providers/transform-messages.js";

@@ -1,4 +1,4 @@
-import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import { normalizeLowercaseStringOrEmpty } from "@aether/normalization-core/string-coerce";
 import { normalizeProviderId } from "./provider-id.js";
 
 export { normalizeProviderId as normalizeModelCatalogProviderId } from "./provider-id.js";

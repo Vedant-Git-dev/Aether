@@ -8,7 +8,7 @@ import type {
   FunctionTool,
 } from "@mistralai/mistralai/models/components";
 import { Chat } from "@mistralai/mistralai/sdk/chat";
-import { appendAssistantThinking } from "@openclaw/llm-core/event-stream";
+import { appendAssistantThinking } from "@aether/llm-core/event-stream";
 import { getEnvApiKey } from "../env-api-keys.js";
 import { getAiTransportHost } from "../host.js";
 import { calculateCost, clampThinkingLevel } from "../model-utils.js";

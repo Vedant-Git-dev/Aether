@@ -6,8 +6,8 @@ import type {
   ThinkingContent,
   ToolCall,
   Usage,
-} from "@openclaw/llm-core";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+} from "@aether/llm-core";
+import { isRecord } from "@aether/normalization-core/record-coerce";
 import type { ChatCompletionChunk } from "openai/resources/chat/completions.js";
 import { getAiTransportHost } from "../host.js";
 import { applyProviderReportedUsageCost, calculateCost } from "../model-utils.js";

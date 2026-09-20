@@ -1,4 +1,4 @@
-import { parseStrictNonNegativeInteger } from "@openclaw/normalization-core/number-coercion";
+import { parseStrictNonNegativeInteger } from "@aether/normalization-core/number-coercion";
 
 export interface PromptTemplate {
   name: string;

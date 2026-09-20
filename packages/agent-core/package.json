@@ -1,5 +1,5 @@
 {
-  "name": "@openclaw/agent-core",
+  "name": "@aether/agent-core",
   "version": "0.0.0-private",
   "private": true,
   "files": [
@@ -63,9 +63,9 @@
     }
   },
   "dependencies": {
-    "@openclaw/ai": "workspace:*",
-    "@openclaw/llm-core": "workspace:*",
-    "@openclaw/normalization-core": "workspace:*",
+    "@aether/ai": "workspace:*",
+    "@aether/llm-core": "workspace:*",
+    "@aether/normalization-core": "workspace:*",
     "typebox": "1.3.18"
   }
 }

@@ -1,5 +1,5 @@
 {
-  "name": "@openclaw/acp-core",
+  "name": "@aether/acp-core",
   "version": "0.0.0-private",
   "private": true,
   "files": [
@@ -66,7 +66,7 @@
     }
   },
   "dependencies": {
-    "@openclaw/normalization-core": "workspace:*"
+    "@aether/normalization-core": "workspace:*"
   },
   "scripts": {
     "build": "tsdown src/index.ts src/error-format.ts src/meta.ts src/session.ts src/session-interaction-mode.ts src/session-lineage-meta.ts src/types.ts src/runtime/error-text.ts src/runtime/errors.ts src/runtime/session-identifiers.ts src/runtime/session-identity.ts src/runtime/types.ts --no-config --platform node --format esm --dts --out-dir dist --clean"

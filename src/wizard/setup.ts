@@ -625,6 +625,22 @@ async function runSetupWizardOnce(
     });
     nextConfig = committed.nextConfig;
   }
+
+  // Both flows: bundled tool plugins are opt-in, so offer them as an explicit
+  // selection instead of silently enabling defaults.
+  {
+    const { setupPluginExtras } = await import("./setup.plugin-extras.js");
+    nextConfig = await setupPluginExtras({
+      config: nextConfig,
+      prompter,
+      workspaceDir,
+    });
+    const committed = await commitSetupConfigFile(nextConfig, {
+      allowConfigSizeDrop: false,
+    });
+    nextConfig = committed.nextConfig;
+  }
+
   let onboardingTarget = resolveOnboardingSetupTarget(nextConfig);
   const { logConfigUpdated } = await loadConfigLoggingModule();
   logConfigUpdated(runtime);

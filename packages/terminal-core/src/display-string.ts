@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import { lowercasePreservingWhitespace } from "@openclaw/normalization-core/string-coerce";
+import { lowercasePreservingWhitespace } from "@aether/normalization-core/string-coerce";
 
 // Display-safe string helpers for shortening user home paths.
 

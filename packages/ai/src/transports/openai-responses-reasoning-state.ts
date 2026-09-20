@@ -1,5 +1,5 @@
-import type { AssistantMessage, Context, Model } from "@openclaw/llm-core";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import type { AssistantMessage, Context, Model } from "@aether/llm-core";
+import { isRecord } from "@aether/normalization-core/record-coerce";
 import { isOpenAIResponsesReplayContext } from "./openai-responses-compaction-replay.js";
 import {
   responsesContinuationPrefixFingerprint,

@@ -1,5 +1,5 @@
-import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
-import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { resolveIntegerOption } from "@aether/normalization-core/number-coercion";
+import { truncateUtf16Safe } from "@aether/normalization-core/utf16-slice";
 import type { MemoryReadResult } from "./types.js";
 
 // Shared memory-file read result shaping and truncation notices.

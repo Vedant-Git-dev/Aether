@@ -2,9 +2,9 @@ import {
   collectNestedErrorCandidates,
   extractErrorCodeOrErrno,
   readErrorName,
-} from "@openclaw/normalization-core/error-coercion";
+} from "@aether/normalization-core/error-coercion";
 // Keep transient network policy aligned across retries and process-level handling.
-import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import { normalizeLowercaseStringOrEmpty } from "@aether/normalization-core/string-coerce";
 
 export const WEBSOCKET_NON_RETRYABLE_CLOSE_ERROR_CODE = "ERR_WEBSOCKET_NON_RETRYABLE_CLOSE";
 

@@ -9,8 +9,8 @@ import {
   resolveClaudeSonnet5ModelIdentity,
   supportsClaudeNativeMaxEffort,
   supportsClaudeNativeXhighEffort,
-} from "@openclaw/llm-core";
-import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+} from "@aether/llm-core";
+import { normalizeLowercaseStringOrEmpty } from "@aether/normalization-core/string-coerce";
 import { clampThinkingLevel } from "../model-utils.js";
 import type { AnthropicEffort } from "../provider-options.js";
 import type {
@@ -33,7 +33,7 @@ export {
   supportsClaudeAdaptiveThinking,
   supportsClaudeNativeMaxEffort,
   supportsClaudeNativeXhighEffort,
-} from "@openclaw/llm-core";
+} from "@aether/llm-core";
 
 export const ANTHROPIC_CLAUDE_CODE_VERSION = "2.1.75";
 export const ANTHROPIC_CLAUDE_CODE_BILLING_SYSTEM_BLOCK = `x-anthropic-billing-header: cc_version=${ANTHROPIC_CLAUDE_CODE_VERSION}; cc_entrypoint=sdk-cli;`;

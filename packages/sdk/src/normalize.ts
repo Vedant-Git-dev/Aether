@@ -1,6 +1,6 @@
-import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
-import { asRecord } from "@openclaw/normalization-core/record-coerce";
-import { readNonEmptyStringPreservingWhitespace as readNonEmptyString } from "@openclaw/normalization-core/string-coerce";
+import { asFiniteNumber } from "@aether/normalization-core/number-coercion";
+import { asRecord } from "@aether/normalization-core/record-coerce";
+import { readNonEmptyStringPreservingWhitespace as readNonEmptyString } from "@aether/normalization-core/string-coerce";
 import { resolveSdkLifecycleEventType } from "./run-terminal.js";
 import type { GatewayEvent, JsonObject, AetherEvent, AetherEventType } from "./types.js";
 

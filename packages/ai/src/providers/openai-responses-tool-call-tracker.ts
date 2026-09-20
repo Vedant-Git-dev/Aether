@@ -1,4 +1,4 @@
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { normalizeOptionalString } from "@aether/normalization-core/string-coerce";
 
 export type ResponsesToolCallIdentity = { itemId?: string; callId?: string };
 

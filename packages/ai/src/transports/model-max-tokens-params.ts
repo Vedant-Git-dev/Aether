@@ -3,7 +3,7 @@
  * Callers canonicalize aliases before dispatch so payloads cannot carry
  * conflicting limits.
  */
-import { asNonNegativeFiniteNumber } from "@openclaw/normalization-core/number-coercion";
+import { asNonNegativeFiniteNumber } from "@aether/normalization-core/number-coercion";
 
 const MAX_TOKENS_PARAM_KEYS = ["maxTokens", "max_completion_tokens", "max_tokens"] as const;
 

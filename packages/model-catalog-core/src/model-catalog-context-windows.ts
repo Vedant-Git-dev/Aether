@@ -1,5 +1,5 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { isRecord } from "@aether/normalization-core/record-coerce";
+import { normalizeOptionalString } from "@aether/normalization-core/string-coerce";
 import {
   MODEL_CATALOG_MAX_CONTEXT_WINDOWS,
   type ModelCatalogContextWindowOption,

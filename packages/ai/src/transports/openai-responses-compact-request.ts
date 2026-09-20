@@ -1,4 +1,4 @@
-import type { Context, Model, StreamFn } from "@openclaw/llm-core";
+import type { Context, Model, StreamFn } from "@aether/llm-core";
 import type { OpenAIResponsesCompactionOutput } from "./openai-responses-compaction-window.js";
 import type {
   OpenAIResponsesOptions,

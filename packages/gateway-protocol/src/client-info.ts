@@ -4,7 +4,7 @@
  * These values cross the WebSocket handshake boundary, so additions must stay
  * aligned with protocol schemas and server policy checks.
  */
-import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
+import { normalizeOptionalLowercaseString } from "@aether/normalization-core/string-coerce";
 
 /** Canonical client ids accepted in gateway hello/connect payloads. */
 export const GATEWAY_CLIENT_IDS = {

@@ -1,6 +1,6 @@
 import { TLSSocket } from "node:tls";
-import { isLoopbackIpAddress, type ParsedIpAddress } from "@openclaw/net-policy/ip";
-import { isWssUrl } from "@openclaw/net-policy/url-protocol";
+import { isLoopbackIpAddress, type ParsedIpAddress } from "@aether/net-policy/ip";
+import { isWssUrl } from "@aether/net-policy/url-protocol";
 import type { ClientOptions } from "ws";
 import {
   normalizeTlsFingerprint,

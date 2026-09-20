@@ -1,5 +1,5 @@
-import type { AssistantMessage, Context, Model, ProviderReplayState } from "@openclaw/llm-core";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import type { AssistantMessage, Context, Model, ProviderReplayState } from "@aether/llm-core";
+import { isRecord } from "@aether/normalization-core/record-coerce";
 import type {
   ResponseCompactionItemParam,
   ResponseOutputItem,

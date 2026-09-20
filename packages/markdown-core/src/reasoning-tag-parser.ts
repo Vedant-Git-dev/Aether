@@ -1,5 +1,5 @@
 // Markdown Core owns provider-tag scanning and CommonMark/GFM ownership.
-import { expectDefined } from "@openclaw/normalization-core";
+import { expectDefined } from "@aether/normalization-core";
 import { fromMarkdown, type Extension, type Handle } from "mdast-util-from-markdown";
 import { gfmTableFromMarkdown } from "mdast-util-gfm-table";
 import { gfmTable } from "micromark-extension-gfm-table";

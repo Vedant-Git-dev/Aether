@@ -1,5 +1,5 @@
-import { stableStringify } from "@openclaw/normalization-core";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { stableStringify } from "@aether/normalization-core";
+import { isRecord } from "@aether/normalization-core/record-coerce";
 import type OpenAI from "openai";
 import type {
   ResponseInput,

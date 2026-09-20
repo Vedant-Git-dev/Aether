@@ -1,5 +1,5 @@
-import { GATEWAY_ASSISTANT_ERROR_FALLBACK_TEXT } from "@openclaw/gateway-protocol/gateway-error-details";
-import { asNullableRecord as readRecord } from "@openclaw/normalization-core/record-coerce";
+import { GATEWAY_ASSISTANT_ERROR_FALLBACK_TEXT } from "@aether/gateway-protocol/gateway-error-details";
+import { asNullableRecord as readRecord } from "@aether/normalization-core/record-coerce";
 import { readSessionProjectionString as readNonemptyString } from "./session-projection-message-identity.js";
 
 export function readSessionMessageDisplayContent(message: unknown): {

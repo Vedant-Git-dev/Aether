@@ -6,7 +6,7 @@ import type {
   TextContent,
   ThinkingBudgets,
   Transport,
-} from "@openclaw/llm-core";
+} from "@aether/llm-core";
 import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.js";
 import { TranscriptNotContinuableError } from "./errors.js";
 import { attachInternalSyncSteeringGetter, getInternalBeforeToolBatch } from "./internal-hooks.js";

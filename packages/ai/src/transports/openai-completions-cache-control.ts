@@ -1,4 +1,4 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { isRecord } from "@aether/normalization-core/record-coerce";
 import type { CacheRetention } from "../types.js";
 import { splitSystemPromptCacheBoundary } from "../utils/system-prompt-cache-boundary.js";
 import type { ResolvedOpenAICompletionsCompat } from "./openai-completions-compat.js";

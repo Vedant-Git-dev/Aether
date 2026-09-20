@@ -1,5 +1,5 @@
 // Collects configured model references from Aether config-shaped objects.
-import { asNonArrayRecord, isRecord } from "@openclaw/normalization-core/record-coerce";
+import { asNonArrayRecord, isRecord } from "@aether/normalization-core/record-coerce";
 
 /** One configured model reference plus its config path. */
 export type ConfiguredModelRef = {

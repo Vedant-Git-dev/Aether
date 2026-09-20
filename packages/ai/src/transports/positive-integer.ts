@@ -1,4 +1,4 @@
-import { parseStrictPositiveInteger } from "@openclaw/normalization-core/number-coercion";
+import { parseStrictPositiveInteger } from "@aether/normalization-core/number-coercion";
 
 export function parsePositiveInteger(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) {

@@ -1,4 +1,4 @@
-import { expectDefined } from "@openclaw/normalization-core/expect";
+import { expectDefined } from "@aether/normalization-core/expect";
 import { getMarkdownTableSource, markdownToIRWithMeta, type MarkdownTableMeta } from "./ir.js";
 import { renderMarkdownCodeTable, renderMarkdownTableBullets } from "./table-layout.js";
 import type { MarkdownTableMode } from "./types.js";

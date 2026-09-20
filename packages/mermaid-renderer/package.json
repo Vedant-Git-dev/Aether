@@ -1,5 +1,5 @@
 {
-  "name": "@openclaw/mermaid-renderer",
+  "name": "@aether/mermaid-renderer",
   "version": "0.0.0-private",
   "private": true,
   "type": "module",
@@ -10,7 +10,7 @@
     "build": "node ../../scripts/run-node-package-bin.mts vite build"
   },
   "dependencies": {
-    "@openclaw/normalization-core": "workspace:*",
+    "@aether/normalization-core": "workspace:*",
     "dompurify": "3.4.14",
     "mermaid": "11.17.2"
   },

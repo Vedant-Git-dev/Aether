@@ -1,4 +1,4 @@
-import type { ErrorShape, ResponseFrame } from "@openclaw/gateway-protocol";
+import type { ErrorShape, ResponseFrame } from "@aether/gateway-protocol";
 import {
   GatewayProtocolRequestError,
   GatewayProtocolRequestTimeoutError,

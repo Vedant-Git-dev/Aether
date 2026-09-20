@@ -289,7 +289,7 @@ export function registerOnboardCommand(program: Command): void {
   const command = program
     .command("awaken")
     .alias("onboard")
-    .description("Guided setup for auth, models, Gateway, workspace, channels, and skills")
+    .description("Interactive setup for auth, models, Gateway, workspace, channels, and skills")
     .addHelpText(
       "after",
       () =>
@@ -297,7 +297,7 @@ export function registerOnboardCommand(program: Command): void {
     )
     .option(
       "--workspace <dir>",
-      "Workspace proposal for guided setup; persisted by classic/non-interactive setup",
+      "Workspace proposal for setup; persisted by all setup flows",
     )
     .option("--agent-name <name>", "Name for the first agent (default: main)")
     .option(
@@ -307,8 +307,12 @@ export function registerOnboardCommand(program: Command): void {
     .option("--reset-scope <scope>", "Reset scope: config|config+creds+sessions|full")
     .option("--non-interactive", "Run without prompts", false)
     .option("--modern", "Open inference-gated Aether (kept for compatibility)", false)
-    .option("--classic", "Use the classic multi-step setup wizard", false)
-    .option("--tui", "Use the terminal hatch instead of the browser handoff", false)
+    .option(
+      "--classic",
+      "Use the guided discovery flow (the multi-step wizard is the default)",
+      false,
+    )
+    .option("--tui", "Use the terminal hatch instead of the browser handoff (guided setup: pair with --classic)", false)
     .option(
       "--accept-risk",
       "Acknowledge that agents are powerful and full system access is risky (required for --non-interactive)",

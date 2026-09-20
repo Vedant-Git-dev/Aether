@@ -1,5 +1,5 @@
 // JSON parse helpers recover structured values from partial model output.
-import { asNonArrayRecord } from "@openclaw/normalization-core/record-coerce";
+import { asNonArrayRecord } from "@aether/normalization-core/record-coerce";
 import { parse as partialParse } from "partial-json";
 
 const VALID_JSON_ESCAPES = new Set(['"', "\\", "/", "b", "f", "n", "r", "t", "u"]);

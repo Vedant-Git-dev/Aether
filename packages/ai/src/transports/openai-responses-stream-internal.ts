@@ -1,5 +1,5 @@
-import { appendAssistantThinking } from "@openclaw/llm-core/event-stream";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { appendAssistantThinking } from "@aether/llm-core/event-stream";
+import { isRecord } from "@aether/normalization-core/record-coerce";
 import type { ResponseOutputItem } from "openai/resources/responses/responses.js";
 import {
   AZURE_RESPONSES_TEXT_CONTENT_PART_TYPE,

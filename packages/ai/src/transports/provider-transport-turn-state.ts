@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Model, StreamOptions } from "@openclaw/llm-core";
+import type { Model, StreamOptions } from "@aether/llm-core";
 import { getAiTransportHost } from "../host.js";
 import { hasOpencodeSessionHeader, resolveOpencodeSessionHeaders } from "./session-affinity.js";
 

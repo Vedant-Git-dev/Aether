@@ -1,8 +1,8 @@
-import type { Model } from "@openclaw/llm-core";
-import { consumeResponseBytes } from "@openclaw/normalization-core";
-import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import type { Model } from "@aether/llm-core";
+import { consumeResponseBytes } from "@aether/normalization-core";
+import { truncateUtf16Safe } from "@aether/normalization-core/utf16-slice";
 import { getAiTransportHost } from "../host.js";
-export { redactIdentifier, sha256Hex } from "@openclaw/normalization-core/node-crypto";
+export { redactIdentifier, sha256Hex } from "@aether/normalization-core/node-crypto";
 export { parseRetryAfterHeadersSeconds as parseRetryAfterSeconds } from "../internal/retry-after.js";
 export { parsePositiveInteger } from "./positive-integer.js";
 

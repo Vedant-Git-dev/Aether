@@ -1,4 +1,4 @@
-import { asOptionalObjectRecord as asRecord } from "@openclaw/normalization-core/record-coerce";
+import { asOptionalObjectRecord as asRecord } from "@aether/normalization-core/record-coerce";
 import type { PlainTextToolCallProtectedRangeResolver } from "./contracts.js";
 import { parseStandalonePlainTextToolCallBlocks, type PlainTextToolCallBlock } from "./payload.js";
 

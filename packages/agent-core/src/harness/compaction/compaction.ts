@@ -4,13 +4,13 @@ import {
   type SimpleStreamOptions,
   type StreamFn,
   type Usage,
-} from "@openclaw/llm-core";
+} from "@aether/llm-core";
 import {
   CHARS_PER_TOKEN_ESTIMATE,
   estimateStringChars,
-} from "@openclaw/normalization-core/cjk-chars";
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+} from "@aether/normalization-core/cjk-chars";
+import { asOptionalRecord } from "@aether/normalization-core/record-coerce";
+import { sliceUtf16Safe, truncateUtf16Safe } from "@aether/normalization-core/utf16-slice";
 import { resolveAgentReasoningOption } from "../../reasoning.js";
 import {
   type AgentCoreCompletionRuntimeDeps,

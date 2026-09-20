@@ -1,4 +1,4 @@
-import type { Api, Context, Model } from "@openclaw/llm-core";
+import type { Api, Context, Model } from "@aether/llm-core";
 import { getAiTransportHost, type AiProviderRequestPolicyInput } from "../host.js";
 
 export function buildGuardedModelFetch(

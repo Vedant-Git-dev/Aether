@@ -1,10 +1,10 @@
-import { replaceCompactionReplayOwnerContent } from "@openclaw/ai/transports";
+import { replaceCompactionReplayOwnerContent } from "@aether/ai/transports";
 import type {
   AssistantMessage,
   AssistantMessageEvent,
   Context,
   ToolResultMessage,
-} from "@openclaw/llm-core";
+} from "@aether/llm-core";
 import { uuidv7 } from "./harness/session/uuid.js";
 import { type AgentCoreStreamRuntimeDeps, resolveAgentCoreStreamFn } from "./runtime-deps.js";
 import { createStreamSteering } from "./stream-steering.js";

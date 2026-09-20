@@ -1,5 +1,5 @@
-import { stableStringify } from "@openclaw/normalization-core";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { stableStringify } from "@aether/normalization-core";
+import { isRecord } from "@aether/normalization-core/record-coerce";
 import type { ResponseInput } from "openai/resources/responses/responses.js";
 import type { StreamOptions, UserMessage } from "../types.js";
 import type { ResponsesContinuationRequest } from "./openai-responses-continuation.js";

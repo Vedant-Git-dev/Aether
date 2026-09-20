@@ -3,7 +3,7 @@
 export {
   CHARS_PER_TOKEN_ESTIMATE,
   estimateStringChars,
-} from "@openclaw/normalization-core/cjk-chars";
+} from "@aether/normalization-core/cjk-chars";
 export {
   configureSqliteConnectionPragmas,
   configureSqliteWalMaintenance,
@@ -15,7 +15,7 @@ export type {
 } from "../../../../src/infra/sqlite-wal.js";
 export { root } from "../../../../src/infra/fs-safe.js";
 export { createSubsystemLogger } from "../../../../src/logging/subsystem.js";
-export { detectMime } from "@openclaw/media-core/mime";
+export { detectMime } from "@aether/media-core/mime";
 export { installProcessWarningFilter } from "../../../../src/infra/warning-filter.js";
 export { redactSensitiveText } from "../../../../src/logging/redact.js";
 export { resolveGlobalSingleton } from "../../../../src/shared/global-singleton.js";

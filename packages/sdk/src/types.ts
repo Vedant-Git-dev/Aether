@@ -1,6 +1,6 @@
 // Public SDK data contracts for Gateway transport, runs, sessions, tools,
 // artifacts, tasks, environments, and normalized event streams.
-import type { GatewayClientRequestOptions } from "@openclaw/gateway-client";
+import type { GatewayClientRequestOptions } from "@aether/gateway-client";
 import type {
   ArtifactSummary as GatewayArtifactSummaryType,
   ArtifactsDownloadResult as GatewayArtifactsDownloadResultType,
@@ -15,7 +15,7 @@ import type {
   TaskSummary as GatewayTaskSummaryType,
   ToolsInvokeParams as GatewayToolsInvokeParamsType,
   ToolsInvokeResult as GatewayToolsInvokeResultType,
-} from "@openclaw/gateway-protocol";
+} from "@aether/gateway-protocol";
 
 export type {
   AgentsCreateParams,
@@ -36,7 +36,7 @@ export type {
   WorkerEnvironmentMetadata,
   WorkerEnvironmentState,
   WorkerTunnelStatus,
-} from "@openclaw/gateway-protocol";
+} from "@aether/gateway-protocol";
 
 export type JsonObject = Record<string, unknown>;
 

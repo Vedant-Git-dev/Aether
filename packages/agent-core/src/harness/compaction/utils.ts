@@ -1,6 +1,6 @@
-import type { AssistantMessage, Message } from "@openclaw/llm-core";
-import { asOptionalRecord as asRecord } from "@openclaw/normalization-core/record-coerce";
-import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import type { AssistantMessage, Message } from "@aether/llm-core";
+import { asOptionalRecord as asRecord } from "@aether/normalization-core/record-coerce";
+import { sliceUtf16Safe, truncateUtf16Safe } from "@aether/normalization-core/utf16-slice";
 import type { AgentMessage } from "../../types.js";
 import type { FileOperations } from "../types.js";
 

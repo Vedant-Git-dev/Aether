@@ -1,4 +1,4 @@
-import type { ScopeUpgradeResult } from "@openclaw/gateway-protocol";
+import type { ScopeUpgradeResult } from "@aether/gateway-protocol";
 import type { GatewayBrowserDeviceTokenStore } from "./browser-device-auth.js";
 import type { GatewayProtocolRequestOptions } from "./protocol-request.js";
 

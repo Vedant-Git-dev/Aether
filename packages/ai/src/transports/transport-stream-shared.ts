@@ -9,8 +9,8 @@ import type {
   ProviderResponse,
   StreamOptions,
   Usage,
-} from "@openclaw/llm-core";
-import { asNonArrayRecord, asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+} from "@aether/llm-core";
+import { asNonArrayRecord, asOptionalRecord } from "@aether/normalization-core/record-coerce";
 import { getAiTransportHost } from "../host.js";
 import {
   appendAssistantMessageDiagnostic,

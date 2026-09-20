@@ -4,7 +4,7 @@
  * Registers provider-specific stream functions and rewrites models that need Aether-managed transport semantics.
  */
 import { randomUUID } from "node:crypto";
-import type { Api, Model, StreamFn, StreamOptions } from "@openclaw/llm-core";
+import type { Api, Model, StreamFn, StreamOptions } from "@aether/llm-core";
 import type { ApiRegistry } from "../api-registry.js";
 import { getAiTransportHost, resolveAiTransportHeaderSentinels } from "../host.js";
 import {

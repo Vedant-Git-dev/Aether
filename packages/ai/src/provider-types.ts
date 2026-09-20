@@ -1,4 +1,4 @@
-import type * as Llm from "@openclaw/llm-core";
+import type * as Llm from "@aether/llm-core";
 export type * from "./types.js";
 
 export const PROVIDER_CONTEXT_HANDOFF: unique symbol = Symbol("providerContextHandoff");

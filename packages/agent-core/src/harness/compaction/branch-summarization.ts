@@ -1,4 +1,4 @@
-import type { Model, StreamFn } from "@openclaw/llm-core";
+import type { Model, StreamFn } from "@aether/llm-core";
 import {
   type AgentCoreCompletionRuntimeDeps,
   consumeAgentCoreStream,

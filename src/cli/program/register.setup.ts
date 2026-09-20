@@ -117,7 +117,7 @@ export function registerSetupCommand(program: Command): void {
     )
     .option(
       "--workspace <dir>",
-      "Workspace proposal for guided setup; persisted by baseline/classic/non-interactive setup",
+      "Workspace proposal for setup; persisted by all setup flows",
     )
     .option("--agent-name <name>", "Name for the first agent (default: main)")
     .option("--wizard", "Run interactive onboarding", false)
@@ -132,8 +132,12 @@ export function registerSetupCommand(program: Command): void {
     )
     .option("--reset-scope <scope>", "Reset scope: config|config+creds+sessions|full")
     .option("--non-interactive", "Run onboarding without prompts", false)
-    .option("--classic", "Use the classic multi-step setup wizard", false)
-    .option("--tui", "Use the terminal hatch instead of the browser handoff", false)
+    .option(
+      "--classic",
+      "Use the guided discovery flow (the multi-step wizard is the default)",
+      false,
+    )
+    .option("--tui", "Use the terminal hatch instead of the browser handoff (guided setup: pair with --classic)", false)
     .option(
       "--accept-risk",
       "Acknowledge that agents are powerful and full system access is risky (required for --non-interactive)",

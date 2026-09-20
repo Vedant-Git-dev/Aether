@@ -1,4 +1,4 @@
-import { normalizeUniqueTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
+import { normalizeUniqueTrimmedStringList } from "@aether/normalization-core/string-normalization";
 
 // Shared media-generation catalog contracts and static entry synthesis.
 

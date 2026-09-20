@@ -6,8 +6,8 @@ import type {
   TextBlockParam,
   ToolResultBlockParam,
 } from "@anthropic-ai/sdk/resources/messages.js";
-import type { Context, Model, Tool } from "@openclaw/llm-core";
-import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coerce";
+import type { Context, Model, Tool } from "@aether/llm-core";
+import { asOptionalObjectRecord } from "@aether/normalization-core/record-coerce";
 import {
   createAnthropicInlineImageBudget,
   normalizeAnthropicInlineContent,

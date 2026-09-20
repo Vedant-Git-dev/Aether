@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
+import { resolveIntegerOption } from "@aether/normalization-core/number-coercion";
 import type { AcpSession } from "./types.js";
 
 export type AcpSessionStore = {

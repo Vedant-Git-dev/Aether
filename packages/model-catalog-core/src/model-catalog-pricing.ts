@@ -3,10 +3,10 @@ import {
   asNonNegativeFiniteNumber,
   asPositiveSafeInteger,
   parseStrictFiniteNumber,
-} from "@openclaw/normalization-core/number-coercion";
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { normalizeTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
+} from "@aether/normalization-core/number-coercion";
+import { asOptionalRecord } from "@aether/normalization-core/record-coerce";
+import { normalizeOptionalString } from "@aether/normalization-core/string-coerce";
+import { normalizeTrimmedStringList } from "@aether/normalization-core/string-normalization";
 import { normalizeModelCatalogProviderId } from "./model-catalog-refs.js";
 import type { ModelCatalogCost, ModelCatalogTieredCost } from "./model-catalog-types.js";
 

@@ -1462,7 +1462,9 @@ async function runCliWithPreparedOutputMode(
           return;
         }
         const { setupWizardCommand } = await import("../commands/onboard.js");
-        await setupWizardCommand(bareRootLaunchTarget.classic ? { classic: true } : {});
+        // The classic multi-step wizard is the default interactive flow;
+        // guided discovery now requires the --classic flag.
+        await setupWizardCommand({});
         return;
       }
       if (bareRootLaunchTarget.kind === "tui") {

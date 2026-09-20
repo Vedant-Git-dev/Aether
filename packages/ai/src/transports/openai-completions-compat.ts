@@ -4,7 +4,7 @@
  * Provider transports use these helpers to derive OpenAI-compatible request
  * behavior from endpoint attribution without scattering provider-specific flags.
  */
-import type { Model, OpenAICompletionsCompat } from "@openclaw/llm-core";
+import type { Model, OpenAICompletionsCompat } from "@aether/llm-core";
 import type { AiProviderRequestCapabilities, AiProviderRequestPolicyInput } from "../host.js";
 import { isKnownOpenAIJsonSchemaModelId } from "../providers/openai-response-format.js";
 import { resolveProviderRequestCapabilities as resolveModelProviderRequestCapabilities } from "./host-policy.js";

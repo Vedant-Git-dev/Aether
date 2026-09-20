@@ -3,7 +3,7 @@
  * deterministic across platform newlines, trailing whitespace, and input
  * ordering.
  */
-import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import { normalizeLowercaseStringOrEmpty } from "@aether/normalization-core/string-coerce";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
 
 /** Canonicalizes provider tool order without relying on host locale settings. */

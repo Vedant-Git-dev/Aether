@@ -1,8 +1,8 @@
 import type { BetaContextManagementConfig } from "@anthropic-ai/sdk/resources/beta/messages/messages.js";
 import type { TextBlockParam } from "@anthropic-ai/sdk/resources/messages.js";
-import type { Model } from "@openclaw/llm-core";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
+import type { Model } from "@aether/llm-core";
+import { isRecord } from "@aether/normalization-core/record-coerce";
+import { normalizeOptionalLowercaseString } from "@aether/normalization-core/string-coerce";
 import { getAiTransportHost } from "../host.js";
 import type { AnthropicContextManagementOptions } from "../provider-options.js";
 import { isAnthropicOAuthApiKey } from "../providers/anthropic-auth-headers.js";

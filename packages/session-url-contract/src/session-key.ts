@@ -1,5 +1,5 @@
-import { normalizeAgentId } from "@openclaw/normalization-core/agent-id";
-import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import { normalizeAgentId } from "@aether/normalization-core/agent-id";
+import { normalizeLowercaseStringOrEmpty } from "@aether/normalization-core/string-coerce";
 
 export const DEFAULT_MAIN_KEY = "main";
 

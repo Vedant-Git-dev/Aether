@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { isRecord } from "@aether/normalization-core/record-coerce";
 import type { ChatCompletionChunk } from "openai/resources/chat/completions.js";
 import { measureUtf8AppendBytes } from "../transports/openai-transport-shared.js";
 import { finalizeTerminalToolCallArguments } from "../transports/transport-stream-shared.js";

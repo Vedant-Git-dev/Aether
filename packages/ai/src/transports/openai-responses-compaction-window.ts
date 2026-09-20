@@ -1,5 +1,5 @@
-import type { Model } from "@openclaw/llm-core";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import type { Model } from "@aether/llm-core";
+import { isRecord } from "@aether/normalization-core/record-coerce";
 import type { ResponseInputItem } from "openai/resources/responses/responses.js";
 import { createSseByteGuard } from "../utils/streaming-byte-guard.js";
 import type { ReplayableResponseCompactionItem } from "./openai-responses-contracts.js";

@@ -1,4 +1,4 @@
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { asOptionalRecord } from "@aether/normalization-core/record-coerce";
 import { readEmbeddingVectors } from "./embedding-vectors.js";
 import type { SsrFPolicy } from "./aether-runtime-network.js";
 import { postJson } from "./post-json.js";

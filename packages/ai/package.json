@@ -1,5 +1,5 @@
 {
-  "name": "@openclaw/ai",
+  "name": "@aether/ai",
   "version": "2026.9.4",
   "description": "Reusable model provider adapters and streaming runtime from Aether",
   "keywords": [
@@ -121,8 +121,8 @@
     "typebox": "1.3.18"
   },
   "devDependencies": {
-    "@openclaw/model-catalog-core": "workspace:*",
-    "@openclaw/normalization-core": "workspace:*"
+    "@aether/model-catalog-core": "workspace:*",
+    "@aether/normalization-core": "workspace:*"
   },
   "engines": {
     "node": ">=22.19.0"

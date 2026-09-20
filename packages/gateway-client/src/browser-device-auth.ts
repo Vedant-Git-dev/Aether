@@ -1,4 +1,4 @@
-import type { ConnectParams, HelloOk } from "@openclaw/gateway-protocol";
+import type { ConnectParams, HelloOk } from "@aether/gateway-protocol";
 import {
   buildGatewayConnectAuth,
   resolveGatewayConnectScopes,

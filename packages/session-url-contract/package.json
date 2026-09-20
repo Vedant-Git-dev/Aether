@@ -1,5 +1,5 @@
 {
-  "name": "@openclaw/session-url-contract",
+  "name": "@aether/session-url-contract",
   "version": "0.0.0-private",
   "private": true,
   "type": "module",
@@ -10,6 +10,6 @@
     "./share-build": "./src/share-build.ts"
   },
   "dependencies": {
-    "@openclaw/normalization-core": "workspace:*"
+    "@aether/normalization-core": "workspace:*"
   }
 }

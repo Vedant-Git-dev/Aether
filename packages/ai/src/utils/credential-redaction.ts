@@ -1,9 +1,9 @@
-import { estimateBase64DecodedBytes } from "@openclaw/media-core/base64";
+import { estimateBase64DecodedBytes } from "@aether/media-core/base64";
 import {
   expectDefined,
   extractBalancedJsonFragments,
   stableStringify,
-} from "@openclaw/normalization-core";
+} from "@aether/normalization-core";
 import { parseRetryAfterHeadersSeconds } from "../internal/retry-after.js";
 
 const NON_CREDENTIAL_FIELD_NAMES = new Set([

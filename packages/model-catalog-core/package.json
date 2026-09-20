@@ -1,5 +1,5 @@
 {
-  "name": "@openclaw/model-catalog-core",
+  "name": "@aether/model-catalog-core",
   "version": "0.0.0-private",
   "private": true,
   "files": [
@@ -9,7 +9,7 @@
   "main": "./dist/index.mjs",
   "types": "./dist/index.d.mts",
   "dependencies": {
-    "@openclaw/normalization-core": "workspace:*",
+    "@aether/normalization-core": "workspace:*",
     "zod": "4.4.3"
   },
   "exports": {

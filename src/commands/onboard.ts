@@ -492,9 +492,11 @@ function validateResetNonInteractiveGateway(params: {
 }
 
 /**
- * Interactive onboarding defaults to guided setup. Any explicit
- * setup flag beyond this allowlist keeps the classic wizard — those flags are
- * a public automation contract and guided setup does not honor them.
+ * Interactive onboarding defaults to the classic multi-step wizard; `--classic`
+ * opts into the guided discovery flow that used to be the default. Any
+ * explicit setup flag beyond this allowlist still keeps the classic wizard —
+ * those flags are a public automation contract and guided setup does not
+ * honor them.
  * Most false booleans mean "not passed" because the command layer normalizes
  * them with Boolean(). False-valued explicit choices preserve undefined when
  * omitted, so daemon, Tailscale-reset, and custom-model input overrides are
@@ -514,14 +516,13 @@ const GUIDED_SAFE_ONBOARD_KEYS = new Set([
 ]);
 
 function wantsClassicInteractiveSetup(opts: OnboardOptions): boolean {
-  if (opts.classic === true) {
-    return true;
-  }
   if (opts.installDaemon !== undefined || opts.customImageInput !== undefined) {
     return true;
   }
   for (const [key, value] of Object.entries(opts)) {
-    if (GUIDED_SAFE_ONBOARD_KEYS.has(key) || key === "installDaemon") {
+    // `classic` selects the guided flow; every other explicit flag keeps the
+    // classic wizard (guided setup does not honor automation flags).
+    if (GUIDED_SAFE_ONBOARD_KEYS.has(key) || key === "installDaemon" || key === "classic") {
       continue;
     }
     if (value === undefined || value === false) {
@@ -529,7 +530,9 @@ function wantsClassicInteractiveSetup(opts: OnboardOptions): boolean {
     }
     return true;
   }
-  return false;
+  // No explicit setup flags: run the classic wizard by default, and let
+  // `--classic` alone opt into guided discovery.
+  return opts.classic !== true;
 }
 
 /** Runs the onboard command after normalizing legacy flags and setup mode. */
@@ -571,7 +574,7 @@ export async function setupWizardCommand(
     rejectOption(
       normalizedOpts,
       runtime,
-      "--classic cannot be combined with --non-interactive. Remove --non-interactive to open the classic wizard, or remove --classic for automated setup.",
+      "--classic (guided discovery) cannot be combined with --non-interactive. Remove --non-interactive for guided discovery, or remove --classic for automated setup.",
     );
     return;
   }

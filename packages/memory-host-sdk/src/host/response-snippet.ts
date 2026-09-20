@@ -1,5 +1,5 @@
-import { consumeResponseBytes, decodeTextPrefix } from "@openclaw/normalization-core";
-import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { consumeResponseBytes, decodeTextPrefix } from "@aether/normalization-core";
+import { truncateUtf16Safe } from "@aether/normalization-core/utf16-slice";
 
 const DEFAULT_ERROR_BODY_MAX_BYTES = 8 * 1024;
 const DEFAULT_ERROR_BODY_MAX_CHARS = 1_000;
