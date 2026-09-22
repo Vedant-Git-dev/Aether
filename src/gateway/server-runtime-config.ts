@@ -16,7 +16,6 @@ import {
   resolveGatewayAuth,
 } from "./auth.js";
 import { normalizeControlUiBasePath } from "./control-ui-shared.js";
-import { warnLegacyAetherEnvVars } from "./env-deprecation.js";
 import { commitHooksConfigReload, resolveHooksConfig } from "./hooks.js";
 import {
   defaultGatewayBindMode,
@@ -104,7 +103,7 @@ export function assertGatewayRuntimeSecurityConfig(
   }
   if (!isLoopbackHost(bindHost) && !hasSharedSecret && authMode !== "trusted-proxy") {
     throw new GatewayEffectiveConfigConflictError(
-      `refusing to bind gateway to ${bindHost}:${params.port} without auth (set gateway.auth.token/password, or set AETHER_GATEWAY_TOKEN/AETHER_GATEWAY_PASSWORD; legacy AETHER_* and MOLTBOT_* environment variables are ignored)`,
+      `refusing to bind gateway to ${bindHost}:${params.port} without auth (set gateway.auth.token/password, or set AETHER_GATEWAY_TOKEN/AETHER_GATEWAY_PASSWORD)`,
     );
   }
   if (
@@ -136,8 +135,6 @@ export async function resolveGatewayRuntimeConfig(params: {
   auth?: GatewayAuthConfig;
   tailscale?: GatewayTailscaleConfig;
 }): Promise<GatewayRuntimeConfig> {
-  warnLegacyAetherEnvVars();
-
   // Tailscale serve/funnel hard-requires loopback.  When bind is not
   // explicitly set, we must resolve Tailscale mode *before* choosing the
   // bind default so that container auto-detection does not override the

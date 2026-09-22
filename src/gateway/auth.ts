@@ -29,8 +29,6 @@ import {
 import { checkBrowserOrigin } from "./origin-check.js";
 import { withSerializedRateLimitAttempt } from "./rate-limit-attempt-serialization.js";
 export { resolveGatewayAuth, type ResolvedGatewayAuth } from "./auth-resolve.js";
-const LEGACY_AETHER_ENV_NOTE =
-  " Legacy AETHER_* and MOLTBOT_* environment variables are ignored; use AETHER_* names.";
 
 /** Normalized outcome for gateway shared-secret, Tailscale, device, and proxy auth. */
 export type GatewayAuthResult = {
@@ -169,7 +167,7 @@ export function assertGatewayAuthConfigured(
       return;
     }
     throw new Error(
-      `gateway auth mode is token, but no token was configured (set gateway.auth.token or AETHER_GATEWAY_TOKEN).${LEGACY_AETHER_ENV_NOTE}`,
+      "gateway auth mode is token, but no token was configured (set gateway.auth.token or AETHER_GATEWAY_TOKEN)",
     );
   }
   if (auth.mode === "password" && !auth.password) {
@@ -182,7 +180,7 @@ export function assertGatewayAuthConfigured(
       );
     }
     throw new Error(
-      `gateway auth mode is password, but no password was configured.${LEGACY_AETHER_ENV_NOTE}`,
+      "gateway auth mode is password, but no password was configured (set gateway.auth.password or AETHER_GATEWAY_PASSWORD)",
     );
   }
   if (auth.mode === "trusted-proxy") {
