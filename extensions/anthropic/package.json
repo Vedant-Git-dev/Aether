@@ -1,0 +1,15 @@
+{
+  "name": "@aether/anthropic-provider",
+  "version": "2026.9.4",
+  "private": true,
+  "description": "Aether Anthropic provider, Claude CLI, and native session catalog plugin",
+  "type": "module",
+  "devDependencies": {
+    "@aether/plugin-sdk": "workspace:*"
+  },
+  "aether": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

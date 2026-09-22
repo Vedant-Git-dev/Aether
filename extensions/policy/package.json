@@ -1,0 +1,27 @@
+{
+  "name": "@aether/policy",
+  "version": "2026.9.4",
+  "private": true,
+  "description": "Aether policy doctor checks for workspace conformance",
+  "type": "module",
+  "dependencies": {
+    "json5": "2.2.3"
+  },
+  "devDependencies": {
+    "@aether/plugin-sdk": "workspace:*",
+    "aether": "workspace:*"
+  },
+  "peerDependencies": {
+    "aether": ">=2026.9.4"
+  },
+  "peerDependenciesMeta": {
+    "aether": {
+      "optional": true
+    }
+  },
+  "aether": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@aether/admin-http-rpc",
+  "version": "2026.9.4",
+  "private": true,
+  "description": "Aether admin HTTP RPC endpoint",
+  "type": "module",
+  "devDependencies": {
+    "@aether/plugin-sdk": "workspace:*"
+  },
+  "aether": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

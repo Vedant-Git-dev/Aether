@@ -1,0 +1,47 @@
+{
+  "name": "@aether/zoom-meetings",
+  "version": "2026.9.4",
+  "description": "Aether Zoom browser meeting participant plugin.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aether/aether"
+  },
+  "type": "module",
+  "dependencies": {
+    "typebox": "1.3.18"
+  },
+  "devDependencies": {
+    "@aether/plugin-sdk": "workspace:*",
+    "aether": "workspace:*"
+  },
+  "peerDependencies": {
+    "aether": ">=2026.9.4"
+  },
+  "peerDependenciesMeta": {
+    "aether": {
+      "optional": true
+    }
+  },
+  "aether": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "install": {
+      "clawhubSpec": "clawhub:@aether/zoom-meetings",
+      "npmSpec": "@aether/zoom-meetings",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.7.2"
+    },
+    "compat": {
+      "pluginApi": ">=2026.9.4"
+    },
+    "build": {
+      "aetherVersion": "2026.9.4",
+      "bundledDist": false
+    },
+    "release": {
+      "publishToClawHub": true,
+      "publishToNpm": true
+    }
+  }
+}

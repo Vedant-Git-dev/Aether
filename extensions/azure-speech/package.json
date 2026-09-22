@@ -1,0 +1,15 @@
+{
+  "name": "@aether/azure-speech",
+  "version": "2026.9.4",
+  "private": true,
+  "description": "Aether Azure Speech plugin",
+  "type": "module",
+  "devDependencies": {
+    "@aether/plugin-sdk": "workspace:*"
+  },
+  "aether": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

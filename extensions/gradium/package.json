@@ -1,0 +1,35 @@
+{
+  "name": "@aether/gradium-speech",
+  "version": "2026.9.4",
+  "description": "Aether Gradium speech plugin.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aether/aether"
+  },
+  "type": "module",
+  "devDependencies": {
+    "@aether/plugin-sdk": "workspace:*"
+  },
+  "aether": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "install": {
+      "clawhubSpec": "clawhub:@aether/gradium-speech",
+      "npmSpec": "@aether/gradium-speech",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.6.8"
+    },
+    "compat": {
+      "pluginApi": ">=2026.9.4"
+    },
+    "build": {
+      "aetherVersion": "2026.9.4",
+      "bundledDist": false
+    },
+    "release": {
+      "publishToClawHub": true,
+      "publishToNpm": true
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "@aether/linux-node",
+  "version": "2026.9.4",
+  "description": "Aether Linux node device capabilities",
+  "type": "module",
+  "dependencies": {
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@aether/plugin-sdk": "workspace:*"
+  },
+  "aether": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

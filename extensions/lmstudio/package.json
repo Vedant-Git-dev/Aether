@@ -1,0 +1,12 @@
+{
+  "name": "@aether/lmstudio-provider",
+  "version": "2026.9.4",
+  "private": true,
+  "description": "Aether LM Studio provider plugin",
+  "type": "module",
+  "aether": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

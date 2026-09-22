@@ -1,0 +1,21 @@
+{
+  "name": "@aether/imap",
+  "version": "2026.9.4",
+  "private": true,
+  "description": "Aether inbound IMAP email trigger plugin",
+  "type": "module",
+  "dependencies": {
+    "imapflow": "1.7.6",
+    "mailauth": "5.0.2",
+    "mailparser": "3.9.15"
+  },
+  "devDependencies": {
+    "@aether/plugin-sdk": "workspace:*",
+    "@types/mailparser": "3.4.6"
+  },
+  "aether": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

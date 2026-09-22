@@ -1,0 +1,26 @@
+{
+  "id": "anthropic-vertex",
+  "categories": [
+    "models"
+  ],
+  "name": "Anthropic Vertex",
+  "description": "Aether Anthropic Vertex provider plugin for Claude models on Google Vertex AI.",
+  "activation": {
+    "onStartup": false
+  },
+  "providers": [
+    "anthropic-vertex"
+  ],
+  "providerCatalogEntry": "./provider-discovery.ts",
+  "syntheticAuthRefs": [
+    "anthropic-vertex"
+  ],
+  "nonSecretAuthMarkers": [
+    "gcp-vertex-credentials"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

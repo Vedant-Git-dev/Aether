@@ -1,0 +1,19 @@
+{
+  "name": "@aether/xai-plugin",
+  "version": "2026.9.4",
+  "private": true,
+  "description": "Aether xAI plugin",
+  "type": "module",
+  "dependencies": {
+    "typebox": "1.3.18",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@aether/plugin-sdk": "workspace:*"
+  },
+  "aether": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

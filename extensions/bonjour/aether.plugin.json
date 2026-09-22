@@ -1,0 +1,16 @@
+{
+  "id": "bonjour",
+  "categories": [
+    "infrastructure"
+  ],
+  "activation": {
+    "onStartup": true
+  },
+  "name": "Bonjour Gateway Discovery",
+  "description": "Advertise the local Aether gateway over Bonjour/mDNS.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@aether/web-readability-plugin",
+  "version": "2026.9.4",
+  "private": true,
+  "description": "Aether local Readability web extraction plugin",
+  "type": "module",
+  "dependencies": {
+    "@mozilla/readability": "0.6.0",
+    "linkedom": "0.18.13"
+  },
+  "devDependencies": {
+    "@aether/plugin-sdk": "workspace:*"
+  },
+  "aether": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

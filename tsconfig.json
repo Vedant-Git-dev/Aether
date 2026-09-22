@@ -1,0 +1,309 @@
+{
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "allowSyntheticDefaultImports": true,
+    "declaration": true,
+    "esModuleInterop": true,
+    "experimentalDecorators": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "lib": ["DOM", "DOM.Iterable", "ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    "noEmitOnError": true,
+    "noUncheckedSideEffectImports": true,
+    "outDir": "dist",
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "es2023",
+    "types": ["node"],
+    "useDefineForClassFields": false,
+    "verbatimModuleSyntax": true,
+    "paths": {
+      "aether/plugin-sdk/*": ["./src/plugin-sdk/*.ts"],
+      "@aether/ai": ["./packages/ai/src/index.ts"],
+      "@aether/ai/diagnostics": ["./packages/ai/src/utils/diagnostics.ts"],
+      "@aether/ai/event-stream": ["./packages/ai/src/utils/event-stream.ts"],
+      "@aether/ai/providers": ["./packages/ai/src/providers.ts"],
+      "@aether/ai/transports": ["./packages/ai/src/transports.ts"],
+      "@aether/ai/types": ["./packages/ai/src/types.ts"],
+      "@aether/ai/validation": ["./packages/ai/src/validation.ts"],
+      "@aether/ai/internal/anthropic": ["./packages/ai/src/internal/anthropic.ts"],
+      "@aether/ai/internal/google-model-family": [
+        "./packages/ai/src/internal/google-model-family.ts"
+      ],
+      "@aether/ai/internal/openai": ["./packages/ai/src/internal/openai.ts"],
+      "@aether/ai/internal/openai-responses-payload-policy": [
+        "./packages/ai/src/internal/openai-responses-payload-policy.ts"
+      ],
+      "@aether/ai/internal/retry-after": ["./packages/ai/src/internal/retry-after.ts"],
+      "@aether/ai/internal/runtime": ["./packages/ai/src/internal/runtime.ts"],
+      "@aether/ai/internal/shared": ["./packages/ai/src/internal/shared.ts"],
+      "@aether/ai/internal/tool-schema": ["./packages/ai/src/internal/tool-schema.ts"],
+      "@aether/agent-core": ["./packages/agent-core/src/index.ts"],
+      "@aether/agent-core/*": ["./packages/agent-core/src/*"],
+      "@aether/llm-core": ["./packages/llm-core/src/index.ts"],
+      "@aether/llm-core/diagnostics": ["./packages/llm-core/src/utils/diagnostics.ts"],
+      "@aether/llm-core/event-stream": ["./packages/llm-core/src/utils/event-stream.ts"],
+      "@aether/llm-core/validation": ["./packages/llm-core/src/validation.ts"],
+      "@aether/llm-core/*": ["./packages/llm-core/src/*"],
+      "@aether/model-catalog-core": ["./packages/model-catalog-core/src/index.ts"],
+      "@aether/model-catalog-core/configured-model-refs": [
+        "./packages/model-catalog-core/src/configured-model-refs.ts"
+      ],
+      "@aether/model-catalog-core/model-catalog-normalize": [
+        "./packages/model-catalog-core/src/model-catalog-normalize.ts"
+      ],
+      "@aether/model-catalog-core/model-catalog-pricing": [
+        "./packages/model-catalog-core/src/model-catalog-pricing.ts"
+      ],
+      "@aether/model-catalog-core/model-catalog-refs": [
+        "./packages/model-catalog-core/src/model-catalog-refs.ts"
+      ],
+      "@aether/model-catalog-core/model-catalog-types": [
+        "./packages/model-catalog-core/src/model-catalog-types.ts"
+      ],
+      "@aether/model-catalog-core/provider-id": [
+        "./packages/model-catalog-core/src/provider-id.ts"
+      ],
+      "@aether/model-catalog-core/provider-model-id-normalization": [
+        "./packages/model-catalog-core/src/provider-model-id-normalization.ts"
+      ],
+      "@aether/model-catalog-core/provider-model-id-normalize": [
+        "./packages/model-catalog-core/src/provider-model-id-normalize.ts"
+      ],
+      "@aether/model-catalog-core/*": ["./packages/model-catalog-core/src/*"],
+      "@aether/gateway-client": ["./packages/gateway-client/src/index.ts"],
+      "@aether/gateway-client/browser": ["./packages/gateway-client/src/browser.ts"],
+      "@aether/gateway-client/scope-upgrade": [
+        "./packages/gateway-client/src/scope-upgrade.ts"
+      ],
+      "@aether/gateway-client/websocket-data": [
+        "./packages/gateway-client/src/websocket-data.ts"
+      ],
+      "@aether/gateway-client/*": ["./packages/gateway-client/src/*"],
+      "@aether/gateway-protocol": ["./packages/gateway-protocol/src/index.ts"],
+      "@aether/gateway-protocol/client-info": [
+        "./packages/gateway-protocol/src/client-info.ts"
+      ],
+      "@aether/gateway-protocol/connect-error-details": [
+        "./packages/gateway-protocol/src/connect-error-details.ts"
+      ],
+      "@aether/gateway-protocol/gateway-error-details": [
+        "./packages/gateway-protocol/src/gateway-error-details.ts"
+      ],
+      "@aether/gateway-protocol/frame-guards": [
+        "./packages/gateway-protocol/src/frame-guards.ts"
+      ],
+      "@aether/gateway-protocol/schema": ["./packages/gateway-protocol/src/schema.ts"],
+      "@aether/gateway-protocol/startup-unavailable": [
+        "./packages/gateway-protocol/src/startup-unavailable.ts"
+      ],
+      "@aether/gateway-protocol/version": ["./packages/gateway-protocol/src/version.ts"],
+      "@aether/gateway-protocol/*": ["./packages/gateway-protocol/src/*"],
+      "@aether/media-generation-core": ["./packages/media-generation-core/src/index.ts"],
+      "@aether/media-generation-core/capability-model-ref": [
+        "./packages/media-generation-core/src/capability-model-ref.ts"
+      ],
+      "@aether/media-generation-core/catalog": [
+        "./packages/media-generation-core/src/catalog.ts"
+      ],
+      "@aether/media-generation-core/model-ref": [
+        "./packages/media-generation-core/src/model-ref.ts"
+      ],
+      "@aether/media-generation-core/normalization": [
+        "./packages/media-generation-core/src/normalization.ts"
+      ],
+      "@aether/media-generation-core/*": ["./packages/media-generation-core/src/*"],
+      "@aether/media-core": ["./packages/media-core/src/index.ts"],
+      "@aether/media-core/attachment-classify": [
+        "./packages/media-core/src/attachment-classify.ts"
+      ],
+      "@aether/media-core/base64": ["./packages/media-core/src/base64.ts"],
+      "@aether/media-core/constants": ["./packages/media-core/src/constants.ts"],
+      "@aether/media-core/content-length": ["./packages/media-core/src/content-length.ts"],
+      "@aether/media-core/file-name": ["./packages/media-core/src/file-name.ts"],
+      "@aether/media-core/inbound-path-policy": [
+        "./packages/media-core/src/inbound-path-policy.ts"
+      ],
+      "@aether/media-core/inline-image-data-url": [
+        "./packages/media-core/src/inline-image-data-url.ts"
+      ],
+      "@aether/media-core/media-source-url": [
+        "./packages/media-core/src/media-source-url.ts"
+      ],
+      "@aether/media-core/mime": ["./packages/media-core/src/mime.ts"],
+      "@aether/media-core/read-byte-stream-with-limit": [
+        "./packages/media-core/src/read-byte-stream-with-limit.ts"
+      ],
+      "@aether/media-core/*": ["./packages/media-core/src/*"],
+      "@aether/media-understanding-common/*": [
+        "./packages/media-understanding-common/src/*"
+      ],
+      "@aether/markdown-core": ["./packages/markdown-core/src/index.ts"],
+      "@aether/markdown-core/code-spans": ["./packages/markdown-core/src/code-spans.ts"],
+      "@aether/markdown-core/fences": ["./packages/markdown-core/src/fences.ts"],
+      "@aether/markdown-core/frontmatter": ["./packages/markdown-core/src/frontmatter.ts"],
+      "@aether/markdown-core/ir": ["./packages/markdown-core/src/ir.ts"],
+      "@aether/markdown-core/render": ["./packages/markdown-core/src/render.ts"],
+      "@aether/markdown-core/render-aware-chunking": [
+        "./packages/markdown-core/src/render-aware-chunking.ts"
+      ],
+      "@aether/markdown-core/tables": ["./packages/markdown-core/src/tables.ts"],
+      "@aether/markdown-core/types": ["./packages/markdown-core/src/types.ts"],
+      "@aether/markdown-core/*": ["./packages/markdown-core/src/*"],
+      "@aether/normalization-core": ["./packages/normalization-core/src/index.ts"],
+      "@aether/normalization-core/agent-id": [
+        "./packages/normalization-core/src/agent-id.ts"
+      ],
+      "@aether/normalization-core/agent-run-terminal-outcome": [
+        "./packages/normalization-core/src/agent-run-terminal-outcome.ts"
+      ],
+      "@aether/normalization-core/boolean-coercion": [
+        "./packages/normalization-core/src/boolean-coercion.ts"
+      ],
+      "@aether/normalization-core/cjk-chars": [
+        "./packages/normalization-core/src/cjk-chars.ts"
+      ],
+      "@aether/normalization-core/code-points": [
+        "./packages/normalization-core/src/code-points.ts"
+      ],
+      "@aether/normalization-core/error-coercion": [
+        "./packages/normalization-core/src/error-coercion.ts"
+      ],
+      "@aether/normalization-core/expect": ["./packages/normalization-core/src/expect.ts"],
+      "@aether/normalization-core/json-coercion": [
+        "./packages/normalization-core/src/json-coercion.ts"
+      ],
+      "@aether/normalization-core/json-schema": [
+        "./packages/normalization-core/src/json-schema.ts"
+      ],
+      "@aether/normalization-core/markdown-plain-text": [
+        "./packages/normalization-core/src/markdown-plain-text.ts"
+      ],
+      "@aether/normalization-core/mountinfo-path": [
+        "./packages/normalization-core/src/mountinfo-path.ts"
+      ],
+      "@aether/normalization-core/node-crypto": [
+        "./packages/normalization-core/src/node-crypto.ts"
+      ],
+      "@aether/normalization-core/number-coercion": [
+        "./packages/normalization-core/src/number-coercion.ts"
+      ],
+      "@aether/normalization-core/phone-presentation": [
+        "./packages/normalization-core/src/phone-presentation.ts"
+      ],
+      "@aether/normalization-core/promise-like": [
+        "./packages/normalization-core/src/promise-like.ts"
+      ],
+      "@aether/normalization-core/record-coerce": [
+        "./packages/normalization-core/src/record-coerce.ts"
+      ],
+      "@aether/normalization-core/result": [
+        "./packages/normalization-core/src/result.ts"
+      ],
+      "@aether/normalization-core/stable-node-path": [
+        "./packages/normalization-core/src/stable-node-path.ts"
+      ],
+      "@aether/normalization-core/stable-stringify": [
+        "./packages/normalization-core/src/stable-stringify.ts"
+      ],
+      "@aether/normalization-core/string-coerce": [
+        "./packages/normalization-core/src/string-coerce.ts"
+      ],
+      "@aether/normalization-core/string-normalization": [
+        "./packages/normalization-core/src/string-normalization.ts"
+      ],
+      "@aether/normalization-core/utf16-slice": [
+        "./packages/normalization-core/src/utf16-slice.ts"
+      ],
+      "@aether/normalization-core/*": ["./packages/normalization-core/src/*"],
+      "@aether/retry": ["./packages/retry/src/index.ts"],
+      "@aether/mermaid-renderer": ["./packages/mermaid-renderer/src/renderer.ts"],
+      "@aether/session-url-contract": ["./packages/session-url-contract/src/index.ts"],
+      "@aether/session-url-contract/parse": ["./packages/session-url-contract/src/parse.ts"],
+      "@aether/session-url-contract/share-build": [
+        "./packages/session-url-contract/src/share-build.ts"
+      ],
+      "@aether/session-url-contract/*": ["./packages/session-url-contract/src/*"],
+      "@aether/workboard-contract": ["./packages/workboard-contract/src/index.ts"],
+      "@aether/acp-core": ["./packages/acp-core/src/index.ts"],
+      "@aether/acp-core/meta": ["./packages/acp-core/src/meta.ts"],
+      "@aether/acp-core/session": ["./packages/acp-core/src/session.ts"],
+      "@aether/acp-core/session-interaction-mode": [
+        "./packages/acp-core/src/session-interaction-mode.ts"
+      ],
+      "@aether/acp-core/session-lineage-meta": [
+        "./packages/acp-core/src/session-lineage-meta.ts"
+      ],
+      "@aether/acp-core/types": ["./packages/acp-core/src/types.ts"],
+      "@aether/acp-core/runtime/error-text": [
+        "./packages/acp-core/src/runtime/error-text.ts"
+      ],
+      "@aether/acp-core/runtime/errors": ["./packages/acp-core/src/runtime/errors.ts"],
+      "@aether/acp-core/runtime/session-identifiers": [
+        "./packages/acp-core/src/runtime/session-identifiers.ts"
+      ],
+      "@aether/acp-core/runtime/session-identity": [
+        "./packages/acp-core/src/runtime/session-identity.ts"
+      ],
+      "@aether/acp-core/runtime/types": ["./packages/acp-core/src/runtime/types.ts"],
+      "@aether/acp-core/*": ["./packages/acp-core/src/*"],
+      "@aether/terminal-core": ["./packages/terminal-core/src/index.ts"],
+      "@aether/terminal-core/ansi": ["./packages/terminal-core/src/ansi.ts"],
+      "@aether/terminal-core/decorative-emoji": [
+        "./packages/terminal-core/src/decorative-emoji.ts"
+      ],
+      "@aether/terminal-core/health-style": [
+        "./packages/terminal-core/src/health-style.ts"
+      ],
+      "@aether/terminal-core/links": ["./packages/terminal-core/src/links.ts"],
+      "@aether/terminal-core/note": ["./packages/terminal-core/src/note.ts"],
+      "@aether/terminal-core/osc-progress": ["./packages/terminal-core/src/osc-progress.ts"],
+      "@aether/terminal-core/palette": ["./packages/terminal-core/src/palette.ts"],
+      "@aether/terminal-core/progress-line": [
+        "./packages/terminal-core/src/progress-line.ts"
+      ],
+      "@aether/terminal-core/prompt-select-styled": [
+        "./packages/terminal-core/src/prompt-select-styled.ts"
+      ],
+      "@aether/terminal-core/prompt-select-styled-params": [
+        "./packages/terminal-core/src/prompt-select-styled-params.ts"
+      ],
+      "@aether/terminal-core/prompt-style": [
+        "./packages/terminal-core/src/prompt-style.ts"
+      ],
+      "@aether/terminal-core/restore": ["./packages/terminal-core/src/restore.ts"],
+      "@aether/terminal-core/safe-text": ["./packages/terminal-core/src/safe-text.ts"],
+      "@aether/terminal-core/stream-writer": [
+        "./packages/terminal-core/src/stream-writer.ts"
+      ],
+      "@aether/terminal-core/table": ["./packages/terminal-core/src/table.ts"],
+      "@aether/terminal-core/terminal-link": [
+        "./packages/terminal-core/src/terminal-link.ts"
+      ],
+      "@aether/terminal-core/theme": ["./packages/terminal-core/src/theme.ts"],
+      "@aether/terminal-core/*": ["./packages/terminal-core/src/*"],
+      "@aether/net-policy": ["./packages/net-policy/src/index.ts"],
+      "@aether/net-policy/ip": ["./packages/net-policy/src/ip.ts"],
+      "@aether/net-policy/ipv4": ["./packages/net-policy/src/ipv4.ts"],
+      "@aether/net-policy/redact-sensitive-url": [
+        "./packages/net-policy/src/redact-sensitive-url.ts"
+      ],
+      "@aether/net-policy/url-protocol": ["./packages/net-policy/src/url-protocol.ts"],
+      "@aether/net-policy/url-userinfo": ["./packages/net-policy/src/url-userinfo.ts"],
+      "@aether/net-policy/*": ["./packages/net-policy/src/*"],
+      "@aether/sdk": ["./packages/sdk/src/index.ts"],
+      "@aether/plugin-sdk/*": ["./src/plugin-sdk/*.ts"],
+      "aether/plugin-sdk/account-id": ["./src/plugin-sdk/account-id.ts"],
+      "@openclaw/*": ["./extensions/*"]
+    }
+  },
+  "include": ["src/**/*", "ui/**/*", "extensions/**/*", "packages/**/*"],
+  "exclude": ["node_modules", "dist", "**/dist/**"]
+}
