@@ -12,7 +12,13 @@
     "onStartup": false
   },
   "contracts": {
-    "tools": ["whatsapp_call", "whatsapp_login"]
+    "tools": [
+      "whatsapp_call",
+      "whatsapp_chats",
+      "whatsapp_contacts",
+      "whatsapp_history",
+      "whatsapp_login"
+    ]
   },
   "channels": ["whatsapp"],
   "configSchema": {

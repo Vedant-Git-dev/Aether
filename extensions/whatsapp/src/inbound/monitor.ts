@@ -3,6 +3,7 @@ import type { WAMessageKey, WASocket } from "baileys";
 import type { AetherConfig } from "aether/plugin-sdk/config-contracts";
 import { getChildLogger } from "aether/plugin-sdk/logging-core";
 import { createSubsystemLogger, defaultRuntime } from "aether/plugin-sdk/runtime-env";
+import { attachWhatsAppRosterTracker } from "../roster-state.js";
 import { createWaSocket, waitForWaConnection } from "../session.js";
 import { resolveWhatsAppSocketTiming, type WhatsAppSocketTimingOptions } from "../socket-timing.js";
 import {
@@ -119,6 +120,11 @@ export async function attachWebInboxToSocket(
       inboundConsoleLog.warn(`Failed hydrating participating groups on connect: ${error}`);
     },
   });
+  // Read-only roster tracking feeds the whatsapp_chats/contacts/history tools.
+  // The bounded roster state survives reconnects for the same account.
+  const detachRosterTracker = attachWhatsAppRosterTracker(options.accountId, {
+    listen: socketSession.listen,
+  });
   const delivery = createWhatsAppMessageDeliveryCoordinator({
     cfg: options.cfg,
     loadConfig: options.loadConfig,
@@ -151,6 +157,7 @@ export async function attachWebInboxToSocket(
   return {
     close: async () => {
       delivery.stopIntake();
+      detachRosterTracker();
       socketSession.stop();
       groupMetadata.close();
       try {

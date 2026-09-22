@@ -13,6 +13,8 @@ export type WhatsAppActionConfig = {
   polls?: boolean;
   /** Enable the experimental requester-bound voice-call tool. Default: false. */
   calls?: boolean;
+  /** Read-only chats/contacts/history roster tools. Default: true. */
+  roster?: boolean;
 };
 
 export type WhatsAppReactionLevel = ReactionLevel;
