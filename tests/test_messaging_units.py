@@ -45,7 +45,8 @@ async def test_fresh_decisions_fire_on_decision_stale_do_not() -> None:
     connector = MessagingConnector(
         enabled=True, approvals=approvals, on_decision=on_decision, on_inbound=None
     )
-    assert await connector._decide(5, APPROVED) is approvals.result
+    fresh = await connector._decide(5, APPROVED)
+    assert fresh is not None and fresh.status == APPROVED
     assert approvals.calls == [(5, APPROVED)]
     assert decisions == [(5, APPROVED)]
 

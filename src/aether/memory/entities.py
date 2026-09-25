@@ -121,6 +121,10 @@ class LLMSamePersonJudge:
         self._provider = provider
 
     async def confirm(self, a: PersonRef, b: PersonRef) -> float:
+        if self._provider is None:
+            # resolve() treats judge failure as "not the same person" — an
+            # agent running without LLM keys just gets more identities
+            raise RuntimeError("no LLM provider configured")
         payload = {
             "reference_a": {"platform": a.platform, "handle": a.handle, "display_name": a.display_name},
             "reference_b": {"platform": b.platform, "handle": b.handle, "display_name": b.display_name},

@@ -212,6 +212,30 @@ class EventStore:
             hours,
         )
 
+    async def list_since(self, after_id: int, limit: int = 50) -> list[Event]:
+        """Events ingested after an id, oldest first — the agent loop's
+        observation stream; `after_id` starts at max_id() on boot so the
+        agent never replays its whole history."""
+        rows = await self._pool.fetch(
+            "SELECT id, source, kind, occurred_at, payload_enc, salience_score,"
+            " memorable, meta FROM events WHERE id > $1 ORDER BY id LIMIT $2",
+            after_id,
+            limit,
+        )
+        return [self._to_event(r) for r in rows]
+
+    async def max_id(self) -> int:
+        return await self._pool.fetchval("SELECT COALESCE(MAX(id), 0) FROM events")
+
+    async def recent(self, limit: int = 50) -> list[Event]:
+        """Newest events, memorable or not — the web feed's source."""
+        rows = await self._pool.fetch(
+            "SELECT id, source, kind, occurred_at, payload_enc, salience_score,"
+            " memorable, meta FROM events ORDER BY id DESC LIMIT $1",
+            limit,
+        )
+        return [self._to_event(r) for r in rows]
+
     async def count_memorable_since(self, since: datetime) -> int:
         return await self._pool.fetchval(
             "SELECT COUNT(*) FROM events WHERE memorable AND occurred_at >= $1",

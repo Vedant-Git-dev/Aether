@@ -75,6 +75,8 @@ class LLMJudge:
         self._provider = provider
 
     async def judge(self, text: str) -> Judgment:
+        if self._provider is None:
+            raise JudgeError("no LLM provider configured")
         turn = await self._provider.complete(self.PROMPT, [Message.user(text)], tools=[])
         data = extract_json(turn.text)
         try:
