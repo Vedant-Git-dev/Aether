@@ -61,3 +61,52 @@ def test_contacts_allowlist_shape() -> None:
     )
     assert cfg.contacts.mode == "enforce"
     assert cfg.contacts.allowlist[0].handle == "@you"
+
+
+# ---------------------------------------------------------------------------
+# Settings: every name .env.example documents must actually load
+# ---------------------------------------------------------------------------
+
+
+def test_settings_reads_the_documented_env_names(monkeypatch) -> None:
+    from aether.config import Settings
+
+    for name in (
+        "AETHER_ENCRYPTION_KEY", "AETHER_TOKEN", "AETHER_DEV_EPHEMERAL_KEY",
+        "DATABASE_URL", "PORT", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+        "GEMINI_API_KEY", "OLLAMA_BASE_URL", "TELEGRAM_BOT_TOKEN",
+        "DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AETHER_ENCRYPTION_KEY", "key")
+    monkeypatch.setenv("AETHER_TOKEN", "tok")
+    monkeypatch.setenv("AETHER_DEV_EPHEMERAL_KEY", "1")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x")
+    monkeypatch.setenv("PORT", "9000")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ak")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tg")
+
+    s = Settings(_env_file=None)
+    assert s.encryption_key == "key"
+    assert s.api_token == "tok"
+    assert s.dev_ephemeral_key is True
+    assert s.database_url == "postgresql://x"
+    assert s.port == 9000
+    assert s.anthropic_api_key == "ak"
+    assert s.telegram_bot_token == "tg"
+
+
+def test_settings_env_file_loads_the_same_names(tmp_path, monkeypatch) -> None:
+    from aether.config import Settings
+
+    env = tmp_path / ".env"
+    env.write_text(
+        "AETHER_ENCRYPTION_KEY=filekey\nAETHER_TOKEN=filetok\nDATABASE_URL=postgresql://y\n",
+        encoding="utf-8",
+    )
+    for name in ("AETHER_ENCRYPTION_KEY", "AETHER_TOKEN", "DATABASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    s = Settings(_env_file=env)
+    assert s.encryption_key == "filekey"
+    assert s.api_token == "filetok"
+    assert s.database_url == "postgresql://y"
