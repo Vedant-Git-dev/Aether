@@ -9,6 +9,7 @@ llm:
   # Ollama:  provider: ollama,  model: llama3.3   (needs OLLAMA_BASE_URL in .env)
   vision_model:                  # optional separate vision-capable model
   salience_model:                # optional cheaper model for the salience judge
+  ollama_vision: false            # ollama only: true if the pulled model accepts images
   max_tokens: 16000
 
 agent:

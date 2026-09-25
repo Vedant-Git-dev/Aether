@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
+    "python-multipart>=0.0.20",  # FastAPI's multipart/form parsing for the capture upload
     "uvicorn[standard]>=0.30",
     "asyncpg>=0.30",
     "cryptography>=44",

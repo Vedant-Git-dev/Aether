@@ -12,15 +12,27 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Secrets, loaded from the environment (and an optional .env file)."""
+    """Secrets, loaded from the environment (and an optional .env file).
+
+    Aether-specific secrets carry the AETHER_ prefix; everything shared
+    keeps the name its platform already uses (DATABASE_URL, PORT,
+    <PROVIDER>_API_KEY, <PLATFORM>_BOT_TOKEN).
+    """
 
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,  # tests construct Settings(api_token=...) by name
+    )
+
+    encryption_key: str = Field(default="", validation_alias="AETHER_ENCRYPTION_KEY")
+    api_token: str = Field(default="change-me", validation_alias="AETHER_TOKEN")
+    dev_ephemeral_key: bool = Field(
+        default=False, validation_alias="AETHER_DEV_EPHEMERAL_KEY"
     )
 
     database_url: str = ""
-    encryption_key: str = ""
-    api_token: str = "change-me"
     port: int = 8000
 
     # LLM provider credentials
@@ -35,8 +47,6 @@ class Settings(BaseSettings):
     slack_bot_token: str = ""
     slack_app_token: str = ""
 
-    # Dev convenience
-    dev_ephemeral_key: bool = False
     log_level: str = "INFO"
 
 
@@ -51,6 +61,10 @@ class LLMConfig(BaseModel):
     vision_model: str | None = None
     salience_model: str | None = None
     max_tokens: int = 16000
+    # Ollama's vision ability depends entirely on which model was pulled;
+    # the hosted providers are inherently vision-capable. Setting a
+    # vision_model implies this regardless.
+    ollama_vision: bool = False
 
 
 class AgentConfig(BaseModel):

@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aether</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --edge: #262b36; --text: #d7dce6;
+    --dim: #8b93a3; --accent: #7aa2f7; --ok: #9ece6a; --warn: #e0af68; --bad: #f7768e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 ui-monospace, "JetBrains Mono", monospace; height: 100vh;
+         display: grid; grid-template-columns: 1fr 420px; }
+  header { grid-column: 1 / 3; display: flex; align-items: center; gap: 12px;
+           padding: 10px 16px; border-bottom: 1px solid var(--edge); background: var(--panel); }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .5px; }
+  #status { font-size: 12px; color: var(--dim); }
+  #status.live { color: var(--ok); }
+  #tokenbar { margin-left: auto; display: flex; gap: 8px; }
+  #token { background: var(--bg); border: 1px solid var(--edge); color: var(--text);
+           padding: 4px 8px; border-radius: 4px; width: 180px; font: inherit; font-size: 12px; }
+  button { background: var(--panel); border: 1px solid var(--edge); color: var(--text);
+           padding: 4px 10px; border-radius: 4px; cursor: pointer; font: inherit; font-size: 12px; }
+  button:hover { border-color: var(--accent); }
+  #chat { display: flex; flex-direction: column; border-right: 1px solid var(--edge); }
+  #log { flex: 1; overflow-y: auto; padding: 16px; display: flex;
+         flex-direction: column; gap: 10px; }
+  .line { max-width: 78%; padding: 8px 12px; border-radius: 10px; white-space: pre-wrap; }
+  .in { align-self: flex-start; background: var(--panel); border: 1px solid var(--edge); }
+  .out { align-self: flex-end; background: #1c2536; border: 1px solid #2c3a55; }
+  .sys { align-self: center; color: var(--dim); font-size: 12px; background: none; border: none; }
+  form { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--edge); }
+  #say { flex: 1; background: var(--panel); border: 1px solid var(--edge);
+         color: var(--text); padding: 10px 12px; border-radius: 4px; font: inherit; resize: none; }
+  #say:focus { outline: none; border-color: var(--accent); }
+  aside { overflow-y: auto; display: flex; flex-direction: column; }
+  section { border-bottom: 1px solid var(--edge); padding: 12px 16px; }
+  section h2 { font-size: 12px; margin: 0 0 10px; color: var(--dim); text-transform:
+               uppercase; letter-spacing: 1px; display: flex; align-items: center; gap: 8px; }
+  .badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; border: 1px solid var(--edge); }
+  .badge.ok { color: var(--ok); border-color: var(--ok); }
+  .badge.bad { color: var(--bad); border-color: var(--bad); }
+  .card { background: var(--panel); border: 1px solid var(--edge); border-radius: 6px;
+          padding: 8px 10px; margin-bottom: 8px; font-size: 12px; }
+  .card .tool { color: var(--accent); }
+  .card .meta { color: var(--dim); font-size: 11px; }
+  .card pre { margin: 6px 0; white-space: pre-wrap; word-break: break-all; color: var(--dim); }
+  .row { display: flex; gap: 8px; margin-top: 6px; }
+  .approve { color: var(--ok); } .deny { color: var(--bad); }
+  .ev { display: flex; gap: 8px; font-size: 12px; padding: 3px 0; border-bottom: 1px dashed #222734; }
+  .ev .k { color: var(--dim); min-width: 110px; }
+  .ev .m { color: var(--warn); }
+  .au { font-size: 12px; padding: 3px 0; border-bottom: 1px dashed #222734; }
+  .au .seq { color: var(--dim); }
+  .au .d { font-weight: 700; }
+  .d.allow { color: var(--ok); } .d.approve, .d.info { color: var(--warn); }
+  .d.deny, .d.filtered { color: var(--bad); }
+  .empty { color: var(--dim); font-size: 12px; font-style: italic; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ÆTHER</h1>
+  <span id="status">offline</span>
+  <div id="tokenbar">
+    <input id="token" type="password" placeholder="API token">
+    <button id="save">save</button>
+  </div>
+</header>
+<div id="chat">
+  <div id="log"></div>
+  <form id="composer">
+    <textarea id="say" rows="2" placeholder="talk to aether…"></textarea>
+    <button>send</button>
+  </form>
+</div>
+<aside>
+  <section>
+    <h2>approvals <span id="apcount" class="badge"></span></h2>
+    <div id="approvals"><div class="empty">none pending</div></div>
+  </section>
+  <section>
+    <h2>audit <span id="chain" class="badge">…</span></h2>
+    <div id="audit"><div class="empty">…</div></div>
+  </section>
+  <section>
+    <h2>events</h2>
+    <div id="events"><div class="empty">…</div></div>
+  </section>
+</aside>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const token = () => localStorage.getItem("aether_token") || "";
+$("token").value = token();
+$("save").onclick = () => { localStorage.setItem("aether_token", $("token").value.trim()); location.reload(); };
+
+function say(text, cls) {
+  const div = document.createElement("div");
+  div.className = "line " + cls;
+  div.textContent = text;
+  $("log").appendChild(div);
+  $("log").scrollTop = $("log").scrollHeight;
+}
+const sysline = (t) => say(t, "sys");
+
+// -- chat websocket: reconnect with exponential backoff + jitter ----------
+let ws = null, attempt = 0, closedByUs = false;
+function connect() {
+  if (!token()) { sysline("set your API token (top right) to connect"); return; }
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(token())}`);
+  ws.onopen = () => { attempt = 0; setStatus(true); sysline("connected"); };
+  ws.onmessage = (m) => {
+    const data = JSON.parse(m.data);
+    if (data.type === "history") data.messages.forEach((h) => say(h.text, h.direction === "in" ? "in" : "out"));
+    else if (data.type === "chat") say(data.text, "out");
+  };
+  ws.onclose = () => {
+    setStatus(false);
+    if (closedByUs) return;
+    const wait = Math.min(30000, 1000 * 2 ** attempt) * (0.5 + Math.random() / 2);
+    attempt += 1;
+    sysline(`disconnected — retrying in ${Math.round(wait / 100) / 10}s`);
+    setTimeout(connect, wait);
+  };
+}
+function setStatus(live) {
+  $("status").textContent = live ? "live" : "offline";
+  $("status").className = live ? "live" : "";
+}
+$("composer").onsubmit = (e) => {
+  e.preventDefault();
+  const text = $("say").value.trim();
+  if (!text || !ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ text }));
+  say(text, "in");
+  $("say").value = "";
+};
+
+// -- panels: token-guarded polls ----------------------------------------------
+async function api(path, opts) {
+  const res = await fetch(`${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token())}`, opts);
+  return res;
+}
+async function refreshApprovals() {
+  if (!token()) return;
+  try {
+    const res = await api("/api/approvals");
+    const data = await res.json();
+    const box = $("approvals");
+    $("apcount").textContent = data.pending.length ? String(data.pending.length) : "";
+    $("apcount").className = "badge " + (data.pending.length ? "bad" : "ok");
+    box.innerHTML = "";
+    if (!data.pending.length) { box.innerHTML = '<div class="empty">none pending</div>'; return; }
+    for (const a of data.pending) {
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML = `<span class="tool"></span> <span class="meta"></span><pre></pre>
+        <div class="row"><button class="approve">approve</button><button class="deny">deny</button></div>`;
+      card.querySelector(".tool").textContent = a.tool_name;
+      card.querySelector(".meta").textContent = `#${a.id} · expires ${a.expires_at.slice(0, 16).replace("T", " ")}`;
+      card.querySelector("pre").textContent = JSON.stringify(a.params, null, 1);
+      card.querySelector(".approve").onclick = () => decide(a.id, "approve");
+      card.querySelector(".deny").onclick = () => decide(a.id, "deny");
+      box.appendChild(card);
+    }
+  } catch {}
+}
+async function decide(id, decision) {
+  try {
+    await api(`/api/approvals/${id}/decide`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision }),
+    });
+  } catch {}
+  refreshApprovals();
+}
+async function refreshAudit() {
+  if (!token()) return;
+  try {
+    const data = await (await api("/api/audit")).json();
+    const c = $("chain");
+    c.textContent = data.chain.ok ? `chain ok (${data.chain.entries})` : `BROKEN @${data.chain.first_bad_seq}`;
+    c.className = "badge " + (data.chain.ok ? "ok" : "bad");
+    c.title = data.chain.problem || "";
+    const box = $("audit");
+    box.innerHTML = "";
+    if (!data.entries.length) { box.innerHTML = '<div class="empty">no entries yet</div>'; return; }
+    for (const e of data.entries) {
+      const div = document.createElement("div");
+      div.className = "au";
+      div.innerHTML = `<span class="seq"></span> <span class="d"></span> <span class="t"></span>`;
+      div.querySelector(".seq").textContent = `#${e.seq}`;
+      const d = div.querySelector(".d"); d.textContent = e.decision; d.classList.add("d", e.decision);
+      div.querySelector(".t").textContent = `${e.actor} · ${e.tool} · ${e.outcome}`;
+      box.appendChild(div);
+    }
+  } catch {}
+}
+async function refreshEvents() {
+  if (!token()) return;
+  try {
+    const data = await (await api("/api/events?limit=40")).json();
+    const box = $("events");
+    box.innerHTML = "";
+    if (!data.events.length) { box.innerHTML = '<div class="empty">nothing yet</div>'; return; }
+    for (const e of data.events) {
+      const div = document.createElement("div");
+      div.className = "ev";
+      div.innerHTML = `<span class="k"></span><span class="b"></span>`;
+      div.querySelector(".k").textContent = `${e.at.slice(5, 16).replace("T", " ")} ${e.source}`;
+      const b = div.querySelector(".b");
+      b.textContent = e.kind + (e.memorable ? " ★" : "");
+      if (e.memorable) b.classList.add("m");
+      b.title = JSON.stringify(e.payload);
+      box.appendChild(div);
+    }
+  } catch {}
+}
+setInterval(refreshApprovals, 5000);
+setInterval(refreshAudit, 10000);
+setInterval(refreshEvents, 10000);
+refreshApprovals(); refreshAudit(); refreshEvents();
+addEventListener("beforeunload", () => { closedByUs = true; ws && ws.close(); });
+connect();
+</script>
+</body>
+</html>
