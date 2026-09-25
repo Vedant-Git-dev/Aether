@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     decided_at  TIMESTAMPTZ,
     expires_at  TIMESTAMPTZ NOT NULL,
-    decision_by TEXT
+    decided_by  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS scheduled_actions (

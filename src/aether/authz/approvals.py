@@ -72,9 +72,10 @@ class Approvals:
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
-                    "INSERT INTO pending_approvals (tool_name, status, expires_at)"
-                    " VALUES ($1, 'pending', $2) RETURNING id, created_at",
+                    "INSERT INTO pending_approvals (tool_name, params_enc, status, expires_at)"
+                    " VALUES ($1, $2, 'pending', $3) RETURNING id, created_at",
                     tool_name,
+                    b"",  # placeholder until the id exists; replaced below, same transaction
                     expires_at,
                 )
                 approval_id = row["id"]
@@ -115,7 +116,7 @@ class Approvals:
             async with conn.transaction():
                 row = await conn.fetchrow(
                     "UPDATE pending_approvals"
-                    " SET status = $1, decided_at = now(), decision_by = $2"
+                    " SET status = $1, decided_at = now(), decided_by = $2"
                     " WHERE id = $3 AND status = 'pending' AND expires_at > now()"
                     " RETURNING id, tool_name, status, created_at, expires_at,"
                     " decided_at, decided_by",
