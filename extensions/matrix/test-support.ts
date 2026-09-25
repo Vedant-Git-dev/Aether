@@ -1,2 +1,0 @@
-// Matrix test support keeps plugin tests on the public SDK fixture boundary.
-export { useAutoCleanupTempDirTracker } from "aether/plugin-sdk/test-env";

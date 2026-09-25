@@ -1,0 +1,44 @@
+# Aether configuration — structure only; secrets live in .env.
+# Copy to config.yaml and edit.
+
+llm:
+  provider: anthropic            # anthropic | openai | gemini | ollama
+  model: claude-opus-5
+  # OpenAI:  provider: openai,  model: gpt-5.1
+  # Gemini:  provider: gemini,  model: gemini-2.5-pro
+  # Ollama:  provider: ollama,  model: llama3.3   (needs OLLAMA_BASE_URL in .env)
+  vision_model:                  # optional separate vision-capable model
+  salience_model:                # optional cheaper model for the salience judge
+  max_tokens: 16000
+
+agent:
+  tick_seconds: 30               # agent loop cadence
+  max_tool_iterations: 12         # tool-call turns per activation before forcing a summary
+  daily_surface_cap: 20           # max high-salience items surfaced per day
+
+salience:
+  threshold: 6.0                 # 0-10; events below are stored but never surface
+  rate_cap_per_hour: 20          # heuristic pre-gate: events above this are noise
+
+mcp_servers: []                  # connect anything via MCP
+  # - name: mail
+  #   transport: {type: stdio, command: npx, args: ["-y", "mcp-mail-server"]}
+  #   poll_tools: [{tool: list_unread, every_minutes: 5}]
+  # - name: calendar
+  #   transport: {type: http, url: "https://mcp.example.com/mcp"}
+
+messaging:
+  telegram: {enabled: false}     # set true + TELEGRAM_BOT_TOKEN in .env
+  discord: {enabled: false}
+  slack: {enabled: false}
+
+contacts:
+  mode: "off"                    # "enforce" = agent sees only allowlisted senders
+  allowlist: []
+    # - {platform: telegram, handle: "@you"}
+    # - {platform: "*", handle: "friend@example.com"}
+
+authz:
+  rules: []                      # evaluated before built-in risk rules
+    # - {tool_pattern: "telegram__send_message", decision: "approve", note: "telegram sends are one-tap"}
+  approval_ttl_hours: 24
