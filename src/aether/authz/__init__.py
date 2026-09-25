@@ -1,1 +1,0 @@
-"""Deterministic authorization + verifiable audit."""
