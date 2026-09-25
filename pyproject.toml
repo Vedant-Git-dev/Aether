@@ -1,0 +1,48 @@
+[project]
+name = "aether-agent"
+version = "0.1.0"
+description = "Aether — a continuous, cross-platform personal action agent"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "asyncpg>=0.30",
+    "cryptography>=44",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "httpx>=0.27",
+    "tenacity>=9",
+    "rapidfuzz>=3.10",
+    "pyyaml>=6.0",
+    "anthropic>=1.0",
+    "openai>=1.60",
+    "google-genai>=1.0",
+    "mcp>=2.0",
+    "python-telegram-bot>=22.0",
+    "py-cord>=2.6",
+    "slack-bolt>=1.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+]
+
+[project.scripts]
+aether = "aether.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aether"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: requires AETHER_TEST_DATABASE_URL (a throwaway Postgres)",
+]

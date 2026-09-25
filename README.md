@@ -1,180 +1,122 @@
 # Aether
 
-## A Continuous Cross Platform AI Action Agent
+**A personal agent that actually acts.** Aether continuously watches your
+connected apps, remembers what's happening across all of them, and takes real
+action on your behalf — replying, booking, filing, following up — instead of
+just reminding you. It asks for a human decision only when the action
+genuinely calls for one.
 
-Aether is a continuously running AI agent designed to connect with a
-user's digital platforms, maintain unified contextual memory across
-those platforms, understand user activity, and safely perform routine
-actions on the user's behalf.
+Most personal-productivity tools stop at organizing or surfacing information:
+a dashboard, a summary, a notification. Aether is built around a different
+premise — that a personal agent should **close the loop itself**, executing
+the small, repetitive actions that fall out of everyday digital life.
 
-## Problem Statement
+A person *can* keep track of everything happening across their email,
+messaging apps, and calendar. What no one can realistically do is do it
+**continuously, without fail, across every app, all day**. That's a hard limit
+of attention and working memory, not discipline. Aether removes that tax.
 
-People interact with many digital platforms every day, including email,
-messaging applications, calendars, and web services. Important
-information, pending tasks, and follow ups are distributed across these
-platforms. Managing everything manually is time consuming and can lead
-to missed actions.
+## Features
 
-Aether addresses this problem by providing a single intelligent agent
-that can monitor connected platforms, maintain contextual memory,
-understand relationships between information, and take appropriate
-actions while keeping sensitive decisions under human control.
+- **Continuous cross-app monitoring** — connects to any app through MCP
+  servers you configure (mail, calendar, whatever speaks MCP) plus native
+  Telegram, Discord, and Slack connectors, and keeps a running, deduplicated
+  memory instead of a raw activity log.
+- **Cross-platform identity resolution** — the same person appearing under
+  different handles on different platforms is linked into one coherent memory
+  of that relationship.
+- **Executes real actions** — drafts and sends follow-ups, books, files,
+  replies — not just reminders.
+- **Screen-vision fallback** — for apps with no API, a companion CLI captures
+  your screen on request; Aether reads and remembers what's on it. Strictly
+  perception-only: it never acts inside an app it can't reliably interact
+  with.
+- **Deterministic authorization + audit** — every action is classified against
+  a declared policy *before* it runs. Low-stakes, reversible actions proceed
+  automatically; higher-stakes ones queue for a one-tap decision. Every
+  decision produces a tamper-evident, hash-chained audit record.
+- **Signal over noise** — a continuous event stream is filtered to a small
+  set of genuinely relevant items, with no human ever labeling what matters.
+- **Your contacts, your rules** — an explicit allowlist decides which contacts
+  the agent may see on every channel; non-allowlisted senders are dropped at
+  ingestion, their content never stored.
+- **Bring your own brain** — Claude, OpenAI, Gemini, or a local Ollama model;
+  one line of config.
 
-## Objectives
+## Architecture
 
-1.  Develop an AI agent capable of continuously monitoring multiple
-    connected digital platforms.
-2.  Maintain a unified and deduplicated memory of user activity across
-    platforms.
-3.  Identify the same contact across different platforms through
-    identity resolution.
-4.  Automatically perform routine actions such as drafting replies,
-    filing information, and scheduling.
-5.  Provide a screen based fallback mechanism for platforms that do not
-    provide an accessible API.
-6.  Implement a risk based authorization layer that evaluates actions
-    before execution.
-7.  Maintain a verifiable audit record of actions performed by the
-    agent.
+```
+┌───────────────────────── Aether (single always-on process) ─────────────┐
+│                                                                         │
+│  Chat surfaces ── Web UI (WebSocket) ─ Telegram ─ Discord ─ Slack      │
+│        │                                                                │
+│  Agent loop ── reason → act → observe, continuous                       │
+│        │                                                                │
+│  ┌─────┴──────────┬──────────────────┬───────────────────┐             │
+│  LLM layer        Connector registry Memory store        Authz + audit  │
+│  Claude/OpenAI/   native + MCP tools  encrypted,         deterministic  │
+│  Gemini/Ollama    (flat namespace)    deduplicated,      policy, one-tap│
+│  (configurable)                     entity-resolved     approvals,      │
+│                                      (AES-256-GCM)      hash chain      │
+│  Scheduler ── persisted scheduled actions, survive restarts             │
+└─────────────────────────────────────────────────────────────────────────┘
+        │                                   │
+   Neon Postgres                     companion CLI (grim → screenshot)
+   (encrypted at rest)               screen-vision, perception-only
+```
 
-## Core Concept
+**LLM providers** are user-configurable: Claude (Anthropic API), OpenAI,
+Google Gemini, or local Ollama.
 
-Aether connects to platforms through their available APIs. These
-connections allow the agent to access relevant user activity from
-services such as email, calendars, and messaging platforms.
+**Connectors**: anything that speaks [MCP](https://modelcontextprotocol.io)
+connects through Aether's MCP host (user-configured in `config.yaml`).
+Telegram, Discord, and Slack are built in natively because they are also the
+chat/approval surfaces. WhatsApp is a documented stub — both free routes
+(Meta test number, WAHA QR bridge) are written up in `docs/whatsapp.md`.
 
-The collected information is stored in a unified memory system. This
-allows Aether to understand activity across different platforms instead
-of treating every platform as an isolated system.
+## Honest trade-offs (stated, not hidden)
 
-Aether also includes identity resolution. This allows the system to
-associate different handles or identifiers with the same contact when
-appropriate.
+- **Encryption at rest** uses AES-256-GCM with a server-held key. This
+  protects the stored history against a database-level compromise — a leaked
+  backup, a breached storage provider — and still lets the agent reason over
+  the history while your devices are offline. It does **not** protect against
+  a compromise of the server process itself; that is a separate, harder
+  problem.
+- **Free-tier hosting** (Render + Neon) is kept awake by a lightweight
+  external uptime ping. Free Render services spin down after 15 idle minutes
+  and are capped at 750 instance-hours/month; scheduled actions survive that
+  because they are persisted the moment they're created and re-armed on boot.
+- **LLM inference** happens at the configured provider. Zero-data-retention
+  tiers and a dedicated secrets-management service are on the roadmap (a
+  platform environment variable holds the encryption key today).
 
-For platforms without an accessible API, Aether provides a screen based
-fallback connector. When directed to a particular screen, the system
-uses OCR and vision based interpretation to understand and record the
-displayed information for later reference. The current scope does not
-require this mechanism to perform actions within such platforms.
+## Quick start
 
-## Risk Based Authorization
+```bash
+cp .env.example .env          # fill in DATABASE_URL (Neon), AETHER_ENCRYPTION_KEY, AETHER_TOKEN
+cp config.example.yaml config.yaml
+pip install -e ".[dev]"
+aether                        # serves on :8000 — /healthz, web chat at /
+pytest                        # unit tests (no network, no DB)
+```
 
-Safety is a core part of Aether.
+Configuration is split cleanly:
 
-Before an action is executed, it passes through a risk based
-authorization layer.
+| File | Holds |
+|---|---|
+| `.env` | secrets — database URL, encryption key, provider API keys, bot tokens |
+| `config.yaml` | structure — LLM provider choice, MCP servers, messaging toggles, contact allowlist, authorization rules |
 
-1.  Low risk and reversible actions can be executed automatically.
-2.  High risk or irreversible actions require explicit user
-    confirmation.
-3.  Every automatic or confirmed decision is recorded in a verifiable
-    audit trail.
+## Security
 
-This approach keeps the user in control while still allowing the agent
-to automate routine work.
+If you believe you've found a security issue, please see
+[SECURITY.md](SECURITY.md) before opening an issue.
 
-## Example Workflow
+## Contributing
 
-Consider a user receiving an email requesting a meeting.
+PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). The test suite runs
+with no network access and no database; integration tests are opt-in.
 
-Aether can understand the information in the email and connect it with
-the user's calendar. It can identify the contact using its cross
-platform identity information, check relevant scheduling information,
-and prepare an appropriate action.
+## License
 
-If the action is classified as low risk, Aether can execute it
-automatically. If the action requires higher authorization, the system
-asks the user for confirmation before execution.
-
-The resulting decision and action are recorded in the audit trail.
-
-## Architecture Overview
-
-The system is organized around several major components.
-
-### Platform Connectors
-
-Connects Aether with supported digital platforms through their APIs.
-
-### Unified Memory
-
-Stores and organizes user activity across connected platforms while
-reducing duplicate information.
-
-### Identity Resolution
-
-Determines whether different platform identities can be associated with
-the same contact.
-
-### Screen Based Perception
-
-Uses OCR and vision based interpretation to understand information
-displayed on platforms without accessible APIs.
-
-### Action Engine
-
-Handles routine actions that Aether is authorized to perform.
-
-### Risk Based Authorization
-
-Classifies actions according to their risk and determines whether they
-can be executed automatically or require user confirmation.
-
-### Audit Trail
-
-Records actions and authorization decisions so that the agent's behavior
-can be verified.
-
-## Methodology
-
-1.  Study existing personal assistant and agent based automation systems
-    and their limitations.
-2.  Design a connector architecture for multiple digital platforms.
-3.  Develop a unified memory store with cross platform identity
-    resolution.
-4.  Develop the screen based fallback connector using OCR and vision
-    based interpretation.
-5.  Design and implement the risk based authorization engine.
-6.  Implement audit logging for agent decisions and actions.
-7.  Integrate the components into a working AI agent prototype.
-8.  Evaluate the system using representative automation scenarios.
-
-## Technology Requirements
-
-### Software
-
-1.  Python
-2.  Visual Studio Code
-3.  SQLite or PostgreSQL for memory storage
-4.  Large Language Model API for reasoning and vision interpretation
-5.  OCR library such as Tesseract
-6.  Messaging and email platform APIs
-7.  Flask or FastAPI for the backend service
-
-## Expected Outcome
-
-The project aims to produce a working AI agent capable of:
-
-1.  Continuously monitoring multiple connected digital platforms.
-2.  Maintaining unified cross platform memory.
-3.  Identifying the same contact across different platforms.
-4.  Understanding information through a screen based fallback mechanism.
-5.  Performing routine low risk actions automatically.
-6.  Requesting confirmation for high risk actions.
-7.  Maintaining a verifiable audit trail of actions and decisions.
-
-## Applications
-
-1.  Personal digital assistance and task automation
-2.  Cross platform communication management
-3.  Automated scheduling and follow up management
-4.  Enterprise workflow automation
-5.  Accessibility focused digital assistance
-
-## Future Scope
-
-1.  Support for a broader range of connected platforms and services.
-2.  Improved passive and continuous screen understanding.
-3.  Multi user and household level coordination between multiple agents.
-4.  Integration with enterprise identity and access management systems.
-5.  Fully local on device model deployment for enhanced privacy.
+[MIT](LICENSE) © Aether contributors
