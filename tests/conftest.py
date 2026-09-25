@@ -16,7 +16,7 @@ from aether.memory.db import create_pool, run_migrations
 DB_URL = os.environ.get("AETHER_TEST_DATABASE_URL", "")
 
 # Tables integration tests are allowed to wipe between tests.
-_TABLES = "audit_log, pending_approvals"
+_TABLES = "audit_log, pending_approvals, events, identities, identity_handles, entity_notes"
 
 
 def pytest_collection_modifyitems(config, items):
