@@ -7,10 +7,18 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from .api import router as api_router
+from .authz.audit import AuditLog
 from .config import AppConfig, Settings, load_config
+from .connectors.mcp_host import MCPHost
+from .connectors.registry import ToolRegistry
+from .connectors.screenvision import ScreenVision
+from .llm.base import ProviderError
+from .llm.registry import ProviderRegistry
 from .logging_setup import configure_logging
 from .memory.crypto import Cipher, CryptoError, generate_key_b64
 from .memory.db import create_pool, run_migrations
+from .memory.events import EventStore
 
 log = logging.getLogger("aether.main")
 
@@ -67,15 +75,44 @@ def create_app(
         app.state.settings = settings
         app.state.config = config
 
-        # Components wire in here as they land: MCP host, messaging
-        # connectors, scheduler worker, agent loop.
+        # --- memory -------------------------------------------------------
+        audit = AuditLog(pool)
+        events = EventStore(pool, cipher, audit, config.contacts)
+        app.state.events = events
+
+        # --- connectors: MCP host + the flat tool namespace -----------------
+        host = MCPHost(config.mcp_servers)
+        host.start()
+        app.state.mcp_host = host
+        tools = ToolRegistry()
+        tools.attach_mcp(host)
+        log.info("mcp tools in the namespace: %d", tools.sync_mcp_tools())
+        app.state.tools = tools
+
+        # --- llm providers (best effort: the agent boots without keys) ----
+        try:
+            providers = ProviderRegistry.from_config(settings, config.llm)
+        except ProviderError as exc:
+            providers = None
+            log.warning(
+                "LLM provider unavailable (%s) — chat replies and screen vision "
+                "stay off until the keys are configured",
+                exc,
+            )
+        app.state.providers = providers
+        app.state.screen_vision = ScreenVision(providers, events) if providers else None
+
+        # The agent loop, messaging surfaces, scheduler, and chat WebSocket
+        # wire in here as they land.
 
         yield
 
+        await host.stop()
         await pool.close()
         log.info("aether stopped")
 
     app = FastAPI(title="Aether", version="0.1.0", lifespan=lifespan)
+    app.include_router(api_router)
 
     @app.get("/healthz")
     async def healthz() -> dict:

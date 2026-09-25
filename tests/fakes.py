@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from aether.llm.types import Message, ToolCall, ToolResult, ToolSpec, Turn
 from aether.memory.entities import PersonRef
-from aether.memory.events import Event
+from aether.memory.events import Event, IngestResult
 
 
 class FakeProvider:
@@ -98,6 +98,28 @@ class FakePersonJudge:
         return self.confidences.pop(0)
 
 
+class FakeRegistry:
+    """ProviderRegistry double: always answers for_role() with one provider."""
+
+    def __init__(self, provider: object | None) -> None:
+        self._provider = provider
+
+    def for_role(self, role: str):
+        return self._provider
+
+
+class FakeApprovals:
+    """Approvals double: records decide() calls, returns a canned result."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, str]] = []
+        self.result: object = object()  # what decide() returns (set to None to simulate stale)
+
+    async def decide(self, approval_id: int, decision: str):
+        self.calls.append((approval_id, decision))
+        return self.result
+
+
 class FakeEventStore:
     """EventStore double for salience-pipeline tests: canned events, canned
     per-source recent counts, recorded salience updates."""
@@ -110,6 +132,13 @@ class FakeEventStore:
         self.events = dict(events or {})
         self.recent_counts = dict(recent_counts or {})
         self.updates: list[tuple[int, float, bool, dict]] = []
+        self.ingested: list[dict] = []
+
+    async def ingest(self, *, source, kind, payload, sender=None, occurred_at=None, meta=None):
+        self.ingested.append(
+            {"source": source, "kind": kind, "payload": payload, "sender": sender}
+        )
+        return IngestResult(stored=True, reason="new", event_id=len(self.ingested))
 
     async def get(self, event_id: int) -> Event | None:
         return self.events.get(event_id)

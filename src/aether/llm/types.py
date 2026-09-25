@@ -111,6 +111,9 @@ class ToolSpec:
     input_schema: dict[str, Any] = field(
         default_factory=lambda: {"type": "object", "properties": {}}
     )
+    # Where the tool came from: "native" or an MCP server name. Informational
+    # only — authz classifies on the tool name.
+    source: str = "native"
 
 
 @dataclass
