@@ -9,7 +9,14 @@ from aether.agent.loop import CaptureRequestBox, SurfaceFanout
 from aether.agent.tools import register_native_tools
 from aether.connectors.registry import ToolRegistry
 from aether.memory.events import Event
-from fakes import FakeApprovals, FakeEntities, FakeEventStore, FakeScheduler, FakeSurfaceConnector
+from fakes import (
+    FakeApprovals,
+    FakeEntities,
+    FakeEventStore,
+    FakeRoutines,
+    FakeScheduler,
+    FakeSurfaceConnector,
+)
 
 
 def _event(event_id: int) -> Event:
@@ -26,12 +33,17 @@ def _event(event_id: int) -> Event:
 
 
 class NativeKit:
-    def __init__(self, events: FakeEventStore | None = None) -> None:
+    def __init__(
+        self,
+        events: FakeEventStore | None = None,
+        routines: FakeRoutines | None = None,
+    ) -> None:
         self.registry = ToolRegistry()
         self.events = events or FakeEventStore()
         self.entities = FakeEntities()
         self.approvals = FakeApprovals()
         self.scheduler = FakeScheduler()
+        self.routines = routines or FakeRoutines()
         self.connector = FakeSurfaceConnector()
         self.box = CaptureRequestBox()
         self.count = register_native_tools(
@@ -42,6 +54,7 @@ class NativeKit:
             scheduler=self.scheduler,
             surfaces=SurfaceFanout([self.connector]),
             capture_box=self.box,
+            routines=routines,  # None keeps the routine tools unregistered
         )
 
     async def run(self, name: str, params: dict) -> str:

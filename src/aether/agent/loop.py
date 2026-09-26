@@ -4,15 +4,19 @@ in the path for anything risky.
 One background task. Each tick it (a) fires due MCP source polls (the
 user's config.yaml poll_tools — a standing instruction, so these run
 directly and are audited), (b) turns inbound chat into memory, (c) scores
-everything new for salience, and (d) if anything actually happened, runs
-one authz-gated LLM turn and fans the reply out to every enabled surface.
+everything new for salience, (d) checks the user's standing routines
+against the new events — deterministic matching, with the taught action
+passing the gate at fire time — and (e) if anything actually happened,
+runs one authz-gated LLM turn and fans the reply out to every enabled
+surface.
 
 Between ticks it sleeps `agent.tick_seconds`, waking early the moment work
 arrives (a message, a screen capture, a wake() from the API).
 
 The executor is the single choke point: every ToolCall the model proposes,
-and every scheduled action when it fires, goes through `classify` → run /
-park / deny, and lands in the hash-chained audit log either way.
+every scheduled action when it fires, and every routine when it triggers,
+goes through `classify` → run / park / deny, and lands in the hash-chained
+audit log either way.
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ from ..memory.context import ContextBuilder
 from ..memory.entities import Sender
 from ..memory.events import Event, EventStore
 from ..memory.salience import Salience
+from ..routines import Routines, trigger_matches
 from ..scheduler.jobs import ScheduledAction, Scheduler
 from .prompts import SYSTEM_PROMPT
 
@@ -127,6 +132,7 @@ class AgentLoop:
         capture_box: CaptureRequestBox,
         config: AppConfig,
         host: MCPHost | None = None,
+        routines: Routines | None = None,
     ) -> None:
         self._providers = providers
         self._tools = tools
@@ -141,6 +147,7 @@ class AgentLoop:
         self._capture_box = capture_box
         self._config = config
         self._host = host
+        self._routines = routines
 
         self._queue: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._woken = asyncio.Event()
@@ -245,6 +252,11 @@ class AgentLoop:
             self._last_event_id = max(self._last_event_id, event.id)
             await self._salience.score_event(event.id)
 
+        # (c2) standing triggers the user taught — deterministic matching
+        # over the same observations, before any LLM is involved
+        if observations and self._routines is not None:
+            await self._run_routines(observations)
+
         if not messages and not observations:
             return  # a quiet tick: no LLM turn, no tokens spent
 
@@ -281,6 +293,67 @@ class AgentLoop:
             )
             if ingest.stored:
                 self.notify()
+
+    # -- routines ---------------------------------------------------------------
+
+    async def _run_routines(self, observations: list[Event]) -> None:
+        """Evaluate the user's standing triggers against this tick's new
+        events. Matching is pure code — no LLM in the decision of *whether*
+        to react — and each fire goes through `_execute`, so the gate
+        applies at fire time, every time."""
+        routines = await self._routines.list_enabled()
+        if not routines:
+            return
+        now = datetime.now(timezone.utc)
+        for routine in routines:
+            if (
+                routine.last_fired_at is not None
+                and routine.cooldown_seconds > 0
+                and now < routine.last_fired_at + timedelta(seconds=routine.cooldown_seconds)
+            ):
+                continue  # inside its cooldown window — a burst of similar events fires it once
+            event = next(
+                (e for e in observations if trigger_matches(routine.trigger, e)),
+                None,
+            )
+            if event is None:
+                continue
+            try:
+                await self._fire_routine(routine, event)
+            except Exception:
+                log.exception("routine %d (%s) failed — continuing", routine.id, routine.label)
+
+    async def _fire_routine(self, routine: Any, event: Event) -> None:
+        action = routine.action or {}
+        call = ToolCall(
+            id=f"routine-{routine.id}-{event.id}",
+            name=str(action.get("tool", "")),
+            arguments=dict(action.get("params") or {}),
+        )
+        try:
+            result = await self._execute(call)
+        except Exception as exc:
+            log.exception("routine %d (%s) fire failed", routine.id, routine.label)
+            result = ToolResult(
+                tool_call_id=call.id,
+                name=call.name,
+                content=f"routine fire failed: {exc}",
+                is_error=True,
+            )
+        # fired counts even on failure: the cooldown should gate a broken
+        # action's retries, not let it hammer every tick
+        await self._routines.mark_fired(routine.id)
+        await self._audit.append(
+            actor="routine",
+            tool_name=call.name,
+            decision="info",
+            rules_matched=f"routine:{routine.id}",
+            params={"event_id": event.id, "event": f"{event.source}/{event.kind}"},
+            outcome=f"routine '{routine.label}' fired on {event.source}/{event.kind}",
+        )
+        await self._surfaces.send_to_user(
+            f"🧭 routine '{routine.label}' fired → {call.name}: {result.content[:220]}"
+        )
 
     # -- the LLM turn ---------------------------------------------------------------
 

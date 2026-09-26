@@ -40,10 +40,14 @@ class Ruling:
 
 # Internal tools read and write Aether's own state only; they never reach an
 # external system under their own power. send_chat_message is included
-# because it talks solely to the owner's own chat surfaces.
+# because it talks solely to the owner's own chat surfaces, and the routine
+# tools because they manage Aether's own stored instructions (delete_routine
+# removes a stored trigger, not anything external) — checked before the risky
+# verbs, which is what lets "delete_routine" win over the bare "delete".
 _INTERNAL = re.compile(
     r"^(memory_\w+|note_entity|schedule_action|request_screen_capture"
-    r"|get_pending_approvals|send_chat_message)$"
+    r"|get_pending_approvals|send_chat_message|create_routine|list_routines"
+    r"|set_routine_enabled|delete_routine)$"
 )
 
 # Verbs that reach an external system or are hard to undo. The verb must

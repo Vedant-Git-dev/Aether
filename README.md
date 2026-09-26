@@ -27,6 +27,12 @@ of attention and working memory, not discipline. Aether removes that tax.
   of that relationship.
 - **Executes real actions** — drafts and sends follow-ups, books, files,
   replies — not just reminders.
+- **Routines** — teach a standing reaction once ("when mail from billing
+  mentions an invoice, note it on my billing contact") and it fires whenever a
+  matching event streams in. Trigger matching is deterministic — source,
+  sender, keyword — with no LLM in the trigger decision, and every fire
+  passes the authorization gate, so a taught routine that does something
+  risky still asks you each time.
 - **Screen-vision fallback** — for apps with no API, a companion CLI captures
   your screen on request; Aether reads and remembers what's on it. Strictly
   perception-only: it never acts inside an app it can't reliably interact
@@ -58,7 +64,7 @@ of attention and working memory, not discipline. Aether removes that tax.
 │  Gemini/Ollama    (flat namespace)    deduplicated,      policy, one-tap│
 │  (configurable)                     entity-resolved     approvals,      │
 │                                      (AES-256-GCM)      hash chain      │
-│  Scheduler ── persisted scheduled actions, survive restarts             │
+│  Scheduler ── persisted scheduled actions + routines, survive restarts  │
 └─────────────────────────────────────────────────────────────────────────┘
         │                                   │
    Neon Postgres                     companion CLI (grim → screenshot)
@@ -111,8 +117,8 @@ Next steps:
 
 - **Deploy on free tiers** (Neon Postgres + Render, kept awake by an
   uptime ping): [DEPLOYMENT.md](DEPLOYMENT.md)
-- **See it work** — four scripted demos, from auto-actions to
-  kill -9 schedule survival: [DEMO.md](DEMO.md)
+- **See it work** — five scripted demos, from auto-actions and taught
+  routines to kill -9 schedule survival: [DEMO.md](DEMO.md)
 - **WhatsApp**: documented stub, both free routes written up in
   [docs/whatsapp.md](docs/whatsapp.md)
 

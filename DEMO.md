@@ -1,6 +1,6 @@
 # Demo walkthrough
 
-Four scripted demos, in increasing order of "watch it carefully". Each one
+Five scripted demos, in increasing order of "watch it carefully". Each one
 runs against a live Aether (local or deployed — see
 [DEPLOYMENT.md](DEPLOYMENT.md)) with at least one LLM provider key set.
 Open the web panel (`/`) with your token before starting; the sections
@@ -97,7 +97,34 @@ memory — the reason "schedule" isn't a timer variable.
    tool executes, a risky one parks for approval. Scheduling is not a
    way around review.
 
-## What all four have in common
+## 5. Teach a routine — and watch it still ask
+
+**What it shows**: standing reactions with deterministic triggers, and
+that teaching one is never a way around review.
+
+1. In chat: *"whenever a mail poll mentions an invoice, note it on my
+   billing contact."* The agent calls `create_routine` and confirms:
+   *Routine 1 'billing' armed … It still passes the authorization gate
+   every time it fires.*
+2. Wait for the next mail poll to bring an invoice in (or send yourself
+   one). The routine fires **before any LLM is involved** — matching is
+   source/sender/keyword, not a model judgment — and you get the
+   🧭 ping: *routine 'billing' fired → note_entity: …*
+3. The **audit** pane now carries two rows per fire: the gate's own
+   decision (`allow · builtin:internal`) and a provenance row —
+   `routine · info · routine:1` — pointing back at what fired and on
+   which event. Ask *"list my routines"* for the roster: label, trigger,
+   fired count, cooldown.
+4. Now teach a risky one: *"when a mail poll contains 'server is down',
+   message me on Telegram."* When it fires, nothing sends — the
+   **approvals** pane lights up with `telegram__send_message`, held for
+   your one tap. Teaching is not a way around review, either.
+5. Done with one? *"pause the billing routine"* / *"delete the billing
+   routine"* — `set_routine_enabled` and `delete_routine` answer, and a
+   paused routine stops matching while its row stays in Postgres for
+   when you re-arm it.
+
+## What all five have in common
 
 Every path ends in the same three artifacts, which is the whole pitch:
 

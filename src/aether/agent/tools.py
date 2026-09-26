@@ -1,5 +1,6 @@
 """Aether's native tools — reading its own memory, keeping entity notes,
-scheduling, requesting screen captures, and talking to the user.
+scheduling, requesting screen captures, talking to the user, and managing
+the user's routines.
 
 These are internal by construction: they touch only Aether's own state
 (or the owner's own chat surfaces), which is why the authz classifier's
@@ -52,8 +53,13 @@ def register_native_tools(
     scheduler: Any,
     surfaces: Any,
     capture_box: Any,
+    routines: Any = None,
 ) -> int:
-    """Add Aether's own tools to the flat namespace. Returns how many."""
+    """Add Aether's own tools to the flat namespace. Returns how many.
+
+    `routines` wires the standing-trigger tools; without a store they are
+    not offered at all (same shape as a loop without an MCP host: no
+    feature, no dead tool spec)."""
 
     async def memory_search(params: dict[str, Any]) -> str:
         query = str(params.get("query", "")).strip()
@@ -149,6 +155,106 @@ def register_native_tools(
         await surfaces.send_to_user(text)
         return "Sent to the user's chat surfaces."
 
+    def _describe_trigger(trigger: dict[str, Any]) -> str:
+        parts: list[str] = []
+        if trigger.get("from"):
+            parts.append(f"from {trigger['from']}")
+        if trigger.get("source"):
+            parts.append(f"source {trigger['source']}")
+        if trigger.get("kind"):
+            parts.append(f"kind {trigger['kind']}")
+        if trigger.get("contains"):
+            parts.append(f"containing {trigger['contains']!r}")
+        return " and ".join(parts) or "any event"
+
+    def _routine_id(params: dict[str, Any]) -> int | None:
+        raw = str(params.get("routine_id", "")).strip()
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+
+    async def create_routine(params: dict[str, Any]) -> str:
+        label = str(params.get("label", "")).strip()
+        tool_name = str(params.get("tool_name", "")).strip()
+        trigger = {
+            key: str(value).strip()
+            for key, value in (
+                ("source", params.get("when_source")),
+                ("kind", params.get("when_kind")),
+                ("from", params.get("when_from")),
+                ("contains", params.get("when_contains")),
+            )
+            if str(value or "").strip()
+        }
+        if not label:
+            return "create_routine needs a label."
+        if not tool_name:
+            return "create_routine needs a tool_name — what to run when it triggers."
+        if not trigger:
+            return (
+                "create_routine needs at least one condition: when_source, "
+                "when_kind, when_from, or when_contains. A reaction to "
+                "'every event' is not something the user would want."
+            )
+        try:
+            cooldown = int(params.get("cooldown_seconds", 300))
+        except (TypeError, ValueError):
+            return "cooldown_seconds must be an integer (seconds between fires)."
+        routine = await routines.create(
+            label=label,
+            trigger=trigger,
+            action={
+                "type": "tool",
+                "tool": tool_name,
+                "params": dict(params.get("params") or {}),
+            },
+            cooldown_seconds=cooldown,
+        )
+        return (
+            f"Routine {routine.id} '{label}' armed: when {_describe_trigger(trigger)}, "
+            f"run {tool_name}. It still passes the authorization gate every "
+            "time it fires — a risky tool will ask the user then."
+        )
+
+    async def list_routines(params: dict[str, Any]) -> str:
+        rows = await routines.list()
+        if not rows:
+            return "No routines armed."
+        lines = []
+        for r in rows:
+            fired = (
+                f"fired {r.fire_count}x"
+                + (f", last {r.last_fired_at:%Y-%m-%d %H:%M}" if r.last_fired_at else "")
+                if r.fire_count
+                else "never fired"
+            )
+            state = "paused" if not r.enabled else fired
+            lines.append(
+                f"#{r.id} '{r.label}' — when {_describe_trigger(r.trigger)} → "
+                f"run {r.action.get('tool', '?')} ({state})"
+            )
+        return "\n".join(lines)
+
+    async def set_routine_enabled(params: dict[str, Any]) -> str:
+        routine_id = _routine_id(params)
+        if routine_id is None:
+            return "set_routine_enabled needs a routine_id."
+        enabled = bool(params.get("enabled", True))
+        routine = await routines.set_enabled(routine_id, enabled)
+        if routine is None:
+            return f"No routine {routine_id}."
+        verb = "re-armed" if enabled else "paused"
+        return f"Routine {routine_id} '{routine.label}' {verb}."
+
+    async def delete_routine(params: dict[str, Any]) -> str:
+        routine_id = _routine_id(params)
+        if routine_id is None:
+            return "delete_routine needs a routine_id."
+        if await routines.delete(routine_id):
+            return f"Routine {routine_id} deleted."
+        return f"No routine {routine_id}."
+
     natives: list[tuple[ToolSpec, NativeHandler]] = [
         (
             _spec(
@@ -225,6 +331,66 @@ def register_native_tools(
             send_chat_message,
         ),
     ]
+    if routines is not None:
+        natives.extend(
+            [
+                (
+                    _spec(
+                        "create_routine",
+                        "Arm a standing reaction: 'when X happens, run Y'. "
+                        "Conditions (when_source, when_kind, when_from, "
+                        "when_contains) are AND-combined; at least one is "
+                        "required. Every fire passes the authorization gate.",
+                        {
+                            "label": {"type": "string", "description": "short human label"},
+                            "when_source": {"type": "string", "description": "event source to match, e.g. mail"},
+                            "when_kind": {"type": "string", "description": "event kind, e.g. chat_message"},
+                            "when_from": {"type": "string", "description": "sender handle to match"},
+                            "when_contains": {"type": "string", "description": "text the event must contain"},
+                            "tool_name": {"type": "string", "description": "tool to run on a match"},
+                            "params": {"type": "object", "description": "arguments for that tool"},
+                            "cooldown_seconds": {
+                                "type": "integer",
+                                "description": "minimum seconds between fires (default 300)",
+                            },
+                        },
+                        ["label", "tool_name"],
+                    ),
+                    create_routine,
+                ),
+                (
+                    _spec(
+                        "list_routines",
+                        "List the user's armed routines — trigger, action, "
+                        "and how often each has fired.",
+                        {},
+                        [],
+                    ),
+                    list_routines,
+                ),
+                (
+                    _spec(
+                        "set_routine_enabled",
+                        "Pause or re-arm a routine without deleting it.",
+                        {
+                            "routine_id": {"type": "integer", "description": "routine to toggle"},
+                            "enabled": {"type": "boolean", "description": "false pauses it"},
+                        },
+                        ["routine_id"],
+                    ),
+                    set_routine_enabled,
+                ),
+                (
+                    _spec(
+                        "delete_routine",
+                        "Delete one of the user's routines.",
+                        {"routine_id": {"type": "integer", "description": "routine to delete"}},
+                        ["routine_id"],
+                    ),
+                    delete_routine,
+                ),
+            ]
+        )
     for spec, handler in natives:
         registry.add_native(spec, handler)
     return len(natives)

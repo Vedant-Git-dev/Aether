@@ -18,7 +18,7 @@ DB_URL = os.environ.get("AETHER_TEST_DATABASE_URL", "")
 # Tables integration tests are allowed to wipe between tests.
 _TABLES = (
     "audit_log, pending_approvals, events, identities, identity_handles, "
-    "entity_notes, chat_messages, scheduled_actions"
+    "entity_notes, chat_messages, scheduled_actions, routines"
 )
 
 

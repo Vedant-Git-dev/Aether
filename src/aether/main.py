@@ -30,6 +30,7 @@ from .memory.db import create_pool, run_migrations
 from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
 from .memory.salience import LLMJudge, Salience
+from .routines import Routines
 from .scheduler import Scheduler, SchedulerWorker
 
 log = logging.getLogger("aether.main")
@@ -129,6 +130,8 @@ def create_app(
         context = ContextBuilder(events, entities, approvals, config.agent)
         scheduler = Scheduler(pool, cipher, audit)
         app.state.scheduler = scheduler
+        routines = Routines(pool, cipher, audit)
+        app.state.routines = routines
 
         # --- chat + the agent ------------------------------------------------
         chat_history = ChatHistory(pool, cipher)
@@ -153,6 +156,7 @@ def create_app(
             capture_box=capture_box,
             config=config,
             host=host,
+            routines=routines,
         )
         app.state.agent = agent
         native = register_native_tools(
@@ -163,6 +167,7 @@ def create_app(
             scheduler=scheduler,
             surfaces=surfaces,
             capture_box=capture_box,
+            routines=routines,
         )
         log.info("native tools registered: %d", native)
 

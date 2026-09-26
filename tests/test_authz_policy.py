@@ -36,7 +36,22 @@ def test_internal_tools_are_allowed() -> None:
         "request_screen_capture",
         "get_pending_approvals",
         "send_chat_message",
+        "create_routine",
+        "list_routines",
+        "set_routine_enabled",
+        "delete_routine",
     ]:
+        ruling = policy.classify(name)
+        assert ruling.decision is Decision.ALLOW, name
+        assert ruling.matched_rule == "builtin:internal"
+
+
+def test_routine_management_beats_the_risky_verbs() -> None:
+    """delete_routine and create_routine carry risky verb stems — they may
+    only pass because `builtin:internal` is checked before `builtin:risky`.
+    If the classifier is ever reordered, this is the test that notices."""
+    policy = Policy([])
+    for name in ("create_routine", "delete_routine"):
         ruling = policy.classify(name)
         assert ruling.decision is Decision.ALLOW, name
         assert ruling.matched_rule == "builtin:internal"
