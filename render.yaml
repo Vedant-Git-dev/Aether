@@ -1,0 +1,39 @@
+# Render blueprint — the free-tier deploy described in DEPLOYMENT.md.
+#
+# `sync: false` env vars are entered in the Render dashboard (or on first
+# Blueprint deploy) and stored there — secrets never live in this file.
+# config.yaml (structure, no secrets) is read from the repo root at boot;
+# commit yours before deploying, or the instance runs with defaults
+# (web chat + agent loop, no external connectors).
+
+services:
+  - type: web
+    name: aether
+    runtime: python
+    plan: free
+    buildCommand: pip install .
+    startCommand: aether   # serves on 0.0.0.0:$PORT — /healthz answers pings
+    envVars:
+      # --- required ---
+      - key: DATABASE_URL          # Neon connection string, sslmode=require
+        sync: false
+      - key: AETHER_ENCRYPTION_KEY  # base64 of 32 bytes — see DEPLOYMENT.md
+        sync: false
+      - key: AETHER_TOKEN          # guards the API, web chat, and companion uploads
+        sync: false
+      # --- LLM provider (set the one matching llm.provider in config.yaml) ---
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      # --- messaging surfaces (optional) ---
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: DISCORD_BOT_TOKEN
+        sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_APP_TOKEN
+        sync: false

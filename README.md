@@ -107,6 +107,15 @@ Configuration is split cleanly:
 | `.env` | secrets — database URL, encryption key, provider API keys, bot tokens |
 | `config.yaml` | structure — LLM provider choice, MCP servers, messaging toggles, contact allowlist, authorization rules |
 
+Next steps:
+
+- **Deploy on free tiers** (Neon Postgres + Render, kept awake by an
+  uptime ping): [DEPLOYMENT.md](DEPLOYMENT.md)
+- **See it work** — four scripted demos, from auto-actions to
+  kill -9 schedule survival: [DEMO.md](DEMO.md)
+- **WhatsApp**: documented stub, both free routes written up in
+  [docs/whatsapp.md](docs/whatsapp.md)
+
 ## Security
 
 If you believe you've found a security issue, please see
