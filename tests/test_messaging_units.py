@@ -12,7 +12,12 @@ import asyncio
 from types import SimpleNamespace
 
 import discord
+<<<<<<< HEAD
 from fakes import FakeApprovals
+=======
+import pytest
+from telegram.error import NetworkError
+>>>>>>> b2e3b925 (fix(connectors): make inbound awaitable and ride out telegram network blips)
 
 from aether.authz.approvals import APPROVED, DENIED
 from aether.config import AppConfig, MessagingConfig, PlatformToggle, Settings
@@ -26,7 +31,14 @@ from aether.connectors.slack import (
     approval_blocks,
     event_to_inbound,
 )
+<<<<<<< HEAD
 from aether.connectors.telegram import TelegramConnector
+=======
+from aether.connectors.telegram import SEND_ATTEMPTS, TelegramConnector
+from aether.connectors.discord import ApprovalView, DiscordConnector
+from fakes import FakeApprovals
+
+>>>>>>> b2e3b925 (fix(connectors): make inbound awaitable and ride out telegram network blips)
 
 # ---------------------------------------------------------------------------
 # shared decide/inbound plumbing (base class)
@@ -109,9 +121,25 @@ class FakeTelegramBot:
         self.sent.append({"chat_id": chat_id, "text": text, "reply_markup": reply_markup})
 
 
+class FlakyTelegramBot(FakeTelegramBot):
+    """Raises NetworkError on the first `failures` sends, then behaves — the
+    shape of a throttled network dropping fresh TLS connects."""
+
+    def __init__(self, failures: int) -> None:
+        super().__init__()
+        self.failures = failures
+
+    async def send_message(self, chat_id: int, text: str, reply_markup=None) -> None:
+        if self.failures > 0:
+            self.failures -= 1
+            raise NetworkError("httpx.ConnectError: tls handshake failed")
+        await super().send_message(chat_id, text, reply_markup)
+
+
 class FakeTelegramApp:
     def __init__(self) -> None:
         self.handlers: list[object] = []
+        self.error_handlers: list[object] = []
         self.bot = FakeTelegramBot()
         self.updater = SimpleNamespace(start_polling=self._noop, stop=self._noop, polling=False)
         self.initialized = False
@@ -124,6 +152,9 @@ class FakeTelegramApp:
 
     def add_handler(self, handler) -> None:
         self.handlers.append(handler)
+
+    def add_error_handler(self, handler) -> None:
+        self.error_handlers.append(handler)
 
     async def initialize(self) -> None:
         self.initialized = True
@@ -163,6 +194,7 @@ async def _started_telegram(approvals=None, decisions=None, inbound=None):
     await connector.start()
     assert factory_calls == ["tg-token"]
     assert app.initialized and app.started and len(app.handlers) == 2
+    assert len(app.error_handlers) == 1  # update failures log, never dump a traceback
     return connector, app
 
 
@@ -242,6 +274,30 @@ async def test_telegram_button_press_decides_and_edits() -> None:
     approvals.result = None
     await button_handler(update, None)
     assert decisions == [(9, APPROVED)]
+
+
+async def test_telegram_send_retries_through_network_blips() -> None:
+    connector, app = await _started_telegram()
+    app.bot = FlakyTelegramBot(failures=2)
+    connector._send_backoff = 0.0
+    await app.handlers[0].callback(_tg_update("hi"), None)  # establish the reply target
+
+    await connector.send_to_user("the deploy finished")
+
+    assert app.bot.sent == [{"chat_id": 42, "text": "the deploy finished", "reply_markup": None}]
+
+
+async def test_telegram_send_gives_up_after_sustained_failure() -> None:
+    connector, app = await _started_telegram()
+    flaky = FlakyTelegramBot(failures=99)
+    app.bot = flaky
+    connector._send_backoff = 0.0
+    await app.handlers[0].callback(_tg_update("hi"), None)
+
+    with pytest.raises(NetworkError):
+        await connector.send_to_user("down")
+    assert flaky.failures == 99 - SEND_ATTEMPTS  # exactly the bounded attempts
+    assert app.bot.sent == []
 
 
 async def test_telegram_disabled_never_builds_an_app() -> None:

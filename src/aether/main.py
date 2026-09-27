@@ -185,7 +185,7 @@ def create_app(
             config,
             approvals=approvals,
             on_decision=agent.execute_decision,
-            on_inbound=agent.submit_message,
+            on_inbound=agent.handle_inbound,
         )
         surfaces.add_connectors(connectors)
         for connector in connectors:

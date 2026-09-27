@@ -258,6 +258,19 @@ async def test_inbound_message_becomes_memory_and_reaches_the_model() -> None:
     assert kit.connector.sent == ["hello back"]
 
 
+async def test_handle_inbound_is_awaitable_and_lands_the_message() -> None:
+    # Connectors await their InboundHandler; the loop's entry for them must
+    # return an awaitable or every DM crashes ("'NoneType' object can't be
+    # awaited") — awaiting here is the regression.
+    provider = FakeProvider([Turn(text="hello back")])
+    kit = LoopKit(provider)
+    await kit.loop.handle_inbound(_msg("what do you remember?"))
+    await kit.loop._tick()
+
+    assert len(kit.events.ingested) == 1
+    assert kit.connector.sent == ["hello back"]
+
+
 async def test_filtered_senders_never_reach_the_model() -> None:
     provider = FakeProvider([])  # would AssertionError if the model were called
     kit = LoopKit(provider)

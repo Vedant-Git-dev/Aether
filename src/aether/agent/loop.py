@@ -189,9 +189,17 @@ class AgentLoop:
         self._woken.set()
 
     def submit_message(self, message: InboundMessage) -> None:
-        """The one entry point for inbound chat, from every surface."""
+        """Queue an inbound chat message — sync, for the WebSocket path and
+        tests. Connectors get the awaitable handle_inbound instead, because
+        the InboundHandler contract they call through is async."""
         self._queue.put_nowait(message)
         self._woken.set()
+
+    async def handle_inbound(self, message: InboundMessage) -> None:
+        """Connector-facing inbound entry — satisfies the async InboundHandler
+        contract (connectors await their handler; a sync return is the
+        "'NoneType' object can't be awaited" crash)."""
+        self.submit_message(message)
 
     # -- the loop ---------------------------------------------------------------
 

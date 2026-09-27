@@ -6,11 +6,12 @@ Only private chats are processed — a personal agent, not a group bot.
 
 from __future__ import annotations
 
-import contextlib
+import asyncio
 import logging
 from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import NetworkError
 from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filters
 
 from ..authz.approvals import APPROVED, DENIED
@@ -25,6 +26,12 @@ from .base import (
 log = logging.getLogger("aether.connectors.telegram")
 
 _CALLBACK_PREFIX = "aether:"
+# A send opens a fresh TLS connection whenever the pooled one has gone stale
+# (httpx keep-alive is ~5s) — on a throttled network that connect fails now
+# and then, so sends get a few bounded tries before giving up on this
+# surface; the fanout then logs and carries on to the others.
+SEND_ATTEMPTS = 3
+SEND_BACKOFF_SECONDS = 2.0
 
 
 class TelegramConnector(MessagingConnector):
@@ -50,6 +57,7 @@ class TelegramConnector(MessagingConnector):
         self._app_factory = app_factory or self._default_app_factory
         self._app: Any = None
         self._chat_ref: str | None = None
+        self._send_backoff = SEND_BACKOFF_SECONDS
 
     @staticmethod
     def _default_app_factory(token: str) -> Any:
@@ -70,6 +78,7 @@ class TelegramConnector(MessagingConnector):
             MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, self._on_message)
         )
         app.add_handler(CallbackQueryHandler(self._on_button))
+        app.add_error_handler(self._on_error)
         await app.initialize()
         await app.start()
         if app.updater is not None:
@@ -118,6 +127,11 @@ class TelegramConnector(MessagingConnector):
         ):  # message too old to edit — non-fatal, the store has the truth
             await query.edit_message_text(f"Approval {decision}: {note}", reply_markup=None)
 
+    async def _on_error(self, update: object, context: Any) -> None:
+        """One clean line — without a registered handler PTB dumps the whole
+        'No error handlers are registered' traceback per failed update."""
+        log.error("telegram update failed: %s", getattr(context, "error", "unknown error"))
+
     # -- outbound --------------------------------------------------------------------
 
     async def send_to_user(self, text: str) -> None:
@@ -143,6 +157,16 @@ class TelegramConnector(MessagingConnector):
         if app is None or self._chat_ref is None:
             log.info("telegram: nowhere to send yet (started=%s)", app is not None)
             return
-        await app.bot.send_message(
-            chat_id=int(self._chat_ref), text=text, reply_markup=reply_markup
-        )
+        for attempt in range(1, SEND_ATTEMPTS + 1):
+            try:
+                await app.bot.send_message(
+                    chat_id=int(self._chat_ref), text=text, reply_markup=reply_markup
+                )
+                return
+            except NetworkError:
+                if attempt == SEND_ATTEMPTS:
+                    raise
+                log.warning(
+                    "telegram send failed (attempt %d/%d) — retrying", attempt, SEND_ATTEMPTS
+                )
+                await asyncio.sleep(self._send_backoff * attempt)
