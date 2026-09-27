@@ -292,6 +292,73 @@ def test_gemini_turn_parsing_synthesizes_ids() -> None:
     assert turn.text == "hello"
     assert turn.tool_calls == [ToolCall(id="gemini_1", name="search", arguments={"q": "x"})]
     assert turn.stop_reason == "tool_use"
+    assert turn.provider_extra is None  # nothing signed -> nothing round-tripped
+
+
+def test_gemini_turn_captures_thought_signatures() -> None:
+    # Gemini 3 signs function calls; with parallel calls only the first
+    # part carries the signature, and the rest echo back bare.
+    part_signed = SimpleNamespace(
+        text=None,
+        function_call=SimpleNamespace(name="f", args={"a": 1}),
+        thought_signature="sig-abc",
+    )
+    part_bare = SimpleNamespace(
+        text=None,
+        function_call=SimpleNamespace(name="g", args={}),
+        thought_signature=None,
+    )
+    candidate = SimpleNamespace(
+        content=SimpleNamespace(parts=[part_signed, part_bare]),
+        finish_reason="STOP",
+    )
+    turn = turn_from_gemini(SimpleNamespace(candidates=[candidate]))
+    assert [c.id for c in turn.tool_calls] == ["gemini_0", "gemini_1"]
+    assert turn.provider_extra == {"gemini_0": "sig-abc"}
+
+
+def test_gemini_function_call_parts_replay_their_signatures() -> None:
+    msg = Message.assistant(
+        "checking",
+        [
+            ToolCall(id="gemini_0", name="f", arguments={"a": 1}),
+            ToolCall(id="gemini_1", name="g", arguments={}),
+        ],
+        provider_extra={"gemini_0": "sig-abc"},
+    )
+    out = messages_to_gemini([msg])
+    assert out[0]["parts"] == [
+        {"text": "checking"},
+        {"function_call": {"name": "f", "args": {"a": 1}}, "thought_signature": "sig-abc"},
+        {"function_call": {"name": "g", "args": {}}},
+    ]
+
+
+def test_gemini_signature_survives_the_tool_loop_round_trip() -> None:
+    # run_tool_loop's exact wiring: parse a response, replay it as
+    # Message.assistant(turn.text, turn.tool_calls, turn.provider_extra) —
+    # the signature must come back on the function-call part or the next
+    # request 400s ("missing a thought_signature").
+    candidate = SimpleNamespace(
+        content=SimpleNamespace(
+            parts=[
+                SimpleNamespace(
+                    text=None,
+                    function_call=SimpleNamespace(name="memory_search", args={"query": "bob"}),
+                    thought_signature="sig-xyz",
+                )
+            ]
+        ),
+        finish_reason="STOP",
+    )
+    turn = turn_from_gemini(SimpleNamespace(candidates=[candidate]))
+    history = [Message.assistant(turn.text, turn.tool_calls, turn.provider_extra)]
+
+    parts = messages_to_gemini(history)[0]["parts"]
+    assert parts == [
+        {"function_call": {"name": "memory_search", "args": {"query": "bob"}},
+         "thought_signature": "sig-xyz"}
+    ]
 
 
 def test_gemini_turn_max_tokens_and_no_candidates() -> None:
