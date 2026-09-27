@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from aether.agent.traces import Trace
 from aether.authz.approvals import PENDING, Approval
 from aether.llm.types import Message, ToolCall, ToolResult, ToolSpec, Turn
 from aether.memory.context import AgentContext
 from aether.memory.entities import Entity, PersonRef
 from aether.memory.events import Event, IngestResult
+from aether.routines import Routine
 from aether.scheduler.jobs import PENDING as JOB_PENDING, ScheduledAction
 
 
@@ -258,6 +260,126 @@ class FakeScheduler:
             payload=dict(payload),
             created_at=datetime.now(timezone.utc),
         )
+
+
+class FakeRoutines:
+    """Routines double: `add` arms rows the loop's matcher sees; create/
+    set_enabled/delete/mark_fired record what the tools and the loop did."""
+
+    def __init__(self) -> None:
+        self.routines: list[Routine] = []
+        self.created: list[dict] = []
+        self.fired: list[int] = []
+        self.toggles: list[tuple[int, bool]] = []
+        self.deleted: list[int] = []
+
+    def add(
+        self,
+        *,
+        label: str = "routine",
+        trigger: dict | None = None,
+        action: dict | None = None,
+        cooldown_seconds: int = 0,
+        last_fired_at: datetime | None = None,
+        enabled: bool = True,
+    ) -> Routine:
+        routine = Routine(
+            id=len(self.routines) + 1,
+            label=label,
+            trigger=dict(trigger or {}),
+            action=dict(action or {"type": "tool", "tool": "note_entity", "params": {}}),
+            enabled=enabled,
+            cooldown_seconds=cooldown_seconds,
+            fire_count=0,
+            last_fired_at=last_fired_at,
+            created_at=datetime.now(timezone.utc),
+        )
+        self.routines.append(routine)
+        return routine
+
+    async def create(
+        self,
+        *,
+        label: str,
+        trigger: dict,
+        action: dict,
+        cooldown_seconds: int = 300,
+        actor: str = "agent",
+    ) -> Routine:
+        self.created.append(
+            {
+                "label": label,
+                "trigger": dict(trigger),
+                "action": dict(action),
+                "cooldown_seconds": cooldown_seconds,
+                "actor": actor,
+            }
+        )
+        return self.add(
+            label=label, trigger=trigger, action=action, cooldown_seconds=cooldown_seconds
+        )
+
+    async def get(self, routine_id: int) -> Routine | None:
+        return next((r for r in self.routines if r.id == routine_id), None)
+
+    async def list(self, limit: int = 50) -> list[Routine]:
+        return list(reversed(self.routines))[:limit]
+
+    async def list_enabled(self) -> list[Routine]:
+        return [r for r in self.routines if r.enabled]
+
+    async def mark_fired(self, routine_id: int) -> None:
+        self.fired.append(routine_id)
+        for r in self.routines:
+            if r.id == routine_id:
+                r.fire_count += 1
+                r.last_fired_at = datetime.now(timezone.utc)
+
+    async def set_enabled(self, routine_id: int, enabled: bool) -> Routine | None:
+        self.toggles.append((routine_id, enabled))
+        routine = await self.get(routine_id)
+        if routine is None:
+            return None
+        routine.enabled = enabled
+        return routine
+
+    async def delete(self, routine_id: int) -> bool:
+        self.deleted.append(routine_id)
+        routine = await self.get(routine_id)
+        if routine is None:
+            return False
+        self.routines.remove(routine)
+        return True
+
+
+class FakeTraces:
+    """Traces double: `add` pre-seeds rows the explain tool can find;
+    create() records what the loop persisted."""
+
+    def __init__(self) -> None:
+        self.traces: list[Trace] = []
+        self.created: list[dict] = []
+
+    def add(self, *, kind: str = "turn", label: str = "", payload: dict | None = None) -> Trace:
+        trace = Trace(
+            id=len(self.traces) + 1,
+            kind=kind,
+            label=label,
+            payload=dict(payload or {}),
+            created_at=datetime.now(timezone.utc),
+        )
+        self.traces.append(trace)
+        return trace
+
+    async def create(self, *, kind: str, label: str = "", payload: dict) -> Trace:
+        self.created.append({"kind": kind, "label": label, "payload": dict(payload)})
+        return self.add(kind=kind, label=label, payload=payload)
+
+    async def get(self, trace_id: int) -> Trace | None:
+        return next((t for t in self.traces if t.id == trace_id), None)
+
+    async def recent(self, limit: int = 20) -> list[Trace]:
+        return list(reversed(self.traces))[:limit]
 
 
 class FakeEntities:

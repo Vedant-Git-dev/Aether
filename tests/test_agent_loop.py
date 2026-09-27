@@ -28,9 +28,11 @@ from fakes import (
     FakeEventStore,
     FakeProvider,
     FakeRegistry,
+    FakeRoutines,
     FakeSalience,
     FakeScheduler,
     FakeSurfaceConnector,
+    FakeTraces,
 )
 
 
@@ -62,6 +64,8 @@ class LoopKit:
         self.salience = FakeSalience()
         self.context = FakeContextBuilder()
         self.scheduler = FakeScheduler()
+        self.routines = FakeRoutines()
+        self.traces = FakeTraces()
         self.connector = FakeSurfaceConnector()
         self.capture_box = CaptureRequestBox()
         self.executed: list[tuple[str, dict]] = []
@@ -79,6 +83,8 @@ class LoopKit:
             capture_box=self.capture_box,
             config=AppConfig(),
             host=None,
+            routines=self.routines,
+            traces=self.traces,
         )
 
     def add_tool(self, name: str, result: str = "ok") -> None:
