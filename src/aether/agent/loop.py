@@ -16,7 +16,9 @@ arrives (a message, a screen capture, a wake() from the API).
 The executor is the single choke point: every ToolCall the model proposes,
 every scheduled action when it fires, and every routine when it triggers,
 goes through `classify` → run / park / deny, and lands in the hash-chained
-audit log either way.
+audit log either way. And every act leaves a trace — what triggered it,
+what the gate ruled, what came back — so "why did you do that?" always
+has a record to answer from.
 """
 
 from __future__ import annotations
@@ -49,6 +51,7 @@ from ..memory.salience import Salience
 from ..routines import Routines, trigger_matches
 from ..scheduler.jobs import ScheduledAction, Scheduler
 from .prompts import SYSTEM_PROMPT
+from .traces import CARRY_OUT, ROUTINE, SCHEDULED, TURN, Traces
 
 log = logging.getLogger("aether.agent")
 
@@ -133,6 +136,7 @@ class AgentLoop:
         config: AppConfig,
         host: MCPHost | None = None,
         routines: Routines | None = None,
+        traces: Traces | None = None,
     ) -> None:
         self._providers = providers
         self._tools = tools
@@ -148,6 +152,7 @@ class AgentLoop:
         self._config = config
         self._host = host
         self._routines = routines
+        self._traces = traces
 
         self._queue: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._woken = asyncio.Event()
@@ -330,8 +335,9 @@ class AgentLoop:
             name=str(action.get("tool", "")),
             arguments=dict(action.get("params") or {}),
         )
+        calls: list[dict[str, Any]] = []
         try:
-            result = await self._execute(call)
+            result = await self._execute(call, trace=calls)
         except Exception as exc:
             log.exception("routine %d (%s) fire failed", routine.id, routine.label)
             result = ToolResult(
@@ -340,10 +346,11 @@ class AgentLoop:
                 content=f"routine fire failed: {exc}",
                 is_error=True,
             )
+            self._note_call(calls, call, result)  # decision "error": no ruling
         # fired counts even on failure: the cooldown should gate a broken
         # action's retries, not let it hammer every tick
         await self._routines.mark_fired(routine.id)
-        await self._audit.append(
+        seq = await self._audit.append(
             actor="routine",
             tool_name=call.name,
             decision="info",
@@ -353,6 +360,25 @@ class AgentLoop:
         )
         await self._surfaces.send_to_user(
             f"🧭 routine '{routine.label}' fired → {call.name}: {result.content[:220]}"
+        )
+        await self._save_trace(
+            kind=ROUTINE,
+            label=routine.label,
+            payload={
+                "routine": {
+                    "id": routine.id,
+                    "label": routine.label,
+                    "trigger": routine.trigger,
+                },
+                "event": {
+                    "id": event.id,
+                    "source": event.source,
+                    "kind": event.kind,
+                    "line": self._event_line(event),
+                },
+                "calls": calls,
+                "audit_seq": seq,
+            },
         )
 
     # -- the LLM turn ---------------------------------------------------------------
@@ -381,16 +407,62 @@ class AgentLoop:
                 )
             )
 
-        final, _ = await run_tool_loop(
-            provider,
-            SYSTEM_PROMPT.format(owner="the user"),
-            history,
-            self._tools.specs(),
-            self._execute,
-            max_iterations=self._config.agent.max_tool_iterations,
-        )
-        if final.text.strip():
-            await self._surfaces.send_to_user(final.text.strip())
+        calls: list[dict[str, Any]] = []  # filled by _execute as the turn runs
+        trace: dict[str, Any] = {
+            "trigger": {
+                "messages": [
+                    {"surface": m.surface, "handle": m.handle, "text": m.text}
+                    for m in messages
+                ],
+                "observations": [
+                    {
+                        "id": e.id,
+                        "source": e.source,
+                        "kind": e.kind,
+                        "line": self._event_line(e),
+                    }
+                    for e in observations
+                ],
+            },
+            "calls": calls,
+        }
+        full_history: list[Message] = []
+        reply = ""
+        try:
+            final, full_history = await run_tool_loop(
+                provider,
+                SYSTEM_PROMPT.format(owner="the user"),
+                history,
+                self._tools.specs(),
+                lambda call: self._execute(call, trace=calls),
+                max_iterations=self._config.agent.max_tool_iterations,
+            )
+            reply = final.text.strip()
+        except Exception as exc:
+            trace["error"] = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            # persist even when the turn died mid-flight: the calls that did
+            # run are already in `calls` (filled by reference), so a partial
+            # record still answers "what were you doing?"
+            reasoning = [
+                m.text.strip()
+                for m in full_history
+                if m.role == "assistant" and m.text.strip()
+            ]
+            if reasoning and reply and reasoning[-1] == reply:
+                reasoning.pop()  # the reply is stored as its own field
+            if reasoning:
+                trace["reasoning"] = reasoning
+            if reply:
+                trace["reply"] = reply
+            await self._save_trace(
+                kind=TURN,
+                label=self._trace_label(messages, observations),
+                payload=trace,
+            )
+        if reply:
+            await self._surfaces.send_to_user(reply)
 
     def _format_context(self, ctx: Any) -> str:
         lines: list[str] = []
@@ -417,12 +489,54 @@ class AgentLoop:
 
     # -- the authorization-gated executor ---------------------------------------------
 
-    async def _execute(self, call: ToolCall) -> ToolResult:
-        """The single choke point between a proposal and the world."""
+    @staticmethod
+    def _note_call(
+        trace: list[dict[str, Any]] | None,
+        call: ToolCall,
+        result: ToolResult,
+        *,
+        ruling: Any = None,
+        audit_seq: int | None = None,
+        approval_id: int | None = None,
+    ) -> None:
+        """Append one call's full record to the trace being built, if any —
+        the gate's own view: the ruling, the audit row (or approval) it
+        produced, and what came back. `trace is None` means the call isn't
+        part of a traced act; tracing stays out of the decision path."""
+        if trace is None:
+            return
+        if ruling is None:  # the call failed before the gate produced an outcome
+            decision, matched_rule, reason = "error", "", ""
+        else:
+            decision = ruling.decision.value
+            matched_rule = ruling.matched_rule
+            reason = ruling.reason
+        trace.append(
+            {
+                "id": call.id,
+                "name": call.name,
+                "params": dict(call.arguments),
+                "decision": decision,
+                "matched_rule": matched_rule,
+                "reason": reason,
+                "audit_seq": audit_seq,
+                "approval_id": approval_id,
+                "result": result.content,
+                "is_error": result.is_error,
+            }
+        )
+
+    async def _execute(
+        self, call: ToolCall, trace: list[dict[str, Any]] | None = None
+    ) -> ToolResult:
+        """The single choke point between a proposal and the world. `trace`,
+        when given, is the call-record list of the decision trace being
+        built — passed explicitly because the scheduler worker and the agent
+        loop run as separate tasks and must never write to a shared one."""
         ruling = self._policy.classify(call.name, call.arguments)
 
         if ruling.decision is Decision.DENY:
-            await self._audit.append(
+            seq = await self._audit.append(
                 actor="agent",
                 tool_name=call.name,
                 decision="deny",
@@ -430,25 +544,31 @@ class AgentLoop:
                 params=call.arguments,
                 outcome=ruling.reason,
             )
-            return ToolResult(
+            result = ToolResult(
                 tool_call_id=call.id, name=call.name,
                 content=f"denied by policy: {ruling.reason}", is_error=True,
             )
+            self._note_call(trace, call, result, ruling=ruling, audit_seq=seq)
+            return result
 
         if ruling.decision is Decision.ALLOW:
             try:
-                result = await self._tools.execute(call.name, call.arguments)
+                content = await self._tools.execute(call.name, call.arguments)
             except UnknownToolError as exc:
-                return ToolResult(
+                result = ToolResult(
                     tool_call_id=call.id, name=call.name,
                     content=f"unknown tool: {exc}", is_error=True,
                 )
+                self._note_call(trace, call, result, ruling=ruling)
+                return result
             except ConnectorUnavailableError as exc:
-                return ToolResult(
+                result = ToolResult(
                     tool_call_id=call.id, name=call.name,
                     content=f"connector unavailable: {exc}", is_error=True,
                 )
-            await self._audit.append(
+                self._note_call(trace, call, result, ruling=ruling)
+                return result
+            seq = await self._audit.append(
                 actor="agent",
                 tool_name=call.name,
                 decision="allow",
@@ -456,7 +576,9 @@ class AgentLoop:
                 params=call.arguments,
                 outcome=ruling.reason,
             )
-            return ToolResult(tool_call_id=call.id, name=call.name, content=result)
+            result = ToolResult(tool_call_id=call.id, name=call.name, content=content)
+            self._note_call(trace, call, result, ruling=ruling, audit_seq=seq)
+            return result
 
         # REQUIRE_APPROVAL: park it, ask, and let the turn go on
         approval = await self._approvals.create(
@@ -468,7 +590,7 @@ class AgentLoop:
         await self._surfaces.present_approval(
             approval.id, call.name, _summarize_call(call)
         )
-        return ToolResult(
+        result = ToolResult(
             tool_call_id=call.id,
             name=call.name,
             content=(
@@ -477,6 +599,8 @@ class AgentLoop:
                 "approve. Do not propose this call again."
             ),
         )
+        self._note_call(trace, call, result, ruling=ruling, approval_id=approval.id)
+        return result
 
     # -- decisions ------------------------------------------------------------------
 
@@ -501,17 +625,32 @@ class AgentLoop:
                 f"Not run — {approval.tool_name} was denied."
             )
             return
+        trace: dict[str, Any] = {
+            "approval_id": approval.id,
+            "tool": approval.tool_name,
+            "params": dict(approval.params),
+            "decided_by": approval.decided_by,
+        }
         try:
             result = await self._tools.execute(approval.tool_name, approval.params)
             await self._approvals.mark_executed(approval.id)
+            trace["result"] = result
+            trace["is_error"] = False
             await self._surfaces.send_to_user(
                 f"✅ ran {approval.tool_name}: {result[:300]}"
             )
         except Exception as exc:
             log.exception("approved call %s failed to run", approval.tool_name)
+            trace["result"] = str(exc)
+            trace["is_error"] = True
             await self._surfaces.send_to_user(
                 f"⚠️ {approval.tool_name} failed after approval: {exc}"
             )
+        await self._save_trace(
+            kind=CARRY_OUT,
+            label=f"approval #{approval.id} — {approval.tool_name}",
+            payload=trace,
+        )
 
     # -- scheduled actions ------------------------------------------------------------
 
@@ -526,7 +665,48 @@ class AgentLoop:
             name=str(payload.get("tool", "")),
             arguments=dict(payload.get("params") or {}),
         )
-        result = await self._execute(call)
+        calls: list[dict[str, Any]] = []
+        result = await self._execute(call, trace=calls)
+        # recorded before any raise, so a failed fire still has its trace
+        await self._save_trace(
+            kind=SCHEDULED,
+            label=action.label,
+            payload={
+                "action": {
+                    "id": action.id,
+                    "label": action.label,
+                    "run_at": f"{action.run_at:%Y-%m-%d %H:%M:%S%z}",
+                },
+                "calls": calls,
+                "result": result.content,
+                "is_error": result.is_error,
+            },
+        )
         if result.is_error:
             raise RuntimeError(result.content)
         return result.content
+
+    # -- traces -------------------------------------------------------------------
+
+    async def _save_trace(
+        self, *, kind: str, label: str, payload: dict[str, Any]
+    ) -> None:
+        """Persist one trace. Traces are bookkeeping, never a participant:
+        if the store isn't wired or the write fails, the act the trace
+        records has already happened and stays untouched."""
+        if self._traces is None:
+            return
+        try:
+            await self._traces.create(kind=kind, label=label, payload=payload)
+        except Exception:
+            log.exception("failed to persist %s trace — the act stands", kind)
+
+    @staticmethod
+    def _trace_label(
+        messages: list[InboundMessage], observations: list[Event]
+    ) -> str:
+        """One human line for the trace list: the message that drove the
+        turn, or what was seen if the turn was observation-only."""
+        if messages:
+            return messages[0].text[:48]
+        return f"observed {len(observations)} new event(s)"

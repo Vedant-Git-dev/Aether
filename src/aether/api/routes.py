@@ -169,3 +169,49 @@ async def audit_feed(request: Request, limit: int = 100, token: str | None = Non
             "problem": chain.problem,
         },
     }
+
+
+@router.get("/api/traces")
+async def traces_feed(request: Request, limit: int = 30, token: str | None = None) -> dict:
+    """Recent decision traces (the "why" to the audit's "what") for the
+    web panel — summaries; the full payload comes per trace."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    traces = getattr(request.app.state, "traces", None)
+    if traces is None:
+        raise HTTPException(status_code=503, detail="decision traces not wired")
+    rows = await traces.recent(limit=min(limit, 200))
+    return {
+        "traces": [
+            {
+                "id": t.id,
+                "kind": t.kind,
+                "label": t.label,
+                "at": t.created_at.isoformat(),
+            }
+            for t in rows  # recent() is newest first — the feed's order
+        ]
+    }
+
+
+@router.get("/api/traces/{trace_id}")
+async def trace_detail(
+    trace_id: int, request: Request, token: str | None = None
+) -> dict:
+    """One decision trace, decrypted for the owner's eyes: what triggered
+    the act, the gate's ruling on every call, and what came back."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    traces = getattr(request.app.state, "traces", None)
+    if traces is None:
+        raise HTTPException(status_code=503, detail="decision traces not wired")
+    trace = await traces.get(trace_id)
+    if trace is None:
+        raise HTTPException(status_code=404, detail=f"no trace {trace_id}")
+    return {
+        "id": trace.id,
+        "kind": trace.kind,
+        "label": trace.label,
+        "at": trace.created_at.isoformat(),
+        "payload": trace.payload,
+    }

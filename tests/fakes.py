@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from aether.agent.traces import Trace
 from aether.authz.approvals import PENDING, Approval
 from aether.llm.types import Message, ToolCall, ToolResult, ToolSpec, Turn
 from aether.memory.context import AgentContext
@@ -349,6 +350,36 @@ class FakeRoutines:
             return False
         self.routines.remove(routine)
         return True
+
+
+class FakeTraces:
+    """Traces double: `add` pre-seeds rows the explain tool can find;
+    create() records what the loop persisted."""
+
+    def __init__(self) -> None:
+        self.traces: list[Trace] = []
+        self.created: list[dict] = []
+
+    def add(self, *, kind: str = "turn", label: str = "", payload: dict | None = None) -> Trace:
+        trace = Trace(
+            id=len(self.traces) + 1,
+            kind=kind,
+            label=label,
+            payload=dict(payload or {}),
+            created_at=datetime.now(timezone.utc),
+        )
+        self.traces.append(trace)
+        return trace
+
+    async def create(self, *, kind: str, label: str = "", payload: dict) -> Trace:
+        self.created.append({"kind": kind, "label": label, "payload": dict(payload)})
+        return self.add(kind=kind, label=label, payload=payload)
+
+    async def get(self, trace_id: int) -> Trace | None:
+        return next((t for t in self.traces if t.id == trace_id), None)
+
+    async def recent(self, limit: int = 20) -> list[Trace]:
+        return list(reversed(self.traces))[:limit]
 
 
 class FakeEntities:

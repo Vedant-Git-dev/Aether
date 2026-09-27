@@ -16,6 +16,7 @@ from fakes import (
     FakeRoutines,
     FakeScheduler,
     FakeSurfaceConnector,
+    FakeTraces,
 )
 
 
@@ -37,6 +38,7 @@ class NativeKit:
         self,
         events: FakeEventStore | None = None,
         routines: FakeRoutines | None = None,
+        traces: FakeTraces | None = None,
     ) -> None:
         self.registry = ToolRegistry()
         self.events = events or FakeEventStore()
@@ -44,6 +46,7 @@ class NativeKit:
         self.approvals = FakeApprovals()
         self.scheduler = FakeScheduler()
         self.routines = routines or FakeRoutines()
+        self.traces = traces or FakeTraces()
         self.connector = FakeSurfaceConnector()
         self.box = CaptureRequestBox()
         self.count = register_native_tools(
@@ -55,6 +58,7 @@ class NativeKit:
             surfaces=SurfaceFanout([self.connector]),
             capture_box=self.box,
             routines=routines,  # None keeps the routine tools unregistered
+            traces=traces,      # same for the decision-replay tool
         )
 
     async def run(self, name: str, params: dict) -> str:

@@ -1,6 +1,6 @@
 # Demo walkthrough
 
-Five scripted demos, in increasing order of "watch it carefully". Each one
+Six scripted demos, in increasing order of "watch it carefully". Each one
 runs against a live Aether (local or deployed — see
 [DEPLOYMENT.md](DEPLOYMENT.md)) with at least one LLM provider key set.
 Open the web panel (`/`) with your token before starting; the sections
@@ -124,11 +124,35 @@ that teaching one is never a way around review.
    paused routine stops matching while its row stays in Postgres for
    when you re-arm it.
 
-## What all five have in common
+## 6. Why did you do that? — decision replay
 
-Every path ends in the same three artifacts, which is the whole pitch:
+**What it shows**: the encrypted "why" behind every act — ask after the
+fact, get the record.
+
+1. Do anything from demos 1–5 (or just chat). Every act — a turn, a
+   routine fire, a scheduled action, an approved call — has written a
+   decision trace alongside its audit rows.
+2. In chat: *"why did you tell me about the invoice?"* The agent calls
+   `explain_decision`, which replays the recorded trace: what was seen
+   (the event lines), what was proposed, the gate's ruling on each call
+   with its audit row, and what came back. The answer comes from the
+   record, not from the model remembering.
+3. Ask about a held action: *"what was approval #3?"* — the trace of the
+   act that proposed it and the trace of it running, both from the
+   record.
+4. The API serves the same records for the panel: `GET /api/traces`
+   (the list) and `GET /api/traces/{id}` (one full trace), token-guarded.
+5. **The point**: traces are the why to the audit's what — encrypted at
+   rest like all human-readable content, and written so that even a
+   failed trace write never breaks the act it records.
+
+## What all six have in common
+
+Every path ends in the same four artifacts, which is the whole pitch:
 
 - the **events** pane — what Aether noticed (deduplicated, scored);
 - the **approvals** pane — what waited for a human, with parameters;
 - the **audit** pane — every decision in order, with a chain that
-  verifies.
+  verifies;
+- the **decision traces** — the why behind each act, replayable on
+  request.

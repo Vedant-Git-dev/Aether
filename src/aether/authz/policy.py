@@ -47,7 +47,7 @@ class Ruling:
 _INTERNAL = re.compile(
     r"^(memory_\w+|note_entity|schedule_action|request_screen_capture"
     r"|get_pending_approvals|send_chat_message|create_routine|list_routines"
-    r"|set_routine_enabled|delete_routine)$"
+    r"|set_routine_enabled|delete_routine|explain_decision)$"
 )
 
 # Verbs that reach an external system or are hard to undo. The verb must

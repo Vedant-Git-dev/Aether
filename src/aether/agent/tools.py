@@ -1,6 +1,6 @@
 """Aether's native tools — reading its own memory, keeping entity notes,
-scheduling, requesting screen captures, talking to the user, and managing
-the user's routines.
+scheduling, requesting screen captures, talking to the user, managing
+the user's routines, and replaying why it acted.
 
 These are internal by construction: they touch only Aether's own state
 (or the owner's own chat surfaces), which is why the authz classifier's
@@ -54,12 +54,14 @@ def register_native_tools(
     surfaces: Any,
     capture_box: Any,
     routines: Any = None,
+    traces: Any = None,
 ) -> int:
     """Add Aether's own tools to the flat namespace. Returns how many.
 
-    `routines` wires the standing-trigger tools; without a store they are
-    not offered at all (same shape as a loop without an MCP host: no
-    feature, no dead tool spec)."""
+    `routines` wires the standing-trigger tools and `traces` the
+    decision-replay tool; without the store behind one it is not offered
+    at all (same shape as a loop without an MCP host: no feature, no dead
+    tool spec)."""
 
     async def memory_search(params: dict[str, Any]) -> str:
         query = str(params.get("query", "")).strip()
@@ -255,6 +257,131 @@ def register_native_tools(
             return f"Routine {routine_id} deleted."
         return f"No routine {routine_id}."
 
+    def _fmt_trace(t: Any) -> str:
+        """Render one recorded trace for the model to answer from: the
+        trigger, every gated call with its ruling, and what came back."""
+        p = t.payload or {}
+        lines = [f"Trace #{t.id} ({t.kind}) — {t.label or '(no label)'}"]
+        trigger = p.get("trigger") or {}
+        for m in trigger.get("messages") or []:
+            lines.append(
+                f"  asked: {m.get('handle', '?')} via {m.get('surface', '?')}: "
+                f"{m.get('text', '')}"
+            )
+        observations = trigger.get("observations") or []
+        if observations:
+            lines.append(f"  seen: {len(observations)} new event(s)")
+            for o in observations:
+                lines.append(f"    [{o.get('source')}/{o.get('kind')}] {o.get('line', '')}")
+        routine = p.get("routine")
+        if routine:
+            lines.append(
+                f"  routine: #{routine.get('id')} '{routine.get('label')}' "
+                f"when {json.dumps(routine.get('trigger') or {}, ensure_ascii=False)}"
+            )
+        event = p.get("event")
+        if event:
+            lines.append(
+                f"  fired on: [{event.get('source')}/{event.get('kind')}] "
+                f"{event.get('line', '')}"
+            )
+        action = p.get("action")
+        if action:
+            lines.append(
+                f"  scheduled: #{action.get('id')} '{action.get('label')}' "
+                f"at {action.get('run_at')}"
+            )
+        if p.get("approval_id") is not None:
+            lines.append(
+                f"  approval #{p.get('approval_id')}, decided by "
+                f"{p.get('decided_by') or 'the user'}"
+            )
+        for c in p.get("calls") or []:
+            gate = f"gate: {c.get('decision', '?')}"
+            if c.get("matched_rule"):
+                gate += f" ({c.get('matched_rule')})"
+            if c.get("audit_seq") is not None:
+                gate += f" [audit #{c.get('audit_seq')}]"
+            if c.get("approval_id") is not None:
+                gate += f" [held as approval #{c.get('approval_id')}]"
+            lines.append(
+                f"  → {c.get('name', '?')} "
+                f"{json.dumps(c.get('params') or {}, ensure_ascii=False, default=str)} "
+                f"— {gate} → {_clip(str(c.get('result', '')), 200)}"
+            )
+        if p.get("audit_seq") is not None and not p.get("calls"):
+            lines.append(f"  audit: #{p.get('audit_seq')}")
+        for r in p.get("reasoning") or []:
+            lines.append(f"  reasoning: {r}")
+        if p.get("reply"):
+            lines.append(f"  reply: {p['reply']}")
+        # a top-level result only exists on acts that are not a call list
+        # (an approved call carried out); a scheduled fire's result already
+        # shows on its call line
+        if p.get("result") is not None and not p.get("calls"):
+            suffix = " (error)" if p.get("is_error") else ""
+            lines.append(f"  result: {_clip(str(p.get('result')), 200)}{suffix}")
+        if p.get("error"):
+            lines.append(f"  error: the turn failed — {p['error']}")
+        return "\n".join(lines)
+
+    async def explain_decision(params: dict[str, Any]) -> str:
+        raw_trace = str(params.get("trace_id", "")).strip()
+        raw_approval = str(params.get("approval_id", "")).strip()
+        about = str(params.get("about", "")).strip()
+        try:
+            limit = max(1, int(params.get("limit", 3)))
+        except (TypeError, ValueError):
+            limit = 3
+
+        if raw_trace:
+            try:
+                trace_id = int(raw_trace)
+            except ValueError:
+                return f"trace_id {raw_trace!r} is not a number."
+            trace = await traces.get(trace_id)
+            if trace is None:
+                return f"No recorded trace {trace_id}."
+            return _fmt_trace(trace)
+
+        if raw_approval:
+            try:
+                approval_id = int(raw_approval)
+            except ValueError:
+                return f"approval_id {raw_approval!r} is not a number."
+            origins: list[Any] = []  # the act that proposed the held call
+            carries: list[Any] = []  # the approved call running
+            for t in await traces.recent(50):
+                p = t.payload or {}
+                if p.get("approval_id") == approval_id:
+                    carries.append(t)
+                elif any(
+                    c.get("approval_id") == approval_id for c in p.get("calls") or []
+                ):
+                    origins.append(t)
+            if not origins and not carries:
+                return f"No recorded trace involving approval #{approval_id}."
+            return "\n\n".join(_fmt_trace(t) for t in (origins + carries)[:4])
+
+        if about:
+            needle = about.lower()
+            found = [
+                t
+                for t in await traces.recent(50)
+                if needle
+                in " ".join(
+                    [t.kind, t.label or "", json.dumps(t.payload or {}, default=str, ensure_ascii=False)]
+                ).lower()
+            ]
+            if not found:
+                return f"No recorded trace mentioning {about!r}."
+            return "\n\n".join(_fmt_trace(t) for t in found[:limit])
+
+        rows = await traces.recent(limit)
+        if not rows:
+            return "No decision traces recorded yet."
+        return "\n\n".join(_fmt_trace(t) for t in rows)
+
     natives: list[tuple[ToolSpec, NativeHandler]] = [
         (
             _spec(
@@ -388,6 +515,40 @@ def register_native_tools(
                         ["routine_id"],
                     ),
                     delete_routine,
+                ),
+            ]
+        )
+    if traces is not None:
+        natives.extend(
+            [
+                (
+                    _spec(
+                        "explain_decision",
+                        "Replay why an action happened: the recorded trace of "
+                        "what was seen, what was proposed, how the "
+                        "authorization gate ruled, and what came back. Look it "
+                        "up by trace_id, by the approval_id a call was held as, "
+                        "or by a topic (about); with nothing given, the most "
+                        "recent traces. Answer 'why did you do that?' from the "
+                        "record, not from memory.",
+                        {
+                            "trace_id": {"type": "integer", "description": "a specific trace"},
+                            "approval_id": {
+                                "type": "integer",
+                                "description": "the approval a call was held as",
+                            },
+                            "about": {
+                                "type": "string",
+                                "description": "topic to search recent traces for",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "max traces when listing (default 3)",
+                            },
+                        },
+                        [],
+                    ),
+                    explain_decision,
                 ),
             ]
         )

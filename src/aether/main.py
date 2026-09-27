@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 
 from .agent import AgentLoop, CaptureRequestBox, SurfaceFanout, register_native_tools
+from .agent.traces import Traces
 from .api import router as api_router
 from .authz.approvals import Approvals
 from .authz.audit import AuditLog
@@ -132,6 +133,8 @@ def create_app(
         app.state.scheduler = scheduler
         routines = Routines(pool, cipher, audit)
         app.state.routines = routines
+        traces = Traces(pool, cipher)
+        app.state.traces = traces
 
         # --- chat + the agent ------------------------------------------------
         chat_history = ChatHistory(pool, cipher)
@@ -157,6 +160,7 @@ def create_app(
             config=config,
             host=host,
             routines=routines,
+            traces=traces,
         )
         app.state.agent = agent
         native = register_native_tools(
@@ -168,6 +172,7 @@ def create_app(
             surfaces=surfaces,
             capture_box=capture_box,
             routines=routines,
+            traces=traces,
         )
         log.info("native tools registered: %d", native)
 
