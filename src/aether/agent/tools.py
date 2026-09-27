@@ -443,8 +443,10 @@ def register_native_tools(
         (
             _spec(
                 "send_chat_message",
-                "Send a message to the user's chat surfaces (Telegram, "
-                "Discord, Slack, web chat — whichever are enabled).",
+                "Push a message to the user's chat surfaces mid-turn "
+                "(Telegram, Discord, Slack, web chat — whichever are "
+                "enabled). Your end-of-turn reply is delivered "
+                "automatically — never use this to answer or to repeat it.",
                 {"text": {"type": "string", "description": "the message"}},
                 ["text"],
             ),

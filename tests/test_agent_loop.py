@@ -104,6 +104,20 @@ class LoopKit:
 
         self.tools.add_native(ToolSpec(name=name, description=f"test {name}"), handler)
 
+    def add_send_chat_message(self) -> None:
+        """The real native tool's mirror: fans out through the loop's own
+        surfaces and refuses empty text — so tests exercise the one-delivery
+        guard against the true delivery shape."""
+
+        async def send(params: dict) -> str:
+            text = str(params.get("text", "")).strip()
+            if not text:
+                return "send_chat_message needs text."
+            await self.loop._surfaces.send_to_user(text)
+            return "Sent to the user's chat surfaces."
+
+        self.tools.add_native(ToolSpec(name="send_chat_message", description="send"), send)
+
 
 # ---------------------------------------------------------------------------
 # the authz-gated executor: allow / park / deny
@@ -306,6 +320,70 @@ async def test_no_provider_leaves_a_note_instead_of_silence() -> None:
     kit.loop.submit_message(_msg("hi"))
     await kit.loop._tick()
     assert any("without an LLM provider" in s for s in kit.connector.sent)
+
+
+# ---------------------------------------------------------------------------
+# one delivery per turn: send_chat_message vs the final reply
+# ---------------------------------------------------------------------------
+
+
+async def test_a_turn_that_sent_via_tool_does_not_also_fan_out_the_reply() -> None:
+    # The model can answer through send_chat_message AND write a final
+    # reply — both reach the fanout, which reads as the same thing twice
+    # in different wording. One delivery per turn: the tool send replaces
+    # the reply, which stays in the trace for replay.
+    provider = FakeProvider([
+        Turn(text="", tool_calls=[
+            ToolCall(id="c1", name="send_chat_message",
+                     arguments={"text": "no mail server connected"})
+        ]),
+        Turn(text="No mail server is connected right now."),
+    ])
+    kit = LoopKit(provider)
+    kit.add_send_chat_message()
+    kit.loop.submit_message(_msg("can you mail"))
+    await kit.loop._tick()
+
+    assert kit.connector.sent == ["no mail server connected"]
+    payload = kit.traces.created[-1]["payload"]
+    assert payload["reply"] == "No mail server is connected right now."
+
+
+async def test_a_denied_send_does_not_swallow_the_reply() -> None:
+    # Only a send that actually delivered replaces the reply — one denied
+    # by policy sent nothing, so the model's final words must still go out.
+    provider = FakeProvider([
+        Turn(text="", tool_calls=[
+            ToolCall(id="c1", name="send_chat_message", arguments={"text": "psst"})
+        ]),
+        Turn(text="I couldn't send that."),
+    ])
+    kit = LoopKit(
+        provider,
+        rules=[AuthzRule(tool_pattern="send_chat_message", decision="deny", note="quiet mode")],
+    )
+    kit.add_send_chat_message()
+    kit.loop.submit_message(_msg("tell me something"))
+    await kit.loop._tick()
+
+    assert kit.connector.sent == ["I couldn't send that."]
+
+
+async def test_an_empty_send_does_not_swallow_the_reply() -> None:
+    # The handler refuses empty text — nothing goes out — so the final
+    # reply is still the turn's one delivery.
+    provider = FakeProvider([
+        Turn(text="", tool_calls=[
+            ToolCall(id="c1", name="send_chat_message", arguments={"text": "  "})
+        ]),
+        Turn(text="Nothing to send."),
+    ])
+    kit = LoopKit(provider)
+    kit.add_send_chat_message()
+    kit.loop.submit_message(_msg("say something"))
+    await kit.loop._tick()
+
+    assert kit.connector.sent == ["Nothing to send."]
 
 
 # ---------------------------------------------------------------------------

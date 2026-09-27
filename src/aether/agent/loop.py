@@ -117,6 +117,21 @@ def _summarize_call(call: ToolCall) -> str:
     return f"{call.name} {blob[:180]}"
 
 
+def _delivered_by_tool(calls: list[dict[str, Any]]) -> bool:
+    """True when the turn already put words in front of the user through
+    send_chat_message — a send that actually delivered (allowed, no error,
+    non-empty text), not one that was denied, parked, or refused."""
+    for call in calls:
+        if call.get("name") != "send_chat_message":
+            continue
+        if call.get("decision") != "allow" or call.get("is_error"):
+            continue
+        if not str(call.get("params", {}).get("text", "")).strip():
+            continue  # the handler refuses empty text; nothing went out
+        return True
+    return False
+
+
 class AgentLoop:
     def __init__(
         self,
@@ -476,8 +491,14 @@ class AgentLoop:
                 label=self._trace_label(messages, observations),
                 payload=trace,
             )
-        if reply:
+        if reply and not _delivered_by_tool(calls):
             await self._surfaces.send_to_user(reply)
+        elif reply:
+            # the model already sent its words this turn via send_chat_message;
+            # delivering the final reply too is what reads as a duplicate —
+            # the same answer twice, differently worded. The reply stays in
+            # the trace, so replay still shows how the turn ended.
+            log.info("reply not sent — send_chat_message already reached the user this turn")
 
     def _format_context(self, ctx: Any) -> str:
         lines: list[str] = []
