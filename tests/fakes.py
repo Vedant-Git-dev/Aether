@@ -300,7 +300,7 @@ class FakeRoutines:
             cooldown_seconds=cooldown_seconds,
             fire_count=0,
             last_fired_at=last_fired_at,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         self.routines.append(routine)
         return routine
@@ -341,7 +341,7 @@ class FakeRoutines:
         for r in self.routines:
             if r.id == routine_id:
                 r.fire_count += 1
-                r.last_fired_at = datetime.now(timezone.utc)
+                r.last_fired_at = datetime.now(UTC)
 
     async def set_enabled(self, routine_id: int, enabled: bool) -> Routine | None:
         self.toggles.append((routine_id, enabled))
@@ -374,7 +374,7 @@ class FakeTraces:
             kind=kind,
             label=label,
             payload=dict(payload or {}),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         self.traces.append(trace)
         return trace

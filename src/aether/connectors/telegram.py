@@ -7,6 +7,7 @@ Only private chats are processed — a personal agent, not a group bot.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Any
 

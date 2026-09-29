@@ -37,17 +37,6 @@ from fakes import (
     FakeTraces,
 )
 
-from aether.agent.loop import AgentLoop, CaptureRequestBox, SurfaceFanout
-from aether.agent.prompts import SYSTEM_PROMPT
-from aether.authz.approvals import APPROVED, DENIED
-from aether.authz.policy import Policy
-from aether.config import AppConfig, AuthzRule, MCPServerConfig, PollTool
-from aether.connectors.base import InboundMessage
-from aether.connectors.registry import ToolRegistry
-from aether.llm.types import ToolCall, ToolSpec, Turn
-from aether.memory.events import Event, IngestResult
-from aether.scheduler.jobs import ScheduledAction
-
 
 def _msg(
     text: str,
@@ -86,6 +75,7 @@ class LoopKit:
         *,
         rules: list[AuthzRule] | None = None,
         config: AppConfig | None = None,
+        agent_settings: FakeAgentSettings | None = None,
     ):
         self.tools = ToolRegistry()
         self.events = FakeEventStore()
@@ -115,6 +105,7 @@ class LoopKit:
             host=None,
             routines=self.routines,
             traces=self.traces,
+            agent_settings=agent_settings,
         )
 
     def add_tool(self, name: str, result: str = "ok") -> None:
@@ -617,7 +608,7 @@ def _poll_host(
         return "3 unread: alice re: demo, bob, carol"
 
     kit.loop._poll_targets["mail:list_unread:0"] = ("mail", config.poll_tools[0])
-    kit.loop._next_poll["mail:list_unread:0"] = datetime.now(timezone.utc)
+    kit.loop._next_poll["mail:list_unread:0"] = datetime.now(UTC)
     kit.loop._host = SimpleNamespace(connections=[connection], call=handler or call)
     return SimpleNamespace(calls=calls)
 
@@ -661,7 +652,7 @@ async def test_the_watchdog_announces_a_dead_connector_once_and_its_recovery() -
     key = "mail:list_unread:0"
 
     def due_again() -> None:
-        kit.loop._next_poll[key] = datetime.now(timezone.utc)
+        kit.loop._next_poll[key] = datetime.now(UTC)
 
     due_again()
     await kit.loop._run_due_polls()
@@ -787,6 +778,30 @@ async def test_with_no_apps_connected_the_prompt_says_so() -> None:
     await kit.loop._tick()
 
     assert "Apps connected right now: none." in provider.calls[0][0]
+
+
+async def test_system_prompt_appends_the_owners_personality_text() -> None:
+    # the personality block from the settings store rides on top of the
+    # prompt — a tone overlay the owner writes, never a way around the rules
+    kit = LoopKit(None, agent_settings=FakeAgentSettings("Be extremely terse. Use no emoji."))
+    prompt = await kit.loop._system_prompt()
+    base = SYSTEM_PROMPT.format(owner="the user", apps=kit.loop._connected_apps())
+    assert prompt.startswith(base)
+    assert "Be extremely terse. Use no emoji." in prompt
+
+
+async def test_system_prompt_is_unchanged_with_no_personality_configured() -> None:
+    kit = LoopKit(None, agent_settings=FakeAgentSettings(""))
+    assert await kit.loop._system_prompt() == SYSTEM_PROMPT.format(
+        owner="the user", apps=kit.loop._connected_apps()
+    )
+
+
+async def test_system_prompt_is_unchanged_with_no_settings_store_wired() -> None:
+    kit = LoopKit(None)  # agent_settings defaults to None
+    assert await kit.loop._system_prompt() == SYSTEM_PROMPT.format(
+        owner="the user", apps=kit.loop._connected_apps()
+    )
 
 
 # ---------------------------------------------------------------------------

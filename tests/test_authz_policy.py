@@ -41,6 +41,7 @@ def test_internal_tools_are_allowed() -> None:
         "set_routine_enabled",
         "delete_routine",
         "explain_decision",
+        "verify_integrity",
     ]:
         ruling = policy.classify(name)
         assert ruling.decision is Decision.ALLOW, name

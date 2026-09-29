@@ -52,6 +52,7 @@ from ..memory.salience import Salience
 from ..routines import Routines, trigger_matches
 from ..scheduler.jobs import ScheduledAction, Scheduler
 from .prompts import SYSTEM_PROMPT
+from .settings import AgentSettings
 from .tools import plain_replay
 from .traces import CARRY_OUT, ROUTINE, SCHEDULED, TURN, Traces
 
@@ -192,6 +193,7 @@ class AgentLoop:
         host: MCPHost | None = None,
         routines: Routines | None = None,
         traces: Traces | None = None,
+        agent_settings: AgentSettings | None = None,
     ) -> None:
         self._providers = providers
         self._tools = tools
@@ -208,6 +210,7 @@ class AgentLoop:
         self._host = host
         self._routines = routines
         self._traces = traces
+        self._agent_settings = agent_settings
 
         self._queue: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._woken = asyncio.Event()
@@ -391,6 +394,10 @@ class AgentLoop:
             if verification.entries:
                 rows = await self._audit.recent(1)
                 newest = rows[0]["created_at"] if rows else None
+            # the render sits inside the same guard: a bug in the badge
+            # wording must degrade to the fallback note, not kill the tick
+            # and take every other batched message down with it
+            text = verification_text(verification, newest)
         except Exception:
             log.exception("/verify could not read the decision record")
             await self._surfaces.send_to_user(
@@ -400,7 +407,7 @@ class AgentLoop:
             return True
         # solicited — the user asked for the check, so it never waits out
         # quiet hours
-        await self._surfaces.send_to_user(verification_text(verification, newest))
+        await self._surfaces.send_to_user(text)
         return True
 
     async def _try_explain_reply(self, message: InboundMessage) -> bool:
@@ -491,7 +498,7 @@ class AgentLoop:
         routines = await self._routines.list_enabled()
         if not routines:
             return
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for routine in routines:
             if (
                 routine.last_fired_at is not None
@@ -567,7 +574,7 @@ class AgentLoop:
     # -- the LLM turn ---------------------------------------------------------------
 
     async def _system_prompt(self) -> str:
-        base = SYSTEM_PROMPT.format(owner="the user")
+        base = SYSTEM_PROMPT.format(owner="the user", apps=self._connected_apps())
         if self._agent_settings is None:
             return base
         personality = await self._agent_settings.get_personality()
@@ -635,7 +642,7 @@ class AgentLoop:
         try:
             final, full_history = await run_tool_loop(
                 provider,
-                SYSTEM_PROMPT.format(owner="the user", apps=self._connected_apps()),
+                await self._system_prompt(),
                 history,
                 self._tools.specs(),
                 lambda call: self._execute(call, trace=calls),

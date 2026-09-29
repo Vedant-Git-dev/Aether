@@ -13,13 +13,9 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import discord
-<<<<<<< HEAD
-from fakes import FakeApprovals
-=======
 import pytest
 from telegram import Chat, Message, Update
 from telegram.error import NetworkError
->>>>>>> b2e3b925 (fix(connectors): make inbound awaitable and ride out telegram network blips)
 
 from aether.authz.approvals import APPROVED, DENIED
 from aether.config import AppConfig, MessagingConfig, PlatformToggle, Settings
@@ -33,14 +29,8 @@ from aether.connectors.slack import (
     approval_blocks,
     event_to_inbound,
 )
-<<<<<<< HEAD
-from aether.connectors.telegram import TelegramConnector
-=======
 from aether.connectors.telegram import SEND_ATTEMPTS, TelegramConnector
-from aether.connectors.discord import ApprovalView, DiscordConnector
 from fakes import FakeApprovals
-
->>>>>>> b2e3b925 (fix(connectors): make inbound awaitable and ride out telegram network blips)
 
 # ---------------------------------------------------------------------------
 # shared decide/inbound plumbing (base class)

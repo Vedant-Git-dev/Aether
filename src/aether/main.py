@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .agent import AgentLoop, CaptureRequestBox, SurfaceFanout, register_native_tools
+from .agent.settings import AgentSettings
 from .agent.traces import Traces
 from .api import router as api_router
 from .authz.approvals import Approvals
@@ -165,6 +166,7 @@ def create_app(
             host=host,
             routines=routines,
             traces=traces,
+            agent_settings=agent_settings,
         )
         app.state.agent = agent
         native = register_native_tools(
