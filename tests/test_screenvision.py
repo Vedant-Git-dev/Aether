@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from fakes import FakeEventStore, FakeProvider, FakeRegistry
+
 from aether.connectors.screenvision import ScreenVision
 from aether.llm.types import Turn
-from fakes import FakeEventStore, FakeProvider, FakeRegistry
 
 
 def _vision(json_text: str) -> ScreenVision:

@@ -10,6 +10,7 @@ but never takes the agent down with it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -58,10 +59,8 @@ class MCPServerConnection:
         self._hold.set()
         task, self._task = self._task, None
         if task is not None:
-            try:
+            with contextlib.suppress(TimeoutError, asyncio.CancelledError):
                 await asyncio.wait_for(task, timeout=5)
-            except (TimeoutError, asyncio.CancelledError):
-                pass
         self._session = None
         self._ready.clear()
 
@@ -110,9 +109,8 @@ class MCPServerConnection:
                 args=list(transport.args),
                 env=dict(transport.env) if transport.env else None,
             )
-            async with stdio_client(params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    yield session
+            async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+                yield session
         else:
             from mcp.client.streamable_http import streamable_http_client
 
@@ -122,11 +120,14 @@ class MCPServerConnection:
 
                 http_client = httpx2.AsyncClient(headers=dict(transport.headers))
             try:
-                async with streamable_http_client(
-                    transport.url or "", http_client=http_client
-                ) as (read, write):
-                    async with ClientSession(read, write) as session:
-                        yield session
+                async with (
+                    streamable_http_client(transport.url or "", http_client=http_client) as (
+                        read,
+                        write,
+                    ),
+                    ClientSession(read, write) as session,
+                ):
+                    yield session
             finally:
                 if http_client is not None:
                     await http_client.aclose()
@@ -182,9 +183,7 @@ class MCPServerConnection:
         except Exception as exc:
             # the session is suspect — break the hold so the runner reconnects
             self._hold.set()
-            raise ConnectorUnavailableError(
-                f"mcp call {self.name}__{tool} failed: {exc}"
-            ) from exc
+            raise ConnectorUnavailableError(f"mcp call {self.name}__{tool} failed: {exc}") from exc
         return _flatten(result)
 
 

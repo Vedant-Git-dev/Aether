@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..connectors.registry import ToolRegistry
@@ -25,9 +25,7 @@ EventSearch = Callable[..., Awaitable[Any]]
 NativeHandler = Callable[[dict[str, Any]], Awaitable[str]]
 
 
-def _spec(
-    name: str, description: str, properties: dict[str, Any], required: list[str]
-) -> ToolSpec:
+def _spec(name: str, description: str, properties: dict[str, Any], required: list[str]) -> ToolSpec:
     return ToolSpec(
         name=name,
         description=description,
@@ -76,9 +74,7 @@ def register_native_tools(
         if not handle or not note:
             return "note_entity needs a handle and a note."
         platform = str(params.get("platform", "*")).strip() or "*"
-        entity = await entities.resolve(
-            platform, handle, str(params.get("display_name", ""))
-        )
+        entity = await entities.resolve(platform, handle, str(params.get("display_name", "")))
         await entities.note(
             entity.id,
             {
@@ -110,13 +106,10 @@ def register_native_tools(
         try:
             run_at = datetime.fromisoformat(raw_when)
         except ValueError:
-            return (
-                f"run_at {raw_when!r} is not an ISO datetime "
-                "(e.g. 2026-09-25T18:30:00+05:30)."
-            )
+            return f"run_at {raw_when!r} is not an ISO datetime (e.g. 2026-09-25T18:30:00+05:30)."
         if run_at.tzinfo is None:
-            run_at = run_at.replace(tzinfo=timezone.utc)
-        if run_at <= datetime.now(timezone.utc) + timedelta(seconds=5):
+            run_at = run_at.replace(tzinfo=UTC)
+        if run_at <= datetime.now(UTC) + timedelta(seconds=5):
             return "run_at must be in the future."
         action = await scheduler.create(
             label=label,

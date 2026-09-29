@@ -44,7 +44,7 @@ class Cipher:
         self._aes = AESGCM(key)
 
     @classmethod
-    def from_b64(cls, key_b64: str) -> "Cipher":
+    def from_b64(cls, key_b64: str) -> Cipher:
         try:
             raw = base64.b64decode(key_b64.strip(), validate=True)
         except Exception as exc:  # binascii.Error, ValueError
@@ -63,7 +63,9 @@ class Cipher:
         try:
             pt = self._aes.decrypt(nonce, ct, aad.encode("utf-8"))
         except InvalidTag as exc:
-            raise CryptoError(f"decryption failed (wrong key, tampered data, or wrong AAD: {aad!r})") from exc
+            raise CryptoError(
+                f"decryption failed (wrong key, tampered data, or wrong AAD: {aad!r})"
+            ) from exc
         return pt.decode("utf-8")
 
     def encrypt_json(self, obj: object, aad: str) -> bytes:

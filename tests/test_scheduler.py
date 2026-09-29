@@ -10,24 +10,27 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
+from fakes import FakeSchedStore
 
 from aether.authz.audit import AuditLog
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.scheduler import DONE, FAILED, PENDING, RUNNING, Scheduler, SchedulerWorker, process_due
 from aether.scheduler.jobs import ScheduledAction
-from fakes import FakeSchedStore
 
 
 def _action(action_id: int, *, due: bool = True, label: str = "ping") -> ScheduledAction:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     when = now - timedelta(minutes=1) if due else now + timedelta(hours=1)
     return ScheduledAction(
-        id=action_id, label=label, run_at=when, status=PENDING,
+        id=action_id,
+        label=label,
+        run_at=when,
+        status=PENDING,
         payload={"type": "tool", "tool": "mail__list_messages", "params": {}},
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 
@@ -107,20 +110,21 @@ def _make_scheduler(db) -> Scheduler:
 @pytest.mark.integration
 async def test_create_persists_at_creation_time_encrypted(db) -> None:
     scheduler = _make_scheduler(db)
-    when = datetime.now(timezone.utc) + timedelta(hours=6)
+    when = datetime.now(UTC) + timedelta(hours=6)
     action = await scheduler.create(
         label="send the file",
         run_at=when,
-        payload={"type": "tool", "tool": "telegram__send_file",
-                 "params": {"path": "report.pdf", "secret note": "for alice only"}},
+        payload={
+            "type": "tool",
+            "tool": "telegram__send_file",
+            "params": {"path": "report.pdf", "secret note": "for alice only"},
+        },
     )
     assert action.id > 0
     assert action.status == PENDING
 
     # on disk: ciphertext, not the payload
-    raw = await db.fetchval(
-        "SELECT payload_enc FROM scheduled_actions WHERE id = $1", action.id
-    )
+    raw = await db.fetchval("SELECT payload_enc FROM scheduled_actions WHERE id = $1", action.id)
     assert b"for alice only" not in raw
 
     # and the read path decrypts it back
@@ -133,8 +137,12 @@ async def test_create_persists_at_creation_time_encrypted(db) -> None:
 @pytest.mark.integration
 async def test_claim_due_is_atomic_and_selective(db) -> None:
     scheduler = _make_scheduler(db)
-    due = await scheduler.create(label="due now", run_at=datetime.now(timezone.utc) - timedelta(minutes=5), payload={"x": 1})
-    later = await scheduler.create(label="later", run_at=datetime.now(timezone.utc) + timedelta(hours=1), payload={"x": 2})
+    due = await scheduler.create(
+        label="due now", run_at=datetime.now(UTC) - timedelta(minutes=5), payload={"x": 1}
+    )
+    later = await scheduler.create(
+        label="later", run_at=datetime.now(UTC) + timedelta(hours=1), payload={"x": 2}
+    )
 
     claimed = await scheduler.claim_due()
     assert [a.id for a in claimed] == [due.id]
@@ -150,8 +158,12 @@ async def test_claim_due_is_atomic_and_selective(db) -> None:
 @pytest.mark.integration
 async def test_process_due_completes_and_fails_over_the_db(db) -> None:
     scheduler = _make_scheduler(db)
-    ok = await scheduler.create(label="ok", run_at=datetime.now(timezone.utc) - timedelta(minutes=1), payload={"n": 1})
-    bad = await scheduler.create(label="bad", run_at=datetime.now(timezone.utc) - timedelta(minutes=1), payload={"n": 2})
+    ok = await scheduler.create(
+        label="ok", run_at=datetime.now(UTC) - timedelta(minutes=1), payload={"n": 1}
+    )
+    bad = await scheduler.create(
+        label="bad", run_at=datetime.now(UTC) - timedelta(minutes=1), payload={"n": 2}
+    )
 
     async def run(action: ScheduledAction) -> str:
         if action.label == "bad":
@@ -165,9 +177,7 @@ async def test_process_due_completes_and_fails_over_the_db(db) -> None:
     assert done.payload == {"n": 1}  # decrypted on the way out of the claim
     assert failed.status == FAILED
 
-    digest = await db.fetchval(
-        "SELECT result_digest FROM scheduled_actions WHERE id = $1", ok.id
-    )
+    digest = await db.fetchval("SELECT result_digest FROM scheduled_actions WHERE id = $1", ok.id)
     assert digest == hashlib.sha256(b"the result").hexdigest()[:16]
 
 
@@ -179,7 +189,7 @@ async def test_overdue_pending_survives_a_restart(db) -> None:
     first = _make_scheduler(db)
     await first.create(
         label="send while I was down",
-        run_at=datetime.now(timezone.utc) - timedelta(minutes=30),
+        run_at=datetime.now(UTC) - timedelta(minutes=30),
         payload={"type": "tool", "tool": "mail__send_message", "params": {"to": "me"}},
     )
 

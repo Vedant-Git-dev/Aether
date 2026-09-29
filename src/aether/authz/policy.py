@@ -19,13 +19,13 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from ..config import AuthzRule
 
 
-class Decision(str, Enum):
+class Decision(StrEnum):
     ALLOW = "allow"
     REQUIRE_APPROVAL = "require_approval"
     DENY = "deny"
@@ -91,33 +91,34 @@ class Policy:
                 tool_re = re.compile(rule.tool_pattern)
                 param_re = re.compile(rule.param_pattern) if rule.param_pattern else None
             except re.error as exc:
-                raise PolicyError(
-                    f"bad regex in authz rule {rule.tool_pattern!r}: {exc}"
-                ) from exc
-            self._rules.append(
-                (tool_re, param_re, _DECISIONS[rule.decision], rule.note)
-            )
+                raise PolicyError(f"bad regex in authz rule {rule.tool_pattern!r}: {exc}") from exc
+            self._rules.append((tool_re, param_re, _DECISIONS[rule.decision], rule.note))
 
     def classify(self, tool_name: str, params: dict[str, Any] | None = None) -> Ruling:
         params = params or {}
         for tool_re, param_re, decision, note in self._rules:
-            if tool_re.search(tool_name):
-                if param_re is None or param_re.search(params_blob(params)):
-                    return Ruling(
-                        decision,
-                        f"user:{tool_re.pattern}",
-                        note or f"user rule {tool_re.pattern!r}",
-                    )
+            if tool_re.search(tool_name) and (
+                param_re is None or param_re.search(params_blob(params))
+            ):
+                return Ruling(
+                    decision,
+                    f"user:{tool_re.pattern}",
+                    note or f"user rule {tool_re.pattern!r}",
+                )
         if _INTERNAL.match(tool_name):
             return Ruling(
                 Decision.ALLOW, "builtin:internal", "internal tool, touches only Aether's own state"
             )
         if _RISKY.search(tool_name):
             return Ruling(
-                Decision.REQUIRE_APPROVAL, "builtin:risky", "reaches an external system or is hard to undo"
+                Decision.REQUIRE_APPROVAL,
+                "builtin:risky",
+                "reaches an external system or is hard to undo",
             )
         if _READONLY.search(tool_name):
             return Ruling(Decision.ALLOW, "builtin:read-only", "read-only tool, no side effects")
         return Ruling(
-            Decision.REQUIRE_APPROVAL, "default:fail-safe", "unknown tool — held for a human decision"
+            Decision.REQUIRE_APPROVAL,
+            "default:fail-safe",
+            "unknown tool — held for a human decision",
         )

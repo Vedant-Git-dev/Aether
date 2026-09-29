@@ -71,6 +71,4 @@ class ScreenVision:
         payload = {k: v for k, v in described.items() if v not in (None, "", [])}
         if note:
             payload["user_note"] = note
-        return await self._events.ingest(
-            source="screen", kind="screen_capture", payload=payload
-        )
+        return await self._events.ingest(source="screen", kind="screen_capture", payload=payload)

@@ -31,7 +31,6 @@ from aether.llm.types import (
     ToolCall,
     ToolResult,
     ToolSpec,
-    Turn,
 )
 
 # ---------------------------------------------------------------------------
@@ -130,7 +129,11 @@ def test_anthropic_turn_parsing_skips_thinking_blocks() -> None:
 
 
 def test_anthropic_turn_stop_reason_mapping() -> None:
-    for api_reason, expected in [("end_turn", "end_turn"), ("max_tokens", "max_output_tokens"), (None, "end_turn")]:
+    for api_reason, expected in [
+        ("end_turn", "end_turn"),
+        ("max_tokens", "max_output_tokens"),
+        (None, "end_turn"),
+    ]:
         response = SimpleNamespace(content=[], stop_reason=api_reason)
         assert turn_from_anthropic(response).stop_reason == expected
 
@@ -177,7 +180,10 @@ def test_openai_tool_result_shape() -> None:
 def test_openai_tools_shape() -> None:
     spec = ToolSpec(name="f", description="d", input_schema={"type": "object"})
     assert tools_to_openai([spec]) == [
-        {"type": "function", "function": {"name": "f", "description": "d", "parameters": {"type": "object"}}}
+        {
+            "type": "function",
+            "function": {"name": "f", "description": "d", "parameters": {"type": "object"}},
+        }
     ]
 
 
@@ -224,21 +230,33 @@ def test_gemini_user_text_and_image() -> None:
 def test_gemini_assistant_function_call() -> None:
     msg = Message.assistant(tool_calls=[ToolCall(id="x", name="search", arguments={"q": "a"})])
     out = messages_to_gemini([msg])
-    assert out == [{"role": "model", "parts": [{"function_call": {"name": "search", "args": {"q": "a"}}}]}]
+    assert out == [
+        {"role": "model", "parts": [{"function_call": {"name": "search", "args": {"q": "a"}}}]}
+    ]
 
 
 def test_gemini_function_response_pairs_by_name() -> None:
-    msg = Message.tool_results([ToolResult(tool_call_id="whatever", name="search", content="found it")])
+    msg = Message.tool_results(
+        [ToolResult(tool_call_id="whatever", name="search", content="found it")]
+    )
     out = messages_to_gemini([msg])
     assert out == [
-        {"role": "user", "parts": [{"function_response": {"name": "search", "response": {"result": "found it"}}}]}
+        {
+            "role": "user",
+            "parts": [
+                {"function_response": {"name": "search", "response": {"result": "found it"}}}
+            ],
+        }
     ]
 
 
 def test_gemini_schema_uppercases_type_names() -> None:
     schema = {
         "type": "object",
-        "properties": {"q": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}},
+        "properties": {
+            "q": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+        },
         "required": ["q"],
     }
     out = _schema_to_gemini(schema)

@@ -9,6 +9,7 @@ ingest / resolve / note.
 from __future__ import annotations
 
 import pytest
+from fakes import FakePersonJudge
 
 from aether.authz.approvals import Approvals
 from aether.authz.audit import AuditLog
@@ -17,14 +18,15 @@ from aether.memory.context import ContextBuilder
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.entities import Entities, Sender
 from aether.memory.events import EventStore, start_of_today
-from fakes import FakePersonJudge
 
 
 def _contacts(mode: str = "off", *rules: dict) -> ContactsConfig:
     return ContactsConfig(mode=mode, allowlist=[ContactRule(**r) for r in rules])
 
 
-async def _fresh(db, *, contacts: ContactsConfig | None = None, judge: FakePersonJudge | None = None):
+async def _fresh(
+    db, *, contacts: ContactsConfig | None = None, judge: FakePersonJudge | None = None
+):
     """A tuple of stores over one fresh key: (events, entities, approvals)."""
     cipher = Cipher.from_b64(generate_key_b64())
     audit = AuditLog(db)
@@ -42,39 +44,54 @@ async def _fresh(db, *, contacts: ContactsConfig | None = None, judge: FakePerso
 @pytest.mark.integration
 async def test_ingest_dedups_identical_content_per_source(db) -> None:
     events, _, _ = await _fresh(db)
-    first = await events.ingest(source="mail", kind="message", payload={"text": "hello", "subject": "hi"})
+    first = await events.ingest(
+        source="mail", kind="message", payload={"text": "hello", "subject": "hi"}
+    )
     # key order in the dict is irrelevant — the hash is over canonical JSON
-    second = await events.ingest(source="mail", kind="message", payload={"subject": "hi", "text": "hello"})
+    second = await events.ingest(
+        source="mail", kind="message", payload={"subject": "hi", "text": "hello"}
+    )
     assert (first.stored, first.reason) == (True, "new")
     assert (second.stored, second.reason) == (False, "duplicate")
 
     # the dedup key is (source, content_hash): the same words from another
     # source are a different event
-    third = await events.ingest(source="telegram", kind="message", payload={"text": "hello", "subject": "hi"})
+    third = await events.ingest(
+        source="telegram", kind="message", payload={"text": "hello", "subject": "hi"}
+    )
     assert third.stored is True
     assert await db.fetchval("SELECT COUNT(*) FROM events") == 2
 
 
 @pytest.mark.integration
 async def test_allowlist_drop_never_stores_content_and_audits(db) -> None:
-    events, _, _ = await _fresh(db, contacts=_contacts("enforce", {"platform": "telegram", "handle": "@vedant"}))
+    events, _, _ = await _fresh(
+        db, contacts=_contacts("enforce", {"platform": "telegram", "handle": "@vedant"})
+    )
 
     dropped = await events.ingest(
-        source="telegram", kind="message",
-        payload={"text": "you never saw this"}, sender=Sender("telegram", "@stranger"),
+        source="telegram",
+        kind="message",
+        payload={"text": "you never saw this"},
+        sender=Sender("telegram", "@stranger"),
     )
     assert (dropped.stored, dropped.reason) == (False, "filtered:contacts")
     assert await db.fetchval("SELECT COUNT(*) FROM events") == 0  # nothing written
 
     # the only trace is an audit row — and it carries no content
-    row = await db.fetchrow("SELECT actor, tool_name, decision, outcome FROM audit_log ORDER BY seq DESC LIMIT 1")
+    row = await db.fetchrow(
+        "SELECT actor, tool_name, decision, outcome FROM audit_log ORDER BY seq DESC LIMIT 1"
+    )
     assert row["tool_name"] == "ingest:telegram"
     assert row["decision"] == "filtered"
     assert row["outcome"] == "filtered by contact allowlist"
 
     # allowlisted senders still get through
     ok = await events.ingest(
-        source="telegram", kind="message", payload={"text": "hi"}, sender=Sender("telegram", "@vedant")
+        source="telegram",
+        kind="message",
+        payload={"text": "hi"},
+        sender=Sender("telegram", "@vedant"),
     )
     assert ok.stored is True
 
@@ -85,8 +102,10 @@ async def test_sender_rides_inside_the_encrypted_payload(db) -> None:
         db, contacts=_contacts("enforce", {"platform": "*", "handle": "friend@example.com"})
     )
     res = await events.ingest(
-        source="gmail", kind="message",
-        payload={"text": "dinner friday?"}, sender=Sender("gmail", "friend@example.com"),
+        source="gmail",
+        kind="message",
+        payload={"text": "dinner friday?"},
+        sender=Sender("gmail", "friend@example.com"),
     )
     assert res.stored is True
 
@@ -106,8 +125,12 @@ async def test_sender_rides_inside_the_encrypted_payload(db) -> None:
 @pytest.mark.integration
 async def test_memorable_events_surface_in_reads(db) -> None:
     events, _, _ = await _fresh(db)
-    a = await events.ingest(source="mail", kind="message", payload={"text": "invoice from acme arrived"})
-    b = await events.ingest(source="mail", kind="message", payload={"text": "random newsletter blast"})
+    a = await events.ingest(
+        source="mail", kind="message", payload={"text": "invoice from acme arrived"}
+    )
+    b = await events.ingest(
+        source="mail", kind="message", payload={"text": "random newsletter blast"}
+    )
     await events.update_salience(a.event_id, 8.0, True, category="finance", actionability="review")
     await events.update_salience(b.event_id, 2.0, False)
 
@@ -122,7 +145,9 @@ async def test_memorable_events_surface_in_reads(db) -> None:
 @pytest.mark.integration
 async def test_search_scores_the_recent_window(db) -> None:
     events, _, _ = await _fresh(db)
-    await events.ingest(source="mail", kind="message", payload={"text": "quarterly tax filing deadline is april 15"})
+    await events.ingest(
+        source="mail", kind="message", payload={"text": "quarterly tax filing deadline is april 15"}
+    )
     await events.ingest(source="telegram", kind="message", payload={"text": "movie night friday"})
 
     hits = await events.search("tax filing", limit=2)
@@ -174,7 +199,9 @@ async def test_notes_are_encrypted_and_audited(db) -> None:
     _, entities, _ = await _fresh(db)
     entity = await entities.resolve("telegram", "@vedant", "Vedant")
 
-    await entities.note(entity.id, {"kind": "relationship", "text": "owes me a reply about the book club"})
+    await entities.note(
+        entity.id, {"kind": "relationship", "text": "owes me a reply about the book club"}
+    )
 
     notes = await entities.notes_for(entity.id)
     assert notes[0].payload["text"] == "owes me a reply about the book club"
@@ -213,11 +240,15 @@ async def test_context_builder_assembles_events_notes_and_approvals(db) -> None:
     events, entities, approvals = await _fresh(db)
 
     memorable = await events.ingest(
-        source="telegram", kind="message",
-        payload={"text": "dinner friday at 7?"}, sender=Sender("telegram", "@vedant"),
+        source="telegram",
+        kind="message",
+        payload={"text": "dinner friday at 7?"},
+        sender=Sender("telegram", "@vedant"),
     )
     await events.update_salience(memorable.event_id, 8.0, True, category="personal")
-    noise = await events.ingest(source="rss", kind="post", payload={"text": "some syndicated blog item"})
+    noise = await events.ingest(
+        source="rss", kind="post", payload={"text": "some syndicated blog item"}
+    )
     await events.update_salience(noise.event_id, 1.0, False)
 
     entity = await entities.resolve("telegram", "@vedant", "Vedant")

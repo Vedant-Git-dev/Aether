@@ -21,7 +21,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -96,9 +96,7 @@ class IngestResult:
 
 def event_text(event: Event) -> str:
     """The stable string the salience judge and search score against."""
-    return json.dumps(
-        event.payload, sort_keys=True, ensure_ascii=False, default=str
-    )
+    return json.dumps(event.payload, sort_keys=True, ensure_ascii=False, default=str)
 
 
 class EventStore:
@@ -148,32 +146,29 @@ class EventStore:
         digest = content_hash(kind, stored_payload)
         meta_json = json.dumps(meta or {}, default=str)
 
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                row = await conn.fetchrow(
-                    "INSERT INTO events (source, kind, occurred_at, content_hash,"
-                    " payload_enc, meta)"
-                    " VALUES ($1, $2, COALESCE($3, now()), $4, $5, $6::jsonb)"
-                    " ON CONFLICT (source, content_hash) DO NOTHING"
-                    " RETURNING id",
-                    source,
-                    kind,
-                    occurred_at,
-                    digest,
-                    b"",
-                    meta_json,
-                )
-                if row is None:
-                    return IngestResult(stored=False, reason="duplicate")
-                event_id = row["id"]
-                blob = self._cipher.encrypt_json(
-                    stored_payload, aad=f"events:payload_enc:{event_id}"
-                )
-                await conn.execute(
-                    "UPDATE events SET payload_enc = $1 WHERE id = $2",
-                    blob,
-                    event_id,
-                )
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "INSERT INTO events (source, kind, occurred_at, content_hash,"
+                " payload_enc, meta)"
+                " VALUES ($1, $2, COALESCE($3, now()), $4, $5, $6::jsonb)"
+                " ON CONFLICT (source, content_hash) DO NOTHING"
+                " RETURNING id",
+                source,
+                kind,
+                occurred_at,
+                digest,
+                b"",
+                meta_json,
+            )
+            if row is None:
+                return IngestResult(stored=False, reason="duplicate")
+            event_id = row["id"]
+            blob = self._cipher.encrypt_json(stored_payload, aad=f"events:payload_enc:{event_id}")
+            await conn.execute(
+                "UPDATE events SET payload_enc = $1 WHERE id = $2",
+                blob,
+                event_id,
+            )
         return IngestResult(stored=True, reason="new", event_id=event_id)
 
     # -- reads ----------------------------------------------------------------
@@ -188,9 +183,7 @@ class EventStore:
             return None
         return self._to_event(row)
 
-    async def recent_memorable(
-        self, limit: int = 50, hours: float | None = None
-    ) -> list[Event]:
+    async def recent_memorable(self, limit: int = 50, hours: float | None = None) -> list[Event]:
         sql = (
             "SELECT id, source, kind, occurred_at, payload_enc, salience_score,"
             " memorable, meta FROM events WHERE memorable"
@@ -199,7 +192,7 @@ class EventStore:
         if hours is not None:
             sql += " AND occurred_at > now() - make_interval(hours => $1)"
             args.append(hours)
-        sql += " ORDER BY occurred_at DESC LIMIT $%d" % (len(args) + 1)
+        sql += f" ORDER BY occurred_at DESC LIMIT ${len(args) + 1}"
         args.append(limit)
         rows = await self._pool.fetch(sql, *args)
         return [self._to_event(r) for r in rows]
@@ -268,7 +261,9 @@ class EventStore:
         category: str = "",
         actionability: str = "",
     ) -> None:
-        extra = {k: v for k, v in {"category": category, "actionability": actionability}.items() if v}
+        extra = {
+            k: v for k, v in {"category": category, "actionability": actionability}.items() if v
+        }
         meta_json = json.dumps(extra, default=str)
         await self._pool.execute(
             "UPDATE events SET salience_score = $1, memorable = $2,"
@@ -304,5 +299,5 @@ class EventStore:
 
 
 def start_of_today(now: datetime | None = None) -> datetime:
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     return now.replace(hour=0, minute=0, second=0, microsecond=0)

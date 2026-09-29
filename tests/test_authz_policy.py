@@ -87,7 +87,11 @@ def test_verb_must_start_a_word() -> None:
 
 def test_user_allow_rule_overrides_builtin_risky() -> None:
     policy = _policy(
-        {"tool_pattern": r"telegram__send_message", "decision": "allow", "note": "telegram is one-tap anyway"}
+        {
+            "tool_pattern": r"telegram__send_message",
+            "decision": "allow",
+            "note": "telegram is one-tap anyway",
+        }
     )
     ruling = policy.classify("telegram__send_message", {"chat_id": 1})
     assert ruling.decision is Decision.ALLOW
@@ -105,10 +109,17 @@ def test_user_deny_rule() -> None:
 
 def test_user_param_pattern_gates_the_rule() -> None:
     policy = _policy(
-        {"tool_pattern": r"telegram__send_message", "param_pattern": r"(?i)\bmoney\b", "decision": "deny"}
+        {
+            "tool_pattern": r"telegram__send_message",
+            "param_pattern": r"(?i)\bmoney\b",
+            "decision": "deny",
+        }
     )
     # params containing the trigger word -> denied by the user rule
-    assert policy.classify("telegram__send_message", {"text": "here is the money"}).decision is Decision.DENY
+    assert (
+        policy.classify("telegram__send_message", {"text": "here is the money"}).decision
+        is Decision.DENY
+    )
     # params without it -> rule doesn't apply, builtin risky takes over
     clean = policy.classify("telegram__send_message", {"text": "hello!"})
     assert clean.decision is Decision.REQUIRE_APPROVAL

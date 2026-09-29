@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -68,24 +68,23 @@ class Approvals:
     ) -> Approval:
         """Park a call. The row is written (params encrypted, bound to the
         row id via AAD) and an audit entry records the hold."""
-        expires_at = datetime.now(timezone.utc) + self._ttl
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                row = await conn.fetchrow(
-                    "INSERT INTO pending_approvals (tool_name, params_enc, status, expires_at)"
-                    " VALUES ($1, $2, 'pending', $3) RETURNING id, created_at",
-                    tool_name,
-                    b"",  # placeholder until the id exists; replaced below, same transaction
-                    expires_at,
-                )
-                approval_id = row["id"]
-                # encrypt only after the id exists so the AAD can bind to it
-                blob = self._cipher.encrypt_json(params, aad=_aad(approval_id))
-                await conn.execute(
-                    "UPDATE pending_approvals SET params_enc = $1 WHERE id = $2",
-                    blob,
-                    approval_id,
-                )
+        expires_at = datetime.now(UTC) + self._ttl
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "INSERT INTO pending_approvals (tool_name, params_enc, status, expires_at)"
+                " VALUES ($1, $2, 'pending', $3) RETURNING id, created_at",
+                tool_name,
+                b"",  # placeholder until the id exists; replaced below, same transaction
+                expires_at,
+            )
+            approval_id = row["id"]
+            # encrypt only after the id exists so the AAD can bind to it
+            blob = self._cipher.encrypt_json(params, aad=_aad(approval_id))
+            await conn.execute(
+                "UPDATE pending_approvals SET params_enc = $1 WHERE id = $2",
+                blob,
+                approval_id,
+            )
         await self._audit.append(
             actor=actor,
             tool_name=tool_name,
@@ -112,24 +111,23 @@ class Approvals:
         updated Approval, or None if it was already decided or expired."""
         if decision not in (APPROVED, DENIED):
             raise ValueError(f"decision must be '{APPROVED}' or '{DENIED}', got {decision!r}")
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                row = await conn.fetchrow(
-                    "UPDATE pending_approvals"
-                    " SET status = $1, decided_at = now(), decided_by = $2"
-                    " WHERE id = $3 AND status = 'pending' AND expires_at > now()"
-                    " RETURNING id, tool_name, status, created_at, expires_at,"
-                    " decided_at, decided_by",
-                    decision,
-                    decided_by,
-                    approval_id,
-                )
-                if row is None:
-                    return None
-                blob = await conn.fetchval(
-                    "SELECT params_enc FROM pending_approvals WHERE id = $1",
-                    approval_id,
-                )
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "UPDATE pending_approvals"
+                " SET status = $1, decided_at = now(), decided_by = $2"
+                " WHERE id = $3 AND status = 'pending' AND expires_at > now()"
+                " RETURNING id, tool_name, status, created_at, expires_at,"
+                " decided_at, decided_by",
+                decision,
+                decided_by,
+                approval_id,
+            )
+            if row is None:
+                return None
+            blob = await conn.fetchval(
+                "SELECT params_enc FROM pending_approvals WHERE id = $1",
+                approval_id,
+            )
         params = self._cipher.decrypt_json(blob, aad=_aad(approval_id))
         await self._audit.append(
             actor="user",

@@ -12,12 +12,13 @@ import asyncio
 from types import SimpleNamespace
 
 import discord
-import pytest
+from fakes import FakeApprovals
 
 from aether.authz.approvals import APPROVED, DENIED
 from aether.config import AppConfig, MessagingConfig, PlatformToggle, Settings
 from aether.connectors import build_messaging_connectors
 from aether.connectors.base import InboundMessage, MessagingConnector
+from aether.connectors.discord import ApprovalView, DiscordConnector
 from aether.connectors.slack import (
     APPROVE_ACTION,
     DENY_ACTION,
@@ -26,9 +27,6 @@ from aether.connectors.slack import (
     event_to_inbound,
 )
 from aether.connectors.telegram import TelegramConnector
-from aether.connectors.discord import ApprovalView, DiscordConnector
-from fakes import FakeApprovals
-
 
 # ---------------------------------------------------------------------------
 # shared decide/inbound plumbing (base class)
@@ -115,9 +113,7 @@ class FakeTelegramApp:
     def __init__(self) -> None:
         self.handlers: list[object] = []
         self.bot = FakeTelegramBot()
-        self.updater = SimpleNamespace(
-            start_polling=self._noop, stop=self._noop, polling=False
-        )
+        self.updater = SimpleNamespace(start_polling=self._noop, stop=self._noop, polling=False)
         self.initialized = False
         self.started = False
         self.stopped = False
@@ -189,10 +185,14 @@ async def test_telegram_inbound_dm_becomes_an_inbound_message() -> None:
     await message_handler(_tg_update("what do you remember?"), None)
 
     assert received == [
-        InboundMessage(surface="telegram", handle="@vedant", text="what do you remember?", chat_ref="42")
+        InboundMessage(
+            surface="telegram", handle="@vedant", text="what do you remember?", chat_ref="42"
+        )
     ]
     # non-text updates are ignored quietly
-    empty = SimpleNamespace(effective_message=SimpleNamespace(text="", chat_id=1), effective_user=None)
+    empty = SimpleNamespace(
+        effective_message=SimpleNamespace(text="", chat_id=1), effective_user=None
+    )
     await message_handler(empty, None)
     assert len(received) == 1
 
@@ -525,7 +525,9 @@ async def test_slack_button_flow_decides_and_updates_the_message() -> None:
 
 
 async def test_slack_without_both_tokens_stays_down() -> None:
-    connector = SlackConnector(bot_token="xoxb", app_token="", app_factory=None, socket_factory=None)
+    connector = SlackConnector(
+        bot_token="xoxb", app_token="", app_factory=None, socket_factory=None
+    )
     await connector.start()
     assert connector._app is None
     await connector.stop()

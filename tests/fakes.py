@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from aether.authz.approvals import PENDING, Approval
 from aether.llm.types import Message, ToolCall, ToolResult, ToolSpec, Turn
 from aether.memory.context import AgentContext
 from aether.memory.entities import Entity, PersonRef
 from aether.memory.events import Event, IngestResult
-from aether.scheduler.jobs import PENDING as JOB_PENDING, ScheduledAction
+from aether.scheduler.jobs import PENDING as JOB_PENDING
+from aether.scheduler.jobs import ScheduledAction
 
 
 class FakeProvider:
@@ -44,9 +45,7 @@ class FakeProvider:
 class FakeExecutor:
     """Callable tool executor returning canned results per tool name."""
 
-    def __init__(
-        self, results: dict[str, str] | None = None, default: str = "ok"
-    ) -> None:
+    def __init__(self, results: dict[str, str] | None = None, default: str = "ok") -> None:
         self.results = results or {}
         self.default = default
         self.calls: list[ToolCall] = []
@@ -125,7 +124,7 @@ class FakeApprovals:
         self.created: list[Approval] = []
         self.executed: list[int] = []
         self.result: object = object()  # what decide() returns (set to None to simulate stale)
-        self._now = datetime.now(timezone.utc)
+        self._now = datetime.now(UTC)
 
     async def create(
         self,
@@ -204,13 +203,14 @@ class FakeAudit:
                 "rules_matched": rules_matched,
                 "params": dict(params or {}),
                 "outcome": outcome,
-                "created_at": datetime.now(timezone.utc),
+                "entry_hash": f"fake-hash-{len(self.entries) + 1}",
+                "created_at": datetime.now(UTC),
             }
         )
         return len(self.entries)
 
     async def recent(self, limit: int = 100) -> list[dict]:
-        return self.entries[-limit:]
+        return list(reversed(self.entries))[:limit]  # newest first, matching the real AuditLog
 
     async def verify_chain(self) -> object:
         from aether.authz.audit import ChainVerification
@@ -256,7 +256,7 @@ class FakeScheduler:
             run_at=run_at,
             status=JOB_PENDING,
             payload=dict(payload),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
 
 
@@ -303,15 +303,12 @@ class FakeSchedStore:
         self.marks: list[tuple[int, str]] = []
 
     async def overdue_pending(self) -> list[ScheduledAction]:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return [a for a in self.actions if a.status == JOB_PENDING and a.run_at <= now]
 
     async def claim_due(self, limit: int = 20) -> list[ScheduledAction]:
-        now = datetime.now(timezone.utc)
-        claimed = [
-            a for a in self.actions
-            if a.status == JOB_PENDING and a.run_at <= now
-        ][:limit]
+        now = datetime.now(UTC)
+        claimed = [a for a in self.actions if a.status == JOB_PENDING and a.run_at <= now][:limit]
         for action in claimed:
             action.status = "running"
         return claimed
@@ -342,9 +339,7 @@ class FakeEventStore:
         self.ingest_result: IngestResult | None = None
 
     async def ingest(self, *, source, kind, payload, sender=None, occurred_at=None, meta=None):
-        self.ingested.append(
-            {"source": source, "kind": kind, "payload": payload, "sender": sender}
-        )
+        self.ingested.append({"source": source, "kind": kind, "payload": payload, "sender": sender})
         if self.ingest_result is not None:
             return self.ingest_result
         return IngestResult(
@@ -373,6 +368,27 @@ class FakeEventStore:
         return self.recent_counts.get(source, 0)
 
     async def update_salience(
-        self, event_id: int, score: float, memorable: bool, category: str = "", actionability: str = ""
+        self,
+        event_id: int,
+        score: float,
+        memorable: bool,
+        category: str = "",
+        actionability: str = "",
     ) -> None:
-        self.updates.append((event_id, score, memorable, {"category": category, "actionability": actionability}))
+        self.updates.append(
+            (event_id, score, memorable, {"category": category, "actionability": actionability})
+        )
+
+
+class FakeAgentSettings:
+    """AgentSettings double: an in-memory personality string, no database."""
+
+    def __init__(self, personality: str = "") -> None:
+        self.personality = personality
+
+    async def get_personality(self) -> str:
+        return self.personality
+
+    async def set_personality(self, text: str) -> str:
+        self.personality = text.strip()
+        return self.personality

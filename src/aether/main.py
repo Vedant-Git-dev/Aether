@@ -8,8 +8,10 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .agent import AgentLoop, CaptureRequestBox, SurfaceFanout, register_native_tools
+from .agent.settings import AgentSettings
 from .api import router as api_router
 from .authz.approvals import Approvals
 from .authz.audit import AuditLog
@@ -97,9 +99,11 @@ def create_app(
         audit = AuditLog(pool)
         events = EventStore(pool, cipher, audit, config.contacts)
         approvals = Approvals(pool, cipher, audit, config.authz.approval_ttl_hours)
+        agent_settings = AgentSettings(pool, cipher)
         app.state.audit = audit
         app.state.events = events
         app.state.approvals = approvals
+        app.state.agent_settings = agent_settings
 
         # --- connectors: MCP host + the flat tool namespace -----------------
         host = MCPHost(config.mcp_servers)
@@ -128,6 +132,7 @@ def create_app(
         salience = Salience(events, LLMJudge(judge_provider), config.salience)
         context = ContextBuilder(events, entities, approvals, config.agent)
         scheduler = Scheduler(pool, cipher, audit)
+        app.state.entities = entities
         app.state.scheduler = scheduler
 
         # --- chat + the agent ------------------------------------------------
@@ -153,6 +158,7 @@ def create_app(
             capture_box=capture_box,
             config=config,
             host=host,
+            agent_settings=agent_settings,
         )
         app.state.agent = agent
         native = register_native_tools(
@@ -198,6 +204,7 @@ def create_app(
     app = FastAPI(title="Aether", version="0.1.0", lifespan=lifespan)
     app.include_router(api_router)
     app.include_router(chat_router)
+    app.mount("/assets", StaticFiles(directory=WEB_DIR), name="web-assets")
 
     @app.get("/healthz")
     async def healthz() -> dict:

@@ -84,7 +84,13 @@ def main() -> int:
                     if response.status_code == 200:
                         requested_note = str(response.json().get("note", ""))
                         print("capture requested", flush=True)
-                        upload(client, url, args.token, capture(args.output), args.note or requested_note)
+                        upload(
+                            client,
+                            url,
+                            args.token,
+                            capture(args.output),
+                            args.note or requested_note,
+                        )
                     elif response.status_code == 401:
                         print("bad token", file=sys.stderr)
                         return 2

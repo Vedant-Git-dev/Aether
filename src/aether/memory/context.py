@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ..authz.approvals import Approval, Approvals
@@ -35,7 +35,7 @@ class AgentContext:
 def apply_daily_cap(events: list[Event], cap: int, now: datetime | None = None) -> list[Event]:
     """Keep at most `cap` of today's events, highest salience first; older
     history passes through untouched. Result stays newest-first."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     today = [e for e in events if e.occurred_at.date() == now.date()]
     if len(today) <= cap:
         return events

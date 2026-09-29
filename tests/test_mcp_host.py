@@ -105,14 +105,16 @@ async def test_disabled_servers_never_spawn() -> None:
 
 
 async def test_dead_server_is_reported_not_raised() -> None:
-    host = MCPHost([
-        MCPServerConfig(
-            name="broken",
-            transport=TransportConfig(
-                type="stdio", command="/nonexistent/aether-binary", args=[]
-            ),
-        )
-    ])
+    host = MCPHost(
+        [
+            MCPServerConfig(
+                name="broken",
+                transport=TransportConfig(
+                    type="stdio", command="/nonexistent/aether-binary", args=[]
+                ),
+            )
+        ]
+    )
     host.start()
     try:
         assert await host.wait_all_ready(timeout=2) == {"broken": False}

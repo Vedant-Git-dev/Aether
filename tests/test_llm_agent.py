@@ -1,10 +1,9 @@
 """Tool-use loop tests with scripted providers — no network, no SDK."""
 
-import pytest
+from fakes import CrashingExecutor, FakeExecutor, FakeProvider
 
 from aether.llm.agent import DEFAULT_MAX_ITERATIONS, run_tool_loop
 from aether.llm.types import Message, ToolCall, ToolResult, ToolSpec, Turn
-from fakes import CrashingExecutor, FakeExecutor, FakeProvider
 
 
 def _spec(name: str = "search") -> ToolSpec:
@@ -27,7 +26,11 @@ async def test_multi_tool_call_conversation() -> None:
     executor = FakeExecutor(results={"memory_search": "found 2", "note_entity": "noted"})
 
     final, history = await run_tool_loop(
-        provider, "sys", [Message.user("go")], [_spec("memory_search"), _spec("note_entity")], executor
+        provider,
+        "sys",
+        [Message.user("go")],
+        [_spec("memory_search"), _spec("note_entity")],
+        executor,
     )
 
     assert final.text == "all done"
@@ -78,12 +81,13 @@ async def test_loop_forces_wrap_up_turn_at_max_iterations() -> None:
 async def test_model_looping_forever_still_terminates() -> None:
     # Script exactly enough turns for one full budget plus wrap-up; if the
     # loop failed to stop it would exhaust the script and raise.
-    provider = FakeProvider([Turn(tool_calls=[ToolCall(id="c", name="search", arguments={})])] * DEFAULT_MAX_ITERATIONS + [Turn(text="stopped")])
+    provider = FakeProvider(
+        [Turn(tool_calls=[ToolCall(id="c", name="search", arguments={})])] * DEFAULT_MAX_ITERATIONS
+        + [Turn(text="stopped")]
+    )
     executor = FakeExecutor()
 
-    final, _ = await run_tool_loop(
-        provider, "sys", [Message.user("go")], [_spec()], executor
-    )
+    final, _ = await run_tool_loop(provider, "sys", [Message.user("go")], [_spec()], executor)
     assert final.text == "stopped"
     assert len(executor.calls) == DEFAULT_MAX_ITERATIONS
 
@@ -97,9 +101,7 @@ async def test_crashing_executor_becomes_error_result() -> None:
     )
     executor = CrashingExecutor()
 
-    final, _ = await run_tool_loop(
-        provider, "sys", [Message.user("go")], [_spec()], executor
-    )
+    final, _ = await run_tool_loop(provider, "sys", [Message.user("go")], [_spec()], executor)
 
     assert final.text == "recovered"
     assert len(executor.calls) == 1
@@ -165,4 +167,4 @@ async def test_provider_extra_round_trips_through_history() -> None:
 def test_default_iterations_matches_agent_config() -> None:
     from aether.config import AgentConfig
 
-    assert DEFAULT_MAX_ITERATIONS == AgentConfig().max_tool_iterations
+    assert AgentConfig().max_tool_iterations == DEFAULT_MAX_ITERATIONS

@@ -3,13 +3,14 @@ ToolRegistry so the wiring (spec name → handler) is what's under test."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+
+from fakes import FakeApprovals, FakeEntities, FakeEventStore, FakeScheduler, FakeSurfaceConnector
 
 from aether.agent.loop import CaptureRequestBox, SurfaceFanout
 from aether.agent.tools import register_native_tools
 from aether.connectors.registry import ToolRegistry
 from aether.memory.events import Event
-from fakes import FakeApprovals, FakeEntities, FakeEventStore, FakeScheduler, FakeSurfaceConnector
 
 
 def _event(event_id: int) -> Event:
@@ -17,7 +18,7 @@ def _event(event_id: int) -> Event:
         id=event_id,
         source="telegram",
         kind="chat_message",
-        occurred_at=datetime(2026, 9, 24, 10, 30, tzinfo=timezone.utc),
+        occurred_at=datetime(2026, 9, 24, 10, 30, tzinfo=UTC),
         payload={"text": "alice owes me a reply"},
         salience_score=7.0,
         memorable=True,
@@ -52,12 +53,28 @@ async def test_six_native_tools_register() -> None:
     kit = NativeKit()
     assert kit.count == 6
     assert len(kit.registry) == 6
-    names = {t.spec.name for t in (kit.registry.get(n) for n in (
-        "memory_search", "note_entity", "get_pending_approvals",
-        "schedule_action", "request_screen_capture", "send_chat_message",
-    ))}
-    assert names == {"memory_search", "note_entity", "get_pending_approvals",
-                     "schedule_action", "request_screen_capture", "send_chat_message"}
+    names = {
+        t.spec.name
+        for t in (
+            kit.registry.get(n)
+            for n in (
+                "memory_search",
+                "note_entity",
+                "get_pending_approvals",
+                "schedule_action",
+                "request_screen_capture",
+                "send_chat_message",
+            )
+        )
+    }
+    assert names == {
+        "memory_search",
+        "note_entity",
+        "get_pending_approvals",
+        "schedule_action",
+        "request_screen_capture",
+        "send_chat_message",
+    }
 
 
 async def test_memory_search_formats_hits_and_misses() -> None:
@@ -73,10 +90,16 @@ async def test_memory_search_formats_hits_and_misses() -> None:
 
 async def test_note_entity_resolves_then_records() -> None:
     kit = NativeKit()
-    out = await kit.run("note_entity", {
-        "handle": "alice@example.com", "note": "owes me a reply",
-        "platform": "mail", "display_name": "Alice", "kind": "commitment",
-    })
+    out = await kit.run(
+        "note_entity",
+        {
+            "handle": "alice@example.com",
+            "note": "owes me a reply",
+            "platform": "mail",
+            "display_name": "Alice",
+            "kind": "commitment",
+        },
+    )
     assert "identity 1" in out
     assert kit.entities.resolved == [("mail", "alice@example.com")]
     identity_id, payload = kit.entities.notes[0]
@@ -84,8 +107,10 @@ async def test_note_entity_resolves_then_records() -> None:
     assert payload["note"] == "owes me a reply"
     assert payload["kind"] == "commitment"
 
-    assert await kit.run("note_entity", {"note": "no handle"}) == \
-        "note_entity needs a handle and a note."
+    assert (
+        await kit.run("note_entity", {"note": "no handle"})
+        == "note_entity needs a handle and a note."
+    )
 
 
 async def test_get_pending_approvals_lists_the_queue() -> None:
@@ -93,7 +118,9 @@ async def test_get_pending_approvals_lists_the_queue() -> None:
     assert await kit.run("get_pending_approvals", {}) == "No pending approvals."
 
     await kit.approvals.create(
-        tool_name="mail__send_message", params={"to": "a@b.c"}, note="risky",
+        tool_name="mail__send_message",
+        params={"to": "a@b.c"},
+        note="risky",
     )
     out = await kit.run("get_pending_approvals", {})
     assert "#1 mail__send_message" in out
@@ -102,18 +129,22 @@ async def test_get_pending_approvals_lists_the_queue() -> None:
 
 async def test_schedule_action_persists_a_future_call() -> None:
     kit = NativeKit()
-    when = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
-    out = await kit.run("schedule_action", {
-        "label": "evening summary",
-        "run_at": when,
-        "tool_name": "mail__send_message",
-        "params": {"to": "me@example.com", "body": "summary"},
-    })
+    when = (datetime.now(UTC) + timedelta(hours=2)).isoformat()
+    out = await kit.run(
+        "schedule_action",
+        {
+            "label": "evening summary",
+            "run_at": when,
+            "tool_name": "mail__send_message",
+            "params": {"to": "me@example.com", "body": "summary"},
+        },
+    )
     assert "authorization gate" in out
     created = kit.scheduler.created[0]
     assert created["label"] == "evening summary"
     assert created["payload"] == {
-        "type": "tool", "tool": "mail__send_message",
+        "type": "tool",
+        "tool": "mail__send_message",
         "params": {"to": "me@example.com", "body": "summary"},
     }
     assert created["run_at"].tzinfo is not None
@@ -121,13 +152,29 @@ async def test_schedule_action_persists_a_future_call() -> None:
 
 async def test_schedule_action_rejects_bad_times() -> None:
     kit = NativeKit()
-    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-    assert await kit.run("schedule_action", {
-        "label": "x", "run_at": past, "tool_name": "t",
-    }) == "run_at must be in the future."
-    assert await kit.run("schedule_action", {
-        "label": "x", "run_at": "tomorrow please", "tool_name": "t",
-    }) == "run_at 'tomorrow please' is not an ISO datetime (e.g. 2026-09-25T18:30:00+05:30)."
+    past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    assert (
+        await kit.run(
+            "schedule_action",
+            {
+                "label": "x",
+                "run_at": past,
+                "tool_name": "t",
+            },
+        )
+        == "run_at must be in the future."
+    )
+    assert (
+        await kit.run(
+            "schedule_action",
+            {
+                "label": "x",
+                "run_at": "tomorrow please",
+                "tool_name": "t",
+            },
+        )
+        == "run_at 'tomorrow please' is not an ISO datetime (e.g. 2026-09-25T18:30:00+05:30)."
+    )
     assert kit.scheduler.created == []
 
 
@@ -144,5 +191,4 @@ async def test_send_chat_message_fans_out() -> None:
     out = await kit.run("send_chat_message", {"text": "the deploy finished"})
     assert out == "Sent to the user's chat surfaces."
     assert kit.connector.sent == ["the deploy finished"]
-    assert await kit.run("send_chat_message", {"text": "  "}) == \
-        "send_chat_message needs text."
+    assert await kit.run("send_chat_message", {"text": "  "}) == "send_chat_message needs text."

@@ -27,9 +27,7 @@ async def test_create_parks_the_call_encrypted(db) -> None:
     assert approval.params == {"chat_id": 123, "text": "happy birthday!"}
 
     # what's on disk is ciphertext, not the params
-    raw = await db.fetchval(
-        "SELECT params_enc FROM pending_approvals WHERE id = $1", approval.id
-    )
+    raw = await db.fetchval("SELECT params_enc FROM pending_approvals WHERE id = $1", approval.id)
     assert b"happy birthday" not in raw
 
     # and it comes back through the normal read path
@@ -131,11 +129,13 @@ async def test_every_step_is_audited(db) -> None:
     await approvals.decide(parked.id, APPROVED)
     await approvals.mark_executed(parked.id)
 
-    rows = await db.fetch(
-        "SELECT decision, outcome FROM audit_log ORDER BY seq"
-    )
+    rows = await db.fetch("SELECT decision, outcome FROM audit_log ORDER BY seq")
     assert [r["decision"] for r in rows] == ["approve", "allow", "info"]
-    assert [r["outcome"] for r in rows] == ["parked for approval", "approved by user", "executed after approval"]
+    assert [r["outcome"] for r in rows] == [
+        "parked for approval",
+        "approved by user",
+        "executed after approval",
+    ]
 
     # the chain across all those appends still verifies
     verification = await AuditLog(db).verify_chain()

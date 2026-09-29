@@ -15,7 +15,7 @@ from typing import Any, Protocol
 from ..config import SalienceConfig
 from ..llm.json_utils import extract_json
 from ..llm.types import Message
-from .events import Event, EventStore, event_text
+from .events import EventStore, event_text
 
 log = logging.getLogger("aether.memory.salience")
 

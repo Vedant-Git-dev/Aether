@@ -16,7 +16,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from aether.chat.ws import ChatHub, router as chat_router
+from aether.chat.ws import ChatHub
+from aether.chat.ws import router as chat_router
 from aether.config import Settings
 from aether.connectors.base import InboundMessage
 
@@ -69,22 +70,19 @@ def _app(agent=None, history: FakeHistory | None = None):
 def test_a_bad_token_is_refused_before_the_socket_opens() -> None:
     app, _, _ = _app()
     client = TestClient(app)
-    with pytest.raises(WebSocketDisconnect):
-        with client.websocket_connect("/ws?token=wrong"):
-            pass
+    with pytest.raises(WebSocketDisconnect), client.websocket_connect("/ws?token=wrong"):
+        pass
 
 
 def test_a_missing_token_is_refused_too() -> None:
     app, _, _ = _app()
     client = TestClient(app)
-    with pytest.raises(WebSocketDisconnect):
-        with client.websocket_connect("/ws"):
-            pass
+    with pytest.raises(WebSocketDisconnect), client.websocket_connect("/ws"):
+        pass
 
 
 def test_history_replays_then_chat_flows_both_ways() -> None:
-    history = FakeHistory([("web", "in", "earlier question"),
-                           ("web", "out", "earlier answer")])
+    history = FakeHistory([("web", "in", "earlier question"), ("web", "out", "earlier answer")])
     app, hub, history = _app(history=history)
     agent = FakeAgent(hub)
     app.state.agent = agent
@@ -92,8 +90,7 @@ def test_history_replays_then_chat_flows_both_ways() -> None:
     with TestClient(app).websocket_connect("/ws?token=secret") as ws:
         first = ws.receive_json()
         assert first["type"] == "history"
-        assert [m["text"] for m in first["messages"]] == \
-            ["earlier question", "earlier answer"]
+        assert [m["text"] for m in first["messages"]] == ["earlier question", "earlier answer"]
 
         ws.send_json({"text": "what do you remember?"})
         reply = ws.receive_json()
@@ -102,8 +99,11 @@ def test_history_replays_then_chat_flows_both_ways() -> None:
     # the inbound line reached the agent like any other surface would
     assert len(agent.submitted) == 1
     message = agent.submitted[0]
-    assert (message.surface, message.handle, message.text) == \
-        ("web", "user", "what do you remember?")
+    assert (message.surface, message.handle, message.text) == (
+        "web",
+        "user",
+        "what do you remember?",
+    )
     # and both directions were persisted to the transcript
     assert ("web", "in", "what do you remember?") in history.rows
     assert ("web", "out", "echo: what do you remember?") in history.rows
@@ -112,8 +112,10 @@ def test_history_replays_then_chat_flows_both_ways() -> None:
 def test_broadcast_reaches_every_connected_client() -> None:
     app, hub, history = _app()
     client = TestClient(app)
-    with client.websocket_connect("/ws?token=secret") as ws1, \
-         client.websocket_connect("/ws?token=secret") as ws2:
+    with (
+        client.websocket_connect("/ws?token=secret") as ws1,
+        client.websocket_connect("/ws?token=secret") as ws2,
+    ):
         for ws in (ws1, ws2):
             ws.receive_json()  # history
         client.get("/_broadcast?text=good%20morning")

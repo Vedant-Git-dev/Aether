@@ -64,7 +64,9 @@ def build_messaging_connectors(
                 )
             )
         else:
-            log.warning("messaging.telegram is enabled but TELEGRAM_BOT_TOKEN is not set — skipping")
+            log.warning(
+                "messaging.telegram is enabled but TELEGRAM_BOT_TOKEN is not set — skipping"
+            )
 
     if config.messaging.discord.enabled:
         if settings.discord_bot_token:

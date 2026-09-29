@@ -17,6 +17,12 @@ pip install -e ".[dev]"
 ```bash
 pytest                                  # unit tests — no network, no database
 AETHER_TEST_DATABASE_URL=<url> pytest -m integration   # opt-in, needs Postgres
+
+ruff check .                            # lint
+ruff format --check .                   # formatting
+
+playwright install chromium             # one-time, for the browser tests below
+AETHER_TEST_E2E=1 pytest -m e2e          # opt-in, no database or API keys needed
 ```
 
 Unit tests must stay hermetic: no network calls, no database, no API keys.
@@ -24,9 +30,17 @@ Anything touching a real provider or Postgres goes behind the `integration`
 marker. `tests/fakes.py` holds the in-memory provider/connector doubles —
 extend those rather than mocking SDKs ad hoc.
 
+The `e2e` suite (`tests/e2e/`) drives the real frontend with a real browser
+against `tests/e2e/dev_server.py` — the real FastAPI app wired to in-memory
+fakes instead of Postgres. Extend that fixture and `tests/e2e/test_smoke.py`
+when you change frontend behavior; don't verify frontend changes by manual
+screenshotting alone.
+
 ## Code conventions
 
 - Python 3.12+, async everywhere — the whole service is one asyncio process.
+- `ruff check` and `ruff format --check` must pass; both are configured in
+  `pyproject.toml`.
 - Plain SQL through asyncpg; no ORM. Migrations are forward-only files in
   `src/aether/migrations/`.
 - Anything a human would consider private gets encrypted before it touches
@@ -35,11 +49,6 @@ extend those rather than mocking SDKs ad hoc.
   path, only code and declared rules.
 - Every connector failure degrades gracefully — one broken MCP server or bot
   token must never take the agent loop down.
-
-## Commit style
-
-Small, reviewable commits with a clear subject line. Tests accompany every
-behavior change.
 
 ## Reporting issues
 

@@ -17,7 +17,7 @@ import hashlib
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -68,7 +68,7 @@ def compute_entry_hash(canonical: str) -> str:
 
 def _created_at_iso(value: Any) -> str:
     if isinstance(value, datetime):
-        return value.astimezone(timezone.utc).isoformat()
+        return value.astimezone(UTC).isoformat()
     return str(value)
 
 
@@ -134,49 +134,43 @@ class AuditLog:
         params: Mapping[str, Any] | None = None,
         outcome: str = "",
     ) -> int:
-        created_at = datetime.now(timezone.utc)
+        created_at = datetime.now(UTC)
         digest = params_digest(params or {})
-        async with self._lock:
-            async with self._pool.acquire() as conn:
-                async with conn.transaction():
-                    seq = await conn.fetchval(
-                        "SELECT COALESCE(MAX(seq), 0) + 1 FROM audit_log"
-                    )
-                    prev_hash = (
-                        await conn.fetchval(
-                            "SELECT entry_hash FROM audit_log ORDER BY seq DESC LIMIT 1"
-                        )
-                        or GENESIS_HASH
-                    )
-                    entry_hash = compute_entry_hash(
-                        canonical_entry(
-                            seq=seq,
-                            actor=actor,
-                            tool_name=tool_name,
-                            decision=decision,
-                            rules_matched=rules_matched,
-                            params_digest=digest,
-                            outcome=outcome,
-                            created_at=created_at.isoformat(),
-                            prev_hash=prev_hash,
-                        )
-                    )
-                    await conn.execute(
-                        "INSERT INTO audit_log (seq, actor, tool_name, decision,"
-                        " rules_matched, params_digest, outcome, prev_hash,"
-                        " entry_hash, created_at)"
-                        " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-                        seq,
-                        actor,
-                        tool_name,
-                        decision,
-                        rules_matched,
-                        digest,
-                        outcome,
-                        prev_hash,
-                        entry_hash,
-                        created_at,
-                    )
+        async with self._lock, self._pool.acquire() as conn, conn.transaction():
+            seq = await conn.fetchval("SELECT COALESCE(MAX(seq), 0) + 1 FROM audit_log")
+            prev_hash = (
+                await conn.fetchval("SELECT entry_hash FROM audit_log ORDER BY seq DESC LIMIT 1")
+                or GENESIS_HASH
+            )
+            entry_hash = compute_entry_hash(
+                canonical_entry(
+                    seq=seq,
+                    actor=actor,
+                    tool_name=tool_name,
+                    decision=decision,
+                    rules_matched=rules_matched,
+                    params_digest=digest,
+                    outcome=outcome,
+                    created_at=created_at.isoformat(),
+                    prev_hash=prev_hash,
+                )
+            )
+            await conn.execute(
+                "INSERT INTO audit_log (seq, actor, tool_name, decision,"
+                " rules_matched, params_digest, outcome, prev_hash,"
+                " entry_hash, created_at)"
+                " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                seq,
+                actor,
+                tool_name,
+                decision,
+                rules_matched,
+                digest,
+                outcome,
+                prev_hash,
+                entry_hash,
+                created_at,
+            )
         return seq
 
     async def verify_chain(self) -> ChainVerification:
@@ -189,6 +183,6 @@ class AuditLog:
     async def recent(self, limit: int = 100) -> list[asyncpg.Record]:
         return await self._pool.fetch(
             "SELECT seq, actor, tool_name, decision, rules_matched, params_digest,"
-            " outcome, created_at FROM audit_log ORDER BY seq DESC LIMIT $1",
+            " outcome, entry_hash, created_at FROM audit_log ORDER BY seq DESC LIMIT $1",
             limit,
         )

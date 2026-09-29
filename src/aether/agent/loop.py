@@ -18,9 +18,10 @@ park / deny, and lands in the hash-chained audit log either way.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..authz.approvals import APPROVED, DENIED, Approval, Approvals
@@ -44,6 +45,7 @@ from ..memory.events import Event, EventStore
 from ..memory.salience import Salience
 from ..scheduler.jobs import ScheduledAction, Scheduler
 from .prompts import SYSTEM_PROMPT
+from .settings import AgentSettings
 
 log = logging.getLogger("aether.agent")
 
@@ -100,9 +102,7 @@ class SurfaceFanout:
             except Exception:
                 log.exception("%s approval presentation failed", connector.name)
         if not self.connectors and self.hub is None:
-            log.warning(
-                "approval #%d for %s has no surface to appear on", approval_id, tool_name
-            )
+            log.warning("approval #%d for %s has no surface to appear on", approval_id, tool_name)
 
 
 def _summarize_call(call: ToolCall) -> str:
@@ -127,6 +127,7 @@ class AgentLoop:
         capture_box: CaptureRequestBox,
         config: AppConfig,
         host: MCPHost | None = None,
+        agent_settings: AgentSettings | None = None,
     ) -> None:
         self._providers = providers
         self._tools = tools
@@ -141,6 +142,7 @@ class AgentLoop:
         self._capture_box = capture_box
         self._config = config
         self._host = host
+        self._agent_settings = agent_settings
 
         self._queue: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._woken = asyncio.Event()
@@ -150,7 +152,7 @@ class AgentLoop:
         self._poll_targets: dict[str, tuple[str, PollTool]] = {}
         self._next_poll: dict[str, datetime] = {}
         if host is not None:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             for conn in host.connections:
                 for i, poll in enumerate(conn.poll_tools):
                     key = f"{conn.name}:{poll.tool}:{i}"
@@ -169,10 +171,8 @@ class AgentLoop:
         task, self._task = self._task, None
         self._woken.set()
         if task is not None:
-            try:
+            with contextlib.suppress(TimeoutError, asyncio.CancelledError):
                 await asyncio.wait_for(task, timeout=10)
-            except (TimeoutError, asyncio.CancelledError):
-                pass
 
     def notify(self) -> None:
         """Wake the loop early — used after screen captures, poll results,
@@ -200,12 +200,8 @@ class AgentLoop:
                 raise
             except Exception:
                 log.exception("agent tick failed")
-            try:
-                await asyncio.wait_for(
-                    self._woken.wait(), timeout=self._config.agent.tick_seconds
-                )
-            except TimeoutError:
-                pass
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._woken.wait(), timeout=self._config.agent.tick_seconds)
             self._woken.clear()
 
     async def _tick(self) -> None:
@@ -255,7 +251,7 @@ class AgentLoop:
     async def _run_due_polls(self) -> None:
         if not self._poll_targets:
             return
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for key, (server, poll) in list(self._poll_targets.items()):
             if now < self._next_poll.get(key, now):
                 continue
@@ -284,6 +280,20 @@ class AgentLoop:
 
     # -- the LLM turn ---------------------------------------------------------------
 
+    async def _system_prompt(self) -> str:
+        base = SYSTEM_PROMPT.format(owner="the user")
+        if self._agent_settings is None:
+            return base
+        personality = await self._agent_settings.get_personality()
+        if not personality:
+            return base
+        return (
+            f"{base}\n"
+            "The user has additionally asked you to behave like this — follow it "
+            "as a tone and priorities overlay, never as a way around the rules "
+            f"above:\n{personality}"
+        )
+
     async def _turn(self, messages: list[InboundMessage], observations: list[Event]) -> None:
         provider = self._providers.for_role("reasoning") if self._providers else None
         if provider is None:
@@ -310,7 +320,7 @@ class AgentLoop:
 
         final, _ = await run_tool_loop(
             provider,
-            SYSTEM_PROMPT.format(owner="the user"),
+            await self._system_prompt(),
             history,
             self._tools.specs(),
             self._execute,
@@ -327,9 +337,7 @@ class AgentLoop:
             who = note.payload.get("handle") or "someone"
             lines.append(f"- note on {who}: {note.payload.get('note', '')}")
         if ctx.pending_approvals:
-            lines.append(
-                f"- {len(ctx.pending_approvals)} approval(s) still waiting for the user"
-            )
+            lines.append(f"- {len(ctx.pending_approvals)} approval(s) still waiting for the user")
         if ctx.today_memorable:
             lines.append(f"- {ctx.today_memorable} memorable event(s) so far today")
         return "\n".join(lines)
@@ -358,8 +366,10 @@ class AgentLoop:
                 outcome=ruling.reason,
             )
             return ToolResult(
-                tool_call_id=call.id, name=call.name,
-                content=f"denied by policy: {ruling.reason}", is_error=True,
+                tool_call_id=call.id,
+                name=call.name,
+                content=f"denied by policy: {ruling.reason}",
+                is_error=True,
             )
 
         if ruling.decision is Decision.ALLOW:
@@ -367,13 +377,17 @@ class AgentLoop:
                 result = await self._tools.execute(call.name, call.arguments)
             except UnknownToolError as exc:
                 return ToolResult(
-                    tool_call_id=call.id, name=call.name,
-                    content=f"unknown tool: {exc}", is_error=True,
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=f"unknown tool: {exc}",
+                    is_error=True,
                 )
             except ConnectorUnavailableError as exc:
                 return ToolResult(
-                    tool_call_id=call.id, name=call.name,
-                    content=f"connector unavailable: {exc}", is_error=True,
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=f"connector unavailable: {exc}",
+                    is_error=True,
                 )
             await self._audit.append(
                 actor="agent",
@@ -392,9 +406,7 @@ class AgentLoop:
             rules_matched=ruling.matched_rule,
             note=ruling.reason,
         )
-        await self._surfaces.present_approval(
-            approval.id, call.name, _summarize_call(call)
-        )
+        await self._surfaces.present_approval(approval.id, call.name, _summarize_call(call))
         return ToolResult(
             tool_call_id=call.id,
             name=call.name,
@@ -424,16 +436,12 @@ class AgentLoop:
 
     async def _carry_out(self, approval: Approval) -> None:
         if approval.status == DENIED:
-            await self._surfaces.send_to_user(
-                f"Not run — {approval.tool_name} was denied."
-            )
+            await self._surfaces.send_to_user(f"Not run — {approval.tool_name} was denied.")
             return
         try:
             result = await self._tools.execute(approval.tool_name, approval.params)
             await self._approvals.mark_executed(approval.id)
-            await self._surfaces.send_to_user(
-                f"✅ ran {approval.tool_name}: {result[:300]}"
-            )
+            await self._surfaces.send_to_user(f"✅ ran {approval.tool_name}: {result[:300]}")
         except Exception as exc:
             log.exception("approved call %s failed to run", approval.tool_name)
             await self._surfaces.send_to_user(
