@@ -9,6 +9,7 @@ the MessagingConnector base class.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import discord
@@ -16,6 +17,7 @@ import discord
 from fakes import FakeApprovals
 =======
 import pytest
+from telegram import Chat, Message, Update
 from telegram.error import NetworkError
 >>>>>>> b2e3b925 (fix(connectors): make inbound awaitable and ride out telegram network blips)
 
@@ -117,8 +119,10 @@ class FakeTelegramBot:
     def __init__(self) -> None:
         self.sent: list[dict] = []
 
-    async def send_message(self, chat_id: int, text: str, reply_markup=None) -> None:
+    async def send_message(self, chat_id: int, text: str, reply_markup=None) -> SimpleNamespace:
         self.sent.append({"chat_id": chat_id, "text": text, "reply_markup": reply_markup})
+        # the way telegram answers a send — the id that links a why? back
+        return SimpleNamespace(message_id=100 + len(self.sent))
 
 
 class FlakyTelegramBot(FakeTelegramBot):
@@ -129,11 +133,11 @@ class FlakyTelegramBot(FakeTelegramBot):
         super().__init__()
         self.failures = failures
 
-    async def send_message(self, chat_id: int, text: str, reply_markup=None) -> None:
+    async def send_message(self, chat_id: int, text: str, reply_markup=None) -> SimpleNamespace:
         if self.failures > 0:
             self.failures -= 1
             raise NetworkError("httpx.ConnectError: tls handshake failed")
-        await super().send_message(chat_id, text, reply_markup)
+        return await super().send_message(chat_id, text, reply_markup)
 
 
 class FakeTelegramApp:
@@ -169,9 +173,9 @@ class FakeTelegramApp:
         self.shutdown = True
 
 
-def _tg_update(text: str, username: str = "vedant", user_id: int = 1, chat_id: int = 42):
+def _tg_update(text: str, username: str = "vedant", user_id: int = 1, chat_id: int = 42, reply_to=None):
     return SimpleNamespace(
-        effective_message=SimpleNamespace(text=text, chat_id=chat_id),
+        effective_message=SimpleNamespace(text=text, chat_id=chat_id, reply_to_message=reply_to),
         effective_user=SimpleNamespace(username=username, id=user_id),
     )
 
@@ -227,6 +231,51 @@ async def test_telegram_inbound_dm_becomes_an_inbound_message() -> None:
     )
     await message_handler(empty, None)
     assert len(received) == 1
+
+
+async def test_telegram_a_reply_carries_what_it_answers() -> None:
+    received: list[InboundMessage] = []
+
+    async def inbound(message: InboundMessage) -> None:
+        received.append(message)
+
+    connector, app = await _started_telegram(inbound=inbound)
+    await app.handlers[0].callback(
+        _tg_update("why?", reply_to=SimpleNamespace(message_id=101, text="the invoice is sent")),
+        None,
+    )
+    assert received == [
+        InboundMessage(
+            surface="telegram", handle="@vedant", text="why?", chat_ref="42",
+            reply_to_id="101", reply_to_text="the invoice is sent",
+        )
+    ]
+
+
+async def test_telegram_send_answers_with_the_message_id() -> None:
+    connector, app = await _started_telegram()
+    await app.handlers[0].callback(_tg_update("hi"), None)  # establish the reply target
+
+    ref = await connector.send_to_user("the deploy finished")
+
+    assert ref == "101"
+    assert app.bot.sent[-1] == {"chat_id": 42, "text": "the deploy finished", "reply_markup": None}
+
+
+async def test_telegram_commands_reach_the_loop_not_the_void() -> None:
+    # the handler's filter admits /commands: the loop owns the deterministic
+    # vocabulary (/verify), and what it doesn't handle flows to the model
+    # like any other message — being dropped at the door only made Aether
+    # look deaf
+    _, app = await _started_telegram()
+    update = Update(
+        update_id=1,
+        message=Message(
+            message_id=10, date=datetime.now(timezone.utc),
+            chat=Chat(id=42, type=Chat.PRIVATE), text="/verify",
+        ),
+    )
+    assert app.handlers[0].filters.check_update(update)
 
 
 async def test_telegram_present_approval_sends_buttons() -> None:
@@ -324,8 +373,10 @@ class FakeDiscordChannel:
         self.id = 555
         self.sent: list[dict] = []
 
-    async def send(self, content=None, view=None) -> None:
+    async def send(self, content=None, view=None) -> SimpleNamespace:
         self.sent.append({"content": content, "view": view})
+        # the way discord answers a send — the id that links a why? back
+        return SimpleNamespace(id=100 + len(self.sent))
 
 
 class FakeDiscordUser:
@@ -335,12 +386,13 @@ class FakeDiscordUser:
         self.id = 99
 
 
-def _dc_message(text: str, *, dm: bool = True, bot: bool = False):
+def _dc_message(text: str, *, dm: bool = True, bot: bool = False, reply_to=None):
     channel_type = discord.ChannelType.private if dm else discord.ChannelType.text
     return SimpleNamespace(
         author=FakeDiscordUser("vedant", bot=bot),
         channel=FakeDiscordChannel(channel_type),
         content=text,
+        reference=reply_to,
     )
 
 
@@ -398,6 +450,21 @@ async def test_discord_registers_on_message_and_rejects_non_dms() -> None:
     assert len(received) == 1
 
 
+async def test_discord_a_reply_carries_what_it_answers_and_sends_answer_with_ids() -> None:
+    received: list[InboundMessage] = []
+
+    async def inbound(message: InboundMessage) -> None:
+        received.append(message)
+
+    connector, bot = await _started_discord(inbound=inbound)
+    await connector.on_message(_dc_message("why?", reply_to=SimpleNamespace(message_id=77)))
+    assert received[-1].reply_to_id == "77"
+    assert received[-1].reply_to_text == ""  # the answered text would cost an extra fetch
+
+    ref = await connector.send_to_user("the deploy finished")
+    assert ref == "101"
+
+
 async def test_discord_approval_view_buttons_decide() -> None:
     approvals = FakeApprovals()
     decisions: list[tuple[int, str]] = []
@@ -447,8 +514,10 @@ class FakeSlackClient:
         self.posted: list[dict] = []
         self.updated: list[dict] = []
 
-    async def chat_postMessage(self, channel: str, text: str, blocks=None) -> None:
+    async def chat_postMessage(self, channel: str, text: str, blocks=None) -> dict:
         self.posted.append({"channel": channel, "text": text, "blocks": blocks})
+        # the way slack answers a send — the ts that links a why? back
+        return {"ts": f"1758000000.{len(self.posted):06d}"}
 
     async def chat_update(self, channel: str, ts: str, text: str) -> None:
         self.updated.append({"channel": channel, "ts": ts, "text": text})
@@ -494,6 +563,15 @@ def test_slack_event_to_inbound_filters() -> None:
     assert event_to_inbound({**good, "bot_id": "B1"}) is None
     assert event_to_inbound({**good, "text": ""}) is None
     assert event_to_inbound({}) is None
+
+
+def test_slack_a_thread_reply_carries_what_it_answers() -> None:
+    good = {"channel_type": "im", "user": "U123", "text": "hello", "channel": "D1"}
+    # a thread reply points at the message it answers — that id is what
+    # links a why? back to the trace that produced it
+    assert event_to_inbound({**good, "thread_ts": "123.400"}) == InboundMessage(
+        "slack", "U123", "hello", "D1", reply_to_id="123.400"
+    )
 
 
 def test_slack_approval_blocks_carry_action_ids_and_values() -> None:
@@ -549,6 +627,22 @@ async def test_slack_inbound_dm_reaches_the_handler_and_replies_work() -> None:
     await connector.present_approval(4, "slack__send_dm", "dm the team")
     posted = app.client.posted[-1]
     assert posted["blocks"][1]["elements"][0]["action_id"] == APPROVE_ACTION
+
+
+async def test_slack_send_answers_with_the_message_ts() -> None:
+    async def inbound(message: InboundMessage) -> None:
+        pass
+
+    connector, app, _ = await _started_slack(inbound=inbound)
+    await app.listeners["message"](
+        {"channel_type": "im", "user": "U123", "text": "hi", "channel": "D1"},
+        None,
+        app.client,
+    )
+
+    ref = await connector.send_to_user("the deploy finished")
+
+    assert ref == "1758000000.000001"
 
 
 async def test_slack_button_flow_decides_and_updates_the_message() -> None:

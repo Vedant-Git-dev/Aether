@@ -177,6 +177,7 @@ def create_app(
             capture_box=capture_box,
             routines=routines,
             traces=traces,
+            audit=audit,
         )
         log.info("native tools registered: %d", native)
 

@@ -35,7 +35,10 @@ def event_to_inbound(event: dict[str, Any]) -> InboundMessage | None:
     if not text or not user:
         return None
     return InboundMessage(
-        surface="slack", handle=user, text=text, chat_ref=event.get("channel", "")
+        surface="slack", handle=user, text=text, chat_ref=event.get("channel", ""),
+        # a thread reply carries its parent's ts — enough to link a later
+        # "why?" back to the trace of the message it answers
+        reply_to_id=str(event.get("thread_ts") or ""),
     )
 
 
@@ -180,11 +183,19 @@ class SlackConnector(MessagingConnector):
 
     # -- outbound ------------------------------------------------------------------
 
-    async def send_to_user(self, text: str) -> None:
+    async def send_to_user(self, text: str) -> str | None:
+        """Send, and answer with the message ts — what links a later "why?"
+        thread reply back to the trace of this send."""
         if self._app is None or not self._chat_ref:
             log.info("slack: nowhere to send yet")
-            return
-        await self._app.client.chat_postMessage(channel=self._chat_ref, text=text)
+            return None
+        response = await self._app.client.chat_postMessage(channel=self._chat_ref, text=text)
+        try:
+            return str(response["ts"] or "") or None
+        except (KeyError, TypeError, IndexError):
+            # a shape without the ts — the send happened, it just can't be
+            # linked back to
+            return None
 
     async def present_approval(self, approval_id: int, tool_name: str, summary: str) -> None:
         if self._app is None or not self._chat_ref:

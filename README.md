@@ -46,13 +46,17 @@ tax.
   one-tap decision. Every execution path — a chat proposal, a scheduled
   action firing hours later, a routine fire — passes the same gate.
 - **Tamper-evident audit** — every decision produces a hash-chained record
-  (SHA-256 over the previous entry), verifiable from the panel. Not an
-  activity log — a chain: editing any past row breaks it visibly.
+  (SHA-256 over the previous entry), verifiable from the panel or on demand
+  from any chat app: send `/verify` and the badge answers in plain words,
+  with no model in the path. Not an activity log — a chain: editing any
+  past row breaks it visibly.
 - **Decision replay** — every act — a chat turn, a routine fire, a
   scheduled action, an approved call — leaves an encrypted trace of what
   triggered it, what was proposed, how the gate ruled, and what came
   back. Ask "why did you do that?" and the answer comes from the record,
-  not from a reconstruction.
+  not from a reconstruction. Reply "why?" to any Aether message in
+  Telegram, Discord, or Slack and the trace answers in plain words —
+  the record speaking, not the model.
 - **Signal over noise** — a continuous event stream is filtered to a small
   set of genuinely relevant items, with no human ever labeling what matters.
 - **Your contacts, your rules** — an explicit allowlist decides which
@@ -147,8 +151,9 @@ Next steps:
 
 - **Deploy on free tiers** (Neon Postgres + Render, kept awake by an
   uptime ping): [DEPLOYMENT.md](DEPLOYMENT.md)
-- **See it work** — six scripted demos, from auto-actions and taught
-  routines to kill -9 schedule survival and decision replay: [DEMO.md](DEMO.md)
+- **See it work** — seven scripted demos, from auto-actions and taught
+  routines to kill -9 schedule survival, decision replay, and the record
+  proving itself from chat: [DEMO.md](DEMO.md)
 - **WhatsApp**: documented stub, both free routes written up in
   [docs/whatsapp.md](docs/whatsapp.md)
 

@@ -77,7 +77,8 @@ async def test_a_turn_leaves_a_trace_with_calls_rulings_and_reply() -> None:
     assert created["label"] == "what's unread?"
     payload = created["payload"]
     assert payload["trigger"]["messages"] == [
-        {"surface": "telegram", "handle": "@vedant", "text": "what's unread?"}
+        {"surface": "telegram", "handle": "@vedant", "text": "what's unread?",
+         "reply_to_id": "", "reply_to_text": ""}
     ]
     assert payload["trigger"]["observations"] == []
     call = payload["calls"][0]

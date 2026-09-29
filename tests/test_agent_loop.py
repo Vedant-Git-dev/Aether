@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from aether.agent.loop import AgentLoop, CaptureRequestBox, SurfaceFanout
 from aether.agent.prompts import SYSTEM_PROMPT
 from aether.authz.approvals import APPROVED, DENIED
+from aether.authz.audit import ChainVerification
 from aether.authz.policy import Policy
 from aether.config import AgentConfig, AppConfig, AuthzRule, MCPServerConfig, PollTool
 from aether.connectors.base import InboundMessage
@@ -48,8 +49,17 @@ from aether.memory.events import Event, IngestResult
 from aether.scheduler.jobs import ScheduledAction
 
 
-def _msg(text: str, handle: str = "@vedant", surface: str = "telegram") -> InboundMessage:
-    return InboundMessage(surface=surface, handle=handle, text=text, chat_ref="1")
+def _msg(
+    text: str,
+    handle: str = "@vedant",
+    surface: str = "telegram",
+    reply_to_id: str = "",
+    reply_to_text: str = "",
+) -> InboundMessage:
+    return InboundMessage(
+        surface=surface, handle=handle, text=text, chat_ref="1",
+        reply_to_id=reply_to_id, reply_to_text=reply_to_text,
+    )
 
 
 def _event(
@@ -777,3 +787,165 @@ async def test_with_no_apps_connected_the_prompt_says_so() -> None:
     await kit.loop._tick()
 
     assert "Apps connected right now: none." in provider.calls[0][0]
+
+
+# ---------------------------------------------------------------------------
+# the deterministic chat vocabulary: /verify and the why? reply
+# ---------------------------------------------------------------------------
+
+
+async def test_verify_command_answers_from_the_record_without_waking_the_model() -> None:
+    provider = FakeProvider([])  # any LLM call would fail the test
+    kit = LoopKit(provider)
+    await kit.audit.append(actor="agent", tool_name="mail__list_unread", decision="allow")
+    kit.loop.submit_message(_msg("/verify"))
+    await kit.loop._tick()
+
+    note = kit.connector.sent[-1]
+    assert "🛡️" in note and "chain intact" in note
+    assert "moments ago" in note  # the row was just written
+    assert provider.calls == []  # deterministic — no LLM turn
+    assert kit.events.ingested == []  # and nothing became memory
+    assert kit.traces.created == []  # a read leaves no record of its own
+
+
+async def test_verify_command_reports_a_broken_chain_in_plain_words() -> None:
+    provider = FakeProvider([])  # any LLM call would fail the test
+    kit = LoopKit(provider)
+    kit.audit.verification = ChainVerification(
+        ok=False, entries=892, first_bad_seq=892,
+        problem="seq 892: stored hash does not match the entry contents",
+    )
+    kit.loop.submit_message(_msg("/verify"))
+    await kit.loop._tick()
+
+    note = kit.connector.sent[-1]
+    assert "⚠️" in note and "BROKEN at entry #892" in note
+    assert provider.calls == []
+
+
+async def test_verify_command_survives_a_dead_record() -> None:
+    provider = FakeProvider([])
+    kit = LoopKit(provider)
+
+    async def dead() -> object:
+        raise RuntimeError("the database is down")
+
+    kit.audit.verify_chain = dead  # type: ignore[method-assign]
+    kit.loop.submit_message(_msg("/verify"))
+    await kit.loop._tick()
+
+    assert "couldn't verify" in kit.connector.sent[-1]
+    assert provider.calls == []
+
+
+async def test_verify_answers_even_during_quiet_hours() -> None:
+    # the user asked for the check — solicited words never wait out the window
+    kit = _quiet_kit(FakeProvider([]))
+    await kit.audit.append(actor="agent", tool_name="t", decision="allow")
+    kit.loop.submit_message(_msg("/verify"))
+    await kit.loop._tick()
+
+    assert "🛡️" in kit.connector.sent[-1]
+    assert kit.loop._held == []
+
+
+async def test_an_unknown_command_flows_to_the_model() -> None:
+    provider = FakeProvider([Turn(text="there's no /help — just ask me")])
+    kit = LoopKit(provider)
+    kit.loop.submit_message(_msg("/help"))
+    await kit.loop._tick()
+
+    assert len(kit.events.ingested) == 1  # an unhandled command is just words
+    assert any("/help" in m.text for m in provider.calls[0][1])
+    assert kit.connector.sent == ["there's no /help — just ask me"]
+
+
+async def test_a_replied_turn_records_where_the_words_landed() -> None:
+    provider = FakeProvider([Turn(text="hello back")])
+    kit = LoopKit(provider)
+    kit.loop.submit_message(_msg("you there?"))
+    await kit.loop._tick()
+
+    payload = kit.traces.created[-1]["payload"]
+    assert payload["chat_refs"] == {"fake": "m1"}  # what a later why? finds
+
+
+async def test_a_held_note_records_no_chat_refs() -> None:
+    provider = FakeProvider([Turn(text="saw the mail")])
+    kit = _quiet_kit(provider)
+    kit.events.events[1] = _event(1)
+    await kit.loop._tick()
+
+    payload = kit.traces.created[-1]["payload"]
+    assert payload["reply"] == "saw the mail"
+    assert "chat_refs" not in payload  # nothing landed anywhere yet
+
+
+async def test_a_why_reply_is_answered_from_the_record() -> None:
+    provider = FakeProvider([])  # any LLM call would fail the test
+    kit = LoopKit(provider)
+    kit.traces.add(
+        kind="turn",
+        label="email alice",
+        payload={
+            "trigger": {"messages": [], "observations": []},
+            "calls": [],
+            "reply": "on it — sent once you approve",
+            "chat_refs": {"telegram": "101"},
+        },
+    )
+    kit.loop.submit_message(_msg("why?", reply_to_id="101"))
+    await kit.loop._tick()
+
+    replay = kit.connector.sent[-1]
+    assert replay.startswith("🧵 that message, from the record")
+    assert "on it — sent once you approve" in replay
+    assert provider.calls == []  # the record answered, not the model
+    assert kit.traces.created == []  # a replay is a read — no new trace
+    assert kit.events.ingested == []  # and not memory either
+
+
+async def test_a_why_reply_to_an_unrecorded_message_reaches_the_model() -> None:
+    provider = FakeProvider([Turn(text="I'm not sure what you mean")])
+    kit = LoopKit(provider)
+    kit.loop.submit_message(
+        _msg("why?", reply_to_id="999", reply_to_text="the earlier words")
+    )
+    await kit.loop._tick()
+
+    # nothing linked the reply, so the model answers — and it can see which
+    # of its own messages the question was about
+    history = provider.calls[0][1]
+    assert any("(replying to my earlier message:" in m.text for m in history)
+    assert kit.connector.sent == ["I'm not sure what you mean"]
+
+
+async def test_a_carried_out_approval_records_where_the_news_landed() -> None:
+    kit = LoopKit(None)
+    kit.add_tool("mail__send_message", result="sent")
+    await kit.loop._execute(
+        ToolCall(id="t1", name="mail__send_message", arguments={"to": "a@b.c", "body": "hi"})
+    )
+    approval = kit.approvals.created[0]
+    approval.status = APPROVED
+
+    await kit.loop.execute_decision(approval.id, APPROVED)
+
+    payload = kit.traces.created[-1]["payload"]
+    assert payload["chat_refs"] == {"fake": "m1"}
+
+
+async def test_a_routine_fire_records_where_its_ping_landed() -> None:
+    kit = LoopKit(None)  # routines fire before any LLM turn
+    kit.add_tool("note_entity", result="noted")
+    kit.routines.add(
+        label="billing",
+        trigger={"source": "mail"},
+        action={"type": "tool", "tool": "note_entity", "params": {"note": "invoice"}},
+    )
+    kit.events.events[1] = _event(1)
+    await kit.loop._tick()
+
+    payload = kit.traces.created[-1]["payload"]
+    assert payload["chat_refs"] == {"fake": "m1"}

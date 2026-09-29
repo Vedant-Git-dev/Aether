@@ -116,6 +116,48 @@ def verify_entries(rows: Iterable[Mapping[str, Any]]) -> ChainVerification:
     return ChainVerification(True, count)
 
 
+def _age(now: datetime, then: datetime) -> str:
+    """Coarse elapsed words, "moments ago" to "N days ago" — the badge's
+    'last act' is a feeling, not a timestamp."""
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=timezone.utc)  # naive stamps are UTC here
+    seconds = max(0.0, (now - then).total_seconds())
+    if seconds < 60:
+        return "moments ago"
+    minutes = seconds / 60
+    if minutes < 60:
+        return f"{int(minutes)} minute{'s' if minutes >= 2 else ''} ago"
+    hours = minutes / 60
+    if hours < 24:
+        return f"{int(hours)} hour{'s' if hours >= 2 else ''} ago"
+    days = hours / 24
+    return f"{int(days)} day{'s' if days >= 2 else ''} ago"
+
+
+def verification_text(verification: ChainVerification, newest_at: datetime | None = None) -> str:
+    """A chain verification as the user reads it in chat — the same facts
+    the panel badge shows, in plain words. Pure: the caller reads the rows."""
+    if verification.entries == 0:
+        return "🛡️ decision record: empty — nothing recorded yet."
+    if verification.ok:
+        last = (
+            f", last act {_age(datetime.now(timezone.utc), newest_at)}"
+            if newest_at is not None
+            else ""
+        )
+        plural = "s" if verification.entries != 1 else ""
+        return (
+            f"🛡️ decision record: {verification.entries:,} decision{plural}, "
+            f"chain intact — every entry still hashes to the one before it{last}."
+        )
+    where = f" at entry #{verification.first_bad_seq}" if verification.first_bad_seq else ""
+    problem = f" — {verification.problem}" if verification.problem else ""
+    return (
+        f"⚠️ decision record: BROKEN{where}{problem}. "
+        "Everything from there on can't be trusted."
+    )
+
+
 class AuditLog:
     """Database-backed chain writer/verifier. Appends are serialized with a
     process-local lock so concurrent callers can't fork the chain."""

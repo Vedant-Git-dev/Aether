@@ -1,6 +1,6 @@
 # Demo walkthrough
 
-Six scripted demos, in increasing order of "watch it carefully". Each one
+Seven scripted demos, in increasing order of "watch it carefully". Each one
 runs against a live Aether (local or deployed — see
 [DEPLOYMENT.md](DEPLOYMENT.md)) with at least one LLM provider key set.
 Open the web panel (`/`) with your token before starting; the sections
@@ -146,7 +146,54 @@ fact, get the record.
    rest like all human-readable content, and written so that even a
    failed trace write never breaks the act it records.
 
-## What all six have in common
+## 7. The record proves itself — from your pocket
+
+**What it shows**: the chain badge and the replay delivered where you
+already are — deterministic, plain words, no model woken.
+
+1. In any enabled chat app (Telegram, Discord, Slack — or the web chat),
+   send `/verify`. The answer is code, not the model — no tokens, no
+   ingest, no new trace:
+   > 🛡️ decision record: 1,247 decisions, chain intact — every entry
+   > still hashes to the one before it, last act 2 minutes ago.
+
+   A natural-language ask works too — *"can anyone tamper with your
+   logs?"* — the model has a `verify_integrity` tool for exactly that.
+2. Reply **why?** to a message Aether sent you — a routine ping, an
+   approval nudge, a carried-out call (Telegram, Discord, or a Slack
+   thread). Your reply's platform id links it back to the trace that
+   produced the message, and the record answers:
+   > 🧵 that message, from the record (trace #57):
+   > Your routine 'billing' fired.
+   > I went ahead with keeping a note — the gate let it through
+   > (builtin:internal).
+   >
+   > The full recorded detail — the exact call, the parameters, the
+   > gate's ruling — is trace #57 in the panel.
+
+   The plain-words rule holds in chat: tool names and raw errors stay
+   in the panel; the message reads like Aether explaining itself.
+3. Break the chain on purpose — demo 3's tamper, this time watched from
+   chat (run the SQL yourself, against your live DB):
+   ```sql
+   SELECT outcome FROM audit_log WHERE seq = 1;   -- remember it
+   UPDATE audit_log SET outcome = 'haha' WHERE seq = 1;
+   ```
+4. `/verify` again:
+   > ⚠️ decision record: BROKEN at entry #1 — seq 1: stored hash does
+   > not match the entry contents. Everything from there on can't be
+   > trusted.
+5. Put the row back (`UPDATE audit_log SET outcome = '<the original
+   text>' WHERE seq = 1;`) and `/verify` once more — green again,
+   because the restored entry hashes to exactly what it hashed to
+   before.
+
+**The point**: the trust features are not panel-only curiosities. The
+badge and the replay are reads from the record — deterministic, plain
+words, no LLM turn — which is itself the claim: the record can answer
+for Aether without Aether improvising.
+
+## What all seven have in common
 
 Every path ends in the same four artifacts, which is the whole pitch:
 

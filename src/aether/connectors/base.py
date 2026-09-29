@@ -21,12 +21,18 @@ class InboundMessage:
 
     `handle` is the sender's handle as the platform wrote it — normalization
     and the contact allowlist happen at ingest, not here.
+
+    `reply_to_id`/`reply_to_text` carry what the message answers, when the
+    platform says so — the id is what links a later "why?" back to the trace
+    of the message it's about.
     """
 
     surface: str  # "telegram" | "discord" | "slack" | "web"
     handle: str
     text: str
     chat_ref: str  # opaque, surface-specific reply target
+    reply_to_id: str = ""  # platform id of the message this one answers, if any
+    reply_to_text: str = ""  # its text, when the platform hands it over
 
 
 InboundHandler = Callable[[InboundMessage], Awaitable[None]]

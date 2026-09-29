@@ -184,10 +184,13 @@ class FakeApprovals:
 
 
 class FakeAudit:
-    """AuditLog double: records appends; recent()/verify_chain() feed the panel."""
+    """AuditLog double: records appends; recent()/verify_chain() feed the
+    panel. `verification` overrides what verify_chain() reports, so a test
+    can stage a broken chain."""
 
-    def __init__(self) -> None:
+    def __init__(self, verification: object | None = None) -> None:
         self.entries: list[dict] = []
+        self.verification = verification
 
     async def append(
         self,
@@ -218,6 +221,8 @@ class FakeAudit:
         return list(reversed(self.entries))[:limit]  # newest first, matching the real AuditLog
 
     async def verify_chain(self) -> object:
+        if self.verification is not None:
+            return self.verification
         from aether.authz.audit import ChainVerification
 
         return ChainVerification(ok=True, entries=len(self.entries))
@@ -406,15 +411,20 @@ class FakeEntities:
 
 
 class FakeSurfaceConnector:
-    """MessagingConnector double: records sends and approval presentations."""
+    """MessagingConnector double: records sends and approval presentations.
+    send_to_user answers with a fresh platform message id, the way the real
+    surfaces do — enough for the loop to link a later why? back."""
 
     def __init__(self, name: str = "fake") -> None:
         self.name = name
         self.sent: list[str] = []
         self.approvals_presented: list[tuple[int, str, str]] = []
+        self._ids = 0
 
-    async def send_to_user(self, text: str) -> None:
+    async def send_to_user(self, text: str) -> str:
         self.sent.append(text)
+        self._ids += 1
+        return f"m{self._ids}"
 
     async def present_approval(self, approval_id: int, tool_name: str, summary: str) -> None:
         self.approvals_presented.append((approval_id, tool_name, summary))
