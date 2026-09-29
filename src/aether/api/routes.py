@@ -281,55 +281,47 @@ async def audit_feed(request: Request, limit: int = 100, token: str | None = Non
     }
 
 
-@router.get("/api/memory")
-async def memory_feed(request: Request, limit: int = 50, token: str | None = None) -> dict:
-    """Everyone Aether has resolved a cross-platform identity for, with
-    their linked handles and most recent relationship note."""
+@router.get("/api/traces")
+async def traces_feed(request: Request, limit: int = 30, token: str | None = None) -> dict:
+    """Recent decision traces (the "why" to the audit's "what") for the
+    web panel — summaries; the full payload comes per trace."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
-    entities = getattr(request.app.state, "entities", None)
-    if entities is None:
-        raise HTTPException(status_code=503, detail="entity store is not wired")
-    people = await entities.list_people(limit=min(limit, 200))
-    out = []
-    for person in people:
-        notes = await entities.notes_for(person.id, limit=1)
-        out.append(
-            {
-                "id": person.id,
-                "display_name": person.display_name,
-                "confidence": person.confidence,
-                "handles": [{"platform": p, "handle": h} for p, h in person.handles],
-                "latest_note": (
-                    {"at": notes[0].created_at.isoformat(), "payload": notes[0].payload}
-                    if notes
-                    else None
-                ),
-            }
-        )
-    return {"people": out}
-
-
-@router.get("/api/tasks")
-async def tasks_feed(request: Request, limit: int = 50, token: str | None = None) -> dict:
-    """Scheduled actions — persisted, survive restarts, run through the
-    same authorization gate as everything else when they fire."""
-    if not _authorized(request, token):
-        raise HTTPException(status_code=401, detail="bad or missing token")
-    scheduler = getattr(request.app.state, "scheduler", None)
-    if scheduler is None:
-        raise HTTPException(status_code=503, detail="scheduler is not wired")
-    actions = await scheduler.list(limit=min(limit, 200))
+    traces = getattr(request.app.state, "traces", None)
+    if traces is None:
+        raise HTTPException(status_code=503, detail="decision traces not wired")
+    rows = await traces.recent(limit=min(limit, 200))
     return {
-        "tasks": [
+        "traces": [
             {
-                "id": a.id,
-                "label": a.label,
-                "run_at": a.run_at.isoformat(),
-                "status": a.status,
-                "payload": a.payload,
-                "created_at": a.created_at.isoformat(),
+                "id": t.id,
+                "kind": t.kind,
+                "label": t.label,
+                "at": t.created_at.isoformat(),
             }
-            for a in actions
+            for t in rows  # recent() is newest first — the feed's order
         ]
+    }
+
+
+@router.get("/api/traces/{trace_id}")
+async def trace_detail(
+    trace_id: int, request: Request, token: str | None = None
+) -> dict:
+    """One decision trace, decrypted for the owner's eyes: what triggered
+    the act, the gate's ruling on every call, and what came back."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    traces = getattr(request.app.state, "traces", None)
+    if traces is None:
+        raise HTTPException(status_code=503, detail="decision traces not wired")
+    trace = await traces.get(trace_id)
+    if trace is None:
+        raise HTTPException(status_code=404, detail=f"no trace {trace_id}")
+    return {
+        "id": trace.id,
+        "kind": trace.kind,
+        "label": trace.label,
+        "at": trace.created_at.isoformat(),
+        "payload": trace.payload,
     }

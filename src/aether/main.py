@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .agent import AgentLoop, CaptureRequestBox, SurfaceFanout, register_native_tools
-from .agent.settings import AgentSettings
+from .agent.traces import Traces
 from .api import router as api_router
 from .authz.approvals import Approvals
 from .authz.audit import AuditLog
@@ -32,6 +32,7 @@ from .memory.db import create_pool, run_migrations
 from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
 from .memory.salience import LLMJudge, Salience
+from .routines import Routines
 from .scheduler import Scheduler, SchedulerWorker
 
 log = logging.getLogger("aether.main")
@@ -134,6 +135,10 @@ def create_app(
         scheduler = Scheduler(pool, cipher, audit)
         app.state.entities = entities
         app.state.scheduler = scheduler
+        routines = Routines(pool, cipher, audit)
+        app.state.routines = routines
+        traces = Traces(pool, cipher)
+        app.state.traces = traces
 
         # --- chat + the agent ------------------------------------------------
         chat_history = ChatHistory(pool, cipher)
@@ -158,7 +163,8 @@ def create_app(
             capture_box=capture_box,
             config=config,
             host=host,
-            agent_settings=agent_settings,
+            routines=routines,
+            traces=traces,
         )
         app.state.agent = agent
         native = register_native_tools(
@@ -169,6 +175,8 @@ def create_app(
             scheduler=scheduler,
             surfaces=surfaces,
             capture_box=capture_box,
+            routines=routines,
+            traces=traces,
         )
         log.info("native tools registered: %d", native)
 
