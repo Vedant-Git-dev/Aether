@@ -13,7 +13,6 @@ from aether.authz.audit import (
     params_digest,
     verify_entries,
 )
-from aether.memory.crypto import Cipher, generate_key_b64
 
 
 def _make_entry(prev_hash: str, seq: int, **overrides) -> dict:
@@ -46,8 +45,15 @@ def _chain(n: int = 3) -> list[dict]:
 
 def test_canonical_entry_pins_field_order() -> None:
     a = canonical_entry(
-        seq=1, actor="a", tool_name="t", decision="d", rules_matched="r",
-        params_digest="p", outcome="o", created_at="c", prev_hash="x",
+        seq=1,
+        actor="a",
+        tool_name="t",
+        decision="d",
+        rules_matched="r",
+        params_digest="p",
+        outcome="o",
+        created_at="c",
+        prev_hash="x",
     )
     assert a.startswith('{"actor":"a"')  # sorted keys
     assert "seq" in a and "prev_hash" in a
@@ -55,7 +61,15 @@ def test_canonical_entry_pins_field_order() -> None:
 
 def test_every_field_is_committed_to_the_hash() -> None:
     base = _make_entry(GENESIS_HASH, 1)
-    for field in ("actor", "tool_name", "decision", "rules_matched", "params_digest", "outcome", "created_at"):
+    for field in (
+        "actor",
+        "tool_name",
+        "decision",
+        "rules_matched",
+        "params_digest",
+        "outcome",
+        "created_at",
+    ):
         # change the field but keep the stored hash — verification must fail
         row = dict(base)
         row[field] = "tampered"
@@ -114,10 +128,13 @@ def test_params_digest_is_stable_and_content_bound() -> None:
 @pytest.mark.integration
 async def test_db_round_trip_verifies(db) -> None:
     audit = AuditLog(db)
-    for seq in (1, 2, 3):
+    for _ in range(3):
         await audit.append(
-            actor="agent", tool_name="mail__send_email", decision="approve",
-            params={"to": "a@b.c"}, outcome="parked for approval",
+            actor="agent",
+            tool_name="mail__send_email",
+            decision="approve",
+            params={"to": "a@b.c"},
+            outcome="parked for approval",
         )
     result = await audit.verify_chain()
     assert result.ok is True, result.problem

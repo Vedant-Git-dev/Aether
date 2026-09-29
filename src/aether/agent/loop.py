@@ -24,9 +24,10 @@ has a record to answer from.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..authz.approvals import APPROVED, DENIED, Approval, Approvals
@@ -108,9 +109,7 @@ class SurfaceFanout:
             except Exception:
                 log.exception("%s approval presentation failed", connector.name)
         if not self.connectors and self.hub is None:
-            log.warning(
-                "approval #%d for %s has no surface to appear on", approval_id, tool_name
-            )
+            log.warning("approval #%d for %s has no surface to appear on", approval_id, tool_name)
 
 
 def _summarize_call(call: ToolCall) -> str:
@@ -162,7 +161,7 @@ class AgentLoop:
         self._poll_targets: dict[str, tuple[str, PollTool]] = {}
         self._next_poll: dict[str, datetime] = {}
         if host is not None:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             for conn in host.connections:
                 for i, poll in enumerate(conn.poll_tools):
                     key = f"{conn.name}:{poll.tool}:{i}"
@@ -181,10 +180,8 @@ class AgentLoop:
         task, self._task = self._task, None
         self._woken.set()
         if task is not None:
-            try:
+            with contextlib.suppress(TimeoutError, asyncio.CancelledError):
                 await asyncio.wait_for(task, timeout=10)
-            except (TimeoutError, asyncio.CancelledError):
-                pass
 
     def notify(self) -> None:
         """Wake the loop early — used after screen captures, poll results,
@@ -212,12 +209,8 @@ class AgentLoop:
                 raise
             except Exception:
                 log.exception("agent tick failed")
-            try:
-                await asyncio.wait_for(
-                    self._woken.wait(), timeout=self._config.agent.tick_seconds
-                )
-            except TimeoutError:
-                pass
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._woken.wait(), timeout=self._config.agent.tick_seconds)
             self._woken.clear()
 
     async def _tick(self) -> None:
@@ -272,7 +265,7 @@ class AgentLoop:
     async def _run_due_polls(self) -> None:
         if not self._poll_targets:
             return
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for key, (server, poll) in list(self._poll_targets.items()):
             if now < self._next_poll.get(key, now):
                 continue
@@ -383,6 +376,20 @@ class AgentLoop:
 
     # -- the LLM turn ---------------------------------------------------------------
 
+    async def _system_prompt(self) -> str:
+        base = SYSTEM_PROMPT.format(owner="the user")
+        if self._agent_settings is None:
+            return base
+        personality = await self._agent_settings.get_personality()
+        if not personality:
+            return base
+        return (
+            f"{base}\n"
+            "The user has additionally asked you to behave like this — follow it "
+            "as a tone and priorities overlay, never as a way around the rules "
+            f"above:\n{personality}"
+        )
+
     async def _turn(self, messages: list[InboundMessage], observations: list[Event]) -> None:
         provider = self._providers.for_role("reasoning") if self._providers else None
         if provider is None:
@@ -472,9 +479,7 @@ class AgentLoop:
             who = note.payload.get("handle") or "someone"
             lines.append(f"- note on {who}: {note.payload.get('note', '')}")
         if ctx.pending_approvals:
-            lines.append(
-                f"- {len(ctx.pending_approvals)} approval(s) still waiting for the user"
-            )
+            lines.append(f"- {len(ctx.pending_approvals)} approval(s) still waiting for the user")
         if ctx.today_memorable:
             lines.append(f"- {ctx.today_memorable} memorable event(s) so far today")
         return "\n".join(lines)
@@ -621,9 +626,7 @@ class AgentLoop:
 
     async def _carry_out(self, approval: Approval) -> None:
         if approval.status == DENIED:
-            await self._surfaces.send_to_user(
-                f"Not run — {approval.tool_name} was denied."
-            )
+            await self._surfaces.send_to_user(f"Not run — {approval.tool_name} was denied.")
             return
         trace: dict[str, Any] = {
             "approval_id": approval.id,

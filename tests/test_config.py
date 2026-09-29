@@ -72,10 +72,19 @@ def test_settings_reads_the_documented_env_names(monkeypatch) -> None:
     from aether.config import Settings
 
     for name in (
-        "AETHER_ENCRYPTION_KEY", "AETHER_TOKEN", "AETHER_DEV_EPHEMERAL_KEY",
-        "DATABASE_URL", "PORT", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-        "GEMINI_API_KEY", "OLLAMA_BASE_URL", "TELEGRAM_BOT_TOKEN",
-        "DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN",
+        "AETHER_ENCRYPTION_KEY",
+        "AETHER_TOKEN",
+        "AETHER_DEV_EPHEMERAL_KEY",
+        "DATABASE_URL",
+        "PORT",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "OLLAMA_BASE_URL",
+        "TELEGRAM_BOT_TOKEN",
+        "DISCORD_BOT_TOKEN",
+        "SLACK_BOT_TOKEN",
+        "SLACK_APP_TOKEN",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AETHER_ENCRYPTION_KEY", "key")

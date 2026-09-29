@@ -100,14 +100,10 @@ def turn_from_anthropic(response: Any) -> Turn:
             )
         elif kind in ("thinking", "redacted_thinking"):
             extra.append(
-                block.model_dump(exclude_none=True)
-                if hasattr(block, "model_dump")
-                else block
+                block.model_dump(exclude_none=True) if hasattr(block, "model_dump") else block
             )
     stop = getattr(response, "stop_reason", None)
-    reason = {"tool_use": "tool_use", "max_tokens": "max_output_tokens"}.get(
-        stop, "end_turn"
-    )
+    reason = {"tool_use": "tool_use", "max_tokens": "max_output_tokens"}.get(stop, "end_turn")
     return Turn(
         text="".join(text_parts),
         tool_calls=calls,
@@ -141,7 +137,7 @@ class AnthropicProvider:
         model: str,
         max_tokens: int = 16000,
         thinking: dict[str, Any] | None = DEFAULT_THINKING,
-    ) -> "AnthropicProvider":
+    ) -> AnthropicProvider:
         if not api_key:
             raise ProviderError(
                 "llm.provider is anthropic but ANTHROPIC_API_KEY is not set — "

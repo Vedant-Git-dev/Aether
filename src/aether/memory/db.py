@@ -28,22 +28,18 @@ async def run_migrations(pool: asyncpg.Pool) -> list[str]:
     applied: list[str] = []
     async with pool.acquire() as conn:
         await conn.execute(_CREATE_MIGRATIONS_TABLE)
-        done = {
-            r["version"]
-            for r in await conn.fetch("SELECT version FROM schema_migrations")
-        }
+        done = {r["version"] for r in await conn.fetch("SELECT version FROM schema_migrations")}
     for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
         version = path.stem
         if version in done:
             continue
         sql = path.read_text(encoding="utf-8")
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(sql)
-                await conn.execute(
-                    "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
-                    version,
-                )
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(sql)
+            await conn.execute(
+                "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
+                version,
+            )
         log.info("applied migration %s", version)
         applied.append(version)
     return applied

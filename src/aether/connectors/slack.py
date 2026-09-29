@@ -4,11 +4,18 @@ no signing secrets. DMs in, replies and approval buttons out.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import Any
 
 from ..authz.approvals import APPROVED, DENIED
-from .base import ApprovalDecider, DecisionCallback, InboundHandler, InboundMessage, MessagingConnector
+from .base import (
+    ApprovalDecider,
+    DecisionCallback,
+    InboundHandler,
+    InboundMessage,
+    MessagingConnector,
+)
 
 log = logging.getLogger("aether.connectors.slack")
 
@@ -151,7 +158,9 @@ class SlackConnector(MessagingConnector):
     async def on_deny(self, ack: Any, body: dict[str, Any], client: Any) -> None:
         await self._handle_button(ack, body, client, DENIED)
 
-    async def _handle_button(self, ack: Any, body: dict[str, Any], client: Any, decision: str) -> None:
+    async def _handle_button(
+        self, ack: Any, body: dict[str, Any], client: Any, decision: str
+    ) -> None:
         await ack()
         try:
             approval_id = int(body["actions"][0]["value"])
@@ -160,14 +169,14 @@ class SlackConnector(MessagingConnector):
             return
         result = await self._decide(approval_id, decision)
         note = "handled." if result is not None else "already decided or expired."
-        try:
+        with contextlib.suppress(
+            Exception
+        ):  # message may be old or locked — the store has the truth
             await client.chat_update(
                 channel=body["channel"]["id"],
                 ts=body["message"]["ts"],
                 text=f"Approval {decision}: {note}",
             )
-        except Exception:  # message may be old or locked — the store has the truth
-            pass
 
     # -- outbound ------------------------------------------------------------------
 

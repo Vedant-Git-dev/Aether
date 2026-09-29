@@ -39,10 +39,10 @@ class OllamaProvider(OpenAIProvider):
         model: str,
         max_tokens: int = 16000,
         supports_vision: bool = False,
-    ) -> "OllamaProvider":
+    ) -> OllamaProvider:
         if not base_url:
-            raise ProviderError(
-                "llm.provider is ollama but OLLAMA_BASE_URL is not set"
-            )
+            raise ProviderError("llm.provider is ollama but OLLAMA_BASE_URL is not set")
         # Ollama ignores the api key; the OpenAI SDK requires one to exist.
-        return cls(AsyncOpenAI(base_url=base_url, api_key="ollama"), model, max_tokens, supports_vision)
+        return cls(
+            AsyncOpenAI(base_url=base_url, api_key="ollama"), model, max_tokens, supports_vision
+        )

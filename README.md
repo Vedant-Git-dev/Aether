@@ -1,4 +1,4 @@
-# Aether
+  # Aether
 
 **A personal agent that actually acts — continuously, not just when asked.**
 Aether watches your connected apps around the clock, keeps a memory of what

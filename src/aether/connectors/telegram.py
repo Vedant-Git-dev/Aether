@@ -6,6 +6,7 @@ Only private chats are processed — a personal agent, not a group bot.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import Any
 
@@ -13,7 +14,13 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filters
 
 from ..authz.approvals import APPROVED, DENIED
-from .base import ApprovalDecider, DecisionCallback, InboundHandler, InboundMessage, MessagingConnector
+from .base import (
+    ApprovalDecider,
+    DecisionCallback,
+    InboundHandler,
+    InboundMessage,
+    MessagingConnector,
+)
 
 log = logging.getLogger("aether.connectors.telegram")
 
@@ -59,7 +66,9 @@ class TelegramConnector(MessagingConnector):
             )
             return
         app = self._app_factory(self._token)
-        app.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, self._on_message))
+        app.add_handler(
+            MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, self._on_message)
+        )
         app.add_handler(CallbackQueryHandler(self._on_button))
         await app.initialize()
         await app.start()
@@ -97,17 +106,17 @@ class TelegramConnector(MessagingConnector):
         if not data or not data.startswith(_CALLBACK_PREFIX):
             return
         await query.answer()
-        action, _, id_part = data[len(_CALLBACK_PREFIX):].partition(":")
+        action, _, id_part = data[len(_CALLBACK_PREFIX) :].partition(":")
         if not id_part.isdigit() or action not in ("approve", "deny"):
             log.warning("odd telegram callback data: %r", data)
             return
         decision = APPROVED if action == "approve" else DENIED
         result = await self._decide(int(id_part), decision)
         note = "handled." if result is not None else "already decided or expired."
-        try:
+        with contextlib.suppress(
+            Exception
+        ):  # message too old to edit — non-fatal, the store has the truth
             await query.edit_message_text(f"Approval {decision}: {note}", reply_markup=None)
-        except Exception:  # message too old to edit — non-fatal, the store has the truth
-            pass
 
     # -- outbound --------------------------------------------------------------------
 
@@ -115,10 +124,18 @@ class TelegramConnector(MessagingConnector):
         await self._send(text, reply_markup=None)
 
     async def present_approval(self, approval_id: int, tool_name: str, summary: str) -> None:
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Approve ✅", callback_data=f"{_CALLBACK_PREFIX}approve:{approval_id}"),
-            InlineKeyboardButton("Deny ❌", callback_data=f"{_CALLBACK_PREFIX}deny:{approval_id}"),
-        ]])
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "Approve ✅", callback_data=f"{_CALLBACK_PREFIX}approve:{approval_id}"
+                    ),
+                    InlineKeyboardButton(
+                        "Deny ❌", callback_data=f"{_CALLBACK_PREFIX}deny:{approval_id}"
+                    ),
+                ]
+            ]
+        )
         await self._send(f"Approval needed: {tool_name}\n{summary}", reply_markup=keyboard)
 
     async def _send(self, text: str, reply_markup: Any) -> None:
@@ -126,4 +143,6 @@ class TelegramConnector(MessagingConnector):
         if app is None or self._chat_ref is None:
             log.info("telegram: nowhere to send yet (started=%s)", app is not None)
             return
-        await app.bot.send_message(chat_id=int(self._chat_ref), text=text, reply_markup=reply_markup)
+        await app.bot.send_message(
+            chat_id=int(self._chat_ref), text=text, reply_markup=reply_markup
+        )

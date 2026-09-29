@@ -51,9 +51,7 @@ async def run_tool_loop(
             return turn, history
 
         # Record the proposal, then execute every call and feed results back.
-        history.append(
-            Message.assistant(turn.text, turn.tool_calls, turn.provider_extra)
-        )
+        history.append(Message.assistant(turn.text, turn.tool_calls, turn.provider_extra))
         results: list[ToolResult] = []
         for call in turn.tool_calls:
             try:

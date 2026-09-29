@@ -75,9 +75,7 @@ class Message:
     # -- constructors for the common shapes ---------------------------------
 
     @classmethod
-    def user(
-        cls, text: str, images: list[ImageBlock] | None = None
-    ) -> "Message":
+    def user(cls, text: str, images: list[ImageBlock] | None = None) -> Message:
         blocks: list[Block] = [TextBlock(text)]
         if images:
             blocks.extend(images)
@@ -89,7 +87,7 @@ class Message:
         text: str = "",
         tool_calls: list[ToolCall] | None = None,
         provider_extra: Any = None,
-    ) -> "Message":
+    ) -> Message:
         blocks: list[Block] = []
         if text:
             blocks.append(TextBlock(text))
@@ -98,7 +96,7 @@ class Message:
         return cls("assistant", blocks, provider_extra)
 
     @classmethod
-    def tool_results(cls, results: list[ToolResult]) -> "Message":
+    def tool_results(cls, results: list[ToolResult]) -> Message:
         return cls("tool", list(results))
 
 

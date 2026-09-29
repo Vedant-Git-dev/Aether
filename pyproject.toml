@@ -29,6 +29,9 @@ dependencies = [
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "playwright>=1.48",
+    "pytest-playwright>=0.5",
 ]
 
 [project.scripts]
@@ -46,4 +49,23 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "integration: requires AETHER_TEST_DATABASE_URL (a throwaway Postgres)",
+    "e2e: browser end-to-end tests against the dev fixture server (requires `playwright install chromium`)",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4"]
+ignore = [
+    "E501",  # line length is a formatter concern, not a lint failure
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["aether"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's dependency-injection idiom is `param: T = File(...)` / `= Form(...)` /
+# `= Depends(...)` — a function call in a default is the documented API, not a bug.
+"src/aether/api/routes.py" = ["B008"]

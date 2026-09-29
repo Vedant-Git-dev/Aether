@@ -5,13 +5,20 @@ and approval buttons out. DMs only — the bot ignores servers and channels.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Any
 
 import discord
 
 from ..authz.approvals import APPROVED, DENIED
-from .base import ApprovalDecider, DecisionCallback, InboundHandler, InboundMessage, MessagingConnector
+from .base import (
+    ApprovalDecider,
+    DecisionCallback,
+    InboundHandler,
+    InboundMessage,
+    MessagingConnector,
+)
 
 log = logging.getLogger("aether.connectors.discord")
 
@@ -38,9 +45,7 @@ class ApprovalView(discord.ui.View):
         note = "handled." if result is not None else "already decided or expired."
         for child in self.children:
             child.disabled = True
-        await interaction.response.edit_message(
-            content=f"Approval {decision}: {note}", view=self
-        )
+        await interaction.response.edit_message(content=f"Approval {decision}: {note}", view=self)
 
 
 def _is_dm(channel: Any) -> bool:
@@ -103,7 +108,9 @@ class DiscordConnector(MessagingConnector):
         except asyncio.CancelledError:
             raise
         except Exception:
-            log.exception("discord gateway stopped — check DISCORD_BOT_TOKEN and the privileged intents")
+            log.exception(
+                "discord gateway stopped — check DISCORD_BOT_TOKEN and the privileged intents"
+            )
 
     async def stop(self) -> None:
         bot, self._bot = self._bot, None
@@ -114,10 +121,8 @@ class DiscordConnector(MessagingConnector):
                 log.exception("discord close failed")
         task, self._task = self._task, None
         if task is not None:
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await task
-            except asyncio.CancelledError:
-                pass
 
     # -- inbound -----------------------------------------------------------------
 

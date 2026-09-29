@@ -65,9 +65,7 @@ def messages_to_gemini(messages: list[Message]) -> list[dict[str, Any]]:
                 if isinstance(b, TextBlock) and b.text:
                     parts.append({"text": b.text})
                 elif isinstance(b, ToolCall):
-                    parts.append(
-                        {"function_call": {"name": b.name, "args": b.arguments}}
-                    )
+                    parts.append({"function_call": {"name": b.name, "args": b.arguments}})
             if parts:
                 out.append({"role": "model", "parts": parts})
         elif msg.role == "tool":
@@ -153,7 +151,7 @@ class GeminiProvider:
         self.supports_vision = supports_vision
 
     @classmethod
-    def build(cls, api_key: str, model: str, max_tokens: int = 16000) -> "GeminiProvider":
+    def build(cls, api_key: str, model: str, max_tokens: int = 16000) -> GeminiProvider:
         if not api_key:
             raise ProviderError(
                 "llm.provider is gemini but GEMINI_API_KEY is not set — "

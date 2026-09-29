@@ -8,20 +8,11 @@ become observations; configured source polls run on schedule.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from aether.agent.loop import AgentLoop, CaptureRequestBox, SurfaceFanout
-from aether.agent.prompts import SYSTEM_PROMPT
-from aether.authz.approvals import APPROVED, DENIED
-from aether.authz.policy import Policy
-from aether.config import AppConfig, AuthzRule, MCPServerConfig, PollTool
-from aether.connectors.base import InboundMessage
-from aether.connectors.registry import ToolRegistry
-from aether.llm.types import ToolCall, ToolSpec, Turn
-from aether.memory.events import Event, IngestResult
-from aether.scheduler.jobs import ScheduledAction
 from fakes import (
+    FakeAgentSettings,
     FakeApprovals,
     FakeAudit,
     FakeContextBuilder,
@@ -35,6 +26,17 @@ from fakes import (
     FakeTraces,
 )
 
+from aether.agent.loop import AgentLoop, CaptureRequestBox, SurfaceFanout
+from aether.agent.prompts import SYSTEM_PROMPT
+from aether.authz.approvals import APPROVED, DENIED
+from aether.authz.policy import Policy
+from aether.config import AppConfig, AuthzRule, MCPServerConfig, PollTool
+from aether.connectors.base import InboundMessage
+from aether.connectors.registry import ToolRegistry
+from aether.llm.types import ToolCall, ToolSpec, Turn
+from aether.memory.events import Event, IngestResult
+from aether.scheduler.jobs import ScheduledAction
+
 
 def _msg(text: str, handle: str = "@vedant", surface: str = "telegram") -> InboundMessage:
     return InboundMessage(surface=surface, handle=handle, text=text, chat_ref="1")
@@ -45,7 +47,7 @@ def _event(event_id: int, source: str = "mail", kind: str = "poll:unread") -> Ev
         id=event_id,
         source=source,
         kind=kind,
-        occurred_at=datetime.now(timezone.utc),
+        occurred_at=datetime.now(UTC),
         payload={"result": "3 unread"},
         salience_score=0.0,
         memorable=False,
@@ -56,7 +58,13 @@ def _event(event_id: int, source: str = "mail", kind: str = "poll:unread") -> Ev
 class LoopKit:
     """One agent loop wired to every fake, for one test."""
 
-    def __init__(self, provider: FakeProvider | None, *, rules: list[AuthzRule] | None = None):
+    def __init__(
+        self,
+        provider: FakeProvider | None,
+        *,
+        rules: list[AuthzRule] | None = None,
+        agent_settings: FakeAgentSettings | None = None,
+    ):
         self.tools = ToolRegistry()
         self.events = FakeEventStore()
         self.approvals = FakeApprovals()
@@ -198,9 +206,7 @@ async def test_denied_by_policy_calls_are_refused_up_front() -> None:
     )
     kit.add_tool("mail__send_message")
 
-    result = await kit.loop._execute(
-        ToolCall(id="t1", name="mail__send_message", arguments={})
-    )
+    result = await kit.loop._execute(ToolCall(id="t1", name="mail__send_message", arguments={}))
     assert result.is_error is True
     assert "denied by policy" in result.content
     assert kit.executed == []
@@ -308,7 +314,7 @@ def _poll_host(kit: LoopKit, every_minutes: float = 5.0) -> SimpleNamespace:
         return "3 unread: alice re: demo, bob, carol"
 
     kit.loop._poll_targets["mail:list_unread:0"] = ("mail", config.poll_tools[0])
-    kit.loop._next_poll["mail:list_unread:0"] = datetime.now(timezone.utc)
+    kit.loop._next_poll["mail:list_unread:0"] = datetime.now(UTC)
     kit.loop._host = SimpleNamespace(connections=[connection], call=call)
     return SimpleNamespace(calls=calls)
 
@@ -339,11 +345,14 @@ async def test_source_polls_run_ingest_and_audit() -> None:
 async def test_scheduled_actions_pass_the_gate_at_fire_time() -> None:
     kit = LoopKit(None)
     kit.add_tool("mail__send_message", result="sent")
-    when = datetime.now(timezone.utc) + timedelta(hours=1)
+    when = datetime.now(UTC) + timedelta(hours=1)
 
     # an allowed scheduled action runs through the executor
     action = ScheduledAction(
-        id=7, label="evening summary", run_at=when, status="pending",
+        id=7,
+        label="evening summary",
+        run_at=when,
+        status="pending",
         payload={"type": "tool", "tool": "mail__list_messages", "params": {"limit": 1}},
         created_at=when,
     )
@@ -354,7 +363,10 @@ async def test_scheduled_actions_pass_the_gate_at_fire_time() -> None:
 
     # a risky scheduled action parks for approval instead of running
     risky = ScheduledAction(
-        id=8, label="send the file", run_at=when, status="pending",
+        id=8,
+        label="send the file",
+        run_at=when,
+        status="pending",
         payload={"type": "tool", "tool": "mail__send_message", "params": {"to": "a@b.c"}},
         created_at=when,
     )
@@ -368,9 +380,12 @@ async def test_scheduled_denials_raise_for_the_worker_to_record() -> None:
     kit.add_tool("mail__send_message")
     kit.loop._policy = Policy([AuthzRule(tool_pattern="mail__send_message", decision="deny")])
     action = ScheduledAction(
-        id=9, label="never", run_at=datetime.now(timezone.utc), status="pending",
+        id=9,
+        label="never",
+        run_at=datetime.now(UTC),
+        status="pending",
         payload={"type": "tool", "tool": "mail__send_message", "params": {}},
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     try:
         await kit.loop.execute_scheduled(action)
@@ -383,3 +398,22 @@ async def test_the_system_prompt_is_formatted_safely() -> None:
     text = SYSTEM_PROMPT.format(owner="the user")
     assert "You are Aether" in text
     assert "{" not in text.replace("{owner}", "")  # no stray braces left behind
+
+
+async def test_system_prompt_appends_the_owners_personality_text() -> None:
+    kit = LoopKit(None, agent_settings=FakeAgentSettings("Be extremely terse. Use no emoji."))
+    prompt = await kit.loop._system_prompt()
+    assert prompt.startswith(SYSTEM_PROMPT.format(owner="the user"))
+    assert "Be extremely terse. Use no emoji." in prompt
+
+
+async def test_system_prompt_is_unchanged_with_no_personality_configured() -> None:
+    kit = LoopKit(None, agent_settings=FakeAgentSettings(""))
+    prompt = await kit.loop._system_prompt()
+    assert prompt == SYSTEM_PROMPT.format(owner="the user")
+
+
+async def test_system_prompt_is_unchanged_with_no_settings_store_wired() -> None:
+    kit = LoopKit(None)  # agent_settings defaults to None
+    prompt = await kit.loop._system_prompt()
+    assert prompt == SYSTEM_PROMPT.format(owner="the user")

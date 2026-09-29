@@ -41,9 +41,7 @@ def test_missing_api_key_error_names_the_variable() -> None:
         ("gemini", "GEMINI_API_KEY"),
     ]:
         with pytest.raises(ProviderError, match=env_var):
-            ProviderRegistry.from_config(
-                _settings(), LLMConfig(provider=provider_name)
-            )
+            ProviderRegistry.from_config(_settings(), LLMConfig(provider=provider_name))
 
 
 def test_unknown_provider_name_raises() -> None:
@@ -57,24 +55,22 @@ def test_unknown_provider_name_raises() -> None:
 def test_salience_role_uses_override_model() -> None:
     registry = ProviderRegistry.from_config(
         _settings(anthropic_api_key="k"),
-        LLMConfig(provider="anthropic", model="claude-opus-5", salience_model="claude-haiku-4-5-20251001"),
+        LLMConfig(
+            provider="anthropic", model="claude-opus-5", salience_model="claude-haiku-4-5-20251001"
+        ),
     )
     assert registry.for_role("reasoning").model == "claude-opus-5"
     assert registry.for_role("salience").model == "claude-haiku-4-5-20251001"
 
 
 def test_salience_role_defaults_to_reasoning_provider() -> None:
-    registry = ProviderRegistry.from_config(
-        _settings(anthropic_api_key="k"), LLMConfig()
-    )
+    registry = ProviderRegistry.from_config(_settings(anthropic_api_key="k"), LLMConfig())
     assert registry.for_role("salience") is registry.for_role("reasoning")
 
 
 def test_vision_role_defaults_to_reasoning_provider() -> None:
     # Hosted providers are vision-capable, so vision falls back to default.
-    registry = ProviderRegistry.from_config(
-        _settings(anthropic_api_key="k"), LLMConfig()
-    )
+    registry = ProviderRegistry.from_config(_settings(anthropic_api_key="k"), LLMConfig())
     assert registry.for_role("vision") is registry.for_role("reasoning")
 
 
@@ -105,14 +101,10 @@ def test_ollama_vision_flag_and_explicit_vision_model() -> None:
 
 
 def test_unknown_role_falls_back_to_reasoning() -> None:
-    registry = ProviderRegistry.from_config(
-        _settings(anthropic_api_key="k"), LLMConfig()
-    )
+    registry = ProviderRegistry.from_config(_settings(anthropic_api_key="k"), LLMConfig())
     assert registry.for_role("nonexistent-role") is registry.for_role("reasoning")
 
 
 def test_registry_providers_satisfy_protocol() -> None:
-    registry = ProviderRegistry.from_config(
-        _settings(anthropic_api_key="k"), LLMConfig()
-    )
+    registry = ProviderRegistry.from_config(_settings(anthropic_api_key="k"), LLMConfig())
     assert isinstance(registry.for_role("reasoning"), Provider)

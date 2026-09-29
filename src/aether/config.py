@@ -28,9 +28,7 @@ class Settings(BaseSettings):
 
     encryption_key: str = Field(default="", validation_alias="AETHER_ENCRYPTION_KEY")
     api_token: str = Field(default="change-me", validation_alias="AETHER_TOKEN")
-    dev_ephemeral_key: bool = Field(
-        default=False, validation_alias="AETHER_DEV_EPHEMERAL_KEY"
-    )
+    dev_ephemeral_key: bool = Field(default=False, validation_alias="AETHER_DEV_EPHEMERAL_KEY")
 
     database_url: str = ""
     port: int = 8000
@@ -161,10 +159,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     """
     if path is None:
         env_path = os.environ.get("AETHER_CONFIG")
-        if env_path:
-            path = Path(env_path)
-        else:
-            path = Path("config.yaml")
+        path = Path(env_path) if env_path else Path("config.yaml")
     p = Path(path)
     if not p.is_file():
         return AppConfig()

@@ -2,7 +2,9 @@
 
 Unit tests stay hermetic (no network, no database). Integration tests are
 opt-in: they run only when AETHER_TEST_DATABASE_URL is set, and manage a
-migrated, truncated database themselves.
+migrated, truncated database themselves. E2E tests are opt-in the same way,
+via AETHER_TEST_E2E=1 — they need `playwright install chromium` done once
+first (see tests/e2e/README.md).
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import pytest
 from aether.memory.db import create_pool, run_migrations
 
 DB_URL = os.environ.get("AETHER_TEST_DATABASE_URL", "")
+E2E_ENABLED = os.environ.get("AETHER_TEST_E2E", "") == "1"
 
 # Tables integration tests are allowed to wipe between tests.
 _TABLES = (
@@ -23,12 +26,15 @@ _TABLES = (
 
 
 def pytest_collection_modifyitems(config, items):
-    if DB_URL:
-        return
-    skip = pytest.mark.skip(reason="integration: set AETHER_TEST_DATABASE_URL to run")
+    skip_integration = pytest.mark.skip(reason="integration: set AETHER_TEST_DATABASE_URL to run")
+    skip_e2e = pytest.mark.skip(
+        reason="e2e: set AETHER_TEST_E2E=1 to run (needs `playwright install chromium` first)"
+    )
     for item in items:
-        if "integration" in item.keywords:
-            item.add_marker(skip)
+        if not DB_URL and "integration" in item.keywords:
+            item.add_marker(skip_integration)
+        if not E2E_ENABLED and "e2e" in item.keywords:
+            item.add_marker(skip_e2e)
 
 
 @pytest.fixture

@@ -62,9 +62,7 @@ def normalize_handle(platform: str, handle: str) -> str:
     if not h:
         return ""
     digits = re.sub(r"\D", "", h)
-    is_phone = platform in _PHONE_PLATFORMS or (
-        h.startswith("+") and len(digits) >= 7
-    )
+    is_phone = platform in _PHONE_PLATFORMS or (h.startswith("+") and len(digits) >= 7)
     if is_phone:
         key = digits[-10:] if len(digits) >= 10 else digits
         return f"tel:{key}"
@@ -126,8 +124,16 @@ class LLMSamePersonJudge:
             # agent running without LLM keys just gets more identities
             raise RuntimeError("no LLM provider configured")
         payload = {
-            "reference_a": {"platform": a.platform, "handle": a.handle, "display_name": a.display_name},
-            "reference_b": {"platform": b.platform, "handle": b.handle, "display_name": b.display_name},
+            "reference_a": {
+                "platform": a.platform,
+                "handle": a.handle,
+                "display_name": a.display_name,
+            },
+            "reference_b": {
+                "platform": b.platform,
+                "handle": b.handle,
+                "display_name": b.display_name,
+            },
         }
         turn = await self._provider.complete(
             self.PROMPT, [Message.user(json.dumps(payload))], tools=[]
@@ -151,9 +157,7 @@ def candidate_score(new: PersonRef, existing: PersonRef) -> float:
     if new.handle and existing.handle:
         scores.append(fuzz.partial_ratio(new.handle.lower(), existing.handle.lower()))
     if new.display_name and existing.display_name:
-        scores.append(
-            fuzz.token_set_ratio(new.display_name.lower(), existing.display_name.lower())
-        )
+        scores.append(fuzz.token_set_ratio(new.display_name.lower(), existing.display_name.lower()))
     new_local, _, _ = new.handle.partition("@")
     old_local, _, _ = existing.handle.partition("@")
     if new_local and old_local and "@" in new.handle and "@" in existing.handle:
@@ -162,7 +166,9 @@ def candidate_score(new: PersonRef, existing: PersonRef) -> float:
     old_digits = re.sub(r"\D", "", existing.handle)
     if len(new_digits) >= 7 and len(old_digits) >= 7:
         scores.append(
-            100.0 if new_digits[-10:] == old_digits[-10:] else float(fuzz.ratio(new_digits, old_digits))
+            100.0
+            if new_digits[-10:] == old_digits[-10:]
+            else float(fuzz.ratio(new_digits, old_digits))
         )
     return max(scores) if scores else 0.0
 
@@ -212,23 +218,49 @@ class Entities:
             handles=[(h["platform"], h["raw_handle"]) for h in handles],
         )
 
+    async def list_people(self, limit: int = 50) -> list[Entity]:
+        """Everyone Aether has resolved an identity for, most recent first —
+        the read side of the "who is this" cross-platform linking."""
+        rows = await self._pool.fetch(
+            "SELECT id, display_name, confidence FROM identities"
+            " WHERE merged_into_id IS NULL ORDER BY created_at DESC LIMIT $1",
+            limit,
+        )
+        if not rows:
+            return []
+        ids = [r["id"] for r in rows]
+        handle_rows = await self._pool.fetch(
+            "SELECT identity_id, platform, raw_handle FROM identity_handles"
+            " WHERE identity_id = ANY($1::bigint[])",
+            ids,
+        )
+        handles_by_id: dict[int, list[tuple[str, str]]] = {}
+        for h in handle_rows:
+            handles_by_id.setdefault(h["identity_id"], []).append((h["platform"], h["raw_handle"]))
+        return [
+            Entity(
+                id=r["id"],
+                display_name=r["display_name"],
+                confidence=r["confidence"],
+                handles=handles_by_id.get(r["id"], []),
+            )
+            for r in rows
+        ]
+
     async def note(self, identity_id: int, payload: dict[str, Any]) -> None:
         """Append an encrypted relationship note for an identity."""
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                note_id = await conn.fetchval(
-                    "INSERT INTO entity_notes (identity_id, payload_enc) VALUES ($1, $2) RETURNING id",
-                    identity_id,
-                    b"",  # placeholder until the id exists; replaced below, same transaction
-                )
-                blob = self._cipher.encrypt_json(
-                    payload, aad=f"entity_notes:payload_enc:{note_id}"
-                )
-                await conn.execute(
-                    "UPDATE entity_notes SET payload_enc = $1 WHERE id = $2",
-                    blob,
-                    note_id,
-                )
+        async with self._pool.acquire() as conn, conn.transaction():
+            note_id = await conn.fetchval(
+                "INSERT INTO entity_notes (identity_id, payload_enc) VALUES ($1, $2) RETURNING id",
+                identity_id,
+                b"",  # placeholder until the id exists; replaced below, same transaction
+            )
+            blob = self._cipher.encrypt_json(payload, aad=f"entity_notes:payload_enc:{note_id}")
+            await conn.execute(
+                "UPDATE entity_notes SET payload_enc = $1 WHERE id = $2",
+                blob,
+                note_id,
+            )
         await self._audit.append(
             actor="agent",
             tool_name="note_entity",
@@ -265,9 +297,7 @@ class Entities:
 
     # -- resolution ---------------------------------------------------------
 
-    async def resolve(
-        self, platform: str, handle: str, display_name: str = ""
-    ) -> Entity:
+    async def resolve(self, platform: str, handle: str, display_name: str = "") -> Entity:
         """Link a reference to an identity — exact match, fuzzy candidates
         confirmed by the LLM, or a fresh identity."""
         normalized = normalize_handle(platform, handle)
@@ -298,7 +328,10 @@ class Entities:
                 continue
             if confidence >= CONFIRM_THRESHOLD:
                 await self._link(
-                    identity_id, platform, handle, normalized,
+                    identity_id,
+                    platform,
+                    handle,
+                    normalized,
                     how=f"fuzzy candidate {ref.handle!r} (score {score:.0f}), LLM confidence {confidence:.2f}",
                 )
                 entity = await self.get(identity_id)
@@ -309,19 +342,18 @@ class Entities:
 
     async def merge(self, primary_id: int, duplicate_id: int) -> None:
         """Fold a duplicate identity into a primary one; recorded, never silent."""
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    "UPDATE identity_handles SET identity_id = $1 WHERE identity_id = $2",
-                    primary_id,
-                    duplicate_id,
-                )
-                await conn.execute(
-                    "UPDATE identities SET merged_into_id = $1, confidence = 0"
-                    " WHERE id = $2 AND merged_into_id IS NULL",
-                    primary_id,
-                    duplicate_id,
-                )
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "UPDATE identity_handles SET identity_id = $1 WHERE identity_id = $2",
+                primary_id,
+                duplicate_id,
+            )
+            await conn.execute(
+                "UPDATE identities SET merged_into_id = $1, confidence = 0"
+                " WHERE id = $2 AND merged_into_id IS NULL",
+                primary_id,
+                duplicate_id,
+            )
         await self._audit.append(
             actor="agent",
             tool_name="entity_merge",
@@ -375,20 +407,19 @@ class Entities:
     async def _create(
         self, platform: str, handle: str, normalized: str, display_name: str
     ) -> Entity:
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                identity_id = await conn.fetchval(
-                    "INSERT INTO identities (display_name) VALUES ($1) RETURNING id",
-                    display_name or handle,
-                )
-                await conn.execute(
-                    "INSERT INTO identity_handles (identity_id, platform, raw_handle, normalized)"
-                    " VALUES ($1, $2, $3, $4) ON CONFLICT (platform, normalized) DO NOTHING",
-                    identity_id,
-                    platform,
-                    handle,
-                    normalized,
-                )
+        async with self._pool.acquire() as conn, conn.transaction():
+            identity_id = await conn.fetchval(
+                "INSERT INTO identities (display_name) VALUES ($1) RETURNING id",
+                display_name or handle,
+            )
+            await conn.execute(
+                "INSERT INTO identity_handles (identity_id, platform, raw_handle, normalized)"
+                " VALUES ($1, $2, $3, $4) ON CONFLICT (platform, normalized) DO NOTHING",
+                identity_id,
+                platform,
+                handle,
+                normalized,
+            )
         await self._audit.append(
             actor="agent",
             tool_name="entity_resolve",

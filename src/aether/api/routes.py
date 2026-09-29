@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hmac
 import logging
-from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel
@@ -27,6 +26,10 @@ def _authorized(request: Request, token: str | None) -> bool:
 
 class DecisionBody(BaseModel):
     decision: str  # "approve" | "deny"
+
+
+class PersonalityBody(BaseModel):
+    text: str
 
 
 @router.post("/api/screen-capture", status_code=202)
@@ -140,6 +143,110 @@ async def events_feed(request: Request, limit: int = 50, token: str | None = Non
     }
 
 
+_BUILTIN_RULES = [
+    {
+        "id": "builtin:internal",
+        "decision": "allow",
+        "description": "Aether's own memory, scheduling, capture-request, and web-chat "
+        "tools — they only ever touch Aether's own state.",
+    },
+    {
+        "id": "builtin:risky",
+        "decision": "require_approval",
+        "description": "Verbs that reach an external system or are hard to undo: send, "
+        "reply, forward, post, publish, delete, remove, cancel, pay, transfer, "
+        "invite, book, create.",
+    },
+    {
+        "id": "builtin:read-only",
+        "decision": "allow",
+        "description": "Observation verbs: list, search, get, read, fetch, find, query.",
+    },
+    {
+        "id": "default:fail-safe",
+        "decision": "require_approval",
+        "description": "Anything that matches none of the above — an unknown tool can "
+        "never run silently.",
+    },
+]
+
+
+@router.get("/api/policy")
+async def policy_feed(request: Request, token: str | None = None) -> dict:
+    """Read-only view of the authorization policy: the user's own rules from
+    config.yaml (evaluated first, in order) followed by the built-in ladder
+    every call falls through to. No edit path — config.yaml is the source
+    of truth."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    authz = request.app.state.config.authz
+    return {
+        "rules": [
+            {
+                "tool_pattern": r.tool_pattern,
+                "param_pattern": r.param_pattern,
+                "decision": r.decision,
+                "note": r.note,
+            }
+            for r in authz.rules
+        ],
+        "builtin_rules": _BUILTIN_RULES,
+        "approval_ttl_hours": authz.approval_ttl_hours,
+    }
+
+
+@router.get("/api/settings/personality")
+async def get_personality(request: Request, token: str | None = None) -> dict:
+    """The owner's custom behavior instructions — appended to the real
+    system prompt on every turn, not cosmetic."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    agent_settings = getattr(request.app.state, "agent_settings", None)
+    if agent_settings is None:
+        raise HTTPException(status_code=503, detail="agent settings store is not wired")
+    return {"text": await agent_settings.get_personality()}
+
+
+@router.put("/api/settings/personality")
+async def set_personality(
+    body: PersonalityBody, request: Request, token: str | None = None
+) -> dict:
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    agent_settings = getattr(request.app.state, "agent_settings", None)
+    if agent_settings is None:
+        raise HTTPException(status_code=503, detail="agent settings store is not wired")
+    saved = await agent_settings.set_personality(body.text)
+    return {"ok": True, "text": saved}
+
+
+@router.get("/api/settings/apps")
+async def apps_feed(request: Request, token: str | None = None) -> dict:
+    """Read-only view of what's actually connected: the native messaging
+    toggles and MCP servers from config.yaml, whether screen-vision is
+    available this boot, and the contact allowlist mode. No edit path —
+    config.yaml and provider keys are the source of truth."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    config = request.app.state.config
+    return {
+        "connectors": [
+            {"name": name, "enabled": toggle.enabled}
+            for name, toggle in (
+                ("telegram", config.messaging.telegram),
+                ("discord", config.messaging.discord),
+                ("slack", config.messaging.slack),
+            )
+        ],
+        "mcp_servers": [
+            {"name": s.name, "transport": s.transport.type, "enabled": s.enabled}
+            for s in config.mcp_servers
+        ],
+        "screen_vision_available": getattr(request.app.state, "screen_vision", None) is not None,
+        "contacts_mode": config.contacts.mode,
+    }
+
+
 @router.get("/api/audit")
 async def audit_feed(request: Request, limit: int = 100, token: str | None = None) -> dict:
     """Recent audit entries plus the live chain verification — the panel
@@ -158,6 +265,7 @@ async def audit_feed(request: Request, limit: int = 100, token: str | None = Non
                 "decision": r["decision"],
                 "rules_matched": r["rules_matched"],
                 "outcome": r["outcome"],
+                "hash": r["entry_hash"],
                 "at": r["created_at"].isoformat(),
             }
             for r in rows
@@ -167,6 +275,8 @@ async def audit_feed(request: Request, limit: int = 100, token: str | None = Non
             "entries": chain.entries,
             "first_bad_seq": chain.first_bad_seq,
             "problem": chain.problem,
+            # rows are newest-first, so the first row's hash is the current chain head
+            "head_hash": rows[0]["entry_hash"] if rows else None,
         },
     }
 

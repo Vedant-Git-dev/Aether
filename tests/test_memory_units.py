@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import pytest
+from fakes import FakeEventStore, FakeJudge, FakeProvider
 
-from aether.config import AgentConfig, ContactRule, ContactsConfig, SalienceConfig
+from aether.config import ContactRule, ContactsConfig, SalienceConfig
 from aether.llm.json_utils import JsonParseError, extract_json
 from aether.llm.types import Turn
+from aether.memory.context import apply_daily_cap, bound_events, collect_senders
 from aether.memory.entities import PersonRef, Sender, candidate_score, normalize_handle
 from aether.memory.events import (
     Event,
@@ -17,15 +19,12 @@ from aether.memory.events import (
 )
 from aether.memory.salience import (
     DEFAULT_JUDGE_SCORE,
-    LLMJudge,
     JudgeError,
     Judgment,
+    LLMJudge,
     Salience,
     heuristic_gate,
 )
-from aether.memory.context import apply_daily_cap, bound_events, collect_senders
-from fakes import FakeEventStore, FakeJudge, FakeProvider
-
 
 # ---------------------------------------------------------------------------
 # extract_json
@@ -92,7 +91,9 @@ def test_allowlist_matches_platform_rules_and_star_rules() -> None:
     )
     assert is_allowlisted(contacts, Sender("telegram", "@vedant")) is True
     assert is_allowlisted(contacts, Sender("gmail", "friend@example.com")) is True  # * email rule
-    assert is_allowlisted(contacts, Sender("outlook", "Friend@Example.com")) is True  # normalized match
+    assert (
+        is_allowlisted(contacts, Sender("outlook", "Friend@Example.com")) is True
+    )  # normalized match
     assert is_allowlisted(contacts, Sender("telegram", "@rando")) is False
 
 
@@ -121,21 +122,26 @@ def test_content_hash_is_canonical_and_kind_bound() -> None:
 
 def test_candidate_score_signals() -> None:
     # same phone digits -> perfect
-    assert candidate_score(
-        PersonRef("sms", "+15550101234"), PersonRef("phone", "555-010-1234")
-    ) == 100.0
+    assert (
+        candidate_score(PersonRef("sms", "+15550101234"), PersonRef("phone", "555-010-1234"))
+        == 100.0
+    )
     # same email local part -> strong
-    assert candidate_score(
-        PersonRef("email", "vedant@work.com", ""), PersonRef("gmail", "vedant@gmail.com", "")
-    ) > 80
+    assert (
+        candidate_score(
+            PersonRef("email", "vedant@work.com", ""), PersonRef("gmail", "vedant@gmail.com", "")
+        )
+        > 80
+    )
     # same display names -> strong
-    assert candidate_score(
-        PersonRef("telegram", "@v", "Vedant Mehta"), PersonRef("discord", "@vm", "Vedant Mehta")
-    ) >= 80
+    assert (
+        candidate_score(
+            PersonRef("telegram", "@v", "Vedant Mehta"), PersonRef("discord", "@vm", "Vedant Mehta")
+        )
+        >= 80
+    )
     # unrelated -> weak
-    assert candidate_score(
-        PersonRef("telegram", "@alpha"), PersonRef("slack", "U999")
-    ) < 50
+    assert candidate_score(PersonRef("telegram", "@alpha"), PersonRef("slack", "U999")) < 50
 
 
 # ---------------------------------------------------------------------------
@@ -150,9 +156,14 @@ def test_heuristic_gate_catches_obvious_noise() -> None:
 
 def _event(event_id: int, payload: dict) -> Event:
     return Event(
-        id=event_id, source="mail", kind="message",
-        occurred_at=start_of_today(), payload=payload,
-        salience_score=0.0, memorable=False, meta={},
+        id=event_id,
+        source="mail",
+        kind="message",
+        occurred_at=start_of_today(),
+        payload=payload,
+        salience_score=0.0,
+        memorable=False,
+        meta={},
     )
 
 
@@ -178,13 +189,13 @@ async def test_rate_capped_source_is_pre_gated() -> None:
 
 async def test_judged_event_scores_and_marks_memorable() -> None:
     store = FakeEventStore(events={1: _event(1, {"text": "mom: dinner friday?"})})
-    judge = FakeJudge([Judgment(salience=7.5, category="family", actionability="reply", one_line="dinner plan")])
+    judge = FakeJudge(
+        [Judgment(salience=7.5, category="family", actionability="reply", one_line="dinner plan")]
+    )
     score = await Salience(store, judge, SalienceConfig()).score_event(1)
     assert score == 7.5
     assert judge.calls == [event_text(store.events[1])]
-    assert store.updates == [
-        (1, 7.5, True, {"category": "family", "actionability": "reply"})
-    ]
+    assert store.updates == [(1, 7.5, True, {"category": "family", "actionability": "reply"})]
 
 
 async def test_judge_scores_are_clamped() -> None:
@@ -213,11 +224,13 @@ async def test_missing_event_scores_zero() -> None:
 
 
 async def test_llm_judge_parses_and_validates() -> None:
-    provider = FakeProvider([
-        Turn(
-            text='{"salience": 6, "category": "work", "actionability": "review", "one_line": "invoice arrived"}'
-        )
-    ])
+    provider = FakeProvider(
+        [
+            Turn(
+                text='{"salience": 6, "category": "work", "actionability": "review", "one_line": "invoice arrived"}'
+            )
+        ]
+    )
     judgment = await LLMJudge(provider).judge("anything")
     assert judgment.salience == 6.0
     assert judgment.category == "work"
@@ -237,9 +250,14 @@ def _ctx_event(event_id: int, days_ago: int, score: float, payload_size: int = 5
     from datetime import timedelta
 
     return Event(
-        id=event_id, source="s", kind="k",
+        id=event_id,
+        source="s",
+        kind="k",
         occurred_at=start_of_today() - timedelta(days=days_ago) + timedelta(hours=event_id % 12),
-        payload={"text": "x" * payload_size}, salience_score=score, memorable=True, meta={},
+        payload={"text": "x" * payload_size},
+        salience_score=score,
+        memorable=True,
+        meta={},
     )
 
 

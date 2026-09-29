@@ -19,9 +19,7 @@ from .openai_provider import OpenAIProvider
 ROLES = ("reasoning", "salience", "vision")
 
 
-def _build(
-    settings: Settings, llm: LLMConfig, model: str, vision_capable: bool
-) -> Provider:
+def _build(settings: Settings, llm: LLMConfig, model: str, vision_capable: bool) -> Provider:
     if llm.provider == "anthropic":
         return AnthropicProvider.build(settings.anthropic_api_key, model, llm.max_tokens)
     if llm.provider == "openai":
@@ -47,7 +45,7 @@ class ProviderRegistry:
         return self._providers["reasoning"]  # unknown role -> default provider
 
     @classmethod
-    def from_config(cls, settings: Settings, llm: LLMConfig) -> "ProviderRegistry":
+    def from_config(cls, settings: Settings, llm: LLMConfig) -> ProviderRegistry:
         # Whether the default instance can see images. For hosted providers
         # that's inherent; for Ollama it depends entirely on the model the
         # user pulled, so it's an explicit config flag.

@@ -11,11 +11,12 @@ review; the call is classified again at fire time.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -61,22 +62,21 @@ class Scheduler:
     ) -> ScheduledAction:
         """Persist one action. The row exists the moment this returns —
         a crash between here and fire time loses nothing."""
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                row = await conn.fetchrow(
-                    "INSERT INTO scheduled_actions (label, run_at, status, payload_enc)"
-                    " VALUES ($1, $2, 'pending', $3) RETURNING id, created_at",
-                    label,
-                    run_at,
-                    b"",  # placeholder until the id exists; replaced below, same transaction
-                )
-                action_id = row["id"]
-                blob = self._cipher.encrypt_json(payload, aad=_aad(action_id))
-                await conn.execute(
-                    "UPDATE scheduled_actions SET payload_enc = $1 WHERE id = $2",
-                    blob,
-                    action_id,
-                )
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "INSERT INTO scheduled_actions (label, run_at, status, payload_enc)"
+                " VALUES ($1, $2, 'pending', $3) RETURNING id, created_at",
+                label,
+                run_at,
+                b"",  # placeholder until the id exists; replaced below, same transaction
+            )
+            action_id = row["id"]
+            blob = self._cipher.encrypt_json(payload, aad=_aad(action_id))
+            await conn.execute(
+                "UPDATE scheduled_actions SET payload_enc = $1 WHERE id = $2",
+                blob,
+                action_id,
+            )
         await self._audit.append(
             actor=actor,
             tool_name="schedule_action",
@@ -143,9 +143,7 @@ class Scheduler:
         return [self._to_action(r) for r in rows]
 
     def _to_action(self, row: asyncpg.Record) -> ScheduledAction:
-        payload = self._cipher.decrypt_json(
-            row["payload_enc"], aad=_aad(row["id"])
-        )
+        payload = self._cipher.decrypt_json(row["payload_enc"], aad=_aad(row["id"]))
         return ScheduledAction(
             id=row["id"],
             label=row["label"],
@@ -176,9 +174,7 @@ async def process_due(scheduler: Scheduler, run: ActionRunner) -> int:
 class SchedulerWorker:
     """Background loop: re-arm on boot, then claim due rows every interval."""
 
-    def __init__(
-        self, scheduler: Scheduler, run: ActionRunner, interval: float = 20.0
-    ) -> None:
+    def __init__(self, scheduler: Scheduler, run: ActionRunner, interval: float = 20.0) -> None:
         self._scheduler = scheduler
         self._run = run
         self._interval = interval
@@ -193,10 +189,8 @@ class SchedulerWorker:
         self._stop.set()
         task, self._task = self._task, None
         if task is not None:
-            try:
+            with contextlib.suppress(TimeoutError, asyncio.CancelledError):
                 await asyncio.wait_for(task, timeout=5)
-            except (TimeoutError, asyncio.CancelledError):
-                pass
 
     async def run_forever(self) -> None:
         # re-arm: rows that came due while the process was down run first —
@@ -213,8 +207,6 @@ class SchedulerWorker:
                 await process_due(self._scheduler, self._run)
             except Exception:
                 log.exception("scheduler pass failed — retrying next interval")
-            try:
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._stop.wait(), timeout=self._interval)
-            except TimeoutError:
-                pass
-        log.info("scheduler worker stopped (utc now: %s)", datetime.now(timezone.utc).isoformat())
+        log.info("scheduler worker stopped (utc now: %s)", datetime.now(UTC).isoformat())

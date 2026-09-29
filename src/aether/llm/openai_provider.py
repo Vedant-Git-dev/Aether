@@ -27,9 +27,7 @@ def messages_to_openai(system: str, messages: list[Message]) -> list[dict[str, A
                     parts.append(
                         {
                             "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{b.media_type};base64,{b.data_b64}"
-                            },
+                            "image_url": {"url": f"data:{b.media_type};base64,{b.data_b64}"},
                         }
                     )
             if parts:
@@ -99,13 +97,9 @@ def turn_from_openai(response: Any) -> Turn:
                 arguments = parsed
         except json.JSONDecodeError:
             pass
-        calls.append(
-            ToolCall(id=tc.id, name=tc.function.name, arguments=arguments)
-        )
+        calls.append(ToolCall(id=tc.id, name=tc.function.name, arguments=arguments))
     finish = getattr(choice, "finish_reason", None)
-    reason = {"tool_calls": "tool_use", "length": "max_output_tokens"}.get(
-        finish, "end_turn"
-    )
+    reason = {"tool_calls": "tool_use", "length": "max_output_tokens"}.get(finish, "end_turn")
     return Turn(
         text=getattr(message, "content", None) or "",
         tool_calls=calls,
@@ -134,9 +128,7 @@ class OpenAIProvider:
         self.max_tokens_param = max_tokens_param
 
     @classmethod
-    def build(
-        cls, api_key: str, model: str, max_tokens: int = 16000
-    ) -> "OpenAIProvider":
+    def build(cls, api_key: str, model: str, max_tokens: int = 16000) -> OpenAIProvider:
         if not api_key:
             raise ProviderError(
                 "llm.provider is openai but OPENAI_API_KEY is not set — "

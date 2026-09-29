@@ -28,23 +28,22 @@ class ChatHistory:
         self._cipher = cipher
 
     async def append(self, surface: str, direction: str, text: str) -> None:
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                row = await conn.fetchrow(
-                    "INSERT INTO chat_messages (surface, direction, payload_enc)"
-                    " VALUES ($1, $2, $3) RETURNING id",
-                    surface,
-                    direction,
-                    b"",  # placeholder until the id exists; replaced below, same transaction
-                )
-                blob = self._cipher.encrypt_json(
-                    {"text": text}, aad=f"chat_messages:payload_enc:{row['id']}"
-                )
-                await conn.execute(
-                    "UPDATE chat_messages SET payload_enc = $1 WHERE id = $2",
-                    blob,
-                    row["id"],
-                )
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "INSERT INTO chat_messages (surface, direction, payload_enc)"
+                " VALUES ($1, $2, $3) RETURNING id",
+                surface,
+                direction,
+                b"",  # placeholder until the id exists; replaced below, same transaction
+            )
+            blob = self._cipher.encrypt_json(
+                {"text": text}, aad=f"chat_messages:payload_enc:{row['id']}"
+            )
+            await conn.execute(
+                "UPDATE chat_messages SET payload_enc = $1 WHERE id = $2",
+                blob,
+                row["id"],
+            )
 
     async def recent(self, limit: int = 50) -> list[dict[str, Any]]:
         rows = await self._pool.fetch(
@@ -111,9 +110,7 @@ async def chat_ws(websocket: WebSocket) -> None:
     """Chat with the agent from the browser. History replays on connect;
     everything the user types goes to the agent loop like any other surface."""
     settings = websocket.app.state.settings
-    if not _authorized(
-        websocket, websocket.query_params.get("token"), settings.api_token
-    ):
+    if not _authorized(websocket, websocket.query_params.get("token"), settings.api_token):
         await websocket.close(code=1008, reason="bad or missing token")
         return
 
