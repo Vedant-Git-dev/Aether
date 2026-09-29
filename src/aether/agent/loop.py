@@ -58,6 +58,32 @@ log = logging.getLogger("aether.agent")
 
 _MAX_OBSERVATIONS = 20
 
+# consecutive failed polls before a connector is announced as down. The user
+# hears about the state once, and once again when it recovers — never per
+# failure. A server with no configured poll has no heartbeat to watch.
+POLL_FAILURES_BEFORE_DOWN = 2
+
+
+def _parse_quiet_hours(raw: str | None) -> tuple[int, int] | None:
+    """Parse "HH:MM-HH:MM" (local time) into minutes since midnight. The
+    window may wrap midnight ("23:00-08:00"); a malformed value is logged
+    and ignored — a budget the config file can't explain is worse than none."""
+    if not raw:
+        return None
+    start_text, sep, end_text = raw.partition("-")
+    try:
+        if not sep:
+            raise ValueError(f"quiet_hours {raw!r} must look like 'HH:MM-HH:MM'")
+        start_h, start_m = (int(part) for part in start_text.strip().split(":"))
+        end_h, end_m = (int(part) for part in end_text.strip().split(":"))
+        window = (start_h * 60 + start_m, end_h * 60 + end_m)
+        if not all(0 <= m < 24 * 60 for m in window):
+            raise ValueError(f"quiet_hours {raw!r} is outside a day")
+        return window
+    except ValueError as exc:
+        log.warning("%s — quiet hours disabled", exc)
+        return None
+
 
 class CaptureRequestBox:
     """A one-slot mailbox: the agent asks for a screenshot, the companion
@@ -175,6 +201,10 @@ class AgentLoop:
         self._last_event_id = 0
         self._poll_targets: dict[str, tuple[str, PollTool]] = {}
         self._next_poll: dict[str, datetime] = {}
+        self._poll_failures: dict[str, int] = {}
+        self._down: set[str] = set()
+        self._quiet = _parse_quiet_hours(config.agent.quiet_hours)
+        self._held: list[str] = []  # unprompted notes waiting out the window
         if host is not None:
             now = datetime.now(UTC)
             for conn in host.connections:
@@ -215,6 +245,36 @@ class AgentLoop:
         contract (connectors await their handler; a sync return is the
         "'NoneType' object can't be awaited" crash)."""
         self.submit_message(message)
+
+    # -- the interruption budget ------------------------------------------------
+
+    def _quiet_now(self) -> bool:
+        """True when local time is inside the quiet window — the user means
+        *their* night, so this reads the clock naively."""
+        if self._quiet is None:
+            return False
+        now = datetime.now()
+        minutes = now.hour * 60 + now.minute
+        start, end = self._quiet
+        if start == end:
+            return True  # a degenerate window is a 24h hold — config's choice
+        if start < end:
+            return start <= minutes < end
+        return minutes >= start or minutes < end  # wraps midnight
+
+    async def _notify(self, text: str, *, urgent: float = 0.0) -> None:
+        """Send an unprompted note under the interruption budget: during
+        quiet hours it waits (batched, shipped when the window ends) unless
+        it is urgent enough on the 0-10 salience scale. Solicited words —
+        replies to the user, approvals, scheduled deliveries — never come
+        through here."""
+        if not text.strip():
+            return
+        if self._quiet_now() and urgent < self._config.agent.quiet_urgent_salience:
+            self._held.append(text)
+            log.info("held for quiet hours: %s", text[:80])
+            return
+        await self._surfaces.send_to_user(text)
 
     # -- the loop ---------------------------------------------------------------
 
@@ -278,6 +338,15 @@ class AgentLoop:
         if observations and self._routines is not None:
             await self._run_routines(observations)
 
+        # held unprompted notes from the quiet window ship as one batched
+        # message the moment the window ends — the budget pays out, in one
+        # interruption instead of a drip
+        if self._held and not self._quiet_now():
+            held, self._held = self._held, []
+            await self._surfaces.send_to_user(
+                "While it was quiet:\n\n" + "\n\n".join(held)
+            )
+
         if not messages and not observations:
             return  # a quiet tick: no LLM turn, no tokens spent
 
@@ -286,6 +355,10 @@ class AgentLoop:
     # -- source polling -----------------------------------------------------------
 
     async def _run_due_polls(self) -> None:
+        """Run every configured poll that is due. The polls double as the
+        connector watchdog's heartbeat: consecutive failures mark a server
+        down (announced once), and the next good poll announces the
+        recovery."""
         if not self._poll_targets:
             return
         now = datetime.now(UTC)
@@ -298,7 +371,21 @@ class AgentLoop:
                 result = await self._host.call(qualified, poll.args)  # type: ignore[union-attr]
             except (UnknownToolError, ConnectorUnavailableError) as exc:
                 log.warning("source poll %s failed: %s", qualified, exc)
+                failures = self._poll_failures.get(server, 0) + 1
+                self._poll_failures[server] = failures
+                if failures >= POLL_FAILURES_BEFORE_DOWN and server not in self._down:
+                    self._down.add(server)
+                    await self._notify(
+                        f"{server} hasn't been responding — I've paused "
+                        "relying on it and will say when it's back."
+                    )
                 continue
+            # a good poll is the heartbeat: the failure count resets, and a
+            # server that was announced down gets its recovery announced
+            self._poll_failures.pop(server, None)
+            if server in self._down:
+                self._down.discard(server)
+                await self._notify(f"{server} is responding again.")
             await self._audit.append(
                 actor="scheduler",
                 tool_name=qualified,
@@ -374,8 +461,10 @@ class AgentLoop:
             params={"event_id": event.id, "event": f"{event.source}/{event.kind}"},
             outcome=f"routine '{routine.label}' fired on {event.source}/{event.kind}",
         )
-        await self._surfaces.send_to_user(
-            f"🧭 routine '{routine.label}' fired → {call.name}: {result.content[:220]}"
+        await self._notify(
+            # the exact call stays in the audit row and the trace; the chat
+            # note speaks plainly, never in internal tool names
+            f"🧭 routine '{routine.label}' fired: {result.content[:220]}"
         )
         await self._save_trace(
             kind=ROUTINE,
@@ -461,7 +550,7 @@ class AgentLoop:
         try:
             final, full_history = await run_tool_loop(
                 provider,
-                SYSTEM_PROMPT.format(owner="the user"),
+                SYSTEM_PROMPT.format(owner="the user", apps=self._connected_apps()),
                 history,
                 self._tools.specs(),
                 lambda call: self._execute(call, trace=calls),
@@ -492,13 +581,29 @@ class AgentLoop:
                 payload=trace,
             )
         if reply and not _delivered_by_tool(calls):
-            await self._surfaces.send_to_user(reply)
+            if messages:
+                # the user spoke first — a reply is solicited, it never waits
+                await self._surfaces.send_to_user(reply)
+            else:
+                # unprompted commentary: the interruption budget decides,
+                # urgent = the loudest thing this turn saw (0-10 salience)
+                await self._notify(
+                    reply,
+                    urgent=max((e.salience_score for e in observations), default=0.0),
+                )
         elif reply:
             # the model already sent its words this turn via send_chat_message;
             # delivering the final reply too is what reads as a duplicate —
             # the same answer twice, differently worded. The reply stays in
             # the trace, so replay still shows how the turn ended.
             log.info("reply not sent — send_chat_message already reached the user this turn")
+
+    def _connected_apps(self) -> str:
+        """The live MCP server list for the system prompt — the model sees
+        exactly what's reachable, so "can you send emails?" gets an honest
+        "mail isn't connected" instead of an invented capability."""
+        servers = self._tools.mcp_servers()
+        return ", ".join(servers) if servers else "none"
 
     def _format_context(self, ctx: Any) -> str:
         lines: list[str] = []
@@ -560,13 +665,36 @@ class AgentLoop:
             }
         )
 
+    def _plain_unavailable(self, name: str) -> str:
+        """Plain words for a name the namespace can't run — the model relays
+        these to the user verbatim, so no internal names, no error jargon.
+        The trace and audit keep the exact call for replay."""
+        server, _, tool_name = name.partition("__")
+        if not tool_name:
+            return "that action isn't available right now"
+        if self._tools.has_server(server):
+            return f"that action isn't available in {server} right now"
+        return f"{server} isn't connected right now"
+
+    @staticmethod
+    def _plain_unresponsive(name: str) -> str:
+        """Plain words for a linked app that failed to answer a call."""
+        server, sep, _ = name.partition("__")
+        if sep:
+            return f"{server} isn't responding right now"
+        return "that app isn't responding right now"
+
     async def _execute(
         self, call: ToolCall, trace: list[dict[str, Any]] | None = None
     ) -> ToolResult:
         """The single choke point between a proposal and the world. `trace`,
         when given, is the call-record list of the decision trace being
         built — passed explicitly because the scheduler worker and the agent
-        loop run as separate tasks and must never write to a shared one."""
+        loop run as separate tasks and must never write to a shared one.
+
+        A call the namespace cannot run never parks: the user is not asked
+        to consent to certain failure — it comes back in the same plain
+        words as any other missing tool."""
         ruling = self._policy.classify(call.name, call.arguments)
 
         if ruling.decision is Decision.DENY:
@@ -588,17 +716,17 @@ class AgentLoop:
         if ruling.decision is Decision.ALLOW:
             try:
                 content = await self._tools.execute(call.name, call.arguments)
-            except UnknownToolError as exc:
+            except UnknownToolError:
                 result = ToolResult(
                     tool_call_id=call.id, name=call.name,
-                    content=f"unknown tool: {exc}", is_error=True,
+                    content=self._plain_unavailable(call.name), is_error=True,
                 )
                 self._note_call(trace, call, result, ruling=ruling)
                 return result
-            except ConnectorUnavailableError as exc:
+            except ConnectorUnavailableError:
                 result = ToolResult(
                     tool_call_id=call.id, name=call.name,
-                    content=f"connector unavailable: {exc}", is_error=True,
+                    content=self._plain_unresponsive(call.name), is_error=True,
                 )
                 self._note_call(trace, call, result, ruling=ruling)
                 return result
@@ -612,6 +740,18 @@ class AgentLoop:
             )
             result = ToolResult(tool_call_id=call.id, name=call.name, content=content)
             self._note_call(trace, call, result, ruling=ruling, audit_seq=seq)
+            return result
+
+        # a risky call the namespace can't run must never ask for consent —
+        # approving certain failure is not a decision worth interrupting the
+        # user for. Answer with the same plain words the ALLOW path uses;
+        # the trace keeps the exact call.
+        if self._tools.get(call.name) is None:
+            result = ToolResult(
+                tool_call_id=call.id, name=call.name,
+                content=self._plain_unavailable(call.name), is_error=True,
+            )
+            self._note_call(trace, call, result, ruling=ruling)
             return result
 
         # REQUIRE_APPROVAL: park it, ask, and let the turn go on
@@ -665,18 +805,42 @@ class AgentLoop:
         }
         try:
             result = await self._tools.execute(approval.tool_name, approval.params)
+        except UnknownToolError as exc:
+            # rows parked before the up-front check — or an app unlinked
+            # while one sat pending — still land here. The user hears plain
+            # words; the exact name and error stay in the trace and the log.
+            log.warning("approved call %s can't run: %s", approval.tool_name, exc)
+            await self._approvals.mark_failed(approval.id)
+            trace["result"] = str(exc)
+            trace["is_error"] = True
+            await self._surfaces.send_to_user(
+                f"⚠️ the approved action couldn't run — "
+                f"{self._plain_unavailable(approval.tool_name)}"
+            )
+        except ConnectorUnavailableError as exc:
+            log.warning("approved call %s can't run: %s", approval.tool_name, exc)
+            await self._approvals.mark_failed(approval.id)
+            trace["result"] = str(exc)
+            trace["is_error"] = True
+            await self._surfaces.send_to_user(
+                f"⚠️ the approved action couldn't run — "
+                f"{self._plain_unresponsive(approval.tool_name)}"
+            )
+        except Exception as exc:
+            log.exception("approved call %s failed to run", approval.tool_name)
+            await self._approvals.mark_failed(approval.id)
+            trace["result"] = str(exc)
+            trace["is_error"] = True
+            await self._surfaces.send_to_user(
+                "⚠️ the approved action couldn't run — it failed unexpectedly. "
+                "The decision record has exactly what happened."
+            )
+        else:
             await self._approvals.mark_executed(approval.id)
             trace["result"] = result
             trace["is_error"] = False
             await self._surfaces.send_to_user(
                 f"✅ ran {approval.tool_name}: {result[:300]}"
-            )
-        except Exception as exc:
-            log.exception("approved call %s failed to run", approval.tool_name)
-            trace["result"] = str(exc)
-            trace["is_error"] = True
-            await self._surfaces.send_to_user(
-                f"⚠️ {approval.tool_name} failed after approval: {exc}"
             )
         await self._save_trace(
             kind=CARRY_OUT,

@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
     id          BIGSERIAL PRIMARY KEY,
     tool_name   TEXT   NOT NULL,
     params_enc  BYTEA  NOT NULL,
-    status      TEXT   NOT NULL DEFAULT 'pending',   -- pending|approved|denied|expired|executed
+    status      TEXT   NOT NULL DEFAULT 'pending',   -- pending|approved|denied|expired|executed|failed
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     decided_at  TIMESTAMPTZ,
     expires_at  TIMESTAMPTZ NOT NULL,

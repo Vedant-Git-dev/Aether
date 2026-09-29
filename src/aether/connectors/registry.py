@@ -80,6 +80,25 @@ class ToolRegistry:
     def get(self, name: str) -> RegisteredTool | None:
         return self._tools.get(name)
 
+    def has_server(self, server: str) -> bool:
+        """True when any tool from this MCP server is in the namespace —
+        distinguishes 'the app isn't connected' from 'the action isn't
+        available in a linked app'."""
+        prefix = f"{server}__"
+        return any(name.startswith(prefix) for name in self._tools)
+
+    def mcp_servers(self) -> list[str]:
+        """The MCP servers live in the namespace right now — the honest
+        answer to 'which apps are connected?'."""
+        seen: set[str] = set()
+        for name, tool in self._tools.items():
+            if tool.kind != "mcp":
+                continue
+            server, sep, _ = name.partition("__")
+            if sep:
+                seen.add(server)
+        return sorted(seen)
+
     def __len__(self) -> int:
         return len(self._tools)
 

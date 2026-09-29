@@ -117,13 +117,14 @@ class FakeApprovals:
     """Approvals double: records decide() calls, returns a canned result.
 
     Also implements the rest of the Approvals surface (create/get/
-    mark_executed/list_pending) so agent-loop tests can run the full
-    park-then-decide flow without a database."""
+    mark_executed/mark_failed/list_pending) so agent-loop tests can run the
+    full park-then-decide flow without a database."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[int, str]] = []
         self.created: list[Approval] = []
         self.executed: list[int] = []
+        self.failed: list[int] = []
         self.result: object = object()  # what decide() returns (set to None to simulate stale)
         self._now = datetime.now(UTC)
 
@@ -174,6 +175,9 @@ class FakeApprovals:
 
     async def mark_executed(self, approval_id: int) -> None:
         self.executed.append(approval_id)
+
+    async def mark_failed(self, approval_id: int) -> None:
+        self.failed.append(approval_id)
 
     async def list_pending(self) -> list[Approval]:
         return [a for a in self.created if a.status == PENDING]
