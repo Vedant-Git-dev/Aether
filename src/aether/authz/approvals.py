@@ -26,6 +26,7 @@ APPROVED = "approved"
 DENIED = "denied"
 EXPIRED = "expired"
 EXECUTED = "executed"
+FAILED = "failed"
 
 
 def _aad(approval_id: int) -> str:
@@ -161,6 +162,24 @@ class Approvals:
             tool_name=row["tool_name"],
             decision="info",
             outcome="executed after approval",
+        )
+
+    async def mark_failed(self, approval_id: int) -> None:
+        """Flip an approved call to failed — the carried-out run couldn't
+        happen, and a broken approval must not linger as if it still owed
+        the user a run."""
+        row = await self._pool.fetchrow(
+            "UPDATE pending_approvals SET status = 'failed'"
+            " WHERE id = $1 AND status = 'approved' RETURNING tool_name",
+            approval_id,
+        )
+        if row is None:
+            return
+        await self._audit.append(
+            actor="agent",
+            tool_name=row["tool_name"],
+            decision="info",
+            outcome="could not run after approval",
         )
 
     async def expire_overdue(self) -> int:

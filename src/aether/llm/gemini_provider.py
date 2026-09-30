@@ -61,11 +61,18 @@ def messages_to_gemini(messages: list[Message]) -> list[dict[str, Any]]:
                 out.append({"role": "user", "parts": parts})
         elif msg.role == "assistant":
             parts = []
+            # provider_extra maps call id -> the thought_signature Gemini 3
+            # signed that call with; it must ride back on the replayed part
+            # or the next request 400s ("missing a thought_signature").
+            signatures = msg.provider_extra if isinstance(msg.provider_extra, dict) else {}
             for b in msg.blocks:
                 if isinstance(b, TextBlock) and b.text:
                     parts.append({"text": b.text})
                 elif isinstance(b, ToolCall):
-                    parts.append({"function_call": {"name": b.name, "args": b.arguments}})
+                    part: dict[str, Any] = {"function_call": {"name": b.name, "args": b.arguments}}
+                    if b.id in signatures:
+                        part["thought_signature"] = signatures[b.id]
+                    parts.append(part)
             if parts:
                 out.append({"role": "model", "parts": parts})
         elif msg.role == "tool":
@@ -104,7 +111,9 @@ def tools_to_gemini(tools: list[ToolSpec]) -> list[dict[str, Any]]:
 
 def turn_from_gemini(response: Any) -> Turn:
     """SDK response -> internal Turn. Gemini function calls carry no id, so
-    one is synthesized per position; results pair by name anyway."""
+    one is synthesized per position; results pair by name anyway. Gemini 3
+    signs each function call with a thought_signature — captured into
+    provider_extra keyed by call id, for the request mapper to echo back."""
     candidates = getattr(response, "candidates", None) or []
     if not candidates:
         raise ProviderError("gemini: response contained no candidates")
@@ -112,16 +121,21 @@ def turn_from_gemini(response: Any) -> Turn:
     parts = getattr(getattr(candidate, "content", None), "parts", None) or []
     text_parts: list[str] = []
     calls: list[ToolCall] = []
+    signatures: dict[str, str] = {}
     for i, part in enumerate(parts):
         function_call = getattr(part, "function_call", None)
         if function_call is not None:
+            call_id = f"gemini_{i}"
             calls.append(
                 ToolCall(
-                    id=f"gemini_{i}",
+                    id=call_id,
                     name=getattr(function_call, "name", ""),
                     arguments=dict(getattr(function_call, "args", None) or {}),
                 )
             )
+            signature = getattr(part, "thought_signature", None)
+            if signature:
+                signatures[call_id] = signature
             continue
         text = getattr(part, "text", None)
         if isinstance(text, str):
@@ -131,7 +145,12 @@ def turn_from_gemini(response: Any) -> Turn:
         reason = "max_output_tokens"
     else:
         reason = "tool_use" if calls else "end_turn"
-    return Turn(text="".join(text_parts), tool_calls=calls, stop_reason=reason)
+    return Turn(
+        text="".join(text_parts),
+        tool_calls=calls,
+        stop_reason=reason,
+        provider_extra=signatures or None,
+    )
 
 
 class GeminiProvider:

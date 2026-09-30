@@ -131,22 +131,34 @@ class DiscordConnector(MessagingConnector):
             return
         self._channel = message.channel
         handle = message.author.name or str(message.author.id)
+        reference = getattr(message, "reference", None)
         await self._emit_inbound(
             InboundMessage(
                 surface="discord",
                 handle=handle,
                 text=message.content,
                 chat_ref=str(message.author.id),
+                # fetching the answered text costs an extra API round-trip —
+                # the id alone links a later "why?" back to its trace
+                reply_to_id=(
+                    str(getattr(reference, "message_id", None) or "")
+                    if reference is not None
+                    else ""
+                ),
             )
         )
 
     # -- outbound ------------------------------------------------------------------
 
-    async def send_to_user(self, text: str) -> None:
+    async def send_to_user(self, text: str) -> str | None:
+        """Send, and answer with the platform message id — what links a
+        later "why?" reply back to the trace of this send."""
         if self._channel is None:
             log.info("discord: no DM channel yet")
-            return
-        await self._channel.send(text)
+            return None
+        sent = await self._channel.send(text)
+        # getattr so test fakes without an id still send fine
+        return str(getattr(sent, "id", "") or "") or None
 
     async def present_approval(self, approval_id: int, tool_name: str, summary: str) -> None:
         if self._channel is None:

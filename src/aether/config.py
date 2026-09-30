@@ -69,6 +69,11 @@ class AgentConfig(BaseModel):
     tick_seconds: float = 30.0
     max_tool_iterations: int = 12
     daily_surface_cap: int = 20
+    # the interruption budget: unprompted commentary waits out this window
+    # (local time, wraps midnight) unless an observation scores at/above the
+    # urgent threshold. Replies to the user never wait.
+    quiet_hours: str | None = None  # "23:00-08:00"
+    quiet_urgent_salience: float = 8.0  # 0-10, only during the window
 
 
 class SalienceConfig(BaseModel):

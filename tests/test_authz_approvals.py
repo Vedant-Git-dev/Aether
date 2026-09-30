@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from aether.authz.approvals import APPROVED, DENIED, PENDING, Approvals
+from aether.authz.approvals import APPROVED, DENIED, FAILED, PENDING, Approvals
 from aether.authz.audit import AuditLog
 from aether.memory.crypto import Cipher, CryptoError, generate_key_b64
 
@@ -118,6 +118,32 @@ async def test_mark_executed_flips_approved_rows_only(db) -> None:
     await approvals.decide(fresh.id, APPROVED)
     await approvals.mark_executed(fresh.id)
     assert (await approvals.get(fresh.id)).status == "executed"
+
+
+@pytest.mark.integration
+async def test_mark_failed_flips_approved_rows_only(db) -> None:
+    approvals = await _make_approvals(db)
+    parked = await approvals.create(tool_name="t__x", params={"x": 1})
+    doomed = await approvals.create(tool_name="t__y", params={"y": 2})
+
+    # not approved yet — no-op
+    await approvals.mark_failed(parked.id)
+    assert (await approvals.get(parked.id)).status == PENDING
+
+    await approvals.decide(doomed.id, APPROVED)
+    await approvals.mark_failed(doomed.id)
+    assert (await approvals.get(doomed.id)).status == FAILED
+
+    # a failed approval is closed for good: no re-decide, no execute
+    assert await approvals.decide(doomed.id, DENIED) is None
+    await approvals.mark_executed(doomed.id)
+    assert (await approvals.get(doomed.id)).status == FAILED
+
+    # the failure landed in the audit chain
+    rows = await db.fetch(
+        "SELECT outcome FROM audit_log WHERE outcome = 'could not run after approval'"
+    )
+    assert len(rows) == 1
 
 
 @pytest.mark.integration

@@ -3,14 +3,18 @@ tamper detection behind the integration marker."""
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from aether.authz.audit import (
     GENESIS_HASH,
     AuditLog,
+    ChainVerification,
     canonical_entry,
     compute_entry_hash,
     params_digest,
+    verification_text,
     verify_entries,
 )
 
@@ -118,6 +122,50 @@ def test_deleted_middle_entry_is_detected() -> None:
 def test_params_digest_is_stable_and_content_bound() -> None:
     assert params_digest({"a": 1, "b": 2}) == params_digest({"b": 2, "a": 1})
     assert params_digest({"a": 1}) != params_digest({"a": 2})
+
+
+# ---------------------------------------------------------------------------
+# verification_text — the chain check as it reads in chat
+# ---------------------------------------------------------------------------
+
+
+def test_verification_text_intact_with_a_recent_act() -> None:
+    two_minutes_ago = datetime.now(timezone.utc) - timedelta(minutes=2)
+    text = verification_text(ChainVerification(ok=True, entries=1247), two_minutes_ago)
+    assert text == (
+        "🛡️ decision record: 1,247 decisions, chain intact — every entry "
+        "still hashes to the one before it, last act 2 minutes ago."
+    )
+
+
+def test_verification_text_counts_and_ages_in_plain_units() -> None:
+    one = verification_text(ChainVerification(ok=True, entries=1))
+    assert one == (
+        "🛡️ decision record: 1 decision, chain intact — every entry still "
+        "hashes to the one before it."
+    )
+    hours_old = datetime.now(timezone.utc) - timedelta(minutes=90)
+    assert "last act 1 hour ago" in verification_text(
+        ChainVerification(ok=True, entries=5), hours_old
+    )
+    naive_then = (datetime.now(timezone.utc) - timedelta(days=2)).replace(tzinfo=None)
+    assert "last act 2 days ago" in verification_text(
+        ChainVerification(ok=True, entries=5), naive_then
+    )
+
+
+def test_verification_text_broken_and_empty_states() -> None:
+    broken = verification_text(ChainVerification(
+        ok=False, entries=892, first_bad_seq=892,
+        problem="seq 892: stored hash does not match the entry contents",
+    ))
+    assert broken == (
+        "⚠️ decision record: BROKEN at entry #892 — seq 892: stored hash "
+        "does not match the entry contents. Everything from there on "
+        "can't be trusted."
+    )
+    assert verification_text(ChainVerification(ok=True, entries=0)) == \
+        "🛡️ decision record: empty — nothing recorded yet."
 
 
 # ---------------------------------------------------------------------------

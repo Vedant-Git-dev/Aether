@@ -1,4 +1,4 @@
-"""Native-tool tests — the six internal tools, exercised through the real
+"""Native-tool tests — the internal tools, exercised through the real
 ToolRegistry so the wiring (spec name → handler) is what's under test."""
 
 from __future__ import annotations
@@ -8,11 +8,13 @@ from datetime import UTC, datetime, timedelta
 from fakes import FakeApprovals, FakeEntities, FakeEventStore, FakeScheduler, FakeSurfaceConnector
 
 from aether.agent.loop import CaptureRequestBox, SurfaceFanout
-from aether.agent.tools import register_native_tools
+from aether.agent.tools import plain_replay, register_native_tools
+from aether.authz.audit import ChainVerification
 from aether.connectors.registry import ToolRegistry
 from aether.memory.events import Event
 from fakes import (
     FakeApprovals,
+    FakeAudit,
     FakeEntities,
     FakeEventStore,
     FakeRoutines,
@@ -41,6 +43,7 @@ class NativeKit:
         events: FakeEventStore | None = None,
         routines: FakeRoutines | None = None,
         traces: FakeTraces | None = None,
+        audit: FakeAudit | None = None,
     ) -> None:
         self.registry = ToolRegistry()
         self.events = events or FakeEventStore()
@@ -49,6 +52,7 @@ class NativeKit:
         self.scheduler = FakeScheduler()
         self.routines = routines or FakeRoutines()
         self.traces = traces or FakeTraces()
+        self.audit = audit or FakeAudit()
         self.connector = FakeSurfaceConnector()
         self.box = CaptureRequestBox()
         self.count = register_native_tools(
@@ -61,6 +65,7 @@ class NativeKit:
             capture_box=self.box,
             routines=routines,  # None keeps the routine tools unregistered
             traces=traces,      # same for the decision-replay tool
+            audit=audit,        # and the integrity check
         )
 
     async def run(self, name: str, params: dict) -> str:
@@ -209,4 +214,149 @@ async def test_send_chat_message_fans_out() -> None:
     out = await kit.run("send_chat_message", {"text": "the deploy finished"})
     assert out == "Sent to the user's chat surfaces."
     assert kit.connector.sent == ["the deploy finished"]
-    assert await kit.run("send_chat_message", {"text": "  "}) == "send_chat_message needs text."
+    assert await kit.run("send_chat_message", {"text": "  "}) == \
+        "send_chat_message needs text."
+
+
+# ---------------------------------------------------------------------------
+# verify_integrity — the record proves itself in plain words
+# ---------------------------------------------------------------------------
+
+
+async def test_audit_wiring_adds_the_integrity_tool() -> None:
+    audit = FakeAudit()
+    await audit.append(actor="agent", tool_name="mail__list_unread", decision="allow")
+    kit = NativeKit(audit=audit)
+    assert kit.count == 7
+
+    out = await kit.run("verify_integrity", {})
+    assert "🛡️" in out
+    assert "1 decision, chain intact" in out
+    assert "moments ago" in out  # the newest row was just written
+
+
+async def test_verify_integrity_reports_a_broken_chain() -> None:
+    kit = NativeKit(audit=FakeAudit(verification=ChainVerification(
+        ok=False, entries=892, first_bad_seq=892,
+        problem="seq 892: stored hash does not match the entry contents",
+    )))
+    out = await kit.run("verify_integrity", {})
+    assert "⚠️" in out
+    assert "BROKEN at entry #892" in out
+
+
+async def test_verify_integrity_on_an_empty_record_says_so() -> None:
+    kit = NativeKit(audit=FakeAudit())
+    assert await kit.run("verify_integrity", {}) == \
+        "🛡️ decision record: empty — nothing recorded yet."
+
+
+# ---------------------------------------------------------------------------
+# plain_replay — the trace as the user reads it in chat
+# ---------------------------------------------------------------------------
+
+
+def _turn_trace(payload: dict) -> FakeTraces:
+    traces = FakeTraces()
+    traces.add(kind="turn", label="replayed turn", payload=payload)
+    return traces
+
+
+def test_plain_replay_speaks_in_plain_words() -> None:
+    traces = _turn_trace({
+        "trigger": {"messages": [
+            {"surface": "telegram", "handle": "@vedant",
+             "text": "email alice the invoice", "reply_to_id": "", "reply_to_text": ""},
+        ], "observations": []},
+        "calls": [{
+            "id": "c1", "name": "mail__send_email",
+            "params": {"to": "alice@x.com"},
+            "decision": "require_approval", "matched_rule": "send", "reason": "sends are risky",
+            "audit_seq": None, "approval_id": 12,
+            "result": "held for approval (#12) — the user has been asked",
+            "is_error": False,
+        }],
+        "reply": "on it — sent once you approve",
+        "chat_refs": {"telegram": "101"},
+    })
+    out = plain_replay(traces.traces[0])
+    assert out.startswith("🧵 that message, from the record (trace #1):")
+    assert 'You asked: "email alice the invoice"' in out
+    assert "I proposed sending an email; the gate held it for your one-tap approval (#12)." in out
+    assert 'I replied: "on it — sent once you approve"' in out
+    assert "trace #1 in the panel" in out
+    # the plain-words rule: never the raw name, never the parameters
+    assert "mail__send_email" not in out
+    assert "alice@x.com" not in out
+    assert "__" not in out
+
+
+def test_plain_replay_of_a_failed_carry_out_never_leaks_the_error() -> None:
+    traces = FakeTraces()
+    traces.add(
+        kind="carry_out",
+        label="approval #5 — gmail__send_message",
+        payload={
+            "approval_id": 5, "tool": "gmail__send_message", "params": {},
+            "decided_by": "user",
+            "result": "unknown tool: gmail__send_message", "is_error": True,
+            "chat_refs": {"telegram": "102"},
+        },
+    )
+    out = plain_replay(traces.traces[0])
+    assert "Approval #5, decided by user." in out
+    assert "It couldn't run — I said so at the time." in out
+    assert "gmail__send_message" not in out
+    assert "unknown tool" not in out
+
+
+def test_plain_replay_words_allowed_and_denied_calls() -> None:
+    traces = _turn_trace({
+        "trigger": {"messages": [], "observations": [
+            {"id": 1, "source": "mail", "kind": "poll:unread", "line": "3 unread"},
+        ]},
+        "calls": [
+            {"id": "c1", "name": "note_entity", "params": {}, "decision": "allow",
+             "matched_rule": "builtin:internal", "reason": "", "audit_seq": 9,
+             "approval_id": None, "result": "Noted on Alice (identity 1).", "is_error": False},
+            {"id": "c2", "name": "telegram__send_message", "params": {"text": "hi"},
+             "decision": "deny", "matched_rule": "quiet mode", "reason": "quiet mode",
+             "audit_seq": 10, "approval_id": None,
+             "result": "denied by policy: quiet mode", "is_error": True},
+        ],
+        "reply": "noted, and I held off on the ping",
+    })
+    out = plain_replay(traces.traces[0])
+    assert "I noticed 1 new event." in out
+    assert "I went ahead with keeping a note — the gate let it through (builtin:internal)." in out
+    assert "I proposed sending a message; the gate blocked it (quiet mode)." in out
+    assert "telegram__send_message" not in out
+
+
+def test_plain_replay_of_routine_and_scheduled_fires() -> None:
+    traces = FakeTraces()
+    traces.add(kind="routine", label="billing", payload={
+        "routine": {"id": 1, "label": "billing", "trigger": {"source": "mail"}},
+        "event": {"id": 9, "source": "mail", "kind": "poll:unread", "line": "an invoice"},
+        "calls": [{"id": "c1", "name": "note_entity", "params": {}, "decision": "allow",
+                   "matched_rule": "builtin:internal", "reason": "", "audit_seq": 11,
+                   "approval_id": None, "result": "noted", "is_error": False}],
+        "audit_seq": 11, "chat_refs": {"telegram": "103"},
+    })
+    traces.add(kind="scheduled", label="evening summary", payload={
+        "action": {"id": 7, "label": "evening summary", "run_at": "2026-09-29 18:30:00+0000"},
+        "calls": [{"id": "sched-7", "name": "mail__list_messages", "params": {"limit": 1},
+                   "decision": "allow", "matched_rule": "builtin:read-only", "reason": "",
+                   "audit_seq": 12, "approval_id": None,
+                   "result": "3 unread: alice, bob", "is_error": False}],
+        "result": "3 unread: alice, bob", "is_error": False,
+    })
+    routine_out = plain_replay(traces.traces[0])
+    assert "Your routine 'billing' fired." in routine_out
+    assert "I went ahead with keeping a note" in routine_out
+
+    scheduled_out = plain_replay(traces.traces[1])
+    assert "The scheduled action 'evening summary' came due." in scheduled_out
+    # a read is said as a read, never as a send
+    assert "I went ahead with checking mail — the gate let it through (builtin:read-only)." in scheduled_out
+    assert "sending an email" not in scheduled_out

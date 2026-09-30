@@ -1,6 +1,7 @@
 """Aether's native tools — reading its own memory, keeping entity notes,
 scheduling, requesting screen captures, talking to the user, managing
-the user's routines, and replaying why it acted.
+the user's routines, replaying why it acted, and proving the record
+intact.
 
 These are internal by construction: they touch only Aether's own state
 (or the owner's own chat surfaces), which is why the authz classifier's
@@ -16,6 +17,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from ..authz.audit import verification_text
 from ..connectors.registry import ToolRegistry
 from ..llm.types import ToolSpec
 
@@ -42,6 +44,179 @@ def _clip(text: str, limit: int = 300) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+# how a tool call is said in plain words — the record keeps the exact
+# name, chat never shows one
+_ACTION_PHRASES = {
+    "mail": "sending an email",
+    "gmail": "sending an email",
+    "telegram": "sending a message",
+    "discord": "sending a message",
+    "slack": "sending a message",
+    "whatsapp": "sending a message",
+    "calendar": "a calendar action",
+    "payments": "a payment",
+}
+
+_NATIVE_PHRASES = {
+    "send_chat_message": "messaging you",
+    "memory_search": "searching my memory",
+    "note_entity": "keeping a note",
+    "get_pending_approvals": "checking pending approvals",
+    "schedule_action": "scheduling an action",
+    "request_screen_capture": "asking for a screenshot",
+    "create_routine": "arming a routine",
+    "list_routines": "listing routines",
+    "set_routine_enabled": "pausing or re-arming a routine",
+    "delete_routine": "deleting a routine",
+    "explain_decision": "replaying a decision",
+    "verify_integrity": "verifying my records",
+}
+
+
+def _plain_action(name: str) -> str:
+    """Plain words for a tool call, the way the user would say it."""
+    server, sep, tool = name.partition("__")
+    if sep:
+        # a read-like tool must never read as a send — "I went ahead with
+        # sending an email" about listing mail would be a lie
+        read_like = ("list", "search", "get", "read", "find", "check", "query")
+        if any(tool.startswith(verb) for verb in read_like):
+            return f"checking {server}"
+        return _ACTION_PHRASES.get(server, f"an action in {server}")
+    return _NATIVE_PHRASES.get(name, "an internal step")
+
+
+def format_trace(t: Any) -> str:
+    """Render one recorded trace for the model to answer from: the
+    trigger, every gated call with its ruling, and what came back."""
+    p = t.payload or {}
+    lines = [f"Trace #{t.id} ({t.kind}) — {t.label or '(no label)'}"]
+    trigger = p.get("trigger") or {}
+    for m in trigger.get("messages") or []:
+        lines.append(
+            f"  asked: {m.get('handle', '?')} via {m.get('surface', '?')}: "
+            f"{m.get('text', '')}"
+        )
+    observations = trigger.get("observations") or []
+    if observations:
+        lines.append(f"  seen: {len(observations)} new event(s)")
+        for o in observations:
+            lines.append(f"    [{o.get('source')}/{o.get('kind')}] {o.get('line', '')}")
+    routine = p.get("routine")
+    if routine:
+        lines.append(
+            f"  routine: #{routine.get('id')} '{routine.get('label')}' "
+            f"when {json.dumps(routine.get('trigger') or {}, ensure_ascii=False)}"
+        )
+    event = p.get("event")
+    if event:
+        lines.append(
+            f"  fired on: [{event.get('source')}/{event.get('kind')}] "
+            f"{event.get('line', '')}"
+        )
+    action = p.get("action")
+    if action:
+        lines.append(
+            f"  scheduled: #{action.get('id')} '{action.get('label')}' "
+            f"at {action.get('run_at')}"
+        )
+    if p.get("approval_id") is not None:
+        lines.append(
+            f"  approval #{p.get('approval_id')}, decided by "
+            f"{p.get('decided_by') or 'the user'}"
+        )
+    for c in p.get("calls") or []:
+        gate = f"gate: {c.get('decision', '?')}"
+        if c.get("matched_rule"):
+            gate += f" ({c.get('matched_rule')})"
+        if c.get("audit_seq") is not None:
+            gate += f" [audit #{c.get('audit_seq')}]"
+        if c.get("approval_id") is not None:
+            gate += f" [held as approval #{c.get('approval_id')}]"
+        lines.append(
+            f"  → {c.get('name', '?')} "
+            f"{json.dumps(c.get('params') or {}, ensure_ascii=False, default=str)} "
+            f"— {gate} → {_clip(str(c.get('result', '')), 200)}"
+        )
+    if p.get("audit_seq") is not None and not p.get("calls"):
+        lines.append(f"  audit: #{p.get('audit_seq')}")
+    for r in p.get("reasoning") or []:
+        lines.append(f"  reasoning: {r}")
+    if p.get("reply"):
+        lines.append(f"  reply: {p['reply']}")
+    # a top-level result only exists on acts that are not a call list
+    # (an approved call carried out); a scheduled fire's result already
+    # shows on its call line
+    if p.get("result") is not None and not p.get("calls"):
+        suffix = " (error)" if p.get("is_error") else ""
+        lines.append(f"  result: {_clip(str(p.get('result')), 200)}{suffix}")
+    if p.get("error"):
+        lines.append(f"  error: the turn failed — {p['error']}")
+    return "\n".join(lines)
+
+
+def plain_replay(trace: Any) -> str:
+    """The recorded trace as the user reads it in chat: what happened, in
+    plain words, with the trace id for everything exact. Internal call
+    names and raw error text stay in the record — this never echoes them."""
+    p = trace.payload or {}
+    lines = [f"🧵 that message, from the record (trace #{trace.id}):"]
+
+    trigger = p.get("trigger") or {}
+    messages = trigger.get("messages") or []
+    if messages:
+        first = _clip(str(messages[0].get("text", "")), 200)
+        more = f" (+{len(messages) - 1} more)" if len(messages) > 1 else ""
+        lines.append(f"You asked: \"{first}\"{more}")
+    elif p.get("routine"):
+        lines.append(f"Your routine '{p['routine'].get('label')}' fired.")
+    elif p.get("action"):
+        lines.append(f"The scheduled action '{p['action'].get('label')}' came due.")
+    elif p.get("approval_id") is not None:
+        lines.append(
+            f"Approval #{p.get('approval_id')}, decided by {p.get('decided_by') or 'you'}."
+        )
+    elif trigger.get("observations"):
+        count = len(trigger["observations"])
+        lines.append(f"I noticed {count} new event{'s' if count != 1 else ''}.")
+
+    for c in p.get("calls") or []:
+        action = _plain_action(str(c.get("name", "")))
+        decision = str(c.get("decision", ""))
+        if c.get("is_error") and decision != "deny":
+            # the exact failure stays in the trace — chat gets the shape
+            lines.append(f"I tried {action} — it didn't work out.")
+        elif decision == "allow":
+            rule = f" ({c.get('matched_rule')})" if c.get("matched_rule") else ""
+            lines.append(f"I went ahead with {action} — the gate let it through{rule}.")
+        elif decision == "require_approval":
+            held = f" (#{c.get('approval_id')})" if c.get("approval_id") is not None else ""
+            lines.append(f"I proposed {action}; the gate held it for your one-tap approval{held}.")
+        elif decision == "deny":
+            reason = f" ({c.get('reason')})" if c.get("reason") else ""
+            lines.append(f"I proposed {action}; the gate blocked it{reason}.")
+        else:
+            lines.append(f"I proposed {action}; it didn't run.")
+
+    # a top-level result only exists on acts that are not a call list
+    # (an approved call carried out); a scheduled fire's result already
+    # shows on its call line
+    if p.get("result") is not None and not p.get("calls"):
+        if p.get("is_error"):
+            lines.append("It couldn't run — I said so at the time.")
+        else:
+            lines.append("It ran as approved.")
+
+    if p.get("reply"):
+        lines.append(f"I replied: \"{_clip(str(p['reply']), 200)}\"")
+
+    lines.append(
+        "The full recorded detail — the exact call, the parameters, the "
+        f"gate's ruling — is trace #{trace.id} in the panel."
+    )
+    return "\n".join(lines)
+
+
 def register_native_tools(
     *,
     registry: ToolRegistry,
@@ -53,13 +228,14 @@ def register_native_tools(
     capture_box: Any,
     routines: Any = None,
     traces: Any = None,
+    audit: Any = None,
 ) -> int:
     """Add Aether's own tools to the flat namespace. Returns how many.
 
-    `routines` wires the standing-trigger tools and `traces` the
-    decision-replay tool; without the store behind one it is not offered
-    at all (same shape as a loop without an MCP host: no feature, no dead
-    tool spec)."""
+    `routines` wires the standing-trigger tools, `traces` the
+    decision-replay tool, and `audit` the integrity check; without the
+    store behind one it is not offered at all (same shape as a loop
+    without an MCP host: no feature, no dead tool spec)."""
 
     async def memory_search(params: dict[str, Any]) -> str:
         query = str(params.get("query", "")).strip()
@@ -149,6 +325,14 @@ def register_native_tools(
             return "send_chat_message needs text."
         await surfaces.send_to_user(text)
         return "Sent to the user's chat surfaces."
+
+    async def verify_integrity(params: dict[str, Any]) -> str:
+        verification = await audit.verify_chain()
+        newest = None
+        if verification.entries:
+            rows = await audit.recent(1)
+            newest = rows[0]["created_at"] if rows else None
+        return verification_text(verification, newest)
 
     def _describe_trigger(trigger: dict[str, Any]) -> str:
         parts: list[str] = []
@@ -250,74 +434,6 @@ def register_native_tools(
             return f"Routine {routine_id} deleted."
         return f"No routine {routine_id}."
 
-    def _fmt_trace(t: Any) -> str:
-        """Render one recorded trace for the model to answer from: the
-        trigger, every gated call with its ruling, and what came back."""
-        p = t.payload or {}
-        lines = [f"Trace #{t.id} ({t.kind}) — {t.label or '(no label)'}"]
-        trigger = p.get("trigger") or {}
-        for m in trigger.get("messages") or []:
-            lines.append(
-                f"  asked: {m.get('handle', '?')} via {m.get('surface', '?')}: "
-                f"{m.get('text', '')}"
-            )
-        observations = trigger.get("observations") or []
-        if observations:
-            lines.append(f"  seen: {len(observations)} new event(s)")
-            for o in observations:
-                lines.append(f"    [{o.get('source')}/{o.get('kind')}] {o.get('line', '')}")
-        routine = p.get("routine")
-        if routine:
-            lines.append(
-                f"  routine: #{routine.get('id')} '{routine.get('label')}' "
-                f"when {json.dumps(routine.get('trigger') or {}, ensure_ascii=False)}"
-            )
-        event = p.get("event")
-        if event:
-            lines.append(
-                f"  fired on: [{event.get('source')}/{event.get('kind')}] "
-                f"{event.get('line', '')}"
-            )
-        action = p.get("action")
-        if action:
-            lines.append(
-                f"  scheduled: #{action.get('id')} '{action.get('label')}' "
-                f"at {action.get('run_at')}"
-            )
-        if p.get("approval_id") is not None:
-            lines.append(
-                f"  approval #{p.get('approval_id')}, decided by "
-                f"{p.get('decided_by') or 'the user'}"
-            )
-        for c in p.get("calls") or []:
-            gate = f"gate: {c.get('decision', '?')}"
-            if c.get("matched_rule"):
-                gate += f" ({c.get('matched_rule')})"
-            if c.get("audit_seq") is not None:
-                gate += f" [audit #{c.get('audit_seq')}]"
-            if c.get("approval_id") is not None:
-                gate += f" [held as approval #{c.get('approval_id')}]"
-            lines.append(
-                f"  → {c.get('name', '?')} "
-                f"{json.dumps(c.get('params') or {}, ensure_ascii=False, default=str)} "
-                f"— {gate} → {_clip(str(c.get('result', '')), 200)}"
-            )
-        if p.get("audit_seq") is not None and not p.get("calls"):
-            lines.append(f"  audit: #{p.get('audit_seq')}")
-        for r in p.get("reasoning") or []:
-            lines.append(f"  reasoning: {r}")
-        if p.get("reply"):
-            lines.append(f"  reply: {p['reply']}")
-        # a top-level result only exists on acts that are not a call list
-        # (an approved call carried out); a scheduled fire's result already
-        # shows on its call line
-        if p.get("result") is not None and not p.get("calls"):
-            suffix = " (error)" if p.get("is_error") else ""
-            lines.append(f"  result: {_clip(str(p.get('result')), 200)}{suffix}")
-        if p.get("error"):
-            lines.append(f"  error: the turn failed — {p['error']}")
-        return "\n".join(lines)
-
     async def explain_decision(params: dict[str, Any]) -> str:
         raw_trace = str(params.get("trace_id", "")).strip()
         raw_approval = str(params.get("approval_id", "")).strip()
@@ -335,7 +451,7 @@ def register_native_tools(
             trace = await traces.get(trace_id)
             if trace is None:
                 return f"No recorded trace {trace_id}."
-            return _fmt_trace(trace)
+            return format_trace(trace)
 
         if raw_approval:
             try:
@@ -354,7 +470,7 @@ def register_native_tools(
                     origins.append(t)
             if not origins and not carries:
                 return f"No recorded trace involving approval #{approval_id}."
-            return "\n\n".join(_fmt_trace(t) for t in (origins + carries)[:4])
+            return "\n\n".join(format_trace(t) for t in (origins + carries)[:4])
 
         if about:
             needle = about.lower()
@@ -368,12 +484,12 @@ def register_native_tools(
             ]
             if not found:
                 return f"No recorded trace mentioning {about!r}."
-            return "\n\n".join(_fmt_trace(t) for t in found[:limit])
+            return "\n\n".join(format_trace(t) for t in found[:limit])
 
         rows = await traces.recent(limit)
         if not rows:
             return "No decision traces recorded yet."
-        return "\n\n".join(_fmt_trace(t) for t in rows)
+        return "\n\n".join(format_trace(t) for t in rows)
 
     natives: list[tuple[ToolSpec, NativeHandler]] = [
         (
@@ -443,8 +559,10 @@ def register_native_tools(
         (
             _spec(
                 "send_chat_message",
-                "Send a message to the user's chat surfaces (Telegram, "
-                "Discord, Slack, web chat — whichever are enabled).",
+                "Push a message to the user's chat surfaces mid-turn "
+                "(Telegram, Discord, Slack, web chat — whichever are "
+                "enabled). Your end-of-turn reply is delivered "
+                "automatically — never use this to answer or to repeat it.",
                 {"text": {"type": "string", "description": "the message"}},
                 ["text"],
             ),
@@ -542,6 +660,24 @@ def register_native_tools(
                         [],
                     ),
                     explain_decision,
+                ),
+            ]
+        )
+    if audit is not None:
+        natives.extend(
+            [
+                (
+                    _spec(
+                        "verify_integrity",
+                        "Verify the tamper-evident hash chain of the decision "
+                        "record and answer in plain words. Use it whenever the "
+                        "user asks whether your records can be trusted — 'can "
+                        "anyone tamper with your logs?', 'prove nothing was "
+                        "edited'.",
+                        {},
+                        [],
+                    ),
+                    verify_integrity,
                 ),
             ]
         )
