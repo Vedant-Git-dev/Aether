@@ -100,3 +100,35 @@ async def test_mcp_tool_without_host_is_an_error() -> None:
     )
     with pytest.raises(UnknownToolError):
         await registry.execute("srv__x", {})
+
+
+async def test_drop_server_removes_only_that_servers_tools() -> None:
+    """The other half of sync_mcp_tools: an app unlinked or disabled from
+    chat must not keep its actions callable — and nobody else's drop."""
+    registry = ToolRegistry()
+    registry.add_native(_native("memory_search"), _echo_handler)
+    host = FakeHost(
+        [
+            ToolSpec(name="mail__list_unread", description="a", source="mail"),
+            ToolSpec(name="mail__send_email", description="b", source="mail"),
+            ToolSpec(name="calendar__get_events", description="c", source="calendar"),
+        ]
+    )
+    registry.attach_mcp(host)
+    assert registry.sync_mcp_tools() == 3
+    assert len(registry) == 4
+
+    assert registry.drop_server("mail") == 2
+    assert len(registry) == 2
+    assert registry.get("mail__list_unread") is None
+    assert registry.get("mail__send_email") is None
+    with pytest.raises(UnknownToolError):
+        await registry.execute("mail__send_email", {})  # gone means not callable
+    # the neighbors and the natives are untouched
+    assert registry.get("calendar__get_events") is not None
+    assert registry.get("memory_search") is not None
+    # the __ delimiter keeps a prefixing name from over-matching
+    assert registry.drop_server("cal") == 0
+    assert registry.get("calendar__get_events") is not None
+    # and dropping what's already gone is a no-op
+    assert registry.drop_server("mail") == 0

@@ -58,6 +58,11 @@ class Approvals:
         self._audit = audit
         self._ttl = timedelta(hours=ttl_hours)
 
+    def set_ttl(self, hours: float) -> None:
+        """Live-update the approval window — a chat-made change to
+        authz.approval_ttl_hours takes effect on the next parked call."""
+        self._ttl = timedelta(hours=hours)
+
     async def create(
         self,
         *,

@@ -5,7 +5,13 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import httpx
-from fakes import FakeAgentSettings, FakeApprovals, FakeAudit, FakeEventStore
+from fakes import (
+    FakeAgentSettings,
+    FakeApprovals,
+    FakeAudit,
+    FakeConfigManager,
+    FakeEventStore,
+)
 from fastapi import FastAPI
 
 from aether.agent.loop import CaptureRequestBox
@@ -81,6 +87,7 @@ def _app(
     agent: FakeAgent | None = None,
     config: AppConfig | None = None,
     agent_settings: FakeAgentSettings | None = None,
+    config_manager: FakeConfigManager | None = None,
     entities=None,
     scheduler=None,
 ) -> FastAPI:
@@ -106,6 +113,8 @@ def _app(
         app.state.agent = agent
     if agent_settings is not None:
         app.state.agent_settings = agent_settings
+    if config_manager is not None:
+        app.state.config_manager = config_manager
     return app
 
 
@@ -356,13 +365,47 @@ async def test_policy_feed_reports_configured_rules_and_the_builtin_ladder() -> 
             "note": "telegram sends are one-tap",
         }
     ]
-    assert len(data["builtin_rules"]) == 4
-    assert {r["id"] for r in data["builtin_rules"]} == {
+    assert len(data["builtin_rules"]) == 6
+    by_id = {r["id"]: r for r in data["builtin_rules"]}
+    assert set(by_id) == {
+        "builtin:config-tune",
+        "builtin:config-security",
         "builtin:internal",
         "builtin:risky",
         "builtin:read-only",
         "default:fail-safe",
     }
+    # the chat-configuration gate, as the panel explains it
+    assert by_id["builtin:config-tune"]["decision"] == "allow"
+    assert by_id["builtin:config-security"]["decision"] == "require_approval"
+
+
+# ---------------------------------------------------------------------------
+# /api/config — the read-only live config + chat-made overrides
+# ---------------------------------------------------------------------------
+
+
+async def test_config_feed_is_token_guarded() -> None:
+    async with _client(_app(None, config_manager=FakeConfigManager())) as client:
+        assert (await client.get("/api/config")).status_code == 401
+
+
+async def test_config_feed_is_503_without_a_manager_wired() -> None:
+    async with _client(_app(None)) as client:  # no config_manager on state
+        response = await client.get("/api/config", params={"token": "secret"})
+    assert response.status_code == 503
+
+
+async def test_config_feed_serves_the_effective_shape() -> None:
+    payload = {
+        "sections": {"agent": {"tick_seconds": 10.0}},
+        "overrides": [{"path": "agent.tick_seconds", "value": 10.0}],
+    }
+    manager = FakeConfigManager(effective_payload=payload)
+    async with _client(_app(None, config_manager=manager)) as client:
+        response = await client.get("/api/config", params={"token": "secret"})
+    assert response.status_code == 200
+    assert response.json() == payload
 
 
 # ---------------------------------------------------------------------------

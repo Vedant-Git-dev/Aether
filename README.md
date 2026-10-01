@@ -48,7 +48,8 @@ tax.
 - **Tamper-evident audit** — every decision produces a hash-chained record
   (SHA-256 over the previous entry), verifiable from the panel or on demand
   from any chat app: send `/verify` and the badge answers in plain words,
-  with no model in the path. Not an activity log — a chain: editing any
+  with no model in the path — the same way `/config` answers about the
+  configuration. Not an activity log — a chain: editing any
   past row breaks it visibly.
 - **Decision replay** — every act — a chat turn, a routine fire, a
   scheduled action, an approved call — leaves an encrypted trace of what
@@ -72,6 +73,17 @@ tax.
   still fires — through the same gate.
 - **Bring your own brain** — Claude, OpenAI, Gemini, or a local Ollama
   model; one line of config.
+- **Configured from chat** — everything `config.yaml` holds is readable and
+  changeable from Telegram, Discord, or Slack: send just `/config` and
+  answer the questions — a step-by-step walk, no paths to memorize — or use
+  the one-line commands as an expert. A change lands without a redeploy.
+  Personal tuning (agent cadence, salience,
+  the model itself) takes effect immediately — an llm change even restarts
+  the process on its own — while the security sections (contacts, authz,
+  messaging, MCP servers) hold for the same one-tap approval as any risky
+  action. Changes persist encrypted in Postgres and override config.yaml
+  until reset, so they survive restarts and ephemeral deploys. Secrets stay
+  in .env, never settable from chat.
 
 ## Architecture
 
@@ -147,13 +159,17 @@ Configuration is split cleanly:
 | `.env` | secrets — database URL, encryption key, provider API keys, bot tokens |
 | `config.yaml` | structure — LLM provider choice, MCP servers, messaging toggles, contact allowlist, authorization rules |
 
+`config.yaml` is the boot base: anything changed from chat (`/config`) layers
+on top of it, row by row in Postgres, until reset.
+
 Next steps:
 
 - **Deploy on free tiers** (Neon Postgres + Render, kept awake by an
   uptime ping): [DEPLOYMENT.md](DEPLOYMENT.md)
-- **See it work** — seven scripted demos, from auto-actions and taught
-  routines to kill -9 schedule survival, decision replay, and the record
-  proving itself from chat: [DEMO.md](DEMO.md)
+- **See it work** — eight scripted demos, from auto-actions and taught
+  routines to kill -9 schedule survival, decision replay, the record
+  proving itself from chat, and the whole config changed from your pocket:
+  [DEMO.md](DEMO.md)
 - **WhatsApp**: documented stub, both free routes written up in
   [docs/whatsapp.md](docs/whatsapp.md)
 

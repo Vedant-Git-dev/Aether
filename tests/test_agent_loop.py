@@ -11,8 +11,16 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from aether.agent.loop import AgentLoop, CaptureRequestBox, SurfaceFanout
+from aether.agent.loop import (
+    AgentLoop,
+    CaptureRequestBox,
+    SurfaceFanout,
+    _coerce_config_value,
+    _MISSING,
+    _parse_config_command,
+)
 from aether.agent.prompts import SYSTEM_PROMPT
+from aether.agent.tools import register_native_tools
 from aether.authz.approvals import APPROVED, DENIED
 from aether.authz.audit import ChainVerification
 from aether.authz.policy import Policy
@@ -26,7 +34,9 @@ from fakes import (
     FakeAgentSettings,
     FakeApprovals,
     FakeAudit,
+    FakeConfigManager,
     FakeContextBuilder,
+    FakeEntities,
     FakeEventStore,
     FakeProvider,
     FakeRegistry,
@@ -36,17 +46,6 @@ from fakes import (
     FakeSurfaceConnector,
     FakeTraces,
 )
-
-from aether.agent.loop import AgentLoop, CaptureRequestBox, SurfaceFanout
-from aether.agent.prompts import SYSTEM_PROMPT
-from aether.authz.approvals import APPROVED, DENIED
-from aether.authz.policy import Policy
-from aether.config import AppConfig, AuthzRule, MCPServerConfig, PollTool
-from aether.connectors.base import InboundMessage
-from aether.connectors.registry import ToolRegistry
-from aether.llm.types import ToolCall, ToolSpec, Turn
-from aether.memory.events import Event, IngestResult
-from aether.scheduler.jobs import ScheduledAction
 
 
 def _msg(
@@ -86,6 +85,8 @@ class LoopKit:
         *,
         rules: list[AuthzRule] | None = None,
         config: AppConfig | None = None,
+        agent_settings: FakeAgentSettings | None = None,
+        config_manager: FakeConfigManager | None = None,
     ):
         self.tools = ToolRegistry()
         self.events = FakeEventStore()
@@ -115,7 +116,24 @@ class LoopKit:
             host=None,
             routines=self.routines,
             traces=self.traces,
+            agent_settings=agent_settings,
+            config_manager=config_manager,
         )
+        if config_manager is not None:
+            # the real native config tools, so a /config write goes through
+            # the true closure → manager path the production loop uses (and
+            # the park test's set_config must be runnable, or the executor
+            # would answer "unavailable" instead of parking)
+            register_native_tools(
+                registry=self.tools,
+                events=self.events,
+                entities=FakeEntities(),
+                approvals=self.approvals,
+                scheduler=self.scheduler,
+                surfaces=SurfaceFanout([self.connector]),
+                capture_box=self.capture_box,
+                config_manager=config_manager,
+            )
 
     def add_tool(self, name: str, result: str = "ok") -> None:
         executed = self.executed
@@ -617,7 +635,7 @@ def _poll_host(
         return "3 unread: alice re: demo, bob, carol"
 
     kit.loop._poll_targets["mail:list_unread:0"] = ("mail", config.poll_tools[0])
-    kit.loop._next_poll["mail:list_unread:0"] = datetime.now(timezone.utc)
+    kit.loop._next_poll["mail:list_unread:0"] = datetime.now(UTC)
     kit.loop._host = SimpleNamespace(connections=[connection], call=handler or call)
     return SimpleNamespace(calls=calls)
 
@@ -661,7 +679,7 @@ async def test_the_watchdog_announces_a_dead_connector_once_and_its_recovery() -
     key = "mail:list_unread:0"
 
     def due_again() -> None:
-        kit.loop._next_poll[key] = datetime.now(timezone.utc)
+        kit.loop._next_poll[key] = datetime.now(UTC)
 
     due_again()
     await kit.loop._run_due_polls()
@@ -787,6 +805,30 @@ async def test_with_no_apps_connected_the_prompt_says_so() -> None:
     await kit.loop._tick()
 
     assert "Apps connected right now: none." in provider.calls[0][0]
+
+
+async def test_system_prompt_appends_the_owners_personality_text() -> None:
+    # the personality block from the settings store rides on top of the
+    # prompt — a tone overlay the owner writes, never a way around the rules
+    kit = LoopKit(None, agent_settings=FakeAgentSettings("Be extremely terse. Use no emoji."))
+    prompt = await kit.loop._system_prompt()
+    base = SYSTEM_PROMPT.format(owner="the user", apps=kit.loop._connected_apps())
+    assert prompt.startswith(base)
+    assert "Be extremely terse. Use no emoji." in prompt
+
+
+async def test_system_prompt_is_unchanged_with_no_personality_configured() -> None:
+    kit = LoopKit(None, agent_settings=FakeAgentSettings(""))
+    assert await kit.loop._system_prompt() == SYSTEM_PROMPT.format(
+        owner="the user", apps=kit.loop._connected_apps()
+    )
+
+
+async def test_system_prompt_is_unchanged_with_no_settings_store_wired() -> None:
+    kit = LoopKit(None)  # agent_settings defaults to None
+    assert await kit.loop._system_prompt() == SYSTEM_PROMPT.format(
+        owner="the user", apps=kit.loop._connected_apps()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -949,3 +991,311 @@ async def test_a_routine_fire_records_where_its_ping_landed() -> None:
 
     payload = kit.traces.created[-1]["payload"]
     assert payload["chat_refs"] == {"fake": "m1"}
+
+
+# ---------------------------------------------------------------------------
+# /config — the whole vocabulary, deterministic (no model, no ingest)
+# ---------------------------------------------------------------------------
+
+
+async def test_config_opens_the_guided_walk_without_waking_the_model() -> None:
+    provider = FakeProvider([])  # any LLM call would fail the test
+    manager = FakeConfigManager(show_reply="⚙️ current configuration")
+    kit = LoopKit(provider, config_manager=manager)
+    kit.loop.submit_message(_msg("/config"))
+    await kit.loop._tick()
+
+    # bare /config is the friendly front door: the walk's opening menu, with
+    # no ingest, no model, no trace — exactly like the rest of the vocabulary
+    assert kit.connector.sent == [(
+        "⚙️ let's set me up — answer each question with a number, "
+        "or \"stop\" any time.\n"
+        "1 — see my settings\n"
+        "2 — change something\n"
+        "3 — put something back the way config.yaml had it"
+    )]
+    assert provider.calls == []
+    assert kit.events.ingested == []  # a read never becomes memory
+    assert kit.traces.created == []
+
+    # the overview arrives inside the walk: "see" relays it, then the menu
+    kit.loop.submit_message(_msg("1"))
+    await kit.loop._tick()
+    assert kit.connector.sent[-1] == (
+        "⚙️ current configuration\n\n"
+        "anything else? 1 — see my settings  2 — change something  "
+        "3 — reset something  (or \"done\")"
+    )
+    assert manager.show_calls == [None]  # the bare overview
+    assert provider.calls == []
+    assert kit.events.ingested == []
+
+
+async def test_config_show_one_path_delegates_it() -> None:
+    provider = FakeProvider([])
+    manager = FakeConfigManager(show_reply="⚙️ agent.tick_seconds = 30.0")
+    kit = LoopKit(provider, config_manager=manager)
+    kit.loop.submit_message(_msg("/config show agent.tick_seconds"))
+    await kit.loop._tick()
+
+    assert manager.show_calls == ["agent.tick_seconds"]
+    assert kit.connector.sent == ["⚙️ agent.tick_seconds = 30.0"]
+
+
+async def test_config_set_tuning_applies_through_the_gate() -> None:
+    provider = FakeProvider([])  # the command answers; the model never turns
+    manager = FakeConfigManager(set_reply="tick interval set to 10s")
+    kit = LoopKit(provider, config_manager=manager)
+    kit.loop.submit_message(_msg("/config set agent.tick_seconds 10"))
+    await kit.loop._tick()
+
+    # the write went through the executor as one synthetic set_config call
+    assert manager.set_calls == [
+        {"op": "set", "path": "agent.tick_seconds", "value": 10, "source": "tool"}
+    ]
+    assert kit.connector.sent == ["tick interval set to 10s"]
+    row = kit.audit.entries[-1]
+    assert row["tool_name"] == "set_config"
+    assert row["decision"] == "allow"
+    assert row["rules_matched"] == "builtin:config-tune"
+    assert provider.calls == []
+    assert kit.events.ingested == []
+
+
+async def test_config_set_security_parks_for_one_tap() -> None:
+    provider = FakeProvider([])
+    manager = FakeConfigManager()
+    kit = LoopKit(provider, config_manager=manager)
+    kit.loop.submit_message(_msg("/config set messaging.telegram.enabled true"))
+    await kit.loop._tick()
+
+    # parked, not applied — nothing reached the manager
+    assert manager.set_calls == []
+    approval = kit.approvals.created[-1]
+    assert approval.tool_name == "set_config"
+    assert approval.params == {"op": "set", "path": "messaging.telegram.enabled", "value": True}
+    # the card went to the surfaces, named for the approval path
+    presented = kit.connector.approvals_presented[-1]
+    assert presented[0] == approval.id
+    assert presented[1] == "set_config"
+    # the reply is in the user's own words, never the model-directed wording
+    note = kit.connector.sent[-1]
+    assert f"one-tap approval (#{approval.id})" in note
+    assert "Do not propose" not in note
+    assert provider.calls == []
+    assert kit.events.ingested == []
+
+
+async def test_config_set_without_a_value_is_refused_before_the_gate() -> None:
+    provider = FakeProvider([])
+    manager = FakeConfigManager()
+    kit = LoopKit(provider, config_manager=manager)
+    kit.loop.submit_message(_msg("/config set agent.tick_seconds"))
+    await kit.loop._tick()
+
+    assert "set needs a value" in kit.connector.sent[-1]
+    assert manager.set_calls == []
+    assert kit.audit.entries == []  # refused up front — nothing was executed
+
+
+async def test_config_garbage_gets_the_usage_not_the_model() -> None:
+    provider = FakeProvider([])
+    manager = FakeConfigManager()
+    kit = LoopKit(provider, config_manager=manager)
+    kit.loop.submit_message(_msg("/config frobnicate the moon"))
+    await kit.loop._tick()
+
+    assert "⚙️ /config" in kit.connector.sent[-1]  # the usage text
+    assert manager.set_calls == [] and manager.show_calls == []
+    assert provider.calls == []
+    assert kit.events.ingested == []
+
+
+async def test_config_when_unwired_answers_deterministically() -> None:
+    provider = FakeProvider([])  # still no LLM turn — the command never lands
+    kit = LoopKit(provider)  # no config_manager wired
+    kit.loop.submit_message(_msg("/config"))
+    await kit.loop._tick()
+
+    assert kit.connector.sent == ["⚙️ config management isn't wired on this instance."]
+    assert provider.calls == []
+    assert kit.events.ingested == []
+
+
+# the guided walk — same gate, friendlier front door
+
+
+async def test_a_guided_tuning_walk_applies_through_the_gate() -> None:
+    provider = FakeProvider([])  # the walk answers; the model never turns
+    manager = FakeConfigManager(set_reply="tick interval set to 10s")
+    kit = LoopKit(provider, config_manager=manager)
+    kit.loop.submit_message(_msg("/config"))
+    await kit.loop._tick()
+    for answer in ("2", "2", "1", "10"):  # change → agent → tick_seconds → 10
+        kit.loop.submit_message(_msg(answer))
+        await kit.loop._tick()
+
+    # the write went through the executor as one synthetic set_config call —
+    # the same gate as the one-liner and the model's own proposals
+    assert manager.set_calls == [
+        {"op": "set", "path": "agent.tick_seconds", "value": 10, "source": "tool"}
+    ]
+    row = kit.audit.entries[-1]
+    assert row["tool_name"] == "set_config"
+    assert row["decision"] == "allow"
+    assert row["rules_matched"] == "builtin:config-tune"
+    assert provider.calls == []
+    assert kit.events.ingested == []
+    # the walk relayed the confirmation and is back at the menu
+    assert kit.connector.sent[-1] == (
+        "tick interval set to 10s\n"
+        "anything else? 1 — see my settings  2 — change something  "
+        "3 — reset something  (or \"done\")"
+    )
+
+
+async def test_a_guided_security_walk_parks_for_one_tap() -> None:
+    provider = FakeProvider([])
+    manager = FakeConfigManager()
+    kit = LoopKit(provider, config_manager=manager)
+    kit.loop.submit_message(_msg("/config"))
+    await kit.loop._tick()
+    for answer in ("2", "4", "1", "on"):  # change → messaging → telegram → on
+        kit.loop.submit_message(_msg(answer))
+        await kit.loop._tick()
+
+    # parked, not applied — nothing reached the manager
+    assert manager.set_calls == []
+    approval = kit.approvals.created[-1]
+    assert approval.tool_name == "set_config"
+    assert approval.params == {
+        "op": "set", "path": "messaging.telegram.enabled", "value": True
+    }
+    presented = kit.connector.approvals_presented[-1]
+    assert presented[0] == approval.id
+    assert presented[1] == "set_config"
+    # the walk relays the park card, then offers the menu again
+    note = kit.connector.sent[-1]
+    assert f"one-tap approval (#{approval.id})" in note
+    assert "anything else?" in note
+    assert provider.calls == []
+    assert kit.events.ingested == []
+
+
+async def test_an_expert_command_mid_walk_honors_expert_and_ends_the_walk() -> None:
+    provider = FakeProvider([Turn(text="done")])  # the stray "2" reaches the model
+    manager = FakeConfigManager(show_reply="⚙️ agent.tick_seconds = 30.0")
+    kit = LoopKit(provider, config_manager=manager)
+    kit.loop.submit_message(_msg("/config"))
+    await kit.loop._tick()
+    kit.loop.submit_message(_msg("2"))
+    await kit.loop._tick()
+    assert "which area?" in kit.connector.sent[-1]
+
+    # the user spoke expert — the one-liner runs, and the walk is over
+    kit.loop.submit_message(_msg("/config show agent.tick_seconds"))
+    await kit.loop._tick()
+    assert manager.show_calls == ["agent.tick_seconds"]
+
+    # a following "2" is normal chat now — no menu is waiting for it
+    assert provider.calls == []
+    kit.loop.submit_message(_msg("2"))
+    await kit.loop._tick()
+    assert len(provider.calls) == 1
+    assert kit.events.ingested[0]["payload"]["text"] == "2"
+
+
+async def test_a_stray_sentence_mid_walk_falls_through_to_normal_chat() -> None:
+    provider = FakeProvider([Turn(text="done"), Turn(text="done")])
+    manager = FakeConfigManager()
+    kit = LoopKit(provider, config_manager=manager)
+    kit.loop.submit_message(_msg("/config"))
+    await kit.loop._tick()
+    kit.loop.submit_message(_msg("2"))
+    await kit.loop._tick()
+    assert "which area?" in kit.connector.sent[-1]
+
+    # a sentence at a menu is a changed subject — the walk steps aside
+    kit.loop.submit_message(_msg("hey what did mom say about dinner?"))
+    await kit.loop._tick()
+    assert len(provider.calls) == 1
+    assert kit.events.ingested[-1]["payload"]["text"] == "hey what did mom say about dinner?"
+
+    # and the walk is gone: a later "1" is chat too, not a menu answer
+    kit.loop.submit_message(_msg("1"))
+    await kit.loop._tick()
+    assert len(provider.calls) == 2
+
+
+async def test_reparse_quiet_hours_flips_the_window_live() -> None:
+    kit = _quiet_kit(None)
+    assert kit.loop._quiet_now() is True
+
+    kit.loop._config.agent.quiet_hours = None  # the chat-made change
+    kit.loop.reparse_quiet_hours()
+    assert kit.loop._quiet_now() is False
+
+    kit.loop._config.agent.quiet_hours = "00:00-23:59"  # and back again
+    kit.loop.reparse_quiet_hours()
+    assert kit.loop._quiet_now() is True
+
+
+# the /config line parser and value coercion — pure functions
+
+
+def test_config_value_coercion() -> None:
+    assert _coerce_config_value("10") == 10
+    assert _coerce_config_value("2.5") == 2.5
+    assert _coerce_config_value("true") is True
+    assert _coerce_config_value("on") is True
+    assert _coerce_config_value("off") is False
+    assert _coerce_config_value("none") is None  # the explicit clear
+    assert _coerce_config_value('"claude-opus-5"') == "claude-opus-5"
+    assert _coerce_config_value("'23:00-07:00'") == "23:00-07:00"  # quoted is literal
+    assert _coerce_config_value("00:00-23:59") == "00:00-23:59"  # not a number — raw
+    assert _coerce_config_value('["a", "b"]') == ["a", "b"]
+    assert _coerce_config_value('{"type": "stdio"}') == {"type": "stdio"}
+    assert _coerce_config_value("claude-sonnet-5") == "claude-sonnet-5"  # a model name stays words
+
+
+def test_config_command_parser_shapes() -> None:
+    assert _parse_config_command("/config") == ("show", None, _MISSING)  # the bare overview
+    assert _parse_config_command("/config frobnicate") == ("usage", None, _MISSING)
+    assert _parse_config_command("/config show") == ("show", None, _MISSING)
+    assert _parse_config_command("/config show agent") == ("show", "agent", _MISSING)
+    assert _parse_config_command("/config show agent.tick_seconds") == (
+        "show",
+        "agent.tick_seconds",
+        _MISSING,
+    )
+    assert _parse_config_command("/config set agent.tick_seconds 10") == (
+        "set",
+        "agent.tick_seconds",
+        10,
+    )
+    assert _parse_config_command("/config set agent.quiet_hours none") == (
+        "set",
+        "agent.quiet_hours",
+        None,
+    )
+    assert _parse_config_command("/config set llm.model 'gpt-5.1'") == (
+        "set",
+        "llm.model",
+        "gpt-5.1",
+    )
+    assert _parse_config_command("/config reset salience.threshold") == (
+        "reset",
+        "salience.threshold",
+        _MISSING,
+    )
+    assert _parse_config_command("/config add contacts.allowlist telegram @friend") == (
+        "add",
+        "contacts.allowlist",
+        "telegram @friend",  # the raw remainder — ConfigManager reads the tokens
+    )
+    assert _parse_config_command("/config remove authz.rules ^mail__send") == (
+        "remove",
+        "authz.rules",
+        "^mail__send",
+    )
+    assert _parse_config_command("/config set") == ("set", None, _MISSING)

@@ -120,7 +120,7 @@ def _age(now: datetime, then: datetime) -> str:
     """Coarse elapsed words, "moments ago" to "N days ago" — the badge's
     'last act' is a feeling, not a timestamp."""
     if then.tzinfo is None:
-        then = then.replace(tzinfo=timezone.utc)  # naive stamps are UTC here
+        then = then.replace(tzinfo=UTC)  # naive stamps are UTC here
     seconds = max(0.0, (now - then).total_seconds())
     if seconds < 60:
         return "moments ago"
@@ -141,7 +141,7 @@ def verification_text(verification: ChainVerification, newest_at: datetime | Non
         return "🛡️ decision record: empty — nothing recorded yet."
     if verification.ok:
         last = (
-            f", last act {_age(datetime.now(timezone.utc), newest_at)}"
+            f", last act {_age(datetime.now(UTC), newest_at)}"
             if newest_at is not None
             else ""
         )

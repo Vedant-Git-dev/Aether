@@ -1,5 +1,13 @@
 # Aether configuration — structure only; secrets live in .env.
 # Copy to config.yaml and edit.
+#
+# Everything here is also changeable from chat: send just /config in
+# Telegram, Discord, or Slack and answer the questions — or use the
+# one-line /config commands. Chat changes persist in Postgres and override
+# this file until you /config reset them — personal tuning applies immediately,
+# the security sections (contacts, authz, messaging, mcp_servers) wait for
+# your one-tap approval, llm changes restart the agent themselves, and
+# secrets stay in .env where chat can never touch them.
 
 llm:
   provider: anthropic            # anthropic | openai | gemini | ollama

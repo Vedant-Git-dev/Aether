@@ -70,6 +70,8 @@ _NATIVE_PHRASES = {
     "delete_routine": "deleting a routine",
     "explain_decision": "replaying a decision",
     "verify_integrity": "verifying my records",
+    "get_config": "reading my configuration",
+    "set_config": "changing my configuration",
 }
 
 
@@ -229,13 +231,15 @@ def register_native_tools(
     routines: Any = None,
     traces: Any = None,
     audit: Any = None,
+    config_manager: Any = None,
 ) -> int:
     """Add Aether's own tools to the flat namespace. Returns how many.
 
     `routines` wires the standing-trigger tools, `traces` the
-    decision-replay tool, and `audit` the integrity check; without the
-    store behind one it is not offered at all (same shape as a loop
-    without an MCP host: no feature, no dead tool spec)."""
+    decision-replay tool, `audit` the integrity check, and `config_manager`
+    the configuration tools; without the store behind one it is not offered
+    at all (same shape as a loop without an MCP host: no feature, no dead
+    tool spec)."""
 
     async def memory_search(params: dict[str, Any]) -> str:
         query = str(params.get("query", "")).strip()
@@ -333,6 +337,23 @@ def register_native_tools(
             rows = await audit.recent(1)
             newest = rows[0]["created_at"] if rows else None
         return verification_text(verification, newest)
+
+    async def get_config(params: dict[str, Any]) -> str:
+        path = str(params.get("path", "")).strip() or None
+        return await config_manager.show(path)
+
+    async def set_config(params: dict[str, Any]) -> str:
+        op = str(params.get("op", "")).strip().lower()
+        path = str(params.get("path", "")).strip()
+        if op not in ("set", "add", "remove", "reset"):
+            return "set_config needs an op: set, add, remove, or reset."
+        if not path:
+            return "set_config needs a config path — e.g. agent.tick_seconds."
+        if op == "set" and "value" not in params:
+            return 'set needs a value — pass "value": null to clear one.'
+        return await config_manager.set(
+            op=op, path=path, value=params.get("value"), source="tool"
+        )
 
     def _describe_trigger(trigger: dict[str, Any]) -> str:
         parts: list[str] = []
@@ -678,6 +699,72 @@ def register_native_tools(
                         [],
                     ),
                     verify_integrity,
+                ),
+            ]
+        )
+    if config_manager is not None:
+        natives.extend(
+            [
+                (
+                    _spec(
+                        "get_config",
+                        "Read Aether's current configuration in plain words: "
+                        "the overview (with everything changed from "
+                        "config.yaml marked), one section ('llm', 'agent', "
+                        "'salience', 'messaging', 'contacts', 'authz', "
+                        "'mcp_servers'), or one setting by its dotted path. "
+                        "Use it whenever the user asks what's set, what a "
+                        "setting is, or what they've changed from chat.",
+                        {
+                            "path": {
+                                "type": "string",
+                                "description": "optional section or dotted path, e.g. agent.tick_seconds",
+                            },
+                        },
+                        [],
+                    ),
+                    get_config,
+                ),
+                (
+                    _spec(
+                        "set_config",
+                        "Change a config.yaml setting from chat. op: set (a "
+                        "value, or null to clear), add/remove (list entries), "
+                        "reset (back to config.yaml). Paths: "
+                        "agent.tick_seconds, agent.max_tool_iterations, "
+                        "agent.daily_surface_cap, agent.quiet_hours, "
+                        "agent.quiet_urgent_salience, salience.threshold, "
+                        "salience.rate_cap_per_hour, llm.provider, llm.model, "
+                        "llm.vision_model, llm.salience_model, llm.max_tokens, "
+                        "llm.ollama_vision, messaging.<platform>.enabled, "
+                        "contacts.mode, contacts.allowlist, authz.rules, "
+                        "authz.approval_ttl_hours, mcp_servers, "
+                        "mcp_servers.<name>.enabled. Tuning (agent.*, "
+                        "salience.*) applies immediately; llm.* persists and "
+                        "Aether restarts itself to load it; security sections "
+                        "(contacts, authz, messaging, mcp_servers) are held "
+                        "for the user's one-tap approval — when a call is "
+                        "held, say so plainly and do not propose it again. "
+                        "Secrets (.env) are not part of this vocabulary.",
+                        {
+                            "op": {
+                                "type": "string",
+                                "description": "set, add, remove, or reset",
+                            },
+                            "path": {
+                                "type": "string",
+                                "description": "the dotted setting path",
+                            },
+                            "value": {
+                                "description": "the new value, or null to clear — "
+                                "for add/remove the list entry, e.g. "
+                                '{"platform": "telegram", "handle": "@friend"} '
+                                "for contacts.allowlist",
+                            },
+                        },
+                        ["op", "path"],
+                    ),
+                    set_config,
                 ),
             ]
         )

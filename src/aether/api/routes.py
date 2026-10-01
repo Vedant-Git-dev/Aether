@@ -145,6 +145,18 @@ async def events_feed(request: Request, limit: int = 50, token: str | None = Non
 
 _BUILTIN_RULES = [
     {
+        "id": "builtin:config-tune",
+        "decision": "allow",
+        "description": "Personal tuning from chat: set_config on agent.*, salience.*, or "
+        "llm.* — applies right away (llm.* also restarts the agent to load it).",
+    },
+    {
+        "id": "builtin:config-security",
+        "decision": "require_approval",
+        "description": "set_config on the security sections (contacts, authz, messaging, "
+        "mcp_servers) or on an unrecognized path — held for the user's one tap.",
+    },
+    {
         "id": "builtin:internal",
         "decision": "allow",
         "description": "Aether's own memory, scheduling, capture-request, and web-chat "
@@ -193,6 +205,20 @@ async def policy_feed(request: Request, token: str | None = None) -> dict:
         "builtin_rules": _BUILTIN_RULES,
         "approval_ttl_hours": authz.approval_ttl_hours,
     }
+
+
+@router.get("/api/config")
+async def config_feed(request: Request, token: str | None = None) -> dict:
+    """Read-only: the live configuration (config.yaml merged with chat-made
+    overrides) plus the override rows themselves. No edit path — changes
+    come from chat (/config) through the same approval gate as every other
+    tool call, never from the panel."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    manager = getattr(request.app.state, "config_manager", None)
+    if manager is None:
+        raise HTTPException(status_code=503, detail="config management is not wired")
+    return await manager.effective()
 
 
 @router.get("/api/settings/personality")
@@ -324,4 +350,58 @@ async def trace_detail(
         "label": trace.label,
         "at": trace.created_at.isoformat(),
         "payload": trace.payload,
+    }
+
+
+@router.get("/api/memory")
+async def memory_feed(request: Request, limit: int = 50, token: str | None = None) -> dict:
+    """Everyone Aether has resolved a cross-platform identity for, with
+    their linked handles and most recent relationship note."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    entities = getattr(request.app.state, "entities", None)
+    if entities is None:
+        raise HTTPException(status_code=503, detail="entity store is not wired")
+    people = await entities.list_people(limit=min(limit, 200))
+    out = []
+    for person in people:
+        notes = await entities.notes_for(person.id, limit=1)
+        out.append(
+            {
+                "id": person.id,
+                "display_name": person.display_name,
+                "confidence": person.confidence,
+                "handles": [{"platform": p, "handle": h} for p, h in person.handles],
+                "latest_note": (
+                    {"at": notes[0].created_at.isoformat(), "payload": notes[0].payload}
+                    if notes
+                    else None
+                ),
+            }
+        )
+    return {"people": out}
+
+
+@router.get("/api/tasks")
+async def tasks_feed(request: Request, limit: int = 50, token: str | None = None) -> dict:
+    """Scheduled actions — persisted, survive restarts, run through the
+    same authorization gate as everything else when they fire."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler is None:
+        raise HTTPException(status_code=503, detail="scheduler is not wired")
+    actions = await scheduler.list(limit=min(limit, 200))
+    return {
+        "tasks": [
+            {
+                "id": a.id,
+                "label": a.label,
+                "run_at": a.run_at.isoformat(),
+                "status": a.status,
+                "payload": a.payload,
+                "created_at": a.created_at.isoformat(),
+            }
+            for a in actions
+        ]
     }

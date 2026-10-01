@@ -41,6 +41,8 @@ def test_internal_tools_are_allowed() -> None:
         "set_routine_enabled",
         "delete_routine",
         "explain_decision",
+        "verify_integrity",
+        "get_config",
     ]:
         ruling = policy.classify(name)
         assert ruling.decision is Decision.ALLOW, name
@@ -160,3 +162,105 @@ def test_params_blob_is_canonical() -> None:
     # key order must not change the blob a param regex sees
     assert params_blob({"a": 1, "b": 2}) == params_blob({"b": 2, "a": 1})
     assert params_blob({"text": "send Money now"}) == '{"text":"send Money now"}'
+
+
+# -- set_config: the chat-configuration gate ---------------------------------
+# _carry_out (an approved call's execution) bypasses classify, so this table
+# is the only gate a config write passes. The airtight direction: tuning
+# allow-lists, everything else parks.
+
+
+def test_set_config_tuning_paths_are_allowed() -> None:
+    policy = Policy([])
+    for path in (
+        "llm.provider",
+        "llm.model",
+        "llm.vision_model",
+        "llm.salience_model",
+        "llm.max_tokens",
+        "llm.ollama_vision",
+        "agent.tick_seconds",
+        "agent.max_tool_iterations",
+        "agent.daily_surface_cap",
+        "agent.quiet_urgent_salience",
+        "agent.quiet_hours",
+        "salience.threshold",
+        "salience.rate_cap_per_hour",
+    ):
+        ruling = policy.classify("set_config", {"op": "set", "path": path, "value": 1})
+        assert ruling.decision is Decision.ALLOW, path
+        assert ruling.matched_rule == "builtin:config-tune", path
+
+
+def test_set_config_security_paths_require_approval() -> None:
+    policy = Policy([])
+    for path in (
+        "messaging.telegram.enabled",
+        "messaging.discord.enabled",
+        "messaging.slack.enabled",
+        "contacts.mode",
+        "contacts.allowlist",
+        "authz.rules",
+        "authz.approval_ttl_hours",
+        "mcp_servers",
+        "mcp_servers.mail.enabled",
+    ):
+        ruling = policy.classify("set_config", {"op": "set", "path": path, "value": True})
+        assert ruling.decision is Decision.REQUIRE_APPROVAL, path
+        assert ruling.matched_rule == "builtin:config-security", path
+    # the op never changes the ruling — only the path root decides
+    add = policy.classify("set_config", {"op": "add", "path": "authz.rules", "value": {}})
+    assert add.decision is Decision.REQUIRE_APPROVAL
+    assert add.matched_rule == "builtin:config-security"
+
+
+def test_set_config_unknown_or_missing_path_parks_never_allows() -> None:
+    policy = Policy([])
+    for params in (
+        {"op": "set", "path": "totally.unknown.path", "value": 1},  # unknown root
+        {"op": "set", "path": "", "value": 1},  # empty path
+        {"op": "set", "value": 1},  # no path at all
+        {"op": "set"},  # nothing but an op
+        {},  # fully garbled
+        {"op": "set", "path": "contacts", "value": 1},  # a bare security root parks too
+    ):
+        ruling = policy.classify("set_config", params)
+        assert ruling.decision is Decision.REQUIRE_APPROVAL, params
+        assert ruling.matched_rule == "builtin:config-security", params
+
+
+def test_set_config_bare_tuning_root_allows_but_handler_refuses() -> None:
+    """`agent` on its own is not a real path, but its root classifies as
+    tuning — defense in depth is the handler: _resolve refuses it, nothing
+    applies. The classifier stays root-based on purpose; this pins that the
+    refusal is the ConfigManager's job, not the gate's."""
+    ruling = Policy([]).classify("set_config", {"op": "set", "path": "agent", "value": 1})
+    assert ruling.decision is Decision.ALLOW
+    assert ruling.matched_rule == "builtin:config-tune"
+
+
+def test_set_config_is_not_internal() -> None:
+    """set_config must not ride the internal allow — its whole point is the
+    per-path split. If it ever matched _INTERNAL, every security write would
+    run silently after one tap on an unrelated card."""
+    ruling = Policy([]).classify("set_config", {"op": "set", "path": "authz.rules", "value": []})
+    assert ruling.decision is Decision.REQUIRE_APPROVAL
+    assert ruling.matched_rule == "builtin:config-security"
+
+
+def test_user_rules_beat_the_set_config_branch_both_directions() -> None:
+    # allow: the user pre-trusted a security-shaped path with one of their own
+    # rules — their rule, their standing trust
+    trusts = _policy(
+        {"tool_pattern": r"set_config", "param_pattern": r"messaging\.", "decision": "allow"}
+    )
+    ruling = trusts.classify(
+        "set_config", {"op": "set", "path": "messaging.telegram.enabled", "value": True}
+    )
+    assert ruling.decision is Decision.ALLOW
+    assert ruling.matched_rule == "user:set_config"
+    # deny: the user locks down a tuning path the builtin would allow
+    locks = _policy({"tool_pattern": r"set_config", "decision": "deny"})
+    ruling = locks.classify("set_config", {"op": "set", "path": "llm.model", "value": "x"})
+    assert ruling.decision is Decision.DENY
+    assert ruling.matched_rule == "user:set_config"

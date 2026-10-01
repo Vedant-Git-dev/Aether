@@ -1,6 +1,6 @@
 # Demo walkthrough
 
-Seven scripted demos, in increasing order of "watch it carefully". Each one
+Eight scripted demos, in increasing order of "watch it carefully". Each one
 runs against a live Aether (local or deployed — see
 [DEPLOYMENT.md](DEPLOYMENT.md)) with at least one LLM provider key set.
 Open the web panel (`/`) with your token before starting; the sections
@@ -193,7 +193,97 @@ badge and the replay are reads from the record — deterministic, plain
 words, no LLM turn — which is itself the claim: the record can answer
 for Aether without Aether improvising.
 
-## What all seven have in common
+## 8. The whole config, from your pocket
+
+**What it shows**: every `config.yaml` setting readable and changeable
+from chat — through the same gate as every other action, with the change
+persisted in Postgres, and a restart nobody performs by hand.
+
+1. In chat, send `/config`. The answer is code, not the model — no tokens,
+   no ingest, no new trace — and it opens a guided walk, not a manual:
+   > ⚙️ let's set me up — answer each question with a number, or "stop" any time.
+   > 1 — see my settings
+   > 2 — change something
+   > 3 — put something back the way config.yaml had it
+
+   Every question is plain words with the current value inline — no dotted
+   paths, no ops, no value syntax to memorize. "1" relays the overview. The
+   expert one-liners still work alongside the walk: `/config show agent`
+   for one section, `/config show agent.tick_seconds` for a single value,
+   and a near miss like `/config agent.ticksecond` gets a did-you-mean
+   instead of a shrug.
+2. Change a personal tuning value — four numbers and a value, no approval
+   card because tuning is yours:
+   ```
+   user: 2        (change something)
+   which area?
+   1 — llm — the model I think with
+   2 — agent — my rhythm: how often I check, how much I do
+   …
+   user: 2        (agent)
+   agent today:
+   1 — tick_seconds · 30 — seconds between my checks
+   …
+   which one?
+   user: 1
+   how many seconds between checks? (currently 30)
+   user: 10
+   agent.tick_seconds set to 10 (config.yaml says 30). — applies from the
+   next tick
+   anything else? 1 — see my settings  2 — change something  3 — reset
+   something  (or "done")
+   ```
+
+   The **audit** pane shows the row (`allow · builtin:config-tune`) — the
+   walk applies through the same synthetic set_config call as the
+   one-liner, so nothing skips the gate — and the panel's read-only config
+   feed (`GET /api/config`) serves the merged value with the override
+   listed. `/config reset agent.tick_seconds` puts config.yaml's value back
+   and deletes the row; the walk asks "put tick_seconds back to
+   config.yaml's 30?" before doing it, so a reset is approved with the
+   value on the table.
+3. Now a security-shaped one, the one-line way:
+   ```
+   /config set messaging.discord.enabled true
+   ```
+   It parks for your one tap — the same card as any risky action, and the
+   one the walk relays verbatim when its questions reach the same change:
+   > 🔒 that one's security-shaped — held for your one-tap approval (#14).
+   > Tap approve and it's done.
+
+   Approve it and the change carries out:
+   > messaging.discord.enabled set to true (config.yaml says false).
+   > — discord is starting up
+
+   …and Discord is alive without a deploy. (No `DISCORD_BOT_TOKEN` in
+   .env? The reply says so honestly — the toggle persists, the connector
+   starts the moment the token exists.)
+4. The allowlist, the same way: `/config set contacts.mode enforce`, then
+   `/config add contacts.allowlist telegram @mom` — both park, both need
+   the tap. Approved, the next message from @mom is seen while a
+   stranger's is dropped at ingest, content never stored:
+   > contacts.allowlist updated — 1 entries now (config.yaml has 0).
+   > — applies to the next message I see
+5. Change the model itself:
+   ```
+   /config set llm.model claude-sonnet-5
+   ```
+   > llm.model set to claude-sonnet-5 (config.yaml says claude-opus-5).
+   > — restarting myself to load it, back in a few seconds
+
+   The reply lands first — the delay is the current turn's chance to finish
+   speaking — then the process drains its requests and serves a fresh app:
+   new lifespan, fresh boot merge, the new model. Nobody restarts anything
+   by hand. And on Render's ephemeral disk, this is the only way a config
+   change survives at all: it lives in Postgres, not the filesystem.
+
+**The point**: the config is not a file you edit on the server — it's a
+conversation, literally: bare `/config` asks plain-words questions and you
+answer with numbers. Reads are deterministic, writes pass the same gate and
+land in the same audit chain as every other act, and the change outlives the
+container.
+
+## What all eight have in common
 
 Every path ends in the same four artifacts, which is the whole pitch:
 
