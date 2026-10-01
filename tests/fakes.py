@@ -125,8 +125,12 @@ class FakeApprovals:
         self.created: list[Approval] = []
         self.executed: list[int] = []
         self.failed: list[int] = []
+        self.ttl_updates: list[float] = []
         self.result: object = object()  # what decide() returns (set to None to simulate stale)
         self._now = datetime.now(UTC)
+
+    def set_ttl(self, hours: float) -> None:
+        self.ttl_updates.append(hours)
 
     async def create(
         self,
@@ -411,15 +415,25 @@ class FakeEntities:
 
 
 class FakeSurfaceConnector:
-    """MessagingConnector double: records sends and approval presentations.
-    send_to_user answers with a fresh platform message id, the way the real
-    surfaces do — enough for the loop to link a later why? back."""
+    """MessagingConnector double: records sends, approval presentations, and
+    start/stop cycles (the config manager's messaging diff stops and starts
+    connectors live). send_to_user answers with a fresh platform message id,
+    the way the real surfaces do — enough for the loop to link a later why?
+    back."""
 
     def __init__(self, name: str = "fake") -> None:
         self.name = name
         self.sent: list[str] = []
         self.approvals_presented: list[tuple[int, str, str]] = []
+        self.starts = 0
+        self.stops = 0
         self._ids = 0
+
+    async def start(self) -> None:
+        self.starts += 1
+
+    async def stop(self) -> None:
+        self.stops += 1
 
     async def send_to_user(self, text: str) -> str:
         self.sent.append(text)
@@ -527,3 +541,63 @@ class FakeAgentSettings:
     async def set_personality(self, text: str) -> str:
         self.personality = text.strip()
         return self.personality
+
+
+class FakeConfigStore:
+    """ConfigOverrides double: rows in a dict, the same four-call surface
+    (load/upsert/delete/delete_prefixed) so ConfigManager tests run with no
+    database."""
+
+    def __init__(self, rows: dict[str, object] | None = None) -> None:
+        self.rows = dict(rows or {})
+        self.upserts: list[tuple[str, object]] = []
+        self.deletes: list[str] = []
+
+    async def load(self) -> dict[str, object]:
+        return dict(self.rows)
+
+    async def upsert(self, path: str, value: object) -> None:
+        self.upserts.append((path, value))
+        self.rows[path] = value
+
+    async def delete(self, path: str) -> None:
+        self.deletes.append(path)
+        self.rows.pop(path, None)
+
+    async def delete_prefixed(self, prefix: str) -> None:
+        for path in [p for p in self.rows if p.startswith(prefix)]:
+            self.rows.pop(path, None)
+
+
+class FakeConfigManager:
+    """ConfigManager double: records what the /config command and the native
+    tools asked for, answers with canned replies. effective_payload is what
+    GET /api/config serves."""
+
+    def __init__(
+        self,
+        show_reply: str = "⚙️ fake config view",
+        set_reply: str = "⚙️ fake set confirmation",
+        effective_payload: dict | None = None,
+    ) -> None:
+        self.show_reply = show_reply
+        self.set_reply = set_reply
+        self.effective_payload = effective_payload if effective_payload is not None else {
+            "sections": {},
+            "overrides": [],
+        }
+        self.show_calls: list[str | None] = []
+        self.set_calls: list[dict] = []
+
+    async def show(self, path: str | None = None) -> str:
+        self.show_calls.append(path)
+        return self.show_reply
+
+    async def set(
+        self, *, op: str, path: str, value: object = None, source: str = "chat"
+    ) -> str:
+        self.set_calls.append({"op": op, "path": path, "value": value, "source": source})
+        return self.set_reply
+
+    async def effective(self) -> dict:
+        return self.effective_payload

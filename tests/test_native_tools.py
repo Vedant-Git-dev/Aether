@@ -15,6 +15,7 @@ from aether.memory.events import Event
 from fakes import (
     FakeApprovals,
     FakeAudit,
+    FakeConfigManager,
     FakeEntities,
     FakeEventStore,
     FakeRoutines,
@@ -44,6 +45,7 @@ class NativeKit:
         routines: FakeRoutines | None = None,
         traces: FakeTraces | None = None,
         audit: FakeAudit | None = None,
+        config_manager: FakeConfigManager | None = None,
     ) -> None:
         self.registry = ToolRegistry()
         self.events = events or FakeEventStore()
@@ -63,9 +65,10 @@ class NativeKit:
             scheduler=self.scheduler,
             surfaces=SurfaceFanout([self.connector]),
             capture_box=self.box,
-            routines=routines,  # None keeps the routine tools unregistered
-            traces=traces,      # same for the decision-replay tool
-            audit=audit,        # and the integrity check
+            routines=routines,        # None keeps the routine tools unregistered
+            traces=traces,            # same for the decision-replay tool
+            audit=audit,              # and the integrity check
+            config_manager=config_manager,  # and the config tools
         )
 
     async def run(self, name: str, params: dict) -> str:
@@ -360,3 +363,72 @@ def test_plain_replay_of_routine_and_scheduled_fires() -> None:
     # a read is said as a read, never as a send
     assert "I went ahead with checking mail — the gate let it through (builtin:read-only)." in scheduled_out
     assert "sending an email" not in scheduled_out
+
+
+# ---------------------------------------------------------------------------
+# get_config / set_config — the configuration vocabulary as native tools
+# ---------------------------------------------------------------------------
+
+
+async def test_config_tools_register_only_when_wired() -> None:
+    """14 with the manager wired, 12 without — the count is the contract
+    main.py logs at boot."""
+    bare = NativeKit(routines=FakeRoutines(), traces=FakeTraces(), audit=FakeAudit())
+    assert bare.count == 12
+    assert bare.registry.get("get_config") is None
+    assert bare.registry.get("set_config") is None
+
+    wired = NativeKit(
+        routines=FakeRoutines(),
+        traces=FakeTraces(),
+        audit=FakeAudit(),
+        config_manager=FakeConfigManager(),
+    )
+    assert wired.count == 14
+    assert wired.registry.get("get_config") is not None
+    assert wired.registry.get("set_config") is not None
+
+
+async def test_get_config_delegates_show() -> None:
+    manager = FakeConfigManager(show_reply="⚙️ the whole config")
+    kit = NativeKit(config_manager=manager)
+    assert await kit.run("get_config", {}) == "⚙️ the whole config"
+    assert await kit.run("get_config", {"path": "agent.tick_seconds"}) == "⚙️ the whole config"
+    assert manager.show_calls == [None, "agent.tick_seconds"]
+
+
+async def test_set_config_delegates_and_passes_explicit_null_through() -> None:
+    manager = FakeConfigManager(set_reply="⚙️ set")
+    kit = NativeKit(config_manager=manager)
+    out = await kit.run("set_config", {"op": "set", "path": "agent.tick_seconds", "value": 10})
+    assert out == "⚙️ set"
+    assert manager.set_calls == [
+        {"op": "set", "path": "agent.tick_seconds", "value": 10, "source": "tool"}
+    ]
+    # explicit null is a legal value (clearing llm.vision_model) — it must
+    # reach the manager, not be mistaken for a missing one
+    await kit.run("set_config", {"op": "set", "path": "llm.vision_model", "value": None})
+    assert manager.set_calls[-1] == {
+        "op": "set",
+        "path": "llm.vision_model",
+        "value": None,
+        "source": "tool",
+    }
+
+
+async def test_set_config_refuses_incomplete_calls_in_plain_words() -> None:
+    manager = FakeConfigManager()
+    kit = NativeKit(config_manager=manager)
+    assert (
+        await kit.run("set_config", {"path": "llm.model"})
+        == "set_config needs an op: set, add, remove, or reset."
+    )
+    assert (
+        await kit.run("set_config", {"op": "set"})
+        == "set_config needs a config path — e.g. agent.tick_seconds."
+    )
+    assert (
+        await kit.run("set_config", {"op": "set", "path": "llm.model"})
+        == 'set needs a value — pass "value": null to clear one.'
+    )
+    assert manager.set_calls == []  # nothing incomplete was ever delegated

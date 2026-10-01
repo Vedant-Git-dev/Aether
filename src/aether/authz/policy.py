@@ -5,10 +5,13 @@ before it executes. First match wins:
 
 1. user rules from config.yaml — explicit trust or distrust, a regex on the
    tool name, optionally combined with a regex on the call parameters
-2. internal Aether tools (memory, scheduling, capture requests) -> ALLOW
-3. risky verbs (send, delete, pay, ...) -> REQUIRE_APPROVAL
-4. read-only verbs (list, search, get, ...) -> ALLOW
-5. anything else -> REQUIRE_APPROVAL
+2. set_config — personal tuning (agent.*, salience.*, llm.*) -> ALLOW;
+   every other config path (the security sections, an unknown or missing
+   one) -> REQUIRE_APPROVAL
+3. internal Aether tools (memory, scheduling, capture requests) -> ALLOW
+4. risky verbs (send, delete, pay, ...) -> REQUIRE_APPROVAL
+5. read-only verbs (list, search, get, ...) -> ALLOW
+6. anything else -> REQUIRE_APPROVAL
 
 The fail-safe direction matters: an unknown tool can never run silently —
 the worst case is an extra approval tap, never an unreviewed action.
@@ -34,7 +37,7 @@ class Decision(StrEnum):
 @dataclass(frozen=True)
 class Ruling:
     decision: Decision
-    matched_rule: str  # "user:<pattern>" | "builtin:internal" | "builtin:risky" | "builtin:read-only" | "default:fail-safe"
+    matched_rule: str  # "user:<pattern>" | "builtin:config-tune" | "builtin:config-security" | "builtin:internal" | "builtin:risky" | "builtin:read-only" | "default:fail-safe"
     reason: str
 
 
@@ -49,7 +52,8 @@ class Ruling:
 _INTERNAL = re.compile(
     r"^(memory_\w+|note_entity|schedule_action|request_screen_capture"
     r"|get_pending_approvals|send_chat_message|create_routine|list_routines"
-    r"|set_routine_enabled|delete_routine|explain_decision|verify_integrity)$"
+    r"|set_routine_enabled|delete_routine|explain_decision|verify_integrity"
+    r"|get_config)$"
 )
 
 # Verbs that reach an external system or are hard to undo. The verb must
@@ -65,6 +69,17 @@ _RISKY = re.compile(
 # so "getter_sync" reads as a get, but "and_get" inside a compound name
 # never grants read-only status on its own.
 _READONLY = re.compile(r"(^|__)(list|search|get|read|fetch|find|query)([a-z_]|$)")
+
+
+# The config vocabulary's two faces, by path root. Personal tuning applies
+# right away; the security sections change who Aether listens to, what it
+# may do, or what it's connected to — those park. Anything that isn't a
+# recognized tuning root parks too: an unrecognized config path can never
+# apply silently. The airtight direction matters because an approved call
+# is carried out without re-classifying — park-time is the only gate a
+# security write passes, and the worst case is an extra approval tap.
+_CONFIG_TUNING_ROOTS = {"agent", "salience", "llm"}
+_CONFIG_SECURITY_ROOTS = {"contacts", "authz", "messaging", "mcp_servers"}
 
 
 class PolicyError(ValueError):
@@ -111,6 +126,8 @@ class Policy:
                     f"user:{tool_re.pattern}",
                     note or f"user rule {tool_re.pattern!r}",
                 )
+        if tool_name == "set_config":
+            return self._classify_set_config(params)
         if _INTERNAL.match(tool_name):
             return Ruling(
                 Decision.ALLOW, "builtin:internal", "internal tool, touches only Aether's own state"
@@ -127,4 +144,32 @@ class Policy:
             Decision.REQUIRE_APPROVAL,
             "default:fail-safe",
             "unknown tool — held for a human decision",
+        )
+
+    @staticmethod
+    def _classify_set_config(params: dict[str, Any]) -> Ruling:
+        """The config gate. The path root decides: tuning applies right
+        away, everything else — the security sections, an unknown, garbled,
+        or missing path — parks. A bad op on a tuning path is refused by the
+        handler and never applies, but defense in depth still means only the
+        tuning roots can classify ALLOW here."""
+        root = str(params.get("path", "")).strip().partition(".")[0].lower()
+        if root in _CONFIG_TUNING_ROOTS:
+            return Ruling(
+                Decision.ALLOW,
+                "builtin:config-tune",
+                "personal tuning — applies right away",
+            )
+        if root in _CONFIG_SECURITY_ROOTS:
+            return Ruling(
+                Decision.REQUIRE_APPROVAL,
+                "builtin:config-security",
+                "changes who Aether listens to, what it may do, or what "
+                "it's connected to — the user decides that with one tap",
+            )
+        return Ruling(
+            Decision.REQUIRE_APPROVAL,
+            "builtin:config-security",
+            "an unrecognized config path can never apply silently — held "
+            "for the user to look at",
         )

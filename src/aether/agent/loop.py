@@ -28,7 +28,7 @@ import contextlib
 import json
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..authz.approvals import APPROVED, DENIED, Approval, Approvals
 from ..authz.audit import AuditLog, verification_text
@@ -55,6 +55,9 @@ from .prompts import SYSTEM_PROMPT
 from .settings import AgentSettings
 from .tools import plain_replay
 from .traces import CARRY_OUT, ROUTINE, SCHEDULED, TURN, Traces
+
+if TYPE_CHECKING:
+    from ..config_store import ConfigManager
 
 log = logging.getLogger("aether.agent")
 
@@ -122,6 +125,16 @@ class SurfaceFanout:
     def add_connectors(self, connectors: list[MessagingConnector]) -> None:
         self.connectors.extend(connectors)
 
+    def remove_connector(self, name: str) -> MessagingConnector | None:
+        """Take one connector out of the fanout by name — a surface the
+        user just switched off. Stopping it is the caller's job; this stays
+        sync like the rest of the fanout."""
+        for i, connector in enumerate(self.connectors):
+            if connector.name == name:
+                del self.connectors[i]
+                return connector
+        return None
+
     async def send_to_user(self, text: str) -> dict[str, str]:
         """Fan out to every enabled surface, collecting where the words
         landed: {connector name: platform message id}. Those ids are what
@@ -174,6 +187,86 @@ def _delivered_by_tool(calls: list[dict[str, Any]]) -> bool:
     return False
 
 
+# the value sentinel: "not on the line" — distinct from None, which is an
+# explicit clear (llm.vision_model, agent.quiet_hours)
+_MISSING = object()
+
+_CONFIG_USAGE = (
+    "⚙️ /config — everything config.yaml holds, from chat.\n\n"
+    "/config — the overview, with everything changed from chat marked\n"
+    "/config show <section|path> — one section's settings, or one value\n"
+    "/config set <path> <value> — e.g. /config set agent.tick_seconds 10\n"
+    "/config add <path> <value…> — contacts.allowlist <platform> <handle> · "
+    "authz.rules <pattern> <decision> [note] · mcp_servers {json object}\n"
+    "/config remove <path> <value…> — allowlist [platform] <handle> · "
+    "authz.rules <pattern> · mcp_servers <name>\n"
+    "/config reset <path> — back to config.yaml's value\n\n"
+    "Personal tuning (agent.*, salience.*, llm.*) applies right away; llm.* "
+    "restarts me to load it. Security sections (contacts, authz, messaging, "
+    "mcp_servers) wait for your one-tap approval. Secrets stay in .env — "
+    "they're never settable from chat."
+)
+
+
+def _coerce_config_value(raw: str) -> Any:
+    """Best-effort typing of a value said in chat: JSON first (covers
+    arrays, objects, numbers, true/false/null), then the plain chat words,
+    then int/float, else the raw string. The value is the raw remainder of
+    the line, so quoted spaces survive."""
+    text = raw.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        inner = text[1:-1].strip()
+        try:
+            return json.loads(inner)
+        except ValueError:
+            return inner  # quoted means "take it literally"
+    try:
+        return json.loads(text)
+    except ValueError:
+        pass
+    lowered = text.lower()
+    if lowered in ("on", "yes", "true"):
+        return True
+    if lowered in ("off", "no", "false"):
+        return False
+    if lowered in ("none", "null"):
+        return None
+    for cast in (int, float):
+        try:
+            return cast(text)
+        except ValueError:
+            continue
+    return text
+
+
+def _parse_config_command(text: str) -> tuple[str, str | None, Any]:
+    """(op, path, value) from a /config line; op "usage" for anything the
+    grammar doesn't recognize. Deliberately dumb — every meaning lives in
+    ConfigManager, so the command path and the tool path share one
+    interpretation and can never drift."""
+    parts = text.split(maxsplit=2)
+    if len(parts) == 1:
+        return "show", None, _MISSING  # bare /config is the overview
+    sub = parts[1].lower()
+    if sub == "show":
+        shown = parts[2].strip() or None if len(parts) > 2 else None
+        return "show", shown, _MISSING
+    if sub not in ("set", "add", "remove", "reset"):
+        return "usage", None, _MISSING
+    if len(parts) < 3:
+        return sub, None, _MISSING
+    rest = parts[2].strip()
+    path, _, tail = rest.partition(" ")
+    if not path:
+        return "usage", None, _MISSING
+    if sub == "reset":
+        return "reset", path, _MISSING
+    tail = tail.strip()
+    if not tail:
+        return sub, path, _MISSING
+    return sub, path, _coerce_config_value(tail)
+
+
 class AgentLoop:
     def __init__(
         self,
@@ -194,6 +287,7 @@ class AgentLoop:
         routines: Routines | None = None,
         traces: Traces | None = None,
         agent_settings: AgentSettings | None = None,
+        config_manager: ConfigManager | None = None,
     ) -> None:
         self._providers = providers
         self._tools = tools
@@ -211,6 +305,7 @@ class AgentLoop:
         self._routines = routines
         self._traces = traces
         self._agent_settings = agent_settings
+        self._config_manager = config_manager
 
         self._queue: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._woken = asyncio.Event()
@@ -223,13 +318,7 @@ class AgentLoop:
         self._down: set[str] = set()
         self._quiet = _parse_quiet_hours(config.agent.quiet_hours)
         self._held: list[str] = []  # unprompted notes waiting out the window
-        if host is not None:
-            now = datetime.now(UTC)
-            for conn in host.connections:
-                for i, poll in enumerate(conn.poll_tools):
-                    key = f"{conn.name}:{poll.tool}:{i}"
-                    self._poll_targets[key] = (conn.name, poll)
-                    self._next_poll[key] = now  # the first tick runs every poll once
+        self.rebuild_poll_targets()
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -279,6 +368,13 @@ class AgentLoop:
         if start < end:
             return start <= minutes < end
         return minutes >= start or minutes < end  # wraps midnight
+
+    def reparse_quiet_hours(self) -> None:
+        """A chat-made change to agent.quiet_hours, applied now — the
+        window is parsed once at boot, so the parse has to be redone on
+        change (a malformed value refuses at the config layer, never
+        here)."""
+        self._quiet = _parse_quiet_hours(self._config.agent.quiet_hours)
 
     async def _notify(self, text: str, *, urgent: float = 0.0) -> dict[str, str] | None:
         """Send an unprompted note under the interruption budget: during
@@ -383,10 +479,14 @@ class AgentLoop:
     # -- the deterministic chat vocabulary ---------------------------------------
 
     async def _try_chat_command(self, message: InboundMessage) -> bool:
-        """Answer /verify straight from the audit chain — no LLM turn, no
-        tokens, nothing ingested, no trace: a read, like recent(). Returns
-        True when the message was a handled command."""
-        if message.text.strip().lower() != "/verify":
+        """Answer the deterministic vocabulary straight from the record or
+        the live state — no LLM turn, no tokens, nothing ingested, no
+        trace. Returns True when the message was a handled command."""
+        text = message.text.strip()
+        first = text.split(maxsplit=1)[0].lower() if text else ""
+        if first == "/config":
+            return await self._config_command(text)
+        if text.lower() != "/verify":
             return False
         try:
             verification = await self._audit.verify_chain()
@@ -409,6 +509,60 @@ class AgentLoop:
         # quiet hours
         await self._surfaces.send_to_user(text)
         return True
+
+    async def _config_command(self, text: str) -> bool:
+        """The /config command, deterministic end to end: no ingest, no
+        model, no tokens. `show` is a read answered from the live config;
+        every write goes through the executor as a synthetic set_config
+        call — the same choke point as the model's proposals, so a
+        security path parks for one-tap approval exactly like any other
+        gated action."""
+        try:
+            reply = await self._run_config_command(text)
+        except Exception:
+            log.exception("/config failed")
+            reply = (
+                "⚠️ that didn't work — the configuration is untouched. "
+                "Nothing else is affected."
+            )
+        # solicited — the user asked, so it never waits out quiet hours
+        await self._surfaces.send_to_user(reply)
+        return True
+
+    async def _run_config_command(self, text: str) -> str:
+        if self._config_manager is None:
+            return "⚙️ config management isn't wired on this instance."
+        op, path, value = _parse_config_command(text)
+        if op == "usage":
+            return _CONFIG_USAGE
+        if op == "show":
+            return await self._config_manager.show(path)
+        if value is _MISSING and op in ("set", "add", "remove"):
+            if op == "set":
+                return (
+                    "set needs a value — e.g. /config set agent.tick_seconds 10 "
+                    "(or the word none to clear a setting)."
+                )
+            return (
+                f"{op} needs a value after the path — e.g. "
+                f"/config {op} contacts.allowlist telegram @friend."
+            )
+        params: dict[str, Any] = {"op": op, "path": path}
+        if value is not _MISSING:
+            params["value"] = value
+        # one synthetic call through the gate — classified, audited,
+        # parked or applied exactly like a model proposal
+        calls: list[dict[str, Any]] = []
+        result = await self._execute(
+            ToolCall(id="cmd-config", name="set_config", arguments=params), trace=calls
+        )
+        held = calls[0].get("approval_id") if calls else None
+        if held is not None:
+            return (
+                f"🔒 that one's security-shaped — held for your one-tap "
+                f"approval (#{held}). Tap approve and it's done."
+            )
+        return result.content
 
     async def _try_explain_reply(self, message: InboundMessage) -> bool:
         """A reply that is just 'why?' (or 'explain') about one of my own
@@ -439,6 +593,25 @@ class AgentLoop:
         return None
 
     # -- source polling -----------------------------------------------------------
+
+    def rebuild_poll_targets(self) -> None:
+        """Rebuild the poll schedule from the host's current servers — the
+        boot block, factored out so a chat-made mcp_servers change can
+        re-run it against the new live set. Servers that left take their
+        stale watchdog state with them."""
+        self._poll_targets.clear()
+        self._next_poll.clear()
+        if self._host is None:
+            return
+        now = datetime.now(UTC)
+        for conn in self._host.connections:
+            for i, poll in enumerate(conn.poll_tools):
+                key = f"{conn.name}:{poll.tool}:{i}"
+                self._poll_targets[key] = (conn.name, poll)
+                self._next_poll[key] = now  # the first tick runs every poll once
+        live = {conn.name for conn in self._host.connections}
+        self._poll_failures = {k: v for k, v in self._poll_failures.items() if k in live}
+        self._down = {s for s in self._down if s in live}
 
     async def _run_due_polls(self) -> None:
         """Run every configured poll that is due. The polls double as the

@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import restart
 from .agent import AgentLoop, CaptureRequestBox, SurfaceFanout, register_native_tools
 from .agent.settings import AgentSettings
 from .agent.traces import Traces
@@ -20,6 +21,7 @@ from .authz.policy import Policy, PolicyError
 from .chat import ChatHistory, ChatHub
 from .chat.ws import router as chat_router
 from .config import AppConfig, Settings, load_config
+from .config_store import ConfigManager, ConfigOverrides
 from .connectors import build_messaging_connectors
 from .connectors.mcp_host import MCPHost
 from .connectors.registry import ToolRegistry
@@ -82,15 +84,23 @@ def create_app(
                 "create a free Neon database and put its connection string in .env."
             )
         cipher = _build_cipher(settings)
-        try:
-            policy = Policy(config.authz.rules)
-        except PolicyError as exc:
-            raise StartupError(f"bad authz rule: {exc}") from exc
 
         # --- database ------------------------------------------------------
         pool = await create_pool(settings.database_url)
         applied = await run_migrations(pool)
         log.info("database ready (migrations applied this boot: %s)", applied or "none")
+
+        # --- chat-made config: rows merge onto the live config, in place ----
+        # Before anything reads a section — an authz or allowlist override
+        # must already be in effect when the first Policy and store are built.
+        config_manager = ConfigManager(ConfigOverrides(pool, cipher), settings, config)
+        await config_manager.bootstrap()
+        app.state.config_manager = config_manager
+
+        try:
+            policy = Policy(config.authz.rules)
+        except PolicyError as exc:
+            raise StartupError(f"bad authz rule: {exc}") from exc
 
         app.state.pool = pool
         app.state.cipher = cipher
@@ -167,6 +177,7 @@ def create_app(
             routines=routines,
             traces=traces,
             agent_settings=agent_settings,
+            config_manager=config_manager,
         )
         app.state.agent = agent
         native = register_native_tools(
@@ -180,6 +191,7 @@ def create_app(
             routines=routines,
             traces=traces,
             audit=audit,
+            config_manager=config_manager,
         )
         log.info("native tools registered: %d", native)
 
@@ -193,6 +205,17 @@ def create_app(
         surfaces.add_connectors(connectors)
         for connector in connectors:
             await connector.start()
+
+        # the manager can now live-apply a chat-made change: swap the policy,
+        # diff the connectors, diff the mcp host, re-parse quiet hours, or
+        # arm a self-restart for an llm.* change
+        config_manager.wire(
+            loop=agent,
+            surfaces=surfaces,
+            tools=tools,
+            host=host,
+            approvals=approvals,
+        )
 
         worker = SchedulerWorker(scheduler, agent.execute_scheduled)
         agent.start()
@@ -230,10 +253,23 @@ def create_app(
 
 
 def main() -> None:
-    """Console entry point (`aether` / `uv run aether`)."""
+    """Console entry point (`aether` / `uv run aether`). A serve loop, not a
+    single run: a chat-made llm.* change arms restart.request(), which flips
+    this server's should_exit once the current turn has had time to land its
+    words; the loop then serves a fresh app (fresh lifespan, fresh boot
+    merge) without the process ever leaving the container — nobody restarts
+    Aether by hand. A real SIGINT/SIGTERM never arms a restart, so the loop
+    exits."""
     import os
 
     import uvicorn
 
     port = int(os.environ.get("PORT", "8000"))
-    uvicorn.run(create_app(), host="0.0.0.0", port=port, log_level="info")
+    while True:
+        server = uvicorn.Server(
+            uvicorn.Config(create_app(), host="0.0.0.0", port=port, log_level="info")
+        )
+        restart.register(server)
+        server.run()
+        if not restart.take_pending():
+            break

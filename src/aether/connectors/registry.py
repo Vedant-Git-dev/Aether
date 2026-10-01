@@ -99,6 +99,18 @@ class ToolRegistry:
                 seen.add(server)
         return sorted(seen)
 
+    def drop_server(self, server: str) -> int:
+        """Remove every tool an MCP server contributed. The other half of
+        sync_mcp_tools: an app unlinked or disabled at runtime must not keep
+        its actions callable."""
+        prefix = f"{server}__"
+        names = [name for name in self._tools if name.startswith(prefix) and self._tools[name].kind == "mcp"]
+        for name in names:
+            del self._tools[name]
+        if names:
+            log.info("dropped %d tool(s) from mcp server %r", len(names), server)
+        return len(names)
+
     def __len__(self) -> int:
         return len(self._tools)
 

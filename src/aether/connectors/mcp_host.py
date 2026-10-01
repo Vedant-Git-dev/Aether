@@ -39,7 +39,11 @@ class MCPServerConnection:
     def __init__(self, config: MCPServerConfig) -> None:
         self.name = config.name
         self.poll_tools: list[PollTool] = list(config.poll_tools)
-        self._config = config
+        # a deep copy: the live config object can be edited in place from
+        # chat (an enabled flip, a transport change) — the connection must
+        # keep running the config it booted with, so a later diff sees the
+        # change instead of the session silently mutating under itself
+        self._config = config.model_copy(deep=True)
         self._ready = asyncio.Event()
         self._hold = asyncio.Event()
         self._stopping = False
@@ -147,6 +151,12 @@ class MCPServerConnection:
     def ready(self) -> bool:
         return self._ready.is_set()
 
+    @property
+    def config(self) -> MCPServerConfig:
+        """The config this connection is running — a pinned copy, so a diff
+        against the live list sees chat-made changes (see __init__)."""
+        return self._config
+
     # -- tools ----------------------------------------------------------------
 
     def tool_specs(self) -> list[ToolSpec]:
@@ -220,6 +230,46 @@ class MCPHost:
     def start(self) -> None:
         for conn in self._connections:
             conn.start()
+
+    async def apply_servers(self, servers: list[MCPServerConfig]) -> dict[str, Any]:
+        """Make the live set match `servers`: stop what left or changed,
+        start what's new, keep unchanged sessions open (a reconnect costs a
+        cold start; an untouched server must never pay it). Disabled
+        servers never spawn. Fresh sessions get a moment to come ready so
+        the caller's immediate tool sync sees what they expose — a server
+        that doesn't make it stays out of the namespace and keeps retrying.
+
+        Returns {"started": [connections], "stopped": [names]} — the names a
+        caller should drop from any derived state (the tool namespace, poll
+        targets)."""
+        desired = [c for c in servers if c.enabled]
+        current = {c.name: c for c in self._connections}
+        new_conns: list[MCPServerConnection] = []
+        started: list[MCPServerConnection] = []
+        stopped: list[str] = []
+        for config in desired:
+            existing = current.get(config.name)
+            if existing is not None and existing.config == config:
+                new_conns.append(existing)  # unchanged — keep the live session
+                continue
+            if existing is not None:
+                await existing.stop()
+                stopped.append(config.name)
+            conn = MCPServerConnection(config)
+            conn.start()
+            new_conns.append(conn)
+            started.append(conn)
+        for name, conn in current.items():
+            if name not in {c.name for c in desired}:
+                await conn.stop()
+                stopped.append(name)
+        self._connections = new_conns
+        self._by_name = {c.name: c for c in new_conns}
+        if started:
+            # best effort, concurrently — a slow server costs one timeout,
+            # not one per server
+            await asyncio.gather(*(c.wait_ready() for c in started))
+        return {"started": started, "stopped": stopped}
 
     async def stop(self) -> None:
         for conn in self._connections:
