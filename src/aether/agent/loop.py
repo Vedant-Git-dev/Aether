@@ -51,6 +51,7 @@ from ..memory.events import Event, EventStore
 from ..memory.salience import Salience
 from ..routines import Routines, trigger_matches
 from ..scheduler.jobs import ScheduledAction, Scheduler
+from .config_wizard import ConfigWizard, coerce_config_value as _coerce_config_value
 from .prompts import SYSTEM_PROMPT
 from .settings import AgentSettings
 from .tools import plain_replay
@@ -192,8 +193,9 @@ def _delivered_by_tool(calls: list[dict[str, Any]]) -> bool:
 _MISSING = object()
 
 _CONFIG_USAGE = (
-    "⚙️ /config — everything config.yaml holds, from chat.\n\n"
-    "/config — the overview, with everything changed from chat marked\n"
+    "⚙️ /config — the guided walk: send just /config and answer the questions.\n"
+    "Everything below is the one-line way to do the same.\n\n"
+    "/config show — the overview, with everything changed from chat marked\n"
     "/config show <section|path> — one section's settings, or one value\n"
     "/config set <path> <value> — e.g. /config set agent.tick_seconds 10\n"
     "/config add <path> <value…> — contacts.allowlist <platform> <handle> · "
@@ -208,37 +210,6 @@ _CONFIG_USAGE = (
 )
 
 
-def _coerce_config_value(raw: str) -> Any:
-    """Best-effort typing of a value said in chat: JSON first (covers
-    arrays, objects, numbers, true/false/null), then the plain chat words,
-    then int/float, else the raw string. The value is the raw remainder of
-    the line, so quoted spaces survive."""
-    text = raw.strip()
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
-        inner = text[1:-1].strip()
-        try:
-            return json.loads(inner)
-        except ValueError:
-            return inner  # quoted means "take it literally"
-    try:
-        return json.loads(text)
-    except ValueError:
-        pass
-    lowered = text.lower()
-    if lowered in ("on", "yes", "true"):
-        return True
-    if lowered in ("off", "no", "false"):
-        return False
-    if lowered in ("none", "null"):
-        return None
-    for cast in (int, float):
-        try:
-            return cast(text)
-        except ValueError:
-            continue
-    return text
-
-
 def _parse_config_command(text: str) -> tuple[str, str | None, Any]:
     """(op, path, value) from a /config line; op "usage" for anything the
     grammar doesn't recognize. Deliberately dumb — every meaning lives in
@@ -246,7 +217,9 @@ def _parse_config_command(text: str) -> tuple[str, str | None, Any]:
     interpretation and can never drift."""
     parts = text.split(maxsplit=2)
     if len(parts) == 1:
-        return "show", None, _MISSING  # bare /config is the overview
+        # bare /config — the guided walk when the manager is wired; the
+        # parser still reads it as the overview for the unwired answer
+        return "show", None, _MISSING
     sub = parts[1].lower()
     if sub == "show":
         shown = parts[2].strip() or None if len(parts) > 2 else None
@@ -306,6 +279,8 @@ class AgentLoop:
         self._traces = traces
         self._agent_settings = agent_settings
         self._config_manager = config_manager
+        # the guided /config walk in progress, if any — memory only
+        self._wizard: ConfigWizard | None = None
 
         self._queue: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._woken = asyncio.Event()
@@ -481,11 +456,40 @@ class AgentLoop:
     async def _try_chat_command(self, message: InboundMessage) -> bool:
         """Answer the deterministic vocabulary straight from the record or
         the live state — no LLM turn, no tokens, nothing ingested, no
-        trace. Returns True when the message was a handled command."""
+        trace. A /config walk in progress answers here too: its questions
+        and replies are part of the same vocabulary. Returns True when the
+        message was a handled command."""
         text = message.text.strip()
         first = text.split(maxsplit=1)[0].lower() if text else ""
         if first == "/config":
+            # bare /config is the friendly front door: the guided walk. A
+            # mid-walk /config starts it over, and an expert line replaces
+            # any walk in progress — the user spoke expert, honor it.
+            if len(text.split()) == 1 and self._config_manager is not None:
+                self._wizard = ConfigWizard(
+                    self._config,
+                    apply=self._apply_config,
+                    show=self._config_manager.show,
+                    yaml_value=self._config_manager.yaml_value,
+                )
+                await self._surfaces.send_to_user(self._wizard.start())
+                return True
+            self._wizard = None
             return await self._config_command(text)
+        if self._wizard is not None:
+            if text.startswith("/"):
+                self._wizard = None  # a command ends the walk quietly
+            else:
+                wizard = self._wizard
+                reply = await wizard.handle(text)
+                if reply is None:
+                    # the walk let go of the message — it's normal chat
+                    self._wizard = None
+                    return False
+                if not wizard.alive:
+                    self._wizard = None  # goodbye — no menu is waiting
+                await self._surfaces.send_to_user(reply)
+                return True
         if text.lower() != "/verify":
             return False
         try:
@@ -547,11 +551,17 @@ class AgentLoop:
                 f"{op} needs a value after the path — e.g. "
                 f"/config {op} contacts.allowlist telegram @friend."
             )
+        return await self._apply_config(op, path, value)
+
+    async def _apply_config(self, op: str, path: str, value: Any = _MISSING) -> str:
+        """One config change through the executor — the same synthetic
+        set_config call for both /config front doors (the guided walk and
+        the one-line grammar), so a write is classified, audited, parked or
+        applied exactly like a model proposal. `value` absent means reset,
+        which carries none."""
         params: dict[str, Any] = {"op": op, "path": path}
         if value is not _MISSING:
             params["value"] = value
-        # one synthetic call through the gate — classified, audited,
-        # parked or applied exactly like a model proposal
         calls: list[dict[str, Any]] = []
         result = await self._execute(
             ToolCall(id="cmd-config", name="set_config", arguments=params), trace=calls

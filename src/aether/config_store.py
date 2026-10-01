@@ -272,6 +272,19 @@ class ConfigManager:
             "overrides": [{"path": p, "value": v} for p, v in sorted(overrides.items())],
         }
 
+    def yaml_value(self, path: str) -> Any:
+        """What config.yaml holds at this path — the value a reset returns
+        to. The guided walk asks before its "put it back?" question, so a
+        user approves a value, not a leap of faith. Raises ConfigError for a
+        path the vocabulary doesn't know, same as set(); an app chat added
+        was never in yaml, so its base container is None."""
+        resolved = self._resolve(path.strip())
+        if resolved.base_container is None:
+            return None
+        if resolved.kind == "list":
+            return list(getattr(resolved.base_container, resolved.field))
+        return getattr(resolved.base_container, resolved.field)
+
     # -- writes -------------------------------------------------------------------
 
     async def set(

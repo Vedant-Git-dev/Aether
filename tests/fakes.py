@@ -572,13 +572,15 @@ class FakeConfigStore:
 class FakeConfigManager:
     """ConfigManager double: records what the /config command and the native
     tools asked for, answers with canned replies. effective_payload is what
-    GET /api/config serves."""
+    GET /api/config serves; yaml_values is what the guided walk's reset
+    question reads (path → the config.yaml value)."""
 
     def __init__(
         self,
         show_reply: str = "⚙️ fake config view",
         set_reply: str = "⚙️ fake set confirmation",
         effective_payload: dict | None = None,
+        yaml_values: dict[str, object] | None = None,
     ) -> None:
         self.show_reply = show_reply
         self.set_reply = set_reply
@@ -586,12 +588,16 @@ class FakeConfigManager:
             "sections": {},
             "overrides": [],
         }
+        self.yaml_values = yaml_values or {}
         self.show_calls: list[str | None] = []
         self.set_calls: list[dict] = []
 
     async def show(self, path: str | None = None) -> str:
         self.show_calls.append(path)
         return self.show_reply
+
+    def yaml_value(self, path: str) -> object:
+        return self.yaml_values.get(path)
 
     async def set(
         self, *, op: str, path: str, value: object = None, source: str = "chat"

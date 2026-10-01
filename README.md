@@ -74,8 +74,10 @@ tax.
 - **Bring your own brain** — Claude, OpenAI, Gemini, or a local Ollama
   model; one line of config.
 - **Configured from chat** — everything `config.yaml` holds is readable and
-  changeable from Telegram, Discord, or Slack: `/config` shows it, and a
-  change lands without a redeploy. Personal tuning (agent cadence, salience,
+  changeable from Telegram, Discord, or Slack: send just `/config` and
+  answer the questions — a step-by-step walk, no paths to memorize — or use
+  the one-line commands as an expert. A change lands without a redeploy.
+  Personal tuning (agent cadence, salience,
   the model itself) takes effect immediately — an llm change even restarts
   the process on its own — while the security sections (contacts, authz,
   messaging, MCP servers) hold for the same one-tap approval as any risky

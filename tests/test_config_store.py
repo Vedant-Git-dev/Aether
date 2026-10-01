@@ -12,11 +12,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 import aether.config_store
 from aether.agent.loop import SurfaceFanout
 from aether.authz.policy import Policy
 from aether.config import AppConfig, AuthzRule, ContactRule, MCPServerConfig, Settings
-from aether.config_store import ConfigManager
+from aether.config_store import ConfigError, ConfigManager
 from aether.connectors.registry import ToolRegistry
 from aether.llm.types import ToolSpec
 from fakes import FakeApprovals, FakeConfigStore, FakeSurfaceConnector
@@ -290,6 +292,52 @@ async def test_show_of_an_unknown_path_is_the_refusal_not_a_crash() -> None:
     manager, _, _ = _manager()
     reply = await manager.show("agent.frobnicate")
     assert "'agent.frobnicate' isn't a setting I know" in reply
+
+
+# -- yaml_value: what a reset returns to ------------------------------------------
+
+
+async def test_yaml_value_reads_the_base_even_after_chat_changes() -> None:
+    manager, _, _ = _manager()
+
+    assert manager.yaml_value("agent.tick_seconds") == 30.0
+    assert manager.yaml_value("salience.threshold") == 6.0
+
+    await manager.set(op="set", path="agent.tick_seconds", value=10)
+    assert manager.yaml_value("agent.tick_seconds") == 30.0  # the base stands
+
+
+async def test_yaml_value_of_a_list_hands_back_the_base_entries() -> None:
+    live = AppConfig(
+        contacts={"allowlist": [ContactRule(platform="telegram", handle="@mom")]}
+    )
+    manager, _, _ = _manager(live=live)
+
+    assert len(manager.yaml_value("contacts.allowlist")) == 1
+
+    await manager.set(op="add", path="contacts.allowlist", value="discord @dad")
+    assert len(manager.yaml_value("contacts.allowlist")) == 1  # yaml's entry, still
+
+
+async def test_yaml_value_of_an_app_item_reads_the_base_app() -> None:
+    live = AppConfig(mcp_servers=[MCPServerConfig(name="mail")])
+    manager, _, _ = _manager(live=live)
+
+    await manager.set(op="set", path="mcp_servers.mail.enabled", value=False)
+    assert manager.yaml_value("mcp_servers.mail.enabled") is True  # yaml's app, on
+
+
+async def test_yaml_value_of_a_chat_added_app_is_none_it_was_never_in_yaml() -> None:
+    manager, _, _ = _manager()
+
+    await manager.set(op="add", path="mcp_servers", value={"name": "mail"})
+    assert manager.yaml_value("mcp_servers.mail.enabled") is None
+
+
+def test_yaml_value_of_an_unknown_path_raises_like_set() -> None:
+    manager, _, _ = _manager()
+    with pytest.raises(ConfigError):
+        manager.yaml_value("agent.frobnicate")
 
 
 # -- list add/remove --------------------------------------------------------------

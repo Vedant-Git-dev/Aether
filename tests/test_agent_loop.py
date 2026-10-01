@@ -998,18 +998,37 @@ async def test_a_routine_fire_records_where_its_ping_landed() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_config_show_answers_without_waking_the_model() -> None:
+async def test_config_opens_the_guided_walk_without_waking_the_model() -> None:
     provider = FakeProvider([])  # any LLM call would fail the test
     manager = FakeConfigManager(show_reply="⚙️ current configuration")
     kit = LoopKit(provider, config_manager=manager)
     kit.loop.submit_message(_msg("/config"))
     await kit.loop._tick()
 
-    assert kit.connector.sent == ["⚙️ current configuration"]
-    assert manager.show_calls == [None]  # the bare overview
+    # bare /config is the friendly front door: the walk's opening menu, with
+    # no ingest, no model, no trace — exactly like the rest of the vocabulary
+    assert kit.connector.sent == [(
+        "⚙️ let's set me up — answer each question with a number, "
+        "or \"stop\" any time.\n"
+        "1 — see my settings\n"
+        "2 — change something\n"
+        "3 — put something back the way config.yaml had it"
+    )]
     assert provider.calls == []
     assert kit.events.ingested == []  # a read never becomes memory
     assert kit.traces.created == []
+
+    # the overview arrives inside the walk: "see" relays it, then the menu
+    kit.loop.submit_message(_msg("1"))
+    await kit.loop._tick()
+    assert kit.connector.sent[-1] == (
+        "⚙️ current configuration\n\n"
+        "anything else? 1 — see my settings  2 — change something  "
+        "3 — reset something  (or \"done\")"
+    )
+    assert manager.show_calls == [None]  # the bare overview
+    assert provider.calls == []
+    assert kit.events.ingested == []
 
 
 async def test_config_show_one_path_delegates_it() -> None:
@@ -1101,6 +1120,111 @@ async def test_config_when_unwired_answers_deterministically() -> None:
     assert kit.connector.sent == ["⚙️ config management isn't wired on this instance."]
     assert provider.calls == []
     assert kit.events.ingested == []
+
+
+# the guided walk — same gate, friendlier front door
+
+
+async def test_a_guided_tuning_walk_applies_through_the_gate() -> None:
+    provider = FakeProvider([])  # the walk answers; the model never turns
+    manager = FakeConfigManager(set_reply="tick interval set to 10s")
+    kit = LoopKit(provider, config_manager=manager)
+    kit.loop.submit_message(_msg("/config"))
+    await kit.loop._tick()
+    for answer in ("2", "2", "1", "10"):  # change → agent → tick_seconds → 10
+        kit.loop.submit_message(_msg(answer))
+        await kit.loop._tick()
+
+    # the write went through the executor as one synthetic set_config call —
+    # the same gate as the one-liner and the model's own proposals
+    assert manager.set_calls == [
+        {"op": "set", "path": "agent.tick_seconds", "value": 10, "source": "tool"}
+    ]
+    row = kit.audit.entries[-1]
+    assert row["tool_name"] == "set_config"
+    assert row["decision"] == "allow"
+    assert row["rules_matched"] == "builtin:config-tune"
+    assert provider.calls == []
+    assert kit.events.ingested == []
+    # the walk relayed the confirmation and is back at the menu
+    assert kit.connector.sent[-1] == (
+        "tick interval set to 10s\n"
+        "anything else? 1 — see my settings  2 — change something  "
+        "3 — reset something  (or \"done\")"
+    )
+
+
+async def test_a_guided_security_walk_parks_for_one_tap() -> None:
+    provider = FakeProvider([])
+    manager = FakeConfigManager()
+    kit = LoopKit(provider, config_manager=manager)
+    kit.loop.submit_message(_msg("/config"))
+    await kit.loop._tick()
+    for answer in ("2", "4", "1", "on"):  # change → messaging → telegram → on
+        kit.loop.submit_message(_msg(answer))
+        await kit.loop._tick()
+
+    # parked, not applied — nothing reached the manager
+    assert manager.set_calls == []
+    approval = kit.approvals.created[-1]
+    assert approval.tool_name == "set_config"
+    assert approval.params == {
+        "op": "set", "path": "messaging.telegram.enabled", "value": True
+    }
+    presented = kit.connector.approvals_presented[-1]
+    assert presented[0] == approval.id
+    assert presented[1] == "set_config"
+    # the walk relays the park card, then offers the menu again
+    note = kit.connector.sent[-1]
+    assert f"one-tap approval (#{approval.id})" in note
+    assert "anything else?" in note
+    assert provider.calls == []
+    assert kit.events.ingested == []
+
+
+async def test_an_expert_command_mid_walk_honors_expert_and_ends_the_walk() -> None:
+    provider = FakeProvider([Turn(text="done")])  # the stray "2" reaches the model
+    manager = FakeConfigManager(show_reply="⚙️ agent.tick_seconds = 30.0")
+    kit = LoopKit(provider, config_manager=manager)
+    kit.loop.submit_message(_msg("/config"))
+    await kit.loop._tick()
+    kit.loop.submit_message(_msg("2"))
+    await kit.loop._tick()
+    assert "which area?" in kit.connector.sent[-1]
+
+    # the user spoke expert — the one-liner runs, and the walk is over
+    kit.loop.submit_message(_msg("/config show agent.tick_seconds"))
+    await kit.loop._tick()
+    assert manager.show_calls == ["agent.tick_seconds"]
+
+    # a following "2" is normal chat now — no menu is waiting for it
+    assert provider.calls == []
+    kit.loop.submit_message(_msg("2"))
+    await kit.loop._tick()
+    assert len(provider.calls) == 1
+    assert kit.events.ingested[0]["payload"]["text"] == "2"
+
+
+async def test_a_stray_sentence_mid_walk_falls_through_to_normal_chat() -> None:
+    provider = FakeProvider([Turn(text="done"), Turn(text="done")])
+    manager = FakeConfigManager()
+    kit = LoopKit(provider, config_manager=manager)
+    kit.loop.submit_message(_msg("/config"))
+    await kit.loop._tick()
+    kit.loop.submit_message(_msg("2"))
+    await kit.loop._tick()
+    assert "which area?" in kit.connector.sent[-1]
+
+    # a sentence at a menu is a changed subject — the walk steps aside
+    kit.loop.submit_message(_msg("hey what did mom say about dinner?"))
+    await kit.loop._tick()
+    assert len(provider.calls) == 1
+    assert kit.events.ingested[-1]["payload"]["text"] == "hey what did mom say about dinner?"
+
+    # and the walk is gone: a later "1" is chat too, not a menu answer
+    kit.loop.submit_message(_msg("1"))
+    await kit.loop._tick()
+    assert len(provider.calls) == 2
 
 
 async def test_reparse_quiet_hours_flips_the_window_live() -> None:

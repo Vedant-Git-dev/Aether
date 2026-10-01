@@ -200,37 +200,54 @@ from chat — through the same gate as every other action, with the change
 persisted in Postgres, and a restart nobody performs by hand.
 
 1. In chat, send `/config`. The answer is code, not the model — no tokens,
-   no ingest, no new trace:
-   > ⚙️ my configuration — config.yaml plus whatever you've changed from
-   > chat:
-   > llm: anthropic · claude-opus-5 · max 16000 tokens
-   > agent: tick 30s · up to 12 tool calls a turn · daily cap 20 · quiet
-   > hours off (urgent at 8)
-   > …
-   > Nothing changed from config.yaml yet.
-   > /config show <section> for one section's settings · /config show
-   > <path> for one value
+   no ingest, no new trace — and it opens a guided walk, not a manual:
+   > ⚙️ let's set me up — answer each question with a number, or "stop" any time.
+   > 1 — see my settings
+   > 2 — change something
+   > 3 — put something back the way config.yaml had it
 
-   `/config show agent` for one section, `/config show agent.tick_seconds`
-   for a single value, and a near miss like `/config agent.ticksecond`
-   gets a did-you-mean instead of a shrug.
-2. Change a personal tuning value — no approval card, because tuning is
-   yours:
+   Every question is plain words with the current value inline — no dotted
+   paths, no ops, no value syntax to memorize. "1" relays the overview. The
+   expert one-liners still work alongside the walk: `/config show agent`
+   for one section, `/config show agent.tick_seconds` for a single value,
+   and a near miss like `/config agent.ticksecond` gets a did-you-mean
+   instead of a shrug.
+2. Change a personal tuning value — four numbers and a value, no approval
+   card because tuning is yours:
    ```
-   /config set agent.tick_seconds 10
+   user: 2        (change something)
+   which area?
+   1 — llm — the model I think with
+   2 — agent — my rhythm: how often I check, how much I do
+   …
+   user: 2        (agent)
+   agent today:
+   1 — tick_seconds · 30 — seconds between my checks
+   …
+   which one?
+   user: 1
+   how many seconds between checks? (currently 30)
+   user: 10
+   agent.tick_seconds set to 10 (config.yaml says 30). — applies from the
+   next tick
+   anything else? 1 — see my settings  2 — change something  3 — reset
+   something  (or "done")
    ```
-   > agent.tick_seconds set to 10 (config.yaml says 30). — applies from the
-   > next tick
 
-   The **audit** pane shows the row (`allow · builtin:config-tune`), and
-   the panel's read-only config feed (`GET /api/config`) serves the merged
-   value with the override listed. `/config reset agent.tick_seconds`
-   puts config.yaml's value back and deletes the row.
-3. Now a security-shaped one:
+   The **audit** pane shows the row (`allow · builtin:config-tune`) — the
+   walk applies through the same synthetic set_config call as the
+   one-liner, so nothing skips the gate — and the panel's read-only config
+   feed (`GET /api/config`) serves the merged value with the override
+   listed. `/config reset agent.tick_seconds` puts config.yaml's value back
+   and deletes the row; the walk asks "put tick_seconds back to
+   config.yaml's 30?" before doing it, so a reset is approved with the
+   value on the table.
+3. Now a security-shaped one, the one-line way:
    ```
    /config set messaging.discord.enabled true
    ```
-   It parks for your one tap — the same card as any risky action:
+   It parks for your one tap — the same card as any risky action, and the
+   one the walk relays verbatim when its questions reach the same change:
    > 🔒 that one's security-shaped — held for your one-tap approval (#14).
    > Tap approve and it's done.
 
@@ -261,8 +278,9 @@ persisted in Postgres, and a restart nobody performs by hand.
    change survives at all: it lives in Postgres, not the filesystem.
 
 **The point**: the config is not a file you edit on the server — it's a
-conversation. Reads are deterministic, writes pass the same gate and land
-in the same audit chain as every other act, and the change outlives the
+conversation, literally: bare `/config` asks plain-words questions and you
+answer with numbers. Reads are deterministic, writes pass the same gate and
+land in the same audit chain as every other act, and the change outlives the
 container.
 
 ## What all eight have in common
