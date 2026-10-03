@@ -51,7 +51,8 @@ from ..memory.events import Event, EventStore
 from ..memory.salience import Salience
 from ..routines import Routines, trigger_matches
 from ..scheduler.jobs import ScheduledAction, Scheduler
-from .config_wizard import ConfigWizard, coerce_config_value as _coerce_config_value
+from .config_wizard import ConfigWizard
+from .config_wizard import coerce_config_value as _coerce_config_value
 from .prompts import SYSTEM_PROMPT
 from .settings import AgentSettings
 from .tools import plain_replay
@@ -261,6 +262,7 @@ class AgentLoop:
         traces: Traces | None = None,
         agent_settings: AgentSettings | None = None,
         config_manager: ConfigManager | None = None,
+        workspace: Any = None,
     ) -> None:
         self._providers = providers
         self._tools = tools
@@ -279,6 +281,7 @@ class AgentLoop:
         self._traces = traces
         self._agent_settings = agent_settings
         self._config_manager = config_manager
+        self._workspace = workspace
         # the guided /config walk in progress, if any — memory only
         self._wizard: ConfigWizard | None = None
 
@@ -758,6 +761,10 @@ class AgentLoop:
 
     async def _system_prompt(self) -> str:
         base = SYSTEM_PROMPT.format(owner="the user", apps=self._connected_apps())
+        if self._workspace is not None:
+            block = self._workspace.context_block()
+            if block:
+                base = f"{base}\n\n{block}"
         if self._agent_settings is None:
             return base
         personality = await self._agent_settings.get_personality()
