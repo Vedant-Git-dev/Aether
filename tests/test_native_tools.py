@@ -5,13 +5,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from fakes import FakeApprovals, FakeEntities, FakeEventStore, FakeScheduler, FakeSurfaceConnector
-
-from aether.agent.loop import CaptureRequestBox, SurfaceFanout
-from aether.agent.tools import plain_replay, register_native_tools
-from aether.authz.audit import ChainVerification
-from aether.connectors.registry import ToolRegistry
-from aether.memory.events import Event
 from fakes import (
     FakeApprovals,
     FakeAudit,
@@ -23,6 +16,13 @@ from fakes import (
     FakeSurfaceConnector,
     FakeTraces,
 )
+
+from aether.agent.loop import CaptureRequestBox, SurfaceFanout
+from aether.agent.tools import plain_replay, register_native_tools
+from aether.authz.audit import ChainVerification
+from aether.connectors.registry import ToolRegistry
+from aether.memory.events import Event
+from aether.workspace import Workspace
 
 
 def _event(event_id: int) -> Event:
@@ -46,6 +46,7 @@ class NativeKit:
         traces: FakeTraces | None = None,
         audit: FakeAudit | None = None,
         config_manager: FakeConfigManager | None = None,
+        workspace: object | None = None,
     ) -> None:
         self.registry = ToolRegistry()
         self.events = events or FakeEventStore()
@@ -69,6 +70,7 @@ class NativeKit:
             traces=traces,            # same for the decision-replay tool
             audit=audit,              # and the integrity check
             config_manager=config_manager,  # and the config tools
+            workspace=workspace,      # and the workspace tools
         )
 
     async def run(self, name: str, params: dict) -> str:
@@ -372,7 +374,8 @@ def test_plain_replay_of_routine_and_scheduled_fires() -> None:
 
 async def test_config_tools_register_only_when_wired() -> None:
     """14 with the manager wired, 12 without — the count is the contract
-    main.py logs at boot."""
+    main.py logs at boot (the workspace tools are counted separately,
+    below)."""
     bare = NativeKit(routines=FakeRoutines(), traces=FakeTraces(), audit=FakeAudit())
     assert bare.count == 12
     assert bare.registry.get("get_config") is None
@@ -432,3 +435,127 @@ async def test_set_config_refuses_incomplete_calls_in_plain_words() -> None:
         == 'set needs a value — pass "value": null to clear one.'
     )
     assert manager.set_calls == []  # nothing incomplete was ever delegated
+
+
+# ---------------------------------------------------------------------------
+# workspace_* — the human-editable Markdown identity/memory layer
+# ---------------------------------------------------------------------------
+
+
+def _workspace(tmp_path) -> Workspace:
+    ws = Workspace(tmp_path / "ws")
+    ws.ensure_scaffold()
+    return ws
+
+
+async def test_workspace_tools_register_only_when_wired(tmp_path) -> None:
+    bare = NativeKit()
+    assert bare.count == 6
+    assert bare.registry.get("workspace_read") is None
+
+    wired = NativeKit(workspace=_workspace(tmp_path))
+    assert wired.count == 12
+    for name in (
+        "workspace_read",
+        "workspace_search",
+        "workspace_remember",
+        "workspace_rewrite",
+        "workspace_promote",
+        "workspace_finish_bootstrap",
+    ):
+        assert wired.registry.get(name) is not None, name
+
+
+async def test_workspace_read_returns_scaffolded_files(tmp_path) -> None:
+    kit = NativeKit(workspace=_workspace(tmp_path))
+    out = await kit.run("workspace_read", {"file": "identity"})
+    assert "Name: Aether" in out
+
+    assert "hasn't been introduced" in await kit.run("workspace_read", {"file": "bootstrap"})
+    assert await kit.run("workspace_read", {"file": ""}) == (
+        "workspace_read needs a file: identity, soul, agents, user, memory, bootstrap, or daily."
+    )
+
+
+async def test_workspace_remember_and_search_round_trip(tmp_path) -> None:
+    kit = NativeKit(workspace=_workspace(tmp_path))
+    out = await kit.run(
+        "workspace_remember", {"text": "prefers concise notifications", "kind": "preference"}
+    )
+    assert out.startswith("Saved to the workspace as entry ")
+
+    found = await kit.run("workspace_search", {"query": "concise notifications"})
+    assert "prefers concise notifications" in found
+
+    assert await kit.run("workspace_remember", {"text": "x"}) == (
+        "workspace_remember needs text and a kind: preference, fact, or daily."
+    )
+
+
+async def test_workspace_remember_refuses_secrets(tmp_path) -> None:
+    kit = NativeKit(workspace=_workspace(tmp_path))
+    out = await kit.run(
+        "workspace_remember",
+        {"text": "api_key: sk-abcdefghijklmnopqrstuvwxyz", "kind": "fact"},
+    )
+    assert out.startswith("not saved:")
+    assert await kit.run("workspace_search", {"query": "sk-abcdefghijklmnopqrstuvwxyz"}) == (
+        "No matching workspace memory."
+    )
+
+
+async def test_workspace_promote_moves_a_daily_entry_into_memory(tmp_path) -> None:
+    workspace = _workspace(tmp_path)
+    kit = NativeKit(workspace=workspace)
+    today = datetime.now(UTC).date().isoformat()
+    saved = await kit.run(
+        "workspace_remember", {"text": "deploy went out at 5pm", "kind": "daily"}
+    )
+    entry_id = saved.rsplit(" ", 1)[-1].rstrip(".")
+
+    promoted = await kit.run("workspace_promote", {"date": today, "entry_id": entry_id})
+    assert promoted == f"Promoted {entry_id} into MEMORY.md."
+    assert "deploy went out at 5pm" in await kit.run("workspace_read", {"file": "memory"})
+
+    missing = await kit.run("workspace_promote", {"date": today, "entry_id": "doesnotexist"})
+    assert missing == f"No active entry doesnotexist on {today}."
+
+
+async def test_workspace_remember_records_user_vs_agent_origin(tmp_path) -> None:
+    workspace = _workspace(tmp_path)
+    kit = NativeKit(workspace=workspace)
+    await kit.run("workspace_remember", {"text": "told me directly", "kind": "fact", "source": "user"})
+    await kit.run("workspace_remember", {"text": "inferred this", "kind": "fact"})
+    sources = {e.text: e.source for e in workspace.entries("memory")}
+    assert sources["told me directly"] == "user"
+    assert sources["inferred this"] == "agent"  # the default when the tool call omits it
+
+
+async def test_workspace_rewrite_replaces_identity_or_soul(tmp_path) -> None:
+    kit = NativeKit(workspace=_workspace(tmp_path))
+    out = await kit.run("workspace_rewrite", {"file": "soul", "text": "# SOUL.md\n\n- Be terse.\n"})
+    assert out == "soul.md replaced."
+    # the tool trims surrounding whitespace from model output before saving
+    assert await kit.run("workspace_read", {"file": "soul"}) == "# SOUL.md\n\n- Be terse."
+
+
+async def test_workspace_rewrite_refuses_other_files(tmp_path) -> None:
+    kit = NativeKit(workspace=_workspace(tmp_path))
+    out = await kit.run("workspace_rewrite", {"file": "memory", "text": "whatever"})
+    assert out.startswith("workspace_rewrite can only replace identity or soul")
+    assert "whatever" not in await kit.run("workspace_read", {"file": "memory"})
+
+
+async def test_workspace_rewrite_refuses_secrets(tmp_path) -> None:
+    kit = NativeKit(workspace=_workspace(tmp_path))
+    out = await kit.run(
+        "workspace_rewrite", {"file": "identity", "text": "api_key: sk-abcdefghijklmnopqrstuvwxyz0123456789"}
+    )
+    assert out.startswith("not saved:")
+
+
+async def test_workspace_finish_bootstrap_removes_the_marker(tmp_path) -> None:
+    kit = NativeKit(workspace=_workspace(tmp_path))
+    assert await kit.run("workspace_finish_bootstrap", {}) == "First-run setup marked complete."
+    assert await kit.run("workspace_finish_bootstrap", {}) == "No first-run setup was pending."
+    assert await kit.run("workspace_read", {"file": "bootstrap"}) == "bootstrap is empty."

@@ -51,3 +51,7 @@ authz:
   rules: []                      # evaluated before built-in risk rules
     # - {tool_pattern: "telegram__send_message", decision: "approve", note: "telegram sends are one-tap"}
   approval_ttl_hours: 24
+
+workspace:
+  enabled: true                  # the human-editable identity/memory Markdown files
+  path: aether-workspace          # created on first boot; edit the files directly anytime

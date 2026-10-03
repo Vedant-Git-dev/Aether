@@ -10,26 +10,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
 
-from aether.agent.loop import (
-    AgentLoop,
-    CaptureRequestBox,
-    SurfaceFanout,
-    _coerce_config_value,
-    _MISSING,
-    _parse_config_command,
-)
-from aether.agent.prompts import SYSTEM_PROMPT
-from aether.agent.tools import register_native_tools
-from aether.authz.approvals import APPROVED, DENIED
-from aether.authz.audit import ChainVerification
-from aether.authz.policy import Policy
-from aether.config import AgentConfig, AppConfig, AuthzRule, MCPServerConfig, PollTool
-from aether.connectors.base import InboundMessage
-from aether.connectors.registry import ToolRegistry
-from aether.llm.types import ToolCall, ToolSpec, Turn
-from aether.memory.events import Event, IngestResult
-from aether.scheduler.jobs import ScheduledAction
 from fakes import (
     FakeAgentSettings,
     FakeApprovals,
@@ -46,6 +28,27 @@ from fakes import (
     FakeSurfaceConnector,
     FakeTraces,
 )
+
+from aether.agent.loop import (
+    _MISSING,
+    AgentLoop,
+    CaptureRequestBox,
+    SurfaceFanout,
+    _coerce_config_value,
+    _parse_config_command,
+)
+from aether.agent.prompts import SYSTEM_PROMPT
+from aether.agent.tools import register_native_tools
+from aether.authz.approvals import APPROVED, DENIED
+from aether.authz.audit import ChainVerification
+from aether.authz.policy import Policy
+from aether.config import AgentConfig, AppConfig, AuthzRule, MCPServerConfig, PollTool
+from aether.connectors.base import InboundMessage
+from aether.connectors.registry import ToolRegistry
+from aether.llm.types import ToolCall, ToolSpec, Turn
+from aether.memory.events import Event, IngestResult
+from aether.scheduler.jobs import ScheduledAction
+from aether.workspace import Workspace
 
 
 def _msg(
@@ -87,6 +90,7 @@ class LoopKit:
         config: AppConfig | None = None,
         agent_settings: FakeAgentSettings | None = None,
         config_manager: FakeConfigManager | None = None,
+        workspace: Any = None,
     ):
         self.tools = ToolRegistry()
         self.events = FakeEventStore()
@@ -118,6 +122,7 @@ class LoopKit:
             traces=self.traces,
             agent_settings=agent_settings,
             config_manager=config_manager,
+            workspace=workspace,
         )
         if config_manager is not None:
             # the real native config tools, so a /config write goes through
@@ -826,6 +831,28 @@ async def test_system_prompt_is_unchanged_with_no_personality_configured() -> No
 
 async def test_system_prompt_is_unchanged_with_no_settings_store_wired() -> None:
     kit = LoopKit(None)  # agent_settings defaults to None
+    assert await kit.loop._system_prompt() == SYSTEM_PROMPT.format(
+        owner="the user", apps=kit.loop._connected_apps()
+    )
+
+
+async def test_system_prompt_carries_the_workspace_context(tmp_path) -> None:
+    workspace = Workspace(tmp_path / "ws")
+    workspace.ensure_scaffold()
+    workspace.remember("prefers concise notifications", "preference")
+    kit = LoopKit(None, workspace=workspace)
+    prompt = await kit.loop._system_prompt()
+    base = SYSTEM_PROMPT.format(owner="the user", apps=kit.loop._connected_apps())
+    assert prompt.startswith(base)
+    assert "[workspace]" in prompt
+    assert "prefers concise notifications" in prompt
+    # the first-run BOOTSTRAP.md that ensure_scaffold() just created rides
+    # along too, so the agent actually sees the setup questions
+    assert "First-run setup" in prompt
+
+
+async def test_system_prompt_is_unchanged_with_no_workspace_wired() -> None:
+    kit = LoopKit(None)  # workspace defaults to None
     assert await kit.loop._system_prompt() == SYSTEM_PROMPT.format(
         owner="the user", apps=kit.loop._connected_apps()
     )

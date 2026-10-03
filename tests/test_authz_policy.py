@@ -43,6 +43,11 @@ def test_internal_tools_are_allowed() -> None:
         "explain_decision",
         "verify_integrity",
         "get_config",
+        "workspace_read",
+        "workspace_search",
+        "workspace_remember",
+        "workspace_promote",
+        "workspace_finish_bootstrap",
     ]:
         ruling = policy.classify(name)
         assert ruling.decision is Decision.ALLOW, name
