@@ -20,6 +20,7 @@ from typing import Any
 from ..authz.audit import verification_text
 from ..connectors.registry import ToolRegistry
 from ..llm.types import ToolSpec
+from ..workspace import SecretRejected, WorkspaceWriteError
 
 log = logging.getLogger("aether.agent.tools")
 
@@ -72,6 +73,12 @@ _NATIVE_PHRASES = {
     "verify_integrity": "verifying my records",
     "get_config": "reading my configuration",
     "set_config": "changing my configuration",
+    "workspace_read": "checking my workspace notes",
+    "workspace_search": "searching my workspace notes",
+    "workspace_remember": "writing a workspace note",
+    "workspace_promote": "promoting a workspace note",
+    "workspace_rewrite": "updating my identity or personality file",
+    "workspace_finish_bootstrap": "finishing first-run setup",
 }
 
 
@@ -232,14 +239,15 @@ def register_native_tools(
     traces: Any = None,
     audit: Any = None,
     config_manager: Any = None,
+    workspace: Any = None,
 ) -> int:
     """Add Aether's own tools to the flat namespace. Returns how many.
 
     `routines` wires the standing-trigger tools, `traces` the
-    decision-replay tool, `audit` the integrity check, and `config_manager`
-    the configuration tools; without the store behind one it is not offered
-    at all (same shape as a loop without an MCP host: no feature, no dead
-    tool spec)."""
+    decision-replay tool, `audit` the integrity check, `config_manager` the
+    configuration tools, and `workspace` the Markdown workspace tools;
+    without the store behind one it is not offered at all (same shape as a
+    loop without an MCP host: no feature, no dead tool spec)."""
 
     async def memory_search(params: dict[str, Any]) -> str:
         query = str(params.get("query", "")).strip()
@@ -354,6 +362,88 @@ def register_native_tools(
         return await config_manager.set(
             op=op, path=path, value=params.get("value"), source="tool"
         )
+
+    async def workspace_read(params: dict[str, Any]) -> str:
+        file = str(params.get("file", "")).strip().lower()
+        if not file:
+            return "workspace_read needs a file: identity, soul, agents, user, memory, bootstrap, or daily."
+        date_str = str(params.get("date", "")).strip() or None
+        try:
+            text = workspace.read(file, date_str=date_str)
+        except ValueError as exc:
+            return str(exc)
+        return text or f"{file} is empty."
+
+    async def workspace_search(params: dict[str, Any]) -> str:
+        query = str(params.get("query", "")).strip()
+        if not query:
+            return "workspace_search needs a query."
+        hits = workspace.search(query, limit=int(params.get("limit", 5)))
+        if not hits:
+            return "No matching workspace memory."
+        return "\n".join(f"[{h.file}#{h.id or '-'}] {h.text}" for h in hits)
+
+    async def workspace_remember(params: dict[str, Any]) -> str:
+        text = str(params.get("text", "")).strip()
+        kind = str(params.get("kind", "")).strip().lower()
+        if not text or kind not in ("preference", "fact", "daily"):
+            return "workspace_remember needs text and a kind: preference, fact, or daily."
+        source = str(params.get("source") or "agent").strip().lower()
+        try:
+            entry_id = workspace.remember(
+                text,
+                kind,
+                source=source,
+                category=str(params.get("category") or "").strip() or None,
+                confidence=params.get("confidence"),
+                supersedes=[str(s) for s in (params.get("supersedes") or [])] or None,
+            )
+        except (SecretRejected, ValueError) as exc:
+            return f"not saved: {exc}"
+        except WorkspaceWriteError as exc:
+            return f"not saved — {exc}"
+        return f"Saved to the workspace as entry {entry_id}."
+
+    async def workspace_promote(params: dict[str, Any]) -> str:
+        date_str = str(params.get("date", "")).strip()
+        entry_id = str(params.get("entry_id", "")).strip()
+        if not date_str or not entry_id:
+            return "workspace_promote needs a date (YYYY-MM-DD) and an entry_id."
+        try:
+            ok = workspace.promote(
+                date_str, entry_id, category=str(params.get("category") or "").strip() or None
+            )
+        except ValueError as exc:
+            return str(exc)
+        except WorkspaceWriteError as exc:
+            return f"not promoted — {exc}"
+        return f"Promoted {entry_id} into MEMORY.md." if ok else f"No active entry {entry_id} on {date_str}."
+
+    async def workspace_rewrite(params: dict[str, Any]) -> str:
+        file = str(params.get("file", "")).strip().lower()
+        text = str(params.get("text", "")).strip()
+        if file not in ("identity", "soul"):
+            return (
+                "workspace_rewrite can only replace identity or soul whole — "
+                "use workspace_remember for a preference or fact, and ask the "
+                "user to edit agents/user/memory directly for anything else."
+            )
+        if not text:
+            return "workspace_rewrite needs text."
+        try:
+            workspace.write_raw(file, text)
+        except SecretRejected as exc:
+            return f"not saved: {exc}"
+        except WorkspaceWriteError as exc:
+            return f"not saved — {exc}"
+        return f"{file}.md replaced."
+
+    async def workspace_finish_bootstrap(params: dict[str, Any]) -> str:
+        try:
+            done = workspace.finish_bootstrap()
+        except WorkspaceWriteError as exc:
+            return f"not finished — {exc}"
+        return "First-run setup marked complete." if done else "No first-run setup was pending."
 
     def _describe_trigger(trigger: dict[str, Any]) -> str:
         parts: list[str] = []
@@ -765,6 +855,122 @@ def register_native_tools(
                         ["op", "path"],
                     ),
                     set_config,
+                ),
+            ]
+        )
+    if workspace is not None:
+        natives.extend(
+            [
+                (
+                    _spec(
+                        "workspace_read",
+                        "Read one file from Aether's human-editable Markdown "
+                        "workspace: identity, soul, agents, user, memory, "
+                        "bootstrap (only present during first-run setup), or "
+                        "daily (today's working notes, or an older date).",
+                        {
+                            "file": {
+                                "type": "string",
+                                "description": "identity | soul | agents | user | memory | bootstrap | daily",
+                            },
+                            "date": {
+                                "type": "string",
+                                "description": "YYYY-MM-DD, for file: daily — defaults to today",
+                            },
+                        },
+                        ["file"],
+                    ),
+                    workspace_read,
+                ),
+                (
+                    _spec(
+                        "workspace_search",
+                        "Search the whole workspace (identity, soul, agent "
+                        "instructions, user preferences, long-term memory, "
+                        "and recent daily notes) for a keyword or phrase.",
+                        {
+                            "query": {"type": "string", "description": "what to look for"},
+                            "limit": {"type": "integer", "description": "max results (default 5)"},
+                        },
+                        ["query"],
+                    ),
+                    workspace_search,
+                ),
+                (
+                    _spec(
+                        "workspace_remember",
+                        "Write a durable note to the workspace — sparingly; "
+                        "most things belong in ordinary memory_search memory, "
+                        "not here. kind=preference (USER.md, something the "
+                        "user consistently wants — pass supersedes with any "
+                        "entry ids it replaces), kind=fact (MEMORY.md, a "
+                        "durable fact or decision; category groups related "
+                        "facts, default 'Notes'), or kind=daily (today's "
+                        "working notes, for context worth keeping only for "
+                        "this session). Refuses anything that looks like a "
+                        "secret, password, or API key.",
+                        {
+                            "text": {"type": "string", "description": "what to remember"},
+                            "kind": {"type": "string", "description": "preference | fact | daily"},
+                            "source": {
+                                "type": "string",
+                                "description": "user (they stated this directly) or agent "
+                                "(you inferred it) — default agent",
+                            },
+                            "category": {"type": "string", "description": "fact only: section heading in MEMORY.md"},
+                            "confidence": {"type": "number", "description": "0-1, if this is an inference rather than something stated"},
+                            "supersedes": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "preference only: entry ids this one replaces",
+                            },
+                        },
+                        ["text", "kind"],
+                    ),
+                    workspace_remember,
+                ),
+                (
+                    _spec(
+                        "workspace_rewrite",
+                        "Replace IDENTITY.md or SOUL.md wholesale — only "
+                        "when the user explicitly asks you to change who "
+                        "you are or how you sound. For anything else "
+                        "(preferences, facts, daily notes) use "
+                        "workspace_remember instead.",
+                        {
+                            "file": {"type": "string", "description": "identity | soul"},
+                            "text": {"type": "string", "description": "the file's full new content"},
+                        },
+                        ["file", "text"],
+                    ),
+                    workspace_rewrite,
+                ),
+                (
+                    _spec(
+                        "workspace_promote",
+                        "Promote an entry from a daily working-notes file "
+                        "into MEMORY.md, because it turned out to matter "
+                        "beyond that day. The original stays on record, "
+                        "marked promoted.",
+                        {
+                            "date": {"type": "string", "description": "YYYY-MM-DD the entry was written on"},
+                            "entry_id": {"type": "string", "description": "the entry's id, from workspace_search or workspace_read"},
+                            "category": {"type": "string", "description": "section heading in MEMORY.md, default 'Notes'"},
+                        },
+                        ["date", "entry_id"],
+                    ),
+                    workspace_promote,
+                ),
+                (
+                    _spec(
+                        "workspace_finish_bootstrap",
+                        "Mark first-run workspace setup complete, once "
+                        "you've introduced yourself and learned the user's "
+                        "basic preferences. Removes BOOTSTRAP.md.",
+                        {},
+                        [],
+                    ),
+                    workspace_finish_bootstrap,
                 ),
             ]
         )
