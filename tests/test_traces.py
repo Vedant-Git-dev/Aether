@@ -11,9 +11,12 @@ encrypted at rest, round-tripped by a fresh instance, recent newest first.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
+from fakes import FakeProvider, FakeRoutines, FakeTraces
+from test_agent_loop import LoopKit, _event, _msg
+from test_native_tools import NativeKit
 
 from aether.agent.traces import Traces
 from aether.authz.approvals import APPROVED
@@ -22,12 +25,6 @@ from aether.config import AuthzRule
 from aether.llm.types import ToolCall, ToolSpec, Turn
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.scheduler.jobs import ScheduledAction
-
-from test_agent_loop import LoopKit, _event, _msg
-from test_native_tools import NativeKit
-
-from fakes import FakeProvider, FakeRoutines, FakeTraces
-
 
 # ---------------------------------------------------------------------------
 # unit: a turn leaves a trace
@@ -216,7 +213,7 @@ async def test_a_routine_fire_is_traced() -> None:
 
 
 def _sched(action_id: int, tool: str, params: dict) -> ScheduledAction:
-    when = datetime.now(timezone.utc) + timedelta(hours=1)
+    when = datetime.now(UTC) + timedelta(hours=1)
     return ScheduledAction(
         id=action_id, label="evening summary", run_at=when, status="pending",
         payload={"type": "tool", "tool": tool, "params": params},
@@ -377,7 +374,7 @@ async def test_explain_by_trace_id_replays_the_record() -> None:
 
 async def test_explain_reports_unknown_ids_and_an_empty_store() -> None:
     kit = NativeKit(traces=FakeTraces())
-    assert "No decision traces recorded yet." == await kit.run("explain_decision", {})
+    assert await kit.run("explain_decision", {}) == "No decision traces recorded yet."
     assert "No recorded trace 9." in await kit.run("explain_decision", {"trace_id": 9})
 
 

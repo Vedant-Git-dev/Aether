@@ -65,21 +65,20 @@ class Traces:
         """Persist one trace — the same two-step encrypt pattern as every
         store: insert a placeholder, then write ciphertext bound to the
         row id via AAD, in the same transaction."""
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                row = await conn.fetchrow(
-                    "INSERT INTO decision_traces (kind, label, trace_enc)"
-                    " VALUES ($1, $2, $3) RETURNING id, created_at",
-                    kind,
-                    label,
-                    b"",  # placeholder until the id exists; replaced below, same transaction
-                )
-                trace_id = row["id"]
-                await conn.execute(
-                    "UPDATE decision_traces SET trace_enc = $1 WHERE id = $2",
-                    self._cipher.encrypt_json(payload, aad=_aad(trace_id)),
-                    trace_id,
-                )
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "INSERT INTO decision_traces (kind, label, trace_enc)"
+                " VALUES ($1, $2, $3) RETURNING id, created_at",
+                kind,
+                label,
+                b"",  # placeholder until the id exists; replaced below, same transaction
+            )
+            trace_id = row["id"]
+            await conn.execute(
+                "UPDATE decision_traces SET trace_enc = $1 WHERE id = $2",
+                self._cipher.encrypt_json(payload, aad=_aad(trace_id)),
+                trace_id,
+            )
         return Trace(
             id=trace_id,
             kind=kind,

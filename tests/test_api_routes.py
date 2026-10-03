@@ -18,8 +18,10 @@ from aether.agent.loop import CaptureRequestBox
 from aether.api.routes import router
 from aether.authz.approvals import Approval
 from aether.config import AppConfig, AuthzConfig, AuthzRule, Settings
+from aether.memory.crypto import generate_key_b64
 from aether.memory.entities import Entity, EntityNote
 from aether.memory.events import Event, IngestResult
+from aether.oauth import OAuthError, OAuthFlow, TokenSet
 from aether.scheduler.jobs import ScheduledAction
 
 
@@ -90,10 +92,11 @@ def _app(
     config_manager: FakeConfigManager | None = None,
     entities=None,
     scheduler=None,
+    settings: Settings | None = None,
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(router)
-    app.state.settings = Settings(_env_file=None, api_token="secret")
+    app.state.settings = settings or Settings(_env_file=None, api_token="secret")
     app.state.config = config or AppConfig()
     if entities is not None:
         app.state.entities = entities
@@ -602,3 +605,175 @@ async def test_tasks_feed_reports_scheduled_actions() -> None:
             "created_at": "2026-09-26T00:00:00+00:00",
         }
     ]
+
+
+# ---------------------------------------------------------------------------
+# /oauth/callback — the public landing of a Google sign-in
+# ---------------------------------------------------------------------------
+
+_KEY = generate_key_b64()  # the deployment's permanent key, as boot would have
+
+
+class FakeExchange:
+    """exchange_code double: records the trade, answers canned (or refuses)."""
+
+    def __init__(self, tokens: TokenSet | None = None, error: OAuthError | None = None) -> None:
+        self.tokens = tokens
+        self.error = error
+        self.calls: list[dict] = []
+
+    async def __call__(self, provider, *, code, client_id, client_secret, redirect):
+        self.calls.append({
+            "provider": provider, "code": code, "client_id": client_id,
+            "client_secret": client_secret, "redirect": redirect,
+        })
+        if self.error is not None:
+            raise self.error
+        return self.tokens
+
+
+class FakeOAuthStore:
+    def __init__(self) -> None:
+        self.saved: list[tuple[str, TokenSet]] = []
+
+    async def save(self, provider: str, tokens: TokenSet) -> None:
+        self.saved.append((provider, tokens))
+
+
+class FakeResolver:
+    def __init__(self, **values: str) -> None:
+        self.values = values
+
+    async def resolve(self, name: str) -> str | None:
+        return self.values.get(name)
+
+
+class FakeFinisher:
+    """The loop's finish_oauth double — the card it sends is loop-side."""
+
+    def __init__(self) -> None:
+        self.finished: list[tuple[str, str]] = []
+
+    async def finish_oauth(self, provider: str, app_key: str) -> None:
+        self.finished.append((provider, app_key))
+
+
+def _token_set() -> TokenSet:
+    return TokenSet(
+        access_token="ya29.a", refresh_token="1//r", scopes="gmail.modify",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+
+def _oauth_app(
+    *, resolver: FakeResolver | None = None,
+    store: FakeOAuthStore | None = None,
+    finisher: FakeFinisher | None = None,
+    settings: Settings | None = None,
+) -> tuple[FastAPI, FakeOAuthStore, FakeFinisher | None]:
+    app = FastAPI()
+    app.include_router(router)
+    app.state.settings = settings or Settings(
+        _env_file=None, api_token="secret", encryption_key=_KEY
+    )
+    store = store or FakeOAuthStore()
+    app.state.oauth_store = store
+    if resolver is not None:
+        app.state.resolver = resolver
+    if finisher is not None:
+        app.state.agent = finisher
+    return app, store, finisher
+
+
+def _state(expiry: float = 9999999999.0) -> str:
+    return OAuthFlow(_KEY)._sign("google", "gmail", "https://r.example/cb", expiry)
+
+
+async def test_the_callback_is_public_and_finishes_the_sign_in(monkeypatch) -> None:
+    exchange = FakeExchange(tokens=_token_set())
+    monkeypatch.setattr("aether.api.routes.exchange_code", exchange)
+    app, store, finisher = _oauth_app(finisher=FakeFinisher())
+    async with _client(app) as client:  # no token anywhere — the link is the proof
+        response = await client.get(
+            "/oauth/callback", params={"code": "4/0Abc", "state": _state()}
+        )
+    assert response.status_code == 200
+    assert "authorized" in response.text
+    # the exchange replays the redirect from the signed state, exactly
+    (call,) = exchange.calls
+    assert call["provider"] == "google"
+    assert call["code"] == "4/0Abc"
+    assert call["redirect"] == "https://r.example/cb"
+    assert [provider for provider, _ in store.saved] == ["google"]
+    assert finisher is not None
+    assert finisher.finished == [("google", "gmail")]  # chat continues by itself
+
+
+async def test_the_callback_reads_client_keys_through_the_resolver(monkeypatch) -> None:
+    exchange = FakeExchange(tokens=_token_set())
+    monkeypatch.setattr("aether.api.routes.exchange_code", exchange)
+    resolver = FakeResolver(GOOGLE_CLIENT_ID="cid-fresh", GOOGLE_CLIENT_SECRET="cs-fresh")
+    app, _, _ = _oauth_app(resolver=resolver)
+    async with _client(app) as client:
+        await client.get("/oauth/callback", params={"code": "4/x", "state": _state()})
+    (call,) = exchange.calls
+    assert call["client_id"] == "cid-fresh"
+    assert call["client_secret"] == "cs-fresh"
+
+
+async def test_a_state_from_somewhere_else_is_refused_plainly(monkeypatch) -> None:
+    exchange = FakeExchange(tokens=_token_set())
+    monkeypatch.setattr("aether.api.routes.exchange_code", exchange)
+    app, store, _ = _oauth_app()
+    stranger = OAuthFlow(generate_key_b64())._sign(
+        "google", "gmail", "https://r.example/cb", 9999999999.0
+    )
+    async with _client(app) as client:
+        response = await client.get(
+            "/oauth/callback", params={"code": "4/x", "state": stranger}
+        )
+    assert response.status_code == 400
+    assert "fresh one" in response.text  # the honest ask: start again in chat
+    assert exchange.calls == []
+    assert store.saved == []
+
+
+async def test_the_provider_refusal_stores_nothing(monkeypatch) -> None:
+    exchange = FakeExchange(error=OAuthError("the provider refused: invalid_grant"))
+    monkeypatch.setattr("aether.api.routes.exchange_code", exchange)
+    app, store, finisher = _oauth_app(finisher=FakeFinisher())
+    async with _client(app) as client:
+        response = await client.get(
+            "/oauth/callback", params={"code": "4/x", "state": _state()}
+        )
+    assert response.status_code == 400
+    assert "nothing was stored" in response.text
+    assert "invalid_grant" in response.text
+    assert store.saved == []
+    assert finisher is not None and finisher.finished == []
+
+
+async def test_a_refused_or_incomplete_sign_in_gets_a_polite_page() -> None:
+    app, store, _ = _oauth_app()
+    async with _client(app) as client:
+        refused = await client.get("/oauth/callback", params={"error": "access_denied"})
+        empty = await client.get("/oauth/callback")
+    assert refused.status_code == 200  # the tab still closes politely
+    assert empty.status_code == 200
+    assert "Nothing was received" in refused.text
+    assert store.saved == []
+
+
+async def test_no_permanent_key_refuses_to_store_tokens(monkeypatch) -> None:
+    exchange = FakeExchange(tokens=_token_set())
+    monkeypatch.setattr("aether.api.routes.exchange_code", exchange)
+    settings = Settings(_env_file=None, api_token="secret")  # no encryption_key
+    app, store, _ = _oauth_app(settings=settings)
+    async with _client(app) as client:
+        response = await client.get(
+            "/oauth/callback", params={"code": "4/x", "state": _state()}
+        )
+    assert response.status_code == 400
+    assert "AETHER_ENCRYPTION_KEY" in response.text
+    assert exchange.calls == []
+    assert store.saved == []

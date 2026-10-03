@@ -264,3 +264,82 @@ def test_user_rules_beat_the_set_config_branch_both_directions() -> None:
     ruling = locks.classify("set_config", {"op": "set", "path": "llm.model", "value": "x"})
     assert ruling.decision is Decision.DENY
     assert ruling.matched_rule == "user:set_config"
+
+
+# -- origin: a connect the user just drove in chat --------------------------------
+
+
+def test_a_walk_or_oauth_origin_allows_a_connect_directly() -> None:
+    """The /apps pick-and-paste (origin "walk") and a sign-in completing at
+    the callback (origin "oauth") are the user's own approval — the connect
+    applies instead of parking, and the audit says which one it was."""
+    policy = Policy([])
+    for origin, rule in (("walk", "builtin:walk-connect"), ("oauth", "builtin:oauth-consent")):
+        add = policy.classify(
+            "set_config",
+            {"op": "add", "path": "mcp_servers", "value": {"name": "github"}},
+            origin=origin,
+        )
+        assert add.decision is Decision.ALLOW, origin
+        assert add.matched_rule == rule, origin
+        toggle = policy.classify(
+            "set_config",
+            {"op": "set", "path": "messaging.telegram.enabled", "value": True},
+            origin=origin,
+        )
+        assert toggle.decision is Decision.ALLOW, origin
+        assert toggle.matched_rule == rule, origin
+
+
+def test_only_the_connect_shaped_roots_ride_an_origin() -> None:
+    """contacts and authz park under any origin — an in-chat walk must never
+    become a way to widen who Aether listens to."""
+    policy = Policy([])
+    for origin in ("walk", "oauth"):
+        for path in ("contacts.allowlist", "authz.rules"):
+            ruling = policy.classify(
+                "set_config", {"op": "set", "path": path, "value": True}, origin=origin
+            )
+            assert ruling.decision is Decision.REQUIRE_APPROVAL, (origin, path)
+            assert ruling.matched_rule == "builtin:config-security", (origin, path)
+
+
+def test_no_or_unrecognized_origin_keeps_todays_rules_exactly() -> None:
+    """The origin argument is loop-internal — a model proposal can never
+    produce it, and its absence (or anything unrecognized) must classify
+    exactly as before."""
+    policy = Policy([])
+    for origin in (None, "model", ""):
+        ruling = policy.classify(
+            "set_config", {"op": "add", "path": "mcp_servers", "value": {}}, origin=origin
+        )
+        assert ruling.decision is Decision.REQUIRE_APPROVAL, origin
+        assert ruling.matched_rule == "builtin:config-security", origin
+
+
+def test_user_rules_still_beat_the_origin_branch() -> None:
+    """A user rule that forces a hold or a deny wins over the walk's direct
+    apply — their rule, their standing decision; the walk relays the card."""
+    holds = _policy(
+        {"tool_pattern": r"set_config", "param_pattern": r"mcp_servers", "decision": "approve"}
+    )
+    ruling = holds.classify(
+        "set_config", {"op": "add", "path": "mcp_servers", "value": {}}, origin="walk"
+    )
+    assert ruling.decision is Decision.REQUIRE_APPROVAL
+    assert ruling.matched_rule == "user:set_config"
+    denies = _policy({"tool_pattern": r"set_config", "decision": "deny"})
+    ruling = denies.classify(
+        "set_config", {"op": "add", "path": "mcp_servers", "value": {}}, origin="oauth"
+    )
+    assert ruling.decision is Decision.DENY
+    assert ruling.matched_rule == "user:set_config"
+
+
+def test_origin_never_touches_any_other_tool() -> None:
+    """Only set_config reads origin — a walk in progress must never make a
+    risky verb any less risky."""
+    policy = Policy([])
+    ruling = policy.classify("send_message", {"text": "hi"}, origin="walk")
+    assert ruling.decision is Decision.REQUIRE_APPROVAL
+    assert ruling.matched_rule == "builtin:risky"

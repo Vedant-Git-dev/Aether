@@ -11,7 +11,8 @@ from aether.memory.context import AgentContext
 from aether.memory.entities import Entity, PersonRef
 from aether.memory.events import Event, IngestResult
 from aether.routines import Routine
-from aether.scheduler.jobs import PENDING as JOB_PENDING, ScheduledAction
+from aether.scheduler.jobs import PENDING as JOB_PENDING
+from aether.scheduler.jobs import ScheduledAction
 
 
 class FakeProvider:

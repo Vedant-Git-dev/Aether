@@ -92,6 +92,46 @@ history lives in Postgres.
 
 ## 5. Connecting your apps
 
+Most of this moved into chat: send `/apps` and the walk hands you the
+exact link and the numbered steps for each app, and keys paste right into
+the conversation — consumed before the agent ever sees them (no LLM, no
+memory, no trace), stored encrypted, never echoed back. The dashboard env
+vars and `.env` still work for every key — the walk checks for them
+first, so nothing needs a redeploy to add an app.
+
+**The one real setup left is Google**, because its apps (gmail, calendar)
+sign in with OAuth through a client **you** own — bring your own client,
+once per provider, not once per app:
+
+1. `https://console.cloud.google.com/apis/library` — in one project,
+   enable **Gmail API**, **Calendar API**, and each matching **"MCP API"**.
+2. `https://console.cloud.google.com/apis/credentials/consent` — create
+   an **External** consent screen and **publish it to Production**.
+3. `https://console.cloud.google.com/apis/credentials` — create an OAuth
+   client (**Web application**) with redirect URI
+   `https://<your-app>.onrender.com/oauth/callback`
+   (locally: whatever public URL you're reachable at — set
+   `AETHER_PUBLIC_URL` and the walk stops asking for it).
+
+Paste the client ID and secret into the walk when it asks; every Google
+app after is just a consent link it sends you — and a second one that
+needs more permissions asks for both sets in one re-approval, so the
+first keeps working.
+
+Honest caveats, because it's your own client, not a verified one:
+
+- Google shows an **"unverified app"** warning on first sign-in —
+  expected. Click through it once (Advanced → proceed). Verification is
+  for apps serving the public; yours serves you.
+- In **Testing** status, refresh tokens die after **7 days** and only
+  100 users can ever grant — step 2's publish to Production fixes both.
+- **Gmail's scope is "restricted"**, which for a public app means an
+  annual security assessment. For a personal deploy the unverified
+  click-through is the whole cost. That's the BYOA trade: no central
+  gateway sees your mail, because there is no central gateway.
+
+The manual paths, for the record:
+
 - **MCP servers** (`config.yaml → mcp_servers`): anything with an HTTP
   transport works from anywhere — the remote servers Google publishes
   for Calendar/Gmail are the easiest start. `stdio` servers need their
@@ -99,8 +139,9 @@ history lives in Postgres.
   won't have (no Node for `npx …`, for example) — run stdio servers on
   your own machine and expose them over HTTP, or stick to remote ones on
   the hosted instance. Locally, stdio servers work as configured.
-- **Telegram / Discord / Slack**: put the bot token(s) in the dashboard
-  env vars and flip the matching `enabled: true` in `config.yaml`.
+- **Telegram / Discord / Slack**: paste the bot token into `/apps` and
+  the walk flips the toggle itself (or put the tokens in the dashboard
+  env vars and flip the matching `enabled: true` in `config.yaml`).
   Telegram uses long polling and Slack uses Socket Mode, so neither
   needs a public webhook URL.
 - **The companion** (`companion/aether_snap.py`) runs on **your machine**,

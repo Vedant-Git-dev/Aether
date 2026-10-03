@@ -28,12 +28,15 @@ import contextlib
 import json
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+from ..apps_catalog import recipe_for
 from ..authz.approvals import APPROVED, DENIED, Approval, Approvals
 from ..authz.audit import AuditLog, verification_text
 from ..authz.policy import Decision, Policy
 from ..config import AppConfig, PollTool
+from ..config_store import ConfigManager
+from ..config_store import actions_word as _actions_word
 from ..connectors.base import (
     ConnectorUnavailableError,
     InboundMessage,
@@ -49,16 +52,18 @@ from ..memory.context import ContextBuilder
 from ..memory.entities import Sender
 from ..memory.events import Event, EventStore
 from ..memory.salience import Salience
+from ..oauth import PROVIDERS, OAuthError, OAuthFlow, callback_url
 from ..routines import Routines, trigger_matches
 from ..scheduler.jobs import ScheduledAction, Scheduler
-from .config_wizard import ConfigWizard, coerce_config_value as _coerce_config_value
+from ..secret_env import EnvResolver
+from ..secret_store import SecretStore
+from .apps_wizard import AppsWizard
+from .config_wizard import ConfigWizard
+from .config_wizard import coerce_config_value as _coerce_config_value
 from .prompts import SYSTEM_PROMPT
 from .settings import AgentSettings
 from .tools import plain_replay
 from .traces import CARRY_OUT, ROUTINE, SCHEDULED, TURN, Traces
-
-if TYPE_CHECKING:
-    from ..config_store import ConfigManager
 
 log = logging.getLogger("aether.agent")
 
@@ -72,6 +77,14 @@ WHY_REPLY_WORDS = frozenset({"why", "explain"})
 # hears about the state once, and once again when it recovers — never per
 # failure. A server with no configured poll has no heartbeat to watch.
 POLL_FAILURES_BEFORE_DOWN = 2
+
+# which .env names each messaging surface needs — /apps says "no token in
+# .env yet" until every one of them is there
+_PLATFORM_TOKENS = {
+    "telegram": ("TELEGRAM_BOT_TOKEN",),
+    "discord": ("DISCORD_BOT_TOKEN",),
+    "slack": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
+}
 
 
 def _parse_quiet_hours(raw: str | None) -> tuple[int, int] | None:
@@ -205,8 +218,8 @@ _CONFIG_USAGE = (
     "/config reset <path> — back to config.yaml's value\n\n"
     "Personal tuning (agent.*, salience.*, llm.*) applies right away; llm.* "
     "restarts me to load it. Security sections (contacts, authz, messaging, "
-    "mcp_servers) wait for your one-tap approval. Secrets stay in .env — "
-    "they're never settable from chat."
+    "mcp_servers) wait for your one-tap approval. Keys paste in /apps — "
+    "/config never sets one."
 )
 
 
@@ -261,6 +274,9 @@ class AgentLoop:
         traces: Traces | None = None,
         agent_settings: AgentSettings | None = None,
         config_manager: ConfigManager | None = None,
+        resolver: EnvResolver | None = None,
+        secret_store: SecretStore | None = None,
+        settings: Any = None,
     ) -> None:
         self._providers = providers
         self._tools = tools
@@ -279,8 +295,20 @@ class AgentLoop:
         self._traces = traces
         self._agent_settings = agent_settings
         self._config_manager = config_manager
+        self._resolver = resolver
+        self._secret_store = secret_store
+        self._settings = settings
         # the guided /config walk in progress, if any — memory only
         self._wizard: ConfigWizard | None = None
+        # the guided /apps walk in progress, if any — same rules, memory only
+        self._apps_walk: AppsWizard | None = None
+        # mcp servers whose "I'll tell you the moment it's up" was already
+        # said this boot — a flapping server never announces twice
+        self._announced_ready: set[str] = set()
+        # the tool_version each server's namespace was last synced at — a
+        # connection hub grows as the user approves apps, and this is how a
+        # tick notices without diffing full tool lists every time
+        self._synced_tool_versions: dict[str, int] = {}
 
         self._queue: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._woken = asyncio.Event()
@@ -393,6 +421,10 @@ class AgentLoop:
         # (a) due source polls first, so their results are observed this tick
         await self._run_due_polls()
 
+        # (a2) a server that answered late joins the namespace here —
+        # keeping the "the moment it's up" promise is the tick's own job
+        await self._reconcile_mcp()
+
         # (b) inbound chat becomes memory (allowlist applies at ingest; a
         # dropped sender is never seen by the model at all)
         drained: list[InboundMessage] = []
@@ -466,6 +498,7 @@ class AgentLoop:
             # mid-walk /config starts it over, and an expert line replaces
             # any walk in progress — the user spoke expert, honor it.
             if len(text.split()) == 1 and self._config_manager is not None:
+                self._apps_walk = None  # one walk at a time
                 self._wizard = ConfigWizard(
                     self._config,
                     apply=self._apply_config,
@@ -488,6 +521,36 @@ class AgentLoop:
                     return False
                 if not wizard.alive:
                     self._wizard = None  # goodbye — no menu is waiting
+                await self._surfaces.send_to_user(reply)
+                return True
+        if first == "/apps":
+            # the app front door: status plus the add menu. Any /apps works
+            # the same — the status IS the answer — and it replaces a live
+            # config walk, as a bare /config replaces an apps one.
+            self._wizard = None
+            self._apps_walk = AppsWizard(
+                apply=self._apply_config,
+                status=self._apps_status,
+                env_names=self._env_names,
+                save_secret=self._store_secret,
+                consent_url=self._consent_url,
+                oauth_state=self._oauth_state,
+                redirect=self._oauth_redirect(),
+            )
+            await self._surfaces.send_to_user(await self._apps_walk.start())
+            return True
+        if self._apps_walk is not None:
+            if text.startswith("/"):
+                self._apps_walk = None  # a command ends the walk quietly
+            else:
+                walk = self._apps_walk
+                reply = await walk.handle(text)
+                if reply is None:
+                    # the walk let go of the message — it's normal chat
+                    self._apps_walk = None
+                    return False
+                if not walk.alive:
+                    self._apps_walk = None  # done, or goodbye — nothing is waiting
                 await self._surfaces.send_to_user(reply)
                 return True
         if text.lower() != "/verify":
@@ -553,18 +616,25 @@ class AgentLoop:
             )
         return await self._apply_config(op, path, value)
 
-    async def _apply_config(self, op: str, path: str, value: Any = _MISSING) -> str:
+    async def _apply_config(
+        self, op: str, path: str, value: Any = _MISSING, origin: str | None = None
+    ) -> str:
         """One config change through the executor — the same synthetic
         set_config call for both /config front doors (the guided walk and
         the one-line grammar), so a write is classified, audited, parked or
         applied exactly like a model proposal. `value` absent means reset,
-        which carries none."""
+        which carries none. `origin` marks a connect the user just drove in
+        chat ("walk", "oauth") — the /apps pick-and-paste and a sign-in
+        completing at the callback apply directly, where /config lines and
+        model proposals still park."""
         params: dict[str, Any] = {"op": op, "path": path}
         if value is not _MISSING:
             params["value"] = value
         calls: list[dict[str, Any]] = []
         result = await self._execute(
-            ToolCall(id="cmd-config", name="set_config", arguments=params), trace=calls
+            ToolCall(id="cmd-config", name="set_config", arguments=params),
+            trace=calls,
+            origin=origin,
         )
         held = calls[0].get("approval_id") if calls else None
         if held is not None:
@@ -573,6 +643,153 @@ class AgentLoop:
                 f"approval (#{held}). Tap approve and it's done."
             )
         return result.content
+
+    # -- /apps: the status render and the oauth plumbing ---------------------------
+
+    async def _env_names(self) -> set[str]:
+        """Which secret names exist right now — names only, never values:
+        pastes, .env, the real environment. An unwired resolver (a bare
+        loop, tests) reads as "nothing set yet", the honest answer for a
+        loop that can't check."""
+        if self._resolver is None:
+            return set()
+        return await self._resolver.known_names()
+
+    def _oauth_redirect(self) -> str:
+        """The pinned public address as an OAuth callback — empty when it
+        isn't set, and the walk asks for the address in chat instead."""
+        public_url = getattr(self._settings, "public_url", "") if self._settings else ""
+        return callback_url(public_url) if public_url else ""
+
+    async def _oauth_state(self, provider: str, scopes: str) -> str:
+        """Does the stored sign-in cover this app's scopes? "covers" — a
+        second Google app is nothing but the apply; "partial" — signed in,
+        but a gmail-scoped token can't drive the calendar MCP, so one
+        union consent re-fills both; "none" — no sign-in yet, the recipe
+        comes first."""
+        if self._resolver is None:
+            return "none"
+        stored = await self._resolver.oauth_scopes(provider)
+        if not stored:
+            return "none"
+        if set(stored.split()) >= set(scopes.split()):
+            return "covers"
+        return "partial"
+
+    async def _store_secret(self, name: str, value: str, app: str) -> bool:
+        """One pasted key into the encrypted store. Called from the
+        deterministic command path — before ingest — so the value is
+        consumed here and never reaches the model, memory, or the audit
+        record, which carries the name and the app only. False when this
+        loop has no store wired, and the walk answers honestly below."""
+        if self._secret_store is None:
+            return False
+        await self._secret_store.set(name, value)
+        await self._audit.append(
+            actor="owner",
+            tool_name="store_app_secret",
+            decision="allow",
+            rules_matched="builtin:internal",
+            params={"name": name, "app": app},
+            outcome="stored encrypted — value never recorded",
+        )
+        return True
+
+    async def _consent_url(self, app_key: str, redirect: str) -> str | None:
+        """The consent link for one OAuth app, or None when this deployment
+        can't do OAuth yet — no permanent key, no client id, no address —
+        which the walk turns into its honest refusal. The client id is
+        resolved fresh: an act reads the resolver, never boot-time
+        settings, so one added after boot just works. The scopes are the
+        union of what's stored and what this app asks for — a gmail-scoped
+        token can't drive the calendar MCP, so a second app asks for both
+        and the refreshed token keeps the first one alive too."""
+        recipe = recipe_for(app_key)
+        if recipe is None or not recipe.oauth or not redirect:
+            return None
+        if self._resolver is None or self._settings is None:
+            return None
+        client_id = await self._resolver.resolve("GOOGLE_CLIENT_ID")
+        if not client_id:
+            return None  # the walk's recipe step adds it first, so this is rare
+        try:
+            flow = OAuthFlow(self._settings.encryption_key)
+        except OAuthError:
+            log.info("consent link refused: no permanent encryption key")
+            return None
+        stored = await self._resolver.oauth_scopes(recipe.oauth)
+        union = " ".join(dict.fromkeys((stored + " " + recipe.scopes).split()))
+        return flow.consent_url(
+            provider=recipe.oauth,
+            app=recipe.key,
+            client_id=client_id,
+            redirect=redirect,
+            scopes=union,
+        )
+
+    async def _apps_status(self) -> str:
+        """What's connected, honestly — the same render at bare /apps and
+        at the walk's menu. A messaging surface that's on without its
+        token says so; an mcp server counts its actions when it has
+        answered and makes the promise when it hasn't."""
+        names = await self._env_names()
+        lines: list[str] = []
+        messaging = self._config.messaging
+        for platform in ("telegram", "discord", "slack"):
+            if not getattr(messaging, platform).enabled:
+                continue
+            if all(name in names for name in _PLATFORM_TOKENS[platform]):
+                lines.append(f"· {platform} — on")
+            else:
+                lines.append(f"· {platform} — on — no token yet")
+        status = self._tools.mcp_status()
+        for server in self._config.mcp_servers:
+            if not server.enabled:
+                continue
+            if status.get(server.name):
+                count = self._tools.server_action_count(server.name)
+                lines.append(f"· {server.name} — connected · {_actions_word(count)}")
+            else:
+                lines.append(
+                    f"· {server.name} — still connecting — I'll tell you "
+                    "the moment it's up"
+                )
+        if not lines:
+            return "📱 your apps: nothing connected yet."
+        return "📱 your apps:\n" + "\n".join(lines)
+
+    async def finish_oauth(self, provider: str, app_key: str) -> None:
+        """The OAuth callback landed: the tokens are stored, the sign-in
+        is done, and a pending walk is finished — this is its answer, out
+        of band. The browser click was the approval, so the connect rides
+        origin "oauth" through the same executor and applies directly —
+        same gate, same audit, no park card; a user rule that forces a
+        hold anyway still gets its verbatim card. Solicited by the browser
+        click, so it never waits out quiet hours."""
+        recipe = recipe_for(app_key)
+        prov = PROVIDERS.get(provider)
+        if recipe is None or recipe.kind != "mcp" or prov is None:
+            log.warning(
+                "oauth callback for unknown %s/%r — tokens kept, nothing added",
+                provider,
+                app_key,
+            )
+            return
+        self._apps_walk = None
+        try:
+            reply = await self._apply_config(
+                "add", "mcp_servers", recipe.server, origin="oauth"
+            )
+        except Exception:
+            log.exception("adding %s after sign-in failed", recipe.name)
+            reply = (
+                "⚠️ that didn't work — the configuration is untouched. "
+                "Nothing else is affected."
+            )
+        head = f"✅ {prov.label} authorized — adding {recipe.name} now."
+        if recipe.stake and reply.startswith("🔒"):
+            head += f" it touches {recipe.stake}, so it needs your one-tap approval."
+        await self._surfaces.send_to_user(f"{head}\n{reply}")
 
     async def _try_explain_reply(self, message: InboundMessage) -> bool:
         """A reply that is just 'why?' (or 'explain') about one of my own
@@ -670,6 +887,62 @@ class AgentLoop:
             )
             if ingest.stored:
                 self.notify()
+
+    # -- the late-ready reconcile ---------------------------------------------------
+
+    async def _reconcile_mcp(self) -> None:
+        """Keep the tool namespace honest about servers that answered
+        late: the sync runs at boot and at apply time, so a server that
+        comes ready after its moment would otherwise never enter the
+        namespace at all — its actions stay uncallable while the config
+        says it's linked. Every tick, a server that's ready at the host
+        but missing from the namespace is synced in, and its coming-up is
+        said out loud — once per boot, so a flapping server never
+        announces twice. A ready server whose tool list changed since the
+        last sync — a connection hub the user approved new apps on — is
+        re-synced and its new actions announced the same way."""
+        if self._host is None:
+            return
+        versions: dict[str, int] = {}
+        late: set[str] = set()
+        changed: set[str] = set()
+        for conn in self._host.connections:
+            if not conn.ready:
+                continue
+            versions[conn.name] = getattr(conn, "tool_version", 0)
+            if not self._tools.has_server(conn.name):
+                late.add(conn.name)
+            elif conn.name in self._synced_tool_versions:
+                if self._synced_tool_versions[conn.name] != versions[conn.name]:
+                    changed.add(conn.name)
+            else:
+                # ready when its sync ran at boot or apply time — never
+                # late, never announced from here; just record
+                self._synced_tool_versions[conn.name] = versions[conn.name]
+        if not late and not changed:
+            return
+        before = {name: self._tools.server_action_count(name) for name in changed}
+        self._tools.sync_mcp_tools()
+        for name in sorted(late):
+            self._synced_tool_versions[name] = versions[name]
+            if name in self._announced_ready:
+                continue
+            self._announced_ready.add(name)
+            note = f"✅ {name} is up"
+            count = self._tools.server_action_count(name)
+            if count:
+                note += f" — {_actions_word(count)} in my vocabulary"
+            # it completes a flow the user started in chat, so like a
+            # /config reply it never waits out quiet hours
+            await self._surfaces.send_to_user(note)
+        for name in sorted(changed):
+            self._synced_tool_versions[name] = versions[name]
+            gained = self._tools.server_action_count(name) - before[name]
+            if gained > 0:
+                word = "action" if gained == 1 else "actions"
+                await self._surfaces.send_to_user(
+                    f"✅ {name} — {gained} new {word} in my vocabulary"
+                )
 
     # -- routines ---------------------------------------------------------------
 
@@ -966,17 +1239,24 @@ class AgentLoop:
         return "that app isn't responding right now"
 
     async def _execute(
-        self, call: ToolCall, trace: list[dict[str, Any]] | None = None
+        self,
+        call: ToolCall,
+        trace: list[dict[str, Any]] | None = None,
+        origin: str | None = None,
     ) -> ToolResult:
         """The single choke point between a proposal and the world. `trace`,
         when given, is the call-record list of the decision trace being
         built — passed explicitly because the scheduler worker and the agent
         loop run as separate tasks and must never write to a shared one.
+        `origin`, when given, is the loop-internal marker for a change the
+        user just drove in chat — it never rides a model proposal, so the
+        policy can let a walk-driven connect through without widening
+        anything else.
 
         A call the namespace cannot run never parks: the user is not asked
         to consent to certain failure — it comes back in the same plain
         words as any other missing tool."""
-        ruling = self._policy.classify(call.name, call.arguments)
+        ruling = self._policy.classify(call.name, call.arguments, origin=origin)
 
         if ruling.decision is Decision.DENY:
             seq = await self._audit.append(

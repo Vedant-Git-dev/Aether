@@ -35,8 +35,11 @@ from .memory.db import create_pool, run_migrations
 from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
 from .memory.salience import LLMJudge, Salience
+from .oauth import OAuthRefresher, OAuthTokenStore
 from .routines import Routines
 from .scheduler import Scheduler, SchedulerWorker
+from .secret_env import EnvResolver
+from .secret_store import SecretStore
 
 log = logging.getLogger("aether.main")
 
@@ -90,6 +93,17 @@ def create_app(
         applied = await run_migrations(pool)
         log.info("database ready (migrations applied this boot: %s)", applied or "none")
 
+        # --- oauth tokens + secrets by name --------------------------------
+        # provider-received tokens (never typed in chat) and keys pasted in
+        # the /apps walk (consumed before ingest) live encrypted like
+        # everything else; the resolver is how every act reads a key — by
+        # name, fresh — so a key added after boot needs no restart
+        oauth_store = OAuthTokenStore(pool, cipher)
+        secret_store = SecretStore(pool, cipher)
+        env_resolver = EnvResolver(token_store=oauth_store, secrets=secret_store)
+        app.state.oauth_store = oauth_store
+        app.state.resolver = env_resolver
+
         # --- chat-made config: rows merge onto the live config, in place ----
         # Before anything reads a section — an authz or allowlist override
         # must already be in effect when the first Policy and store are built.
@@ -118,7 +132,7 @@ def create_app(
         app.state.agent_settings = agent_settings
 
         # --- connectors: MCP host + the flat tool namespace -----------------
-        host = MCPHost(config.mcp_servers)
+        host = MCPHost(config.mcp_servers, resolver=env_resolver)
         host.start()
         app.state.mcp_host = host
         tools = ToolRegistry()
@@ -178,6 +192,9 @@ def create_app(
             traces=traces,
             agent_settings=agent_settings,
             config_manager=config_manager,
+            resolver=env_resolver,
+            secret_store=secret_store,
+            settings=settings,
         )
         app.state.agent = agent
         native = register_native_tools(
@@ -215,11 +232,14 @@ def create_app(
             tools=tools,
             host=host,
             approvals=approvals,
+            resolver=env_resolver,
         )
 
         worker = SchedulerWorker(scheduler, agent.execute_scheduled)
+        refresher = OAuthRefresher(oauth_store, resolver=env_resolver)
         agent.start()
         worker.start()
+        refresher.start()
         log.info(
             "aether running — surfaces: web%s, agent loop + scheduler live",
             "".join(f", {c.name}" for c in connectors),
@@ -229,6 +249,7 @@ def create_app(
 
         await worker.stop()
         await agent.stop()
+        await refresher.stop()
         for connector in connectors:
             await connector.stop()
         await host.stop()

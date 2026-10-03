@@ -82,8 +82,26 @@ tax.
   the process on its own — while the security sections (contacts, authz,
   messaging, MCP servers) hold for the same one-tap approval as any risky
   action. Changes persist encrypted in Postgres and override config.yaml
-  until reset, so they survive restarts and ephemeral deploys. Secrets stay
-  in .env, never settable from chat.
+  until reset, so they survive restarts and ephemeral deploys. Keys never
+  ride a /config line — they paste in `/apps` instead.
+- **Apps connect from chat** — `/apps` lists what's connected and walks you
+  through adding more. Known apps (Gmail, GitHub, Notion, Telegram, …) hand
+  you the exact link and the numbered steps; keys paste right in the chat —
+  consumed before ingest, stored encrypted, never echoed back — so no `.env`
+  editing at all. OAuth apps are bring-your-own-client and per provider: the
+  one-time Google setup collects your client ID and secret, and every Google
+  app after is just a consent link sent in chat, which Aether receives at
+  its own callback; a second Google app that needs more permissions asks for
+  both in one re-approval, and the first app keeps working. Anything not in
+  the catalog gets the same standardized questions. For the long tail
+  there's a prebuilt hub: connect Composio once and 1000+ apps are each a
+  single approve-click away, their actions picked up the moment you approve
+  them. Every connection is verified in plain words — "connected ·
+  24 actions" or "hasn't answered yet — I'll tell you the moment it's up" —
+  and a server that comes up late, or grows new actions after you approve
+  them, says so, unprompted. Config references keys by name only (`$NAME`),
+  and OAuth tokens received from providers never pass through chat at all —
+  both live encrypted like all other content.
 
 ## Architecture
 
@@ -133,7 +151,11 @@ chat/approval surfaces. WhatsApp is a documented stub — both free routes
   backup, a breached storage provider — and still lets the agent reason over
   the history while your devices are offline. It does **not** protect against
   a compromise of the server process itself; that is a separate, harder
-  problem.
+  problem. Keys and OAuth tokens live in this same encrypted store — never
+  in config.yaml, never in the audit record (which names keys only). The
+  honest caveat on pasting: a key transits the chat platform and sits in
+  its history until you delete the message — delete it right after the
+  "stored." reply.
 - **Free-tier hosting** (Render + Neon) is kept awake by a lightweight
   external uptime ping. Free Render services spin down after 15 idle minutes
   and are capped at 750 instance-hours/month; scheduled actions survive that
@@ -141,6 +163,11 @@ chat/approval surfaces. WhatsApp is a documented stub — both free routes
 - **LLM inference** happens at the configured provider. Zero-data-retention
   tiers and a dedicated secrets-management service are on the roadmap (a
   platform environment variable holds the encryption key today).
+- **The prebuilt hub** (Composio, one optional recipe in `/apps`) puts a
+  third party in the path of everything connected through it — the hub
+  provider sees that app activity, and its free tier is metered per month.
+  It's convenience, not a requirement: an app connected by its own recipe
+  talks only to Aether and the app, never to anyone else's infrastructure.
 
 ## Quick start
 
@@ -166,9 +193,10 @@ Next steps:
 
 - **Deploy on free tiers** (Neon Postgres + Render, kept awake by an
   uptime ping): [DEPLOYMENT.md](DEPLOYMENT.md)
-- **See it work** — eight scripted demos, from auto-actions and taught
+- **See it work** — nine scripted demos, from auto-actions and taught
   routines to kill -9 schedule survival, decision replay, the record
-  proving itself from chat, and the whole config changed from your pocket:
+  proving itself from chat, the whole config changed from your pocket, and
+  an app connected end-to-end without leaving it:
   [DEMO.md](DEMO.md)
 - **WhatsApp**: documented stub, both free routes written up in
   [docs/whatsapp.md](docs/whatsapp.md)

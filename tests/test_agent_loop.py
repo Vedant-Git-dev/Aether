@@ -11,25 +11,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from aether.agent.loop import (
-    AgentLoop,
-    CaptureRequestBox,
-    SurfaceFanout,
-    _coerce_config_value,
-    _MISSING,
-    _parse_config_command,
-)
-from aether.agent.prompts import SYSTEM_PROMPT
-from aether.agent.tools import register_native_tools
-from aether.authz.approvals import APPROVED, DENIED
-from aether.authz.audit import ChainVerification
-from aether.authz.policy import Policy
-from aether.config import AgentConfig, AppConfig, AuthzRule, MCPServerConfig, PollTool
-from aether.connectors.base import InboundMessage
-from aether.connectors.registry import ToolRegistry
-from aether.llm.types import ToolCall, ToolSpec, Turn
-from aether.memory.events import Event, IngestResult
-from aether.scheduler.jobs import ScheduledAction
 from fakes import (
     FakeAgentSettings,
     FakeApprovals,
@@ -46,6 +27,36 @@ from fakes import (
     FakeSurfaceConnector,
     FakeTraces,
 )
+
+from aether.agent.loop import (
+    _MISSING,
+    AgentLoop,
+    CaptureRequestBox,
+    SurfaceFanout,
+    _coerce_config_value,
+    _parse_config_command,
+)
+from aether.agent.prompts import SYSTEM_PROMPT
+from aether.agent.tools import register_native_tools
+from aether.authz.approvals import APPROVED, DENIED
+from aether.authz.audit import ChainVerification
+from aether.authz.policy import Policy
+from aether.config import (
+    AgentConfig,
+    AppConfig,
+    AuthzRule,
+    MCPServerConfig,
+    MessagingConfig,
+    PlatformToggle,
+    PollTool,
+    TransportConfig,
+)
+from aether.connectors.base import InboundMessage
+from aether.connectors.registry import ToolRegistry
+from aether.llm.types import ToolCall, ToolSpec, Turn
+from aether.memory.events import Event, IngestResult
+from aether.scheduler.jobs import ScheduledAction
+from aether.secret_env import EnvResolver
 
 
 def _msg(
@@ -1086,6 +1097,28 @@ async def test_config_set_security_parks_for_one_tap() -> None:
     assert kit.events.ingested == []
 
 
+async def test_a_model_proposed_connect_still_parks() -> None:
+    """The origin argument is loop-internal: a set_config the model
+    proposes carries no origin, so a connect parks exactly as before —
+    the direct apply belongs to the /apps walk and the callback alone."""
+    kit = LoopKit(None, config_manager=FakeConfigManager())
+    await kit.loop._execute(
+        ToolCall(
+            id="t1",
+            name="set_config",
+            arguments={
+                "op": "add",
+                "path": "mcp_servers",
+                "value": {"name": "github", "transport": {}},
+            },
+        )
+    )
+    assert kit.approvals.created[-1].tool_name == "set_config"
+    assert kit.approvals.created[-1].params == {
+        "op": "add", "path": "mcp_servers", "value": {"name": "github", "transport": {}}
+    }
+
+
 async def test_config_set_without_a_value_is_refused_before_the_gate() -> None:
     provider = FakeProvider([])
     manager = FakeConfigManager()
@@ -1299,3 +1332,404 @@ def test_config_command_parser_shapes() -> None:
         "^mail__send",
     )
     assert _parse_config_command("/config set") == ("set", None, _MISSING)
+
+
+# ---------------------------------------------------------------------------
+# /apps — the app front door, and the promises it keeps (no model, no ingest)
+# ---------------------------------------------------------------------------
+
+_APPS_MENU = "1 — add an app    (or \"done\")"
+_ADD_MENU = (
+    "add which one?\n"
+    "1 — telegram — talk to me there\n"
+    "2 — discord — talk to me there\n"
+    "3 — slack — talk to me there\n"
+    "4 — gmail — my inbox: read threads, write drafts, sort labels\n"
+    "5 — google calendar — my schedule: events and invites\n"
+    "6 — github — my code: repos, issues, pull requests\n"
+    "7 — notion — my notes: pages and databases\n"
+    "8 — composio — 1000+ prebuilt apps — each connection is one click\n"
+    "9 — something else — any app that speaks MCP"
+)
+
+
+class FakeMcpHost:
+    """The host's surface as the reconcile and the status read it: named
+    connections with readiness flags and live tool lists (a hub grows after
+    connect — `tools` and `tool_version` move together, like the real one)."""
+
+    def __init__(self, *connections: SimpleNamespace) -> None:
+        self.connections = list(connections)
+
+    def tool_specs(self) -> list[ToolSpec]:
+        return [
+            ToolSpec(name=f"{c.name}__{tool}", description="one action", source=c.name)
+            for c in self.connections
+            if c.ready
+            for tool in getattr(c, "tools", ("act",))
+        ]
+
+
+async def test_apps_opens_the_walk_without_waking_the_model() -> None:
+    provider = FakeProvider([])  # any LLM call would fail the test
+    kit = LoopKit(provider)
+    kit.loop.submit_message(_msg("/apps"))
+    await kit.loop._tick()
+
+    assert kit.connector.sent == [f"📱 your apps: nothing connected yet.\n{_APPS_MENU}"]
+    assert provider.calls == []
+    assert kit.events.ingested == []  # a read never becomes memory
+    assert kit.traces.created == []
+
+
+async def test_the_apps_status_is_honest_about_both_halves(tmp_path) -> None:
+    provider = FakeProvider([])
+    config = AppConfig(
+        messaging=MessagingConfig(
+            telegram=PlatformToggle(enabled=True),
+            discord=PlatformToggle(enabled=True),
+        ),
+        mcp_servers=[
+            MCPServerConfig(name="mail", transport=TransportConfig(type="http", url="https://x")),
+            MCPServerConfig(name="calendar", transport=TransportConfig(type="http", url="https://y")),
+        ],
+    )
+    kit = LoopKit(provider, config=config)
+    env_file = tmp_path / ".env"
+    env_file.write_text("TELEGRAM_BOT_TOKEN=yes\n")  # discord's token is still missing
+    kit.loop._resolver = EnvResolver(env_file)
+    host = FakeMcpHost(
+        SimpleNamespace(name="mail", ready=True),
+        SimpleNamespace(name="calendar", ready=False),
+    )
+    kit.tools.attach_mcp(host)
+    kit.tools.sync_mcp_tools()  # the boot sync: mail is in, calendar isn't
+    kit.loop._host = host
+
+    kit.loop.submit_message(_msg("/apps"))
+    await kit.loop._tick()
+    assert kit.connector.sent == [(
+        "📱 your apps:\n"
+        "· telegram — on\n"
+        "· discord — on — no token yet\n"
+        "· mail — connected · 1 action\n"
+        "· calendar — still connecting — I'll tell you the moment it's up\n"
+        f"{_APPS_MENU}"
+    )]
+    assert provider.calls == []
+    assert kit.events.ingested == []
+
+
+class FakeSecretStore:
+    """SecretStore double: takes the paste, keeps it by name — the loop's
+    store call is the only place the value ever lands."""
+
+    def __init__(self) -> None:
+        self.saved: dict[str, str] = {}
+
+    async def set(self, name: str, value: str) -> None:
+        self.saved[name] = value
+
+
+async def test_a_pasted_key_connects_directly_and_never_reaches_the_model(
+    tmp_path,
+) -> None:
+    """The headline /apps transcript, end to end: the paste is consumed
+    before ingest (no event, no model turn, never echoed), stored
+    encrypted with the audit naming the key only, and the pick-and-paste
+    applies the connect directly — origin "walk" through the same gate."""
+    provider = FakeProvider([Turn(text="done")])  # only the post-walk chat turn
+    manager = FakeConfigManager(
+        set_reply="mcp_servers updated — 1 entries now (config.yaml has 0)."
+    )
+    kit = LoopKit(provider, config_manager=manager)
+    kit.loop._resolver = EnvResolver(tmp_path / ".env")  # empty .env: nothing set
+    store = FakeSecretStore()
+    kit.loop._secret_store = store
+
+    kit.loop.submit_message(_msg("/apps"))
+    await kit.loop._tick()
+    for answer in ("1", "6", "ghp_paste_me_123"):  # menu → github → the paste
+        kit.loop.submit_message(_msg(answer))
+        await kit.loop._tick()
+
+    # consumed before ingest: no event, no model turn, never echoed back
+    assert kit.events.ingested == []
+    assert provider.calls == []
+    assert not any("ghp_paste_me_123" in text for text in kit.connector.sent)
+
+    # it went to the encrypted store, and the audit row names it only
+    assert store.saved == {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_paste_me_123"}
+    stored = [e for e in kit.audit.entries if e["tool_name"] == "store_app_secret"][-1]
+    assert stored["actor"] == "owner"
+    assert stored["tool_name"] == "store_app_secret"
+    assert stored["decision"] == "allow"
+    assert stored["params"] == {"name": "GITHUB_PERSONAL_ACCESS_TOKEN", "app": "github"}
+    assert stored["outcome"] == "stored encrypted — value never recorded"
+    assert "ghp_paste_me_123" not in str(kit.audit.entries)
+
+    # the pick-and-paste was the approval: applied, not parked
+    assert kit.approvals.created == []
+    assert manager.set_calls == [{
+        "op": "add",
+        "path": "mcp_servers",
+        "value": {
+            "name": "github",
+            "transport": {
+                "type": "http",
+                "url": "https://api.githubcopilot.com/mcp/",
+                "headers": {"Authorization": "Bearer $GITHUB_PERSONAL_ACCESS_TOKEN"},
+            },
+        },
+        "source": "tool",
+    }]
+    applied = kit.audit.entries[-1]
+    assert applied["tool_name"] == "set_config"
+    assert applied["decision"] == "allow"
+    assert applied["rules_matched"] == "builtin:walk-connect"
+    assert kit.connector.sent[-1] == (
+        "stored — connecting github now.\n"
+        "mcp_servers updated — 1 entries now (config.yaml has 0)."
+    )
+    assert kit.loop._apps_walk is None  # done — nothing is waiting
+
+    # normal chat flows again
+    kit.loop.submit_message(_msg("thanks"))
+    await kit.loop._tick()
+    assert len(provider.calls) == 1
+
+
+async def test_an_unwired_store_refuses_a_paste_honestly(tmp_path) -> None:
+    """A loop without the store wired (a bare test loop) can't save a
+    paste — and says so instead of pretending."""
+    provider = FakeProvider([])
+    kit = LoopKit(provider, config_manager=FakeConfigManager())
+    kit.loop._resolver = EnvResolver(tmp_path / ".env")
+    kit.loop.submit_message(_msg("/apps"))
+    await kit.loop._tick()
+    for answer in ("1", "6", "ghp_paste_me_123"):
+        kit.loop.submit_message(_msg(answer))
+        await kit.loop._tick()
+    assert kit.connector.sent[-1] == (
+        "that didn't work — nothing was stored. add GITHUB_PERSONAL_ACCESS_TOKEN "
+        'to .env and reply "done", or paste it again.'
+    )
+    assert kit.loop._apps_walk is not None  # still waiting — nothing was lost
+
+
+async def test_a_user_rule_still_parks_a_walk_connect_and_chat_flows_again(
+    tmp_path,
+) -> None:
+    """Origin "walk" is the loop's argument, not a promise: the user's own
+    rule forces the hold the origin would have skipped, and the walk
+    relays the familiar card verbatim before letting go."""
+    provider = FakeProvider([Turn(text="done")])  # only the post-walk chat turns
+    manager = FakeConfigManager()
+    kit = LoopKit(
+        provider,
+        rules=[AuthzRule(tool_pattern=r"set_config", decision="approve")],
+        config_manager=manager,
+    )
+    env_file = tmp_path / ".env"
+    env_file.write_text("GITHUB_PERSONAL_ACCESS_TOKEN=ghp_present\n")
+    kit.loop._resolver = EnvResolver(env_file)
+
+    kit.loop.submit_message(_msg("/apps"))
+    await kit.loop._tick()
+    for answer in ("1", "6"):  # menu → github → the key's already in .env
+        kit.loop.submit_message(_msg(answer))
+        await kit.loop._tick()
+
+    # the walk's write went through the same gate — and the user's rule won
+    assert kit.approvals.created[-1].params == {
+        "op": "add",
+        "path": "mcp_servers",
+        "value": {
+            "name": "github",
+            "transport": {
+                "type": "http",
+                "url": "https://api.githubcopilot.com/mcp/",
+                "headers": {"Authorization": "Bearer $GITHUB_PERSONAL_ACCESS_TOKEN"},
+            },
+        },
+    }
+    note = kit.connector.sent[-1]
+    assert note.startswith("the key's already there — connecting github now.")
+    assert "one-tap approval" in note  # the card, relayed by the walk verbatim
+    assert manager.set_calls == []  # parked, not applied — the user's rule
+    assert provider.calls == []  # the whole walk: no model, no ingest
+    assert kit.events.ingested == []
+
+    # the walk ended at the card — normal chat flows again
+    kit.loop.submit_message(_msg("thanks, tapping approve now"))
+    await kit.loop._tick()
+    assert len(provider.calls) == 1
+
+
+async def test_bare_apps_and_bare_config_replace_each_other() -> None:
+    provider = FakeProvider([])
+    kit = LoopKit(provider, config_manager=FakeConfigManager())
+
+    # a live config walk is replaced by bare /apps
+    kit.loop.submit_message(_msg("/config"))
+    await kit.loop._tick()
+    assert "let's set me up" in kit.connector.sent[-1]
+    kit.loop.submit_message(_msg("/apps"))
+    await kit.loop._tick()
+    kit.loop.submit_message(_msg("1"))
+    await kit.loop._tick()
+    assert kit.connector.sent[-1] == _ADD_MENU  # the apps catalog answered, not the config areas
+
+    # and a live apps walk is replaced by bare /config
+    kit.loop.submit_message(_msg("/config"))
+    await kit.loop._tick()
+    kit.loop.submit_message(_msg("2"))
+    await kit.loop._tick()
+    assert kit.connector.sent[-1].startswith("which area?")
+    assert provider.calls == []
+
+
+async def test_a_command_mid_apps_walk_ends_it_and_falls_through() -> None:
+    provider = FakeProvider([Turn(text="done"), Turn(text="done")])
+    kit = LoopKit(provider, config_manager=FakeConfigManager())
+    kit.loop.submit_message(_msg("/apps"))
+    await kit.loop._tick()
+    kit.loop.submit_message(_msg("1"))
+    await kit.loop._tick()
+    assert kit.connector.sent[-1] == _ADD_MENU
+
+    # a slash command ends the walk quietly, and the message itself is chat
+    kit.loop.submit_message(_msg("/remind me to water the plants"))
+    await kit.loop._tick()
+    assert len(provider.calls) == 1
+    assert kit.events.ingested[-1]["payload"]["text"] == "/remind me to water the plants"
+
+    # the walk is gone: a later "1" reaches the model, not the menu
+    kit.loop.submit_message(_msg("1"))
+    await kit.loop._tick()
+    assert len(provider.calls) == 2
+
+
+async def test_the_tick_announces_a_late_ready_server_once() -> None:
+    kit = LoopKit(None)  # a quiet tick — no model is needed or wanted
+    host = FakeMcpHost(
+        SimpleNamespace(name="stub", ready=True),
+        SimpleNamespace(name="mail", ready=False),
+    )
+    kit.tools.attach_mcp(host)
+    kit.loop._host = host
+    assert not kit.tools.has_server("stub")  # the gap: ready, but not callable
+
+    await kit.loop._tick()
+    # it joined the namespace and said so, once, with its action count
+    assert kit.connector.sent == ["✅ stub is up — 1 action in my vocabulary"]
+    assert kit.tools.has_server("stub")
+    assert not kit.tools.has_server("mail")  # still silent — no false promise
+
+    await kit.loop._tick()
+    assert len(kit.connector.sent) == 1  # once per boot, never again
+
+
+async def test_the_tick_announces_hub_growth_once() -> None:
+    """The hub promise: an app approved after connect shows up as callable
+    actions — the tick notices the changed tool list, syncs, and says so."""
+    kit = LoopKit(None)
+    hub = SimpleNamespace(name="hub", ready=True, tools=["act"], tool_version=1)
+    host = FakeMcpHost(hub)
+    kit.tools.attach_mcp(host)
+    kit.tools.sync_mcp_tools()  # the boot sync
+    kit.loop._host = host
+
+    await kit.loop._tick()  # already in the namespace: recorded, quiet
+    assert kit.connector.sent == []
+
+    # the user approved an app on the hub's dashboard — its tools grew
+    hub.tools.append("calendar_add")
+    hub.tool_version = 2
+
+    await kit.loop._tick()
+    assert kit.connector.sent == ["✅ hub — 1 new action in my vocabulary"]
+    assert kit.tools.get("hub__calendar_add") is not None  # actually callable
+
+    await kit.loop._tick()
+    assert len(kit.connector.sent) == 1  # the growth is said once, not repeated
+
+
+async def test_a_tool_that_vanished_leaves_the_namespace() -> None:
+    """The other half of honesty: a hub that lost an app doesn't keep its
+    actions callable — and a loss is fixed quietly, not announced."""
+    kit = LoopKit(None)
+    hub = SimpleNamespace(name="hub", ready=True, tools=["act", "extra"], tool_version=1)
+    host = FakeMcpHost(hub)
+    kit.tools.attach_mcp(host)
+    kit.tools.sync_mcp_tools()
+    kit.loop._host = host
+    await kit.loop._tick()  # the boot sync is the baseline now
+
+    hub.tools.remove("extra")
+    hub.tool_version = 2
+    await kit.loop._tick()
+
+    assert kit.tools.get("hub__extra") is None  # pruned, not callable
+    assert kit.tools.get("hub__act") is not None  # the rest of the hub stayed
+    assert kit.connector.sent == []  # quiet — nothing was gained
+
+
+async def test_finish_oauth_applies_the_connect_directly() -> None:
+    """The browser click was the approval: the connect rides origin "oauth"
+    through the same executor and applies directly — same gate, same
+    audit, no park card."""
+    provider = FakeProvider([])
+    manager = FakeConfigManager(set_reply="mcp_servers updated — 1 entries now.")
+    kit = LoopKit(provider, config_manager=manager)
+    kit.loop._apps_walk = "a live walk"  # paused at the consent link
+
+    await kit.loop.finish_oauth("google", "gmail")
+
+    assert kit.loop._apps_walk is None  # the pause is cleared out of band
+    assert kit.approvals.created == []  # applied, not parked
+    assert manager.set_calls == [{
+        "op": "add",
+        "path": "mcp_servers",
+        "value": {
+            "name": "gmail",
+            "transport": {
+                "type": "http",
+                "url": "https://gmailmcp.googleapis.com/mcp",
+                "headers": {"Authorization": "Bearer $GOOGLE_OAUTH_ACCESS_TOKEN"},
+            },
+        },
+        "source": "tool",
+    }]
+    row = kit.audit.entries[-1]
+    assert row["tool_name"] == "set_config"
+    assert row["decision"] == "allow"
+    assert row["rules_matched"] == "builtin:oauth-consent"
+    assert kit.connector.sent == [(
+        "✅ Google authorized — adding gmail now.\n"
+        "mcp_servers updated — 1 entries now."
+    )]
+    assert provider.calls == []
+
+
+async def test_finish_oauth_with_a_user_hold_still_shows_the_card() -> None:
+    """A user rule that forces the hold wins over the origin — the callback
+    relays the familiar card, stake line and all."""
+    provider = FakeProvider([])
+    kit = LoopKit(
+        provider,
+        rules=[AuthzRule(tool_pattern=r"set_config", decision="approve")],
+        config_manager=FakeConfigManager(),
+    )
+    await kit.loop.finish_oauth("google", "gmail")
+    approval = kit.approvals.created[-1]
+    note = kit.connector.sent[-1]
+    assert note.startswith("✅ Google authorized — adding gmail now.")
+    assert "it touches your mail, so it needs your one-tap approval." in note
+    assert f"one-tap approval (#{approval.id})" in note
+
+
+async def test_finish_oauth_for_an_unknown_app_keeps_the_tokens_and_says_nothing() -> None:
+    kit = LoopKit(None, config_manager=FakeConfigManager())
+    await kit.loop.finish_oauth("google", "not-a-known-app")
+    assert kit.connector.sent == []  # nothing was added; chat wasn't disturbed

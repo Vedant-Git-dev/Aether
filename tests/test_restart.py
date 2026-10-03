@@ -9,8 +9,6 @@ hands the state back and forth between iterations.
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from aether import restart

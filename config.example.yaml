@@ -7,7 +7,16 @@
 # this file until you /config reset them — personal tuning applies immediately,
 # the security sections (contacts, authz, messaging, mcp_servers) wait for
 # your one-tap approval, llm changes restart the agent themselves, and
-# secrets stay in .env where chat can never touch them.
+# secrets never ride a /config line — keys paste in /apps instead (.env
+# keeps working for every one of them).
+#
+# Apps connect from chat too: /apps walks you through adding one — the link
+# to make the key, the numbered steps, and a paste that takes it right there
+# (consumed before the agent sees it, stored encrypted, never echoed back).
+# The verdict reads the live connection, not the diff: "connected ·
+# N actions" or "hasn't answered yet — I'll tell you the moment it's up".
+# mcp_servers entries written that way reference keys by name ($NAME),
+# never the value.
 
 llm:
   provider: anthropic            # anthropic | openai | gemini | ollama
@@ -29,7 +38,7 @@ salience:
   threshold: 6.0                 # 0-10; events below are stored but never surface
   rate_cap_per_hour: 20          # heuristic pre-gate: events above this are noise
 
-mcp_servers: []                  # connect anything via MCP
+mcp_servers: []                  # connect apps from chat: /apps — or by hand here
   # - name: mail
   #   transport: {type: stdio, command: npx, args: ["-y", "mcp-mail-server"]}
   #   poll_tools: [{tool: list_unread, every_minutes: 5}]
