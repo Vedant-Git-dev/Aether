@@ -28,12 +28,15 @@ import contextlib
 import json
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+from ..composio_bridge import SERVER_ENTRY, SERVER_NAME, ComposioBridge
 from ..authz.approvals import APPROVED, DENIED, Approval, Approvals
 from ..authz.audit import AuditLog, verification_text
 from ..authz.policy import Decision, Policy
 from ..config import AppConfig, PollTool
+from ..config_store import ConfigManager
+from ..config_store import actions_word as _actions_word
 from ..connectors.base import (
     ConnectorUnavailableError,
     InboundMessage,
@@ -51,14 +54,15 @@ from ..memory.events import Event, EventStore
 from ..memory.salience import Salience
 from ..routines import Routines, trigger_matches
 from ..scheduler.jobs import ScheduledAction, Scheduler
-from .config_wizard import ConfigWizard, coerce_config_value as _coerce_config_value
+from ..secret_env import EnvResolver
+from ..secret_store import SecretStore
+from .apps_wizard import AppsWizard
+from .config_wizard import ConfigWizard
+from .config_wizard import coerce_config_value as _coerce_config_value
 from .prompts import SYSTEM_PROMPT
 from .settings import AgentSettings
 from .tools import plain_replay
 from .traces import CARRY_OUT, ROUTINE, SCHEDULED, TURN, Traces
-
-if TYPE_CHECKING:
-    from ..config_store import ConfigManager
 
 log = logging.getLogger("aether.agent")
 
@@ -72,6 +76,14 @@ WHY_REPLY_WORDS = frozenset({"why", "explain"})
 # hears about the state once, and once again when it recovers — never per
 # failure. A server with no configured poll has no heartbeat to watch.
 POLL_FAILURES_BEFORE_DOWN = 2
+
+# which .env names each messaging surface needs — /apps says "no token in
+# .env yet" until every one of them is there
+_PLATFORM_TOKENS = {
+    "telegram": ("TELEGRAM_BOT_TOKEN",),
+    "discord": ("DISCORD_BOT_TOKEN",),
+    "slack": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
+}
 
 
 def _parse_quiet_hours(raw: str | None) -> tuple[int, int] | None:
@@ -205,8 +217,8 @@ _CONFIG_USAGE = (
     "/config reset <path> — back to config.yaml's value\n\n"
     "Personal tuning (agent.*, salience.*, llm.*) applies right away; llm.* "
     "restarts me to load it. Security sections (contacts, authz, messaging, "
-    "mcp_servers) wait for your one-tap approval. Secrets stay in .env — "
-    "they're never settable from chat."
+    "mcp_servers) wait for your one-tap approval. Keys paste in /apps — "
+    "/config never sets one."
 )
 
 
@@ -261,6 +273,10 @@ class AgentLoop:
         traces: Traces | None = None,
         agent_settings: AgentSettings | None = None,
         config_manager: ConfigManager | None = None,
+        resolver: EnvResolver | None = None,
+        secret_store: SecretStore | None = None,
+        settings: Any = None,
+        composio: ComposioBridge | None = None,
     ) -> None:
         self._providers = providers
         self._tools = tools
@@ -279,8 +295,24 @@ class AgentLoop:
         self._traces = traces
         self._agent_settings = agent_settings
         self._config_manager = config_manager
+        self._resolver = resolver
+        self._secret_store = secret_store
+        self._settings = settings
+        self._composio = composio
         # the guided /config walk in progress, if any — memory only
         self._wizard: ConfigWizard | None = None
+        # the guided /apps walk in progress, if any — same rules, memory only
+        self._apps_walk: AppsWizard | None = None
+        # mcp servers whose "I'll tell you the moment it's up" was already
+        # said this boot — a flapping server never announces twice
+        self._announced_ready: set[str] = set()
+        # the tool_version each server's namespace was last synced at — a
+        # connection hub grows as the user approves apps, and this is how a
+        # tick notices without diffing full tool lists every time
+        self._synced_tool_versions: dict[str, int] = {}
+        # in-flight Connect Link waits — tracked so a completed task is
+        # never garbage-collected mid-flight
+        self._connect_waits: set[asyncio.Task[None]] = set()
 
         self._queue: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._woken = asyncio.Event()
@@ -393,6 +425,10 @@ class AgentLoop:
         # (a) due source polls first, so their results are observed this tick
         await self._run_due_polls()
 
+        # (a2) a server that answered late joins the namespace here —
+        # keeping the "the moment it's up" promise is the tick's own job
+        await self._reconcile_mcp()
+
         # (b) inbound chat becomes memory (allowlist applies at ingest; a
         # dropped sender is never seen by the model at all)
         drained: list[InboundMessage] = []
@@ -466,6 +502,7 @@ class AgentLoop:
             # mid-walk /config starts it over, and an expert line replaces
             # any walk in progress — the user spoke expert, honor it.
             if len(text.split()) == 1 and self._config_manager is not None:
+                self._apps_walk = None  # one walk at a time
                 self._wizard = ConfigWizard(
                     self._config,
                     apply=self._apply_config,
@@ -488,6 +525,38 @@ class AgentLoop:
                     return False
                 if not wizard.alive:
                     self._wizard = None  # goodbye — no menu is waiting
+                await self._surfaces.send_to_user(reply)
+                return True
+        if first == "/apps":
+            # the app front door: bare /apps is the status, /apps add <name>
+            # starts the connect walk. Either replaces a live config walk,
+            # as a bare /config replaces an apps one.
+            self._wizard = None
+            self._apps_walk = self._new_apps_wizard()
+            parts = text.split(maxsplit=2)
+            if len(parts) >= 2 and parts[1].lower() == "add":
+                name = parts[2] if len(parts) > 2 else ""
+                reply = await self._apps_walk.start_add(name)
+            else:
+                reply = await self._apps_walk.start()
+            await self._surfaces.send_to_user(reply)
+            self._maybe_spawn_connect_waiter()
+            if not self._apps_walk.alive:
+                self._apps_walk = None
+            return True
+        if self._apps_walk is not None:
+            if text.startswith("/"):
+                self._apps_walk = None  # a command ends the walk quietly
+            else:
+                walk = self._apps_walk
+                reply = await walk.handle(text)
+                if reply is None:
+                    # the walk let go of the message — it's normal chat
+                    self._apps_walk = None
+                    return False
+                self._maybe_spawn_connect_waiter()
+                if not walk.alive:
+                    self._apps_walk = None  # done, or goodbye — nothing is waiting
                 await self._surfaces.send_to_user(reply)
                 return True
         if text.lower() != "/verify":
@@ -553,18 +622,24 @@ class AgentLoop:
             )
         return await self._apply_config(op, path, value)
 
-    async def _apply_config(self, op: str, path: str, value: Any = _MISSING) -> str:
+    async def _apply_config(
+        self, op: str, path: str, value: Any = _MISSING, origin: str | None = None
+    ) -> str:
         """One config change through the executor — the same synthetic
         set_config call for both /config front doors (the guided walk and
         the one-line grammar), so a write is classified, audited, parked or
         applied exactly like a model proposal. `value` absent means reset,
-        which carries none."""
+        which carries none. `origin` marks a connect the user just drove in
+        chat ("walk") — the /apps pick-and-paste applies directly, where
+        /config lines and model proposals still park."""
         params: dict[str, Any] = {"op": op, "path": path}
         if value is not _MISSING:
             params["value"] = value
         calls: list[dict[str, Any]] = []
         result = await self._execute(
-            ToolCall(id="cmd-config", name="set_config", arguments=params), trace=calls
+            ToolCall(id="cmd-config", name="set_config", arguments=params),
+            trace=calls,
+            origin=origin,
         )
         held = calls[0].get("approval_id") if calls else None
         if held is not None:
@@ -573,6 +648,182 @@ class AgentLoop:
                 f"approval (#{held}). Tap approve and it's done."
             )
         return result.content
+
+    # -- /apps: the status render and the connect plumbing ---------------------------
+
+    async def _env_names(self) -> set[str]:
+        """Which secret names exist right now — names only, never values:
+        pastes, .env, the real environment. An unwired resolver (a bare
+        loop, tests) reads as "nothing set yet", the honest answer for a
+        loop that can't check."""
+        if self._resolver is None:
+            return set()
+        return await self._resolver.known_names()
+
+    async def _store_secret(self, name: str, value: str, app: str) -> bool:
+        """One pasted key into the encrypted store. Called from the
+        deterministic command path — before ingest — so the value is
+        consumed here and never reaches the model, memory, or the audit
+        record, which carries the name and the app only. False when this
+        loop has no store wired, and the walk answers honestly below."""
+        if self._secret_store is None:
+            return False
+        await self._secret_store.set(name, value)
+        await self._audit.append(
+            actor="owner",
+            tool_name="store_app_secret",
+            decision="allow",
+            rules_matched="builtin:internal",
+            params={"name": name, "app": app},
+            outcome="stored encrypted — value never recorded",
+        )
+        return True
+
+    async def _apps_status(self) -> str:
+        """What's connected, honestly — the same render at bare /apps and
+        after a connect. A messaging surface that's on without its token
+        says so; a hub app names its identity (or its non-active status);
+        an mcp server counts its actions when it has answered and makes
+        the promise when it hasn't. The footer is the gate, in one line —
+        connection status and what Aether may do are separate truths."""
+        names = await self._env_names()
+        lines: list[str] = []
+        messaging = self._config.messaging
+        for platform in ("telegram", "discord", "slack"):
+            if not getattr(messaging, platform).enabled:
+                continue
+            if all(name in names for name in _PLATFORM_TOKENS[platform]):
+                lines.append(f"· {platform} — on")
+            else:
+                lines.append(f"· {platform} — on — no token yet")
+        if self._composio is not None:
+            try:
+                apps = await self._composio.accounts()
+            except Exception:
+                log.exception("reading the hub's connected apps failed")
+                apps = []
+            for app in apps:
+                if app.status == "ACTIVE":
+                    who = f" — {app.identity}" if app.identity else ""
+                    lines.append(f"· {app.toolkit}{who} — connected")
+                else:
+                    lines.append(
+                        f"· {app.toolkit} — {app.status.lower()} — "
+                        f"/apps add {app.toolkit} to reconnect"
+                    )
+        status = self._tools.mcp_status()
+        for server in self._config.mcp_servers:
+            if not server.enabled:
+                continue
+            if status.get(server.name):
+                count = self._tools.server_action_count(server.name)
+                lines.append(f"· {server.name} — connected · {_actions_word(count)}")
+            else:
+                lines.append(
+                    f"· {server.name} — still connecting — I'll tell you "
+                    "the moment it's up"
+                )
+        head = "📱 your apps:\n" + "\n".join(lines) if lines else "📱 your apps: nothing connected yet."
+        return f"{head}\nthe gate: reads run free — sends, deletes and anything new ask first."
+
+    def _new_apps_wizard(self) -> AppsWizard:
+        """Every walk wires the same loop functions — the connect command
+        path and the background waiter's permissions walk alike."""
+        return AppsWizard(
+            apply=self._apply_config,
+            status=self._apps_status,
+            env_names=self._env_names,
+            save_secret=self._store_secret,
+            find_toolkits=self._find_toolkits,
+            authorize=self._authorize_composio,
+        )
+
+    async def _find_toolkits(self, query: str) -> list[tuple[str, str]]:
+        """The hub's live catalog, fuzzy-matched — [] when there's no hub
+        wired, which the walk reads as 'nothing by that name'."""
+        if self._composio is None:
+            return []
+        try:
+            found = await self._composio.find_toolkits(query)
+        except Exception:
+            log.exception("toolkit lookup failed")
+            return []
+        return [(t.slug, t.name) for t in found]
+
+    async def _authorize_composio(self, toolkit: str) -> tuple[str, str] | None:
+        """Start one app's Connect Link. The first connect also pins the
+        composio mcp_servers entry — the walk's pick is the approval, so
+        it rides origin "walk" through the same executor; a user rule that
+        parks it anyway gets its card relayed and the link still served
+        (the tools arrive when the one-tap lands)."""
+        bridge = self._composio
+        if bridge is None:
+            return None
+        try:
+            entry = next(
+                (s for s in self._config.mcp_servers if s.name == SERVER_NAME), None
+            )
+            reply = ""
+            if entry is None:
+                reply = await self._apply_config(
+                    "add", "mcp_servers", dict(SERVER_ENTRY), origin="walk"
+                )
+            elif not entry.enabled:
+                reply = await self._apply_config(
+                    "set", f"mcp_servers.{SERVER_NAME}.enabled", True, origin="walk"
+                )
+            if reply.startswith("🔒"):
+                await self._surfaces.send_to_user(reply)
+            return await bridge.authorize(toolkit)
+        except Exception:
+            log.exception("starting the %s connect failed", toolkit)
+            return None
+
+    def _maybe_spawn_connect_waiter(self) -> None:
+        """The walk just served a Connect Link — wait for the click out of
+        band so the user isn't stuck watching. The walk hands over
+        (toolkit, request id) exactly once."""
+        walk = self._apps_walk
+        if walk is None or walk.pending_connect is None:
+            return
+        toolkit, request_id = walk.pending_connect
+        walk.pending_connect = None
+        self.watch_connect(toolkit, request_id)
+
+    def watch_connect(self, toolkit: str, request_id: str) -> None:
+        """A Connect Link waiting on its click — from the chat walk or the
+        web panel alike; the same out-of-band wait, the same announcement."""
+        if self._composio is None:
+            return
+        task = asyncio.create_task(
+            self._wait_for_connect(toolkit, request_id), name="composio-connect"
+        )
+        self._connect_waits.add(task)
+        task.add_done_callback(self._connect_waits.discard)
+
+    async def _wait_for_connect(self, toolkit: str, request_id: str) -> None:
+        """The out-of-band half of a Connect Link: block until the click
+        lands (or the link dies), then ask the gate's question — what may
+        Aether do with the new app. Solicited by the user's own click, so
+        the answer never waits out quiet hours."""
+        bridge = self._composio
+        assert bridge is not None
+        try:
+            app = await bridge.wait_and_enable(toolkit, request_id)
+        except Exception:
+            log.exception("the %s connect never completed", toolkit)
+            await self._surfaces.send_to_user(
+                f"⚠️ the {toolkit} connection didn't finish — the link may "
+                f"have expired. /apps add {toolkit} to try again."
+            )
+            return
+        walk = self._apps_walk
+        if walk is None or not walk.alive:
+            walk = self._new_apps_wizard()
+            self._apps_walk = walk
+        await self._surfaces.send_to_user(
+            walk.enter_permissions(app.toolkit, app.identity)
+        )
 
     async def _try_explain_reply(self, message: InboundMessage) -> bool:
         """A reply that is just 'why?' (or 'explain') about one of my own
@@ -670,6 +921,62 @@ class AgentLoop:
             )
             if ingest.stored:
                 self.notify()
+
+    # -- the late-ready reconcile ---------------------------------------------------
+
+    async def _reconcile_mcp(self) -> None:
+        """Keep the tool namespace honest about servers that answered
+        late: the sync runs at boot and at apply time, so a server that
+        comes ready after its moment would otherwise never enter the
+        namespace at all — its actions stay uncallable while the config
+        says it's linked. Every tick, a server that's ready at the host
+        but missing from the namespace is synced in, and its coming-up is
+        said out loud — once per boot, so a flapping server never
+        announces twice. A ready server whose tool list changed since the
+        last sync — a connection hub the user approved new apps on — is
+        re-synced and its new actions announced the same way."""
+        if self._host is None:
+            return
+        versions: dict[str, int] = {}
+        late: set[str] = set()
+        changed: set[str] = set()
+        for conn in self._host.connections:
+            if not conn.ready:
+                continue
+            versions[conn.name] = getattr(conn, "tool_version", 0)
+            if not self._tools.has_server(conn.name):
+                late.add(conn.name)
+            elif conn.name in self._synced_tool_versions:
+                if self._synced_tool_versions[conn.name] != versions[conn.name]:
+                    changed.add(conn.name)
+            else:
+                # ready when its sync ran at boot or apply time — never
+                # late, never announced from here; just record
+                self._synced_tool_versions[conn.name] = versions[conn.name]
+        if not late and not changed:
+            return
+        before = {name: self._tools.server_action_count(name) for name in changed}
+        self._tools.sync_mcp_tools()
+        for name in sorted(late):
+            self._synced_tool_versions[name] = versions[name]
+            if name in self._announced_ready:
+                continue
+            self._announced_ready.add(name)
+            note = f"✅ {name} is up"
+            count = self._tools.server_action_count(name)
+            if count:
+                note += f" — {_actions_word(count)} in my vocabulary"
+            # it completes a flow the user started in chat, so like a
+            # /config reply it never waits out quiet hours
+            await self._surfaces.send_to_user(note)
+        for name in sorted(changed):
+            self._synced_tool_versions[name] = versions[name]
+            gained = self._tools.server_action_count(name) - before[name]
+            if gained > 0:
+                word = "action" if gained == 1 else "actions"
+                await self._surfaces.send_to_user(
+                    f"✅ {name} — {gained} new {word} in my vocabulary"
+                )
 
     # -- routines ---------------------------------------------------------------
 
@@ -966,17 +1273,24 @@ class AgentLoop:
         return "that app isn't responding right now"
 
     async def _execute(
-        self, call: ToolCall, trace: list[dict[str, Any]] | None = None
+        self,
+        call: ToolCall,
+        trace: list[dict[str, Any]] | None = None,
+        origin: str | None = None,
     ) -> ToolResult:
         """The single choke point between a proposal and the world. `trace`,
         when given, is the call-record list of the decision trace being
         built — passed explicitly because the scheduler worker and the agent
         loop run as separate tasks and must never write to a shared one.
+        `origin`, when given, is the loop-internal marker for a change the
+        user just drove in chat — it never rides a model proposal, so the
+        policy can let a walk-driven connect through without widening
+        anything else.
 
         A call the namespace cannot run never parks: the user is not asked
         to consent to certain failure — it comes back in the same plain
         words as any other missing tool."""
-        ruling = self._policy.classify(call.name, call.arguments)
+        ruling = self._policy.classify(call.name, call.arguments, origin=origin)
 
         if ruling.decision is Decision.DENY:
             seq = await self._audit.append(

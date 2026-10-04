@@ -10,20 +10,18 @@ persisting routines at all.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
+from fakes import FakeRoutines
+from test_agent_loop import LoopKit
+from test_native_tools import NativeKit
 
 from aether.authz.audit import AuditLog
 from aether.llm.types import ToolSpec
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.events import Event
 from aether.routines import Routines, trigger_matches
-
-from test_agent_loop import LoopKit
-from test_native_tools import NativeKit
-
-from fakes import FakeRoutines
 
 
 def _obs(
@@ -40,7 +38,7 @@ def _obs(
         id=event_id,
         source=source,
         kind=kind,
-        occurred_at=datetime.now(timezone.utc),
+        occurred_at=datetime.now(UTC),
         payload=payload,
         salience_score=0.0,
         memorable=False,
@@ -143,7 +141,7 @@ async def test_cooldown_window_holds_a_refire() -> None:
         trigger={"source": "mail"},
         action={"type": "tool", "tool": "note_entity", "params": {}},
         cooldown_seconds=300,
-        last_fired_at=datetime.now(timezone.utc),
+        last_fired_at=datetime.now(UTC),
     )
     kit.events.events[1] = _obs(1, source="mail")
 
@@ -388,7 +386,7 @@ async def test_cooldown_expires_after_its_window() -> None:
         trigger={"source": "mail"},
         action={"type": "tool", "tool": "note_entity", "params": {}},
         cooldown_seconds=60,
-        last_fired_at=datetime.now(timezone.utc) - timedelta(seconds=90),
+        last_fired_at=datetime.now(UTC) - timedelta(seconds=90),
     )
     kit.events.events[1] = _obs(1, source="mail")
 

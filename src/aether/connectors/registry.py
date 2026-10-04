@@ -53,11 +53,16 @@ class ToolRegistry:
 
     def sync_mcp_tools(self) -> int:
         """Pull the host's current tool list into the namespace. Idempotent —
-        safe to call repeatedly (e.g. whenever a server (re)connects)."""
+        safe to call repeatedly (e.g. whenever a server (re)connects). A tool
+        that vanished from a still-ready server leaves with it — the
+        vocabulary never overclaims. (A server that isn't ready reports
+        nothing, so its tools stay until it answers or is unlinked.)"""
         if self._mcp_host is None:
             return 0
         added = 0
+        reported: dict[str, set[str]] = {}
         for spec in self._mcp_host.tool_specs():
+            reported.setdefault(spec.source, set()).add(spec.name)
             existing = self._tools.get(spec.name)
             if existing is not None:
                 if existing.kind == "mcp":
@@ -70,6 +75,13 @@ class ToolRegistry:
                 continue
             self._tools[spec.name] = RegisteredTool(spec, "mcp")
             added += 1
+        for server, names in reported.items():
+            prefix = f"{server}__"
+            for name in list(self._tools):
+                tool = self._tools[name]
+                if tool.kind == "mcp" and name.startswith(prefix) and name not in names:
+                    del self._tools[name]
+                    log.info("mcp tool %s left the namespace — its server no longer lists it", name)
         return added
 
     # -- use ----------------------------------------------------------------------
@@ -98,6 +110,18 @@ class ToolRegistry:
             if sep:
                 seen.add(server)
         return sorted(seen)
+
+    def mcp_status(self) -> dict[str, bool]:
+        """Per-server readiness, straight off the live host — the honest
+        answer to 'is it actually up?' (a configured server that never
+        answered is still not connected, whatever the config says)."""
+        if self._mcp_host is None:
+            return {}
+        return {conn.name: conn.ready for conn in self._mcp_host.connections}
+
+    def server_action_count(self, server: str) -> int:
+        """How many of the namespace's actions come from this server."""
+        return sum(1 for t in self._tools.values() if t.kind == "mcp" and t.spec.source == server)
 
     def drop_server(self, server: str) -> int:
         """Remove every tool an MCP server contributed. The other half of

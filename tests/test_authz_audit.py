@@ -3,7 +3,7 @@ tamper detection behind the integration marker."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -130,7 +130,7 @@ def test_params_digest_is_stable_and_content_bound() -> None:
 
 
 def test_verification_text_intact_with_a_recent_act() -> None:
-    two_minutes_ago = datetime.now(timezone.utc) - timedelta(minutes=2)
+    two_minutes_ago = datetime.now(UTC) - timedelta(minutes=2)
     text = verification_text(ChainVerification(ok=True, entries=1247), two_minutes_ago)
     assert text == (
         "🛡️ decision record: 1,247 decisions, chain intact — every entry "
@@ -144,11 +144,11 @@ def test_verification_text_counts_and_ages_in_plain_units() -> None:
         "🛡️ decision record: 1 decision, chain intact — every entry still "
         "hashes to the one before it."
     )
-    hours_old = datetime.now(timezone.utc) - timedelta(minutes=90)
+    hours_old = datetime.now(UTC) - timedelta(minutes=90)
     assert "last act 1 hour ago" in verification_text(
         ChainVerification(ok=True, entries=5), hours_old
     )
-    naive_then = (datetime.now(timezone.utc) - timedelta(days=2)).replace(tzinfo=None)
+    naive_then = (datetime.now(UTC) - timedelta(days=2)).replace(tzinfo=None)
     assert "last act 2 days ago" in verification_text(
         ChainVerification(ok=True, entries=5), naive_then
     )

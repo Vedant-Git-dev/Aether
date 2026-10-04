@@ -35,8 +35,11 @@ from .memory.db import create_pool, run_migrations
 from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
 from .memory.salience import LLMJudge, Salience
+from .composio_bridge import ComposioBridge
 from .routines import Routines
 from .scheduler import Scheduler, SchedulerWorker
+from .secret_env import EnvResolver
+from .secret_store import SecretStore
 
 log = logging.getLogger("aether.main")
 
@@ -90,6 +93,25 @@ def create_app(
         applied = await run_migrations(pool)
         log.info("database ready (migrations applied this boot: %s)", applied or "none")
 
+        # --- secrets by name + the app hub ---------------------------------
+        # keys pasted in the /apps walk (consumed before ingest) live
+        # encrypted like everything else; the resolver is how every act
+        # reads a key — by name, fresh — so a key added after boot needs no
+        # restart. The Composio bridge rides it: a COMPOSIO_API_KEY pasted
+        # in chat works without a boot.
+        secret_store = SecretStore(pool, cipher)
+        env_resolver = EnvResolver(secrets=secret_store)
+        app.state.resolver = env_resolver
+        composio = ComposioBridge(env_resolver, secret_store)
+        app.state.composio = composio
+        try:
+            if await composio.ensure():
+                log.info("composio session open — the app hub is live")
+        except Exception:
+            # the hub being down must never keep Aether from booting —
+            # /apps answers honestly and the next connect retries
+            log.exception("composio session couldn't open — apps connect on demand")
+
         # --- chat-made config: rows merge onto the live config, in place ----
         # Before anything reads a section — an authz or allowlist override
         # must already be in effect when the first Policy and store are built.
@@ -118,7 +140,7 @@ def create_app(
         app.state.agent_settings = agent_settings
 
         # --- connectors: MCP host + the flat tool namespace -----------------
-        host = MCPHost(config.mcp_servers)
+        host = MCPHost(config.mcp_servers, resolver=env_resolver)
         host.start()
         app.state.mcp_host = host
         tools = ToolRegistry()
@@ -178,6 +200,10 @@ def create_app(
             traces=traces,
             agent_settings=agent_settings,
             config_manager=config_manager,
+            resolver=env_resolver,
+            secret_store=secret_store,
+            settings=settings,
+            composio=composio,
         )
         app.state.agent = agent
         native = register_native_tools(
@@ -215,6 +241,7 @@ def create_app(
             tools=tools,
             host=host,
             approvals=approvals,
+            resolver=env_resolver,
         )
 
         worker = SchedulerWorker(scheduler, agent.execute_scheduled)

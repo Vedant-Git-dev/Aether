@@ -99,6 +99,12 @@ def _plain_entry(entry: Any) -> str:
     return str(entry)
 
 
+def actions_word(count: int) -> str:
+    """N action(s) — the executor note, /apps, and the late-ready announce
+    all say it, so they share one wording and can never drift apart."""
+    return f"{count} action{'s' if count != 1 else ''}"
+
+
 def _plain_validation_error(exc: ValidationError, path: str) -> str:
     """A pydantic refusal restated in plain words — the user never sees
     validator jargon, they see what the setting needed."""
@@ -204,6 +210,7 @@ class ConfigManager:
         self._tools: Any = None
         self._host: Any = None
         self._approvals: Any = None
+        self._resolver: Any = None
 
     def wire(
         self,
@@ -213,6 +220,7 @@ class ConfigManager:
         tools: Any = None,
         host: Any = None,
         approvals: Any = None,
+        resolver: Any = None,
     ) -> None:
         """The live actors the apply hooks talk to. Called once after the
         connectors are up; anything left None logs later and the change
@@ -222,6 +230,7 @@ class ConfigManager:
         self._tools = tools
         self._host = host
         self._approvals = approvals
+        self._resolver = resolver
 
     # -- boot -------------------------------------------------------------------
 
@@ -601,12 +610,15 @@ class ConfigManager:
     async def _apply_messaging(self) -> str:
         """Diff the live connectors against the toggles: stop what went off,
         start what went on (a half-configured platform is named honestly —
-        it stays off until the token exists in .env)."""
+        it stays off until the token exists in .env). Runs on every
+        messaging write, even a same-value one, so a token that landed after
+        boot still starts its platform — that's what 'it starts once one is
+        there' promises."""
         if self._surfaces is None or self._loop is None:
             log.info("messaging changed but the fanout isn't wired — applies on the next boot")
             return ""
         fresh = build_messaging_connectors(
-            self._settings,
+            await self._messaging_settings(),
             self._live,
             approvals=self._approvals,
             on_decision=self._loop.execute_decision,
@@ -635,15 +647,31 @@ class ConfigManager:
             notes.append(f"{connector.name} is starting up")
         for platform in ("telegram", "discord", "slack"):
             if getattr(self._live.messaging, platform).enabled and platform not in desired:
-                notes.append(f"{platform} has no token in .env — it starts once one is there")
+                notes.append(f"{platform} has no token yet — it starts once one is pasted or set")
         if not notes:
             return ""
         return " — " + "; ".join(notes)
 
+    async def _messaging_settings(self) -> Settings:
+        """Tokens read fresh through the resolver when one is wired — a key
+        added to .env after boot is picked up here without a restart.
+        Unwired (tests, early boot) keeps the boot snapshot."""
+        if self._resolver is None:
+            return self._settings
+        values: dict[str, str] = {}
+        for field in ("telegram_bot_token", "discord_bot_token", "slack_bot_token", "slack_app_token"):
+            value = await self._resolver.resolve(field.upper())
+            if value:
+                values[field] = value
+        return Settings(_env_file=None, **values)
+
     async def _apply_mcp(self) -> str:
         """Make the host match the list: stop what left or changed, start
         what's new, drop the stopped apps' actions from the namespace, and
-        re-sync so the started ones' actions are callable."""
+        re-sync so the started ones' actions are callable. The note tells
+        the truth per started server — one that has answered is 'connected'
+        with its actions counted, one that hasn't gets the promise the
+        loop's tick reconcile later fulfills out loud."""
         if self._host is None or self._tools is None:
             log.info("mcp_servers changed but the host isn't wired — applies on the next boot")
             return ""
@@ -653,18 +681,24 @@ class ConfigManager:
         self._tools.sync_mcp_tools()
         if self._loop is not None:
             self._loop.rebuild_poll_targets()
-        started = [c.name for c in diff["started"]]
-        stopped = list(diff["stopped"])
-        notes: list[str] = []
-        if restarted := [n for n in stopped if n in started]:
-            notes.append(f"{', '.join(restarted)} restarting")
-        if fresh := [n for n in started if n not in stopped]:
-            notes.append(f"{', '.join(fresh)} started — their actions are in my vocabulary")
-        if gone := [n for n in stopped if n not in started]:
+        notes = [self._server_note(conn) for conn in diff["started"]]
+        restarted = {c.name for c in diff["started"]}
+        if gone := [n for n in diff["stopped"] if n not in restarted]:
             notes.append(f"{', '.join(gone)} stopped — their actions are gone until they're on again")
         if not notes:
             return ""
         return " — " + "; ".join(notes)
+
+    def _server_note(self, conn: Any) -> str:
+        """One started server, honestly: answered → connected with its
+        actions counted; silent so far → still trying, and the announce
+        comes unprompted the moment it answers."""
+        if conn.ready:
+            return (
+                f"{conn.name} connected · {actions_word(self._tools.server_action_count(conn.name))}"
+                " in my vocabulary"
+            )
+        return f"{conn.name} hasn't answered yet — still trying, I'll tell you the moment it's up"
 
     # -- path resolution -----------------------------------------------------------
 
@@ -821,13 +855,13 @@ class ConfigManager:
         """One compact line per section for the overview."""
         live = self._live
         if name == "llm":
-            l = live.llm
-            text = f"llm: {l.provider} · {l.model}"
-            if l.vision_model:
-                text += f" · vision {l.vision_model}"
-            if l.salience_model:
-                text += f" · salience {l.salience_model}"
-            text += f" · max {_plain_value(l.max_tokens)} tokens"
+            llm = live.llm
+            text = f"llm: {llm.provider} · {llm.model}"
+            if llm.vision_model:
+                text += f" · vision {llm.vision_model}"
+            if llm.salience_model:
+                text += f" · salience {llm.salience_model}"
+            text += f" · max {_plain_value(llm.max_tokens)} tokens"
             return text
         if name == "agent":
             a = live.agent

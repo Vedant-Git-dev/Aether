@@ -1,6 +1,6 @@
 # Demo walkthrough
 
-Eight scripted demos, in increasing order of "watch it carefully". Each one
+Nine scripted demos, in increasing order of "watch it carefully". Each one
 runs against a live Aether (local or deployed — see
 [DEPLOYMENT.md](DEPLOYMENT.md)) with at least one LLM provider key set.
 Open the web panel (`/`) with your token before starting; the sections
@@ -283,7 +283,102 @@ answer with numbers. Reads are deterministic, writes pass the same gate and
 land in the same audit chain as every other act, and the change outlives the
 container.
 
-## What all eight have in common
+## 9. An app connected end-to-end, without leaving chat
+
+**What it shows**: `/apps` — the whole connection story delivered where you
+already are: the exact link and numbered steps to make the key, the paste
+that takes it, and a verdict read off the live connection instead of off the
+config diff. No `.env` editing, no leaving chat.
+
+1. In chat, send `/apps` — deterministic, like every command: no tokens, no
+   ingest, no new trace.
+   > 📱 your apps: nothing connected yet.
+   > 1 — add an app    (or "done")
+
+   With things connected, the status is honest about both halves — what the
+   config says and what each connection actually reports:
+   > 📱 your apps:
+   > · telegram — on
+   > · mail — connected · 3 actions
+   > · calendar — still connecting — I'll tell you the moment it's up
+
+   "Still connecting" is not a shrug — the moment the server answers, chat
+   hears it unprompted:
+   > ✅ calendar is up — 12 actions in my vocabulary
+
+2. Add GitHub — "1", then "6". The recipe carries everything the setup used
+   to make you go looking for, and the paste takes the key right there:
+   ```
+   user: 6
+   github — my code: repos, issues, pull requests.
+   one key needed:
+   1 — open https://github.com/settings/personal-access-tokens/new and create
+     a token (repo, issues and pull requests permissions are enough)
+   paste the token here — I'll take it from there.
+   user: ghp_xxxxxxxxxxxxxxxxxxxx
+   stored — connecting github now.
+   mcp_servers updated — 1 entries now (config.yaml has 0). — github
+   connected · 24 actions in my vocabulary
+   ```
+
+   That's the whole flow: three messages, no file editing, no approval
+   card — the pick-and-paste was the approval. The paste is consumed before
+   ingest — no model, no memory, no trace — and lands in the encrypted
+   store; the reply names the key only, never the value. (A key added to
+   `.env` by hand still works: reply "done" at the paste and the walk
+   checks honestly — "not yet — GITHUB_PERSONAL_ACCESS_TOKEN isn't set.
+   paste it here, or add to .env and reply \"done\"" — and connects the
+   moment it's there, no restart.)
+
+   The verdict reads the live connection, not the diff. A server that
+   hasn't answered yet says that instead — "hasn't answered yet — still
+   trying, I'll tell you the moment it's up" — and the moment it does, the
+   same unprompted ✅ from step 1 arrives.
+
+   (The messaging apps — telegram, discord, slack — walk the same way: the
+   recipe hands you the BotFather or developer-console link, the token
+   pastes once, and the reply is "stored — switching telegram on now." If
+   the token isn't in yet, the status says so — "telegram — on — no token
+   yet" — and means it: the connector starts the moment the key lands.)
+
+3. The key's value lives in exactly one place — the encrypted store — and
+   the written config references it by name only:
+   `Authorization: "Bearer $GITHUB_PERSONAL_ACCESS_TOKEN"`. Check the
+   **audit** pane: the row names `store_app_secret` with the key's name and
+   the app, and no value anywhere; the apply's parameters show the `$NAME`
+   reference, not the token.
+
+4. Gmail goes one step further — it signs in with Google, so you bring your
+   own client once and never type a token at all. First Google app only:
+   the walk teaches the one-time setup (enable the APIs, publish the
+   consent screen to Production, create the client with your redirect URI),
+   takes the client ID and secret as pastes, then the link arrives in chat:
+   > stored. last step — let me in:
+   > open this and approve: https://accounts.google.com/o/oauth2/v2/auth?…
+   > (I'll take it from there)
+
+   The browser round-trip ends on a tiny success page ("✅ authorized —
+   back to chat") and chat continues on its own:
+   > ✅ Google authorized — adding gmail now.
+   > mcp_servers updated — 1 entries now (config.yaml has 0). — gmail
+   > connected · N actions in my vocabulary
+
+   The tokens travel provider → callback → encrypted store — never typed,
+   never in chat, never in config.yaml. Google Calendar afterwards is just
+   "5": no new credentials (the client is per provider, not per app), and —
+   because a gmail-scoped token can't drive the calendar MCP — one consent
+   that asks for both, so the two apps keep working off the one sign-in:
+   > one more approval — google calendar needs a permission your last
+   > sign-in didn't include, and both keep working after this:
+   > open this and approve: https://accounts.google.com/o/oauth2/v2/auth?…
+
+**The point**: connecting an app used to mean leaving chat to find the
+server, the credential flow, and the config syntax. `/apps` delivers all of
+it where you already are — the steps, the paste, the apply — and keeps the
+promise afterwards with verification that reads the actual connection: no
+overclaiming, and a late answer comes to find you instead of you checking.
+
+## What all nine have in common
 
 Every path ends in the same four artifacts, which is the whole pitch:
 

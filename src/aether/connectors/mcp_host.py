@@ -19,12 +19,17 @@ from typing import Any
 
 from ..config import MCPServerConfig, PollTool
 from ..llm.types import ToolSpec
+from ..secret_env import EnvResolver
 from .base import ConnectorUnavailableError, UnknownToolError
 
 log = logging.getLogger("aether.connectors.mcp")
 
 DEFAULT_READY_TIMEOUT = 10.0
 _MAX_BACKOFF = 30.0
+# how often a live session re-asks the tool list — a connection hub grows as
+# the user approves apps, and its new actions must reach the namespace
+# without a reconnect
+_RELIST_SECONDS = 60.0
 
 
 class MCPServerConnection:
@@ -36,7 +41,7 @@ class MCPServerConnection:
     reconnects with exponential backoff.
     """
 
-    def __init__(self, config: MCPServerConfig) -> None:
+    def __init__(self, config: MCPServerConfig, resolver: EnvResolver | None = None) -> None:
         self.name = config.name
         self.poll_tools: list[PollTool] = list(config.poll_tools)
         # a deep copy: the live config object can be edited in place from
@@ -44,12 +49,14 @@ class MCPServerConnection:
         # keep running the config it booted with, so a later diff sees the
         # change instead of the session silently mutating under itself
         self._config = config.model_copy(deep=True)
+        self._resolver = resolver
         self._ready = asyncio.Event()
         self._hold = asyncio.Event()
         self._stopping = False
         self._task: asyncio.Task[None] | None = None
         self._session: Any = None
         self._tools: dict[str, Any] = {}
+        self._tool_version = 0  # bumped whenever the tool-name set changes
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -78,11 +85,23 @@ class MCPServerConnection:
                         await session.initialize()
                         self._session = session
                         result = await session.list_tools()
-                        self._tools = {tool.name: tool for tool in result.tools}
+                        self._absorb(result)
                         self._ready.set()
                         log.info("mcp server %s ready — %d tools", self.name, len(self._tools))
                         backoff = 1.0
-                        await self._hold.wait()
+                        while not self._stopping and not self._hold.is_set():
+                            with contextlib.suppress(TimeoutError):
+                                # a parked wait with a heartbeat: every cadence
+                                # the tool list is re-asked — a connection hub
+                                # grows as the user approves apps, and its new
+                                # actions must reach the namespace without a
+                                # reconnect
+                                await asyncio.wait_for(
+                                    self._hold.wait(), timeout=_RELIST_SECONDS
+                                )
+                            if self._hold.is_set() or self._stopping:
+                                break
+                            await self._relist(session)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -111,21 +130,27 @@ class MCPServerConnection:
             params = StdioServerParameters(
                 command=transport.command or "",
                 args=list(transport.args),
-                env=dict(transport.env) if transport.env else None,
+                env=await self._expand(transport.env),
             )
             async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
                 yield session
         else:
             from mcp.client.streamable_http import streamable_http_client
 
+            url = transport.url or ""
+            if self._resolver is not None and "$" in url:
+                # a hub's URL carries the user's key in it — it lives in .env
+                # by name and re-resolves at every (re)connect, exactly like
+                # env values and headers
+                url = await self._resolver.expand_value(url)
             http_client = None
             if transport.headers:
                 import httpx2  # mcp's HTTP stack; ships with the mcp package
 
-                http_client = httpx2.AsyncClient(headers=dict(transport.headers))
+                http_client = httpx2.AsyncClient(headers=await self._expand(transport.headers))
             try:
                 async with (
-                    streamable_http_client(transport.url or "", http_client=http_client) as (
+                    streamable_http_client(url, http_client=http_client) as (
                         read,
                         write,
                     ),
@@ -137,6 +162,18 @@ class MCPServerConnection:
                     await http_client.aclose()
 
     # -- readiness ------------------------------------------------------------
+
+    async def _expand(self, mapping: dict[str, str] | None) -> dict[str, str] | None:
+        """$NAME references resolved at open time — every (re)connect re-reads
+        .env through the resolver, so a key added after boot needs no
+        restart, and a missing one fails this attempt with its name in the
+        log (the SDK's stdio children otherwise only ever see a safe
+        whitelist, never the parent's environment)."""
+        if not mapping:
+            return dict(mapping) if mapping else None
+        if self._resolver is None:
+            return dict(mapping)
+        return await self._resolver.expand_map(dict(mapping))
 
     async def wait_ready(self, timeout: float = DEFAULT_READY_TIMEOUT) -> bool:
         if self._task is None:
@@ -157,7 +194,34 @@ class MCPServerConnection:
         against the live list sees chat-made changes (see __init__)."""
         return self._config
 
+    @property
+    def tool_version(self) -> int:
+        """Bumped whenever the tool-name set changed — lets the agent loop
+        notice a hub that grew without diffing full tool lists each tick."""
+        return self._tool_version
+
     # -- tools ----------------------------------------------------------------
+
+    def _absorb(self, result: Any) -> None:
+        tools = {tool.name: tool for tool in result.tools}
+        if set(tools) != set(self._tools):
+            self._tools = tools
+            self._tool_version += 1
+
+    async def _relist(self, session: Any) -> None:
+        try:
+            result = await session.list_tools()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("mcp server %s tool re-list failed: %s", self.name, exc)
+            return
+        before = len(self._tools)
+        self._absorb(result)
+        if len(self._tools) != before:
+            log.info(
+                "mcp server %s — tool list changed, %d tools now", self.name, len(self._tools)
+            )
 
     def tool_specs(self) -> list[ToolSpec]:
         """Current tools with their flat-namespace names. Empty until connected."""
@@ -219,8 +283,9 @@ def _flatten(result: Any) -> str:
 class MCPHost:
     """All configured servers: start/stop, tool listing, and call routing."""
 
-    def __init__(self, servers: list[MCPServerConfig]) -> None:
-        self._connections = [MCPServerConnection(c) for c in servers if c.enabled]
+    def __init__(self, servers: list[MCPServerConfig], resolver: EnvResolver | None = None) -> None:
+        self._resolver = resolver
+        self._connections = [MCPServerConnection(c, resolver) for c in servers if c.enabled]
         self._by_name = {c.name: c for c in self._connections}
 
     @property
@@ -255,7 +320,7 @@ class MCPHost:
             if existing is not None:
                 await existing.stop()
                 stopped.append(config.name)
-            conn = MCPServerConnection(config)
+            conn = MCPServerConnection(config, self._resolver)
             conn.start()
             new_conns.append(conn)
             started.append(conn)

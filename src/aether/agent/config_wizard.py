@@ -51,8 +51,9 @@ _AGAIN = (
 )
 _GOODBYE = "ok — anytime. /config to start again."
 _MCP_TAIL = (
-    "(want env keys or a poll schedule on it too? the one-liner can: "
-    "/config add mcp_servers {json})"
+    "(known apps have ready recipes — their links and .env lines — and "
+    "/apps walks you through them. env keys or a poll schedule can come "
+    "here too: /config add mcp_servers {json})"
 )
 
 _UNKNOWN = object()  # yaml_value couldn't answer — the confirm keeps it vague
@@ -680,10 +681,7 @@ class ConfigWizard:
 
     def _mcp_menu(self) -> str:
         apps = self._config.mcp_servers
-        if not apps:
-            head = "the apps today: (none yet)"
-        else:
-            head = "the apps today:"
+        head = "the apps today: (none yet)" if not apps else "the apps today:"
         lines = [head]
         for i, app in enumerate(apps, 1):
             polls = len(app.poll_tools)

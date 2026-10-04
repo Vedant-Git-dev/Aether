@@ -5,13 +5,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from fakes import FakeApprovals, FakeEntities, FakeEventStore, FakeScheduler, FakeSurfaceConnector
-
-from aether.agent.loop import CaptureRequestBox, SurfaceFanout
-from aether.agent.tools import plain_replay, register_native_tools
-from aether.authz.audit import ChainVerification
-from aether.connectors.registry import ToolRegistry
-from aether.memory.events import Event
 from fakes import (
     FakeApprovals,
     FakeAudit,
@@ -23,6 +16,12 @@ from fakes import (
     FakeSurfaceConnector,
     FakeTraces,
 )
+
+from aether.agent.loop import CaptureRequestBox, SurfaceFanout
+from aether.agent.tools import plain_replay, register_native_tools
+from aether.authz.audit import ChainVerification
+from aether.connectors.registry import ToolRegistry
+from aether.memory.events import Event
 
 
 def _event(event_id: int) -> Event:
