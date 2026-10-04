@@ -43,6 +43,10 @@ class Approval:
     expires_at: datetime
     decided_at: datetime | None
     decided_by: str | None
+    # why the gate parked this call — carried on the row so the panel can
+    # show the reason, not just the ask (empty for rows that predate 007)
+    rules_matched: str = ""
+    note: str = ""
 
 
 class Approvals:
@@ -77,11 +81,14 @@ class Approvals:
         expires_at = datetime.now(UTC) + self._ttl
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
-                "INSERT INTO pending_approvals (tool_name, params_enc, status, expires_at)"
-                " VALUES ($1, $2, 'pending', $3) RETURNING id, created_at",
+                "INSERT INTO pending_approvals"
+                " (tool_name, params_enc, status, expires_at, rules_matched, note)"
+                " VALUES ($1, $2, 'pending', $3, $4, $5) RETURNING id, created_at",
                 tool_name,
                 b"",  # placeholder until the id exists; replaced below, same transaction
                 expires_at,
+                rules_matched,
+                note,
             )
             approval_id = row["id"]
             # encrypt only after the id exists so the AAD can bind to it
@@ -108,6 +115,8 @@ class Approvals:
             expires_at=expires_at,
             decided_at=None,
             decided_by=None,
+            rules_matched=rules_matched,
+            note=note,
         )
 
     async def decide(
@@ -123,7 +132,7 @@ class Approvals:
                 " SET status = $1, decided_at = now(), decided_by = $2"
                 " WHERE id = $3 AND status = 'pending' AND expires_at > now()"
                 " RETURNING id, tool_name, status, created_at, expires_at,"
-                " decided_at, decided_by",
+                " decided_at, decided_by, rules_matched, note",
                 decision,
                 decided_by,
                 approval_id,
@@ -151,6 +160,8 @@ class Approvals:
             expires_at=row["expires_at"],
             decided_at=row["decided_at"],
             decided_by=row["decided_by"],
+            rules_matched=row["rules_matched"],
+            note=row["note"],
         )
 
     async def mark_executed(self, approval_id: int) -> None:
@@ -212,7 +223,8 @@ class Approvals:
     async def get(self, approval_id: int) -> Approval | None:
         row = await self._pool.fetchrow(
             "SELECT id, tool_name, status, created_at, expires_at, decided_at,"
-            " decided_by, params_enc FROM pending_approvals WHERE id = $1",
+            " decided_by, rules_matched, note, params_enc"
+            " FROM pending_approvals WHERE id = $1",
             approval_id,
         )
         if row is None:
@@ -222,7 +234,8 @@ class Approvals:
     async def list_pending(self) -> list[Approval]:
         rows = await self._pool.fetch(
             "SELECT id, tool_name, status, created_at, expires_at, decided_at,"
-            " decided_by, params_enc FROM pending_approvals WHERE status = 'pending'"
+            " decided_by, rules_matched, note, params_enc"
+            " FROM pending_approvals WHERE status = 'pending'"
             " ORDER BY created_at"
         )
         approvals: list[Approval] = []
@@ -244,4 +257,6 @@ class Approvals:
             expires_at=row["expires_at"],
             decided_at=row["decided_at"],
             decided_by=row["decided_by"],
+            rules_matched=row["rules_matched"],
+            note=row["note"],
         )

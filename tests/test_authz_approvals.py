@@ -22,6 +22,7 @@ async def test_create_parks_the_call_encrypted(db) -> None:
         tool_name="telegram__send_message",
         params={"chat_id": 123, "text": "happy birthday!"},
         rules_matched="builtin:risky",
+        note="reaches an external system or is hard to undo",
     )
     assert approval.status == PENDING
     assert approval.params == {"chat_id": 123, "text": "happy birthday!"}
@@ -30,10 +31,17 @@ async def test_create_parks_the_call_encrypted(db) -> None:
     raw = await db.fetchval("SELECT params_enc FROM pending_approvals WHERE id = $1", approval.id)
     assert b"happy birthday" not in raw
 
-    # and it comes back through the normal read path
+    # and it comes back through the normal read path — why-it's-parked included
     fetched = await approvals.get(approval.id)
     assert fetched is not None
     assert fetched.params == {"chat_id": 123, "text": "happy birthday!"}
+    assert fetched.rules_matched == "builtin:risky"
+    assert fetched.note == "reaches an external system or is hard to undo"
+
+    pending = await approvals.list_pending()
+    assert [(p.rules_matched, p.note) for p in pending] == [
+        ("builtin:risky", "reaches an external system or is hard to undo")
+    ]
 
 
 @pytest.mark.integration

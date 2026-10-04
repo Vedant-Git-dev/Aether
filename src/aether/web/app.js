@@ -29,6 +29,7 @@ const ICONS = {
   activity: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 12h4l2.5-7 5 14 2.5-7H21"/></svg>',
   attention: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 4 2 20h20L12 4z"/><path d="M12 10v4M12 17h.01"/></svg>',
   audit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>',
+  traces: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="5" cy="5" r="2"/><circle cx="5" cy="12" r="2"/><circle cx="5" cy="19" r="2"/><path d="M9.5 5H19M9.5 12h6.5M9.5 19H19"/></svg>',
   policy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/></svg>',
   apps: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>',
   tasks: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m4 12 4 4 12-12"/><path d="M4 6h9M4 18h9" stroke-opacity=".5"/></svg>',
@@ -37,6 +38,8 @@ const ICONS = {
   collapse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6h16M4 12h10M4 18h16"/></svg>',
   menu: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
   bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 9a6 6 0 1 1 12 0c0 4 1.5 5.5 2 6H4c.5-.5 2-2 2-6Z"/><path d="M10 19a2 2 0 0 0 4 0"/></svg>',
+  sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>',
   shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m12 3-8 3v5c0 5 3.4 8.3 8 10 4.6-1.7 8-5 8-10V6Z"/><path d="m9 12 2 2 4-5"/></svg>',
   arrow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m9 18 6-6-6-6"/></svg>',
   github: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.9 1.53 2.36 1.09 2.93.83.09-.65.35-1.09.63-1.34-2.22-.25-4.56-1.11-4.56-4.94 0-1.09.39-1.99 1.03-2.69-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.03a9.6 9.6 0 0 1 5 0c1.91-1.3 2.75-1.03 2.75-1.03.55 1.37.2 2.39.1 2.64.64.7 1.03 1.6 1.03 2.69 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.75c0 .26.18.58.69.48A10 10 0 0 0 12 2Z"/></svg>',
@@ -84,6 +87,7 @@ const ASSET_V = "4";
 
 const TOKEN_KEY = "aether_token";
 const COLLAPSE_KEY = "aether_sidebar_collapsed";
+const THEME_KEY = "aether_theme";
 const token = () => localStorage.getItem(TOKEN_KEY) || "";
 const hasToken = () => Boolean(token());
 
@@ -120,6 +124,10 @@ const state = {
   taskFilter: "all",
   people: [],
   approvalUi: {}, // id -> { pending, result: {ok, msg} }
+  traces: [],
+  tracesError: "", // set when the feed itself fails (e.g. not wired)
+  tracesOpen: new Set(), // expanded trace ids
+  traceDetails: {}, // id -> fetched payload-bearing trace
 };
 
 // --------------------------------------------------------------- polling
@@ -161,14 +169,29 @@ async function refreshAudit() {
     state.audit = data;
   } catch { return; }
   if (state.page === "audit") paintAudit();
+  if (state.page === "attention") paintAttention(); // the recently-decided strip reads the same feed
+}
+
+async function refreshTraces() {
+  if (!hasToken()) return;
+  try {
+    const data = await api("/api/traces?limit=50");
+    state.traces = data.traces;
+    state.tracesError = "";
+  } catch (err) {
+    state.tracesError = err.message; // e.g. not wired — the page says so honestly
+    return;
+  }
+  if (state.page === "traces") paintTraces();
 }
 
 function startPolling() {
   stopPolling();
-  refreshApprovals(); refreshEvents(); refreshAudit();
+  refreshApprovals(); refreshEvents(); refreshAudit(); refreshTraces();
   pollHandles.push(setInterval(refreshApprovals, 5000));
   pollHandles.push(setInterval(refreshEvents, 10000));
   pollHandles.push(setInterval(refreshAudit, 10000));
+  pollHandles.push(setInterval(refreshTraces, 10000));
 }
 
 // --------------------------------------------------------------- shared bits
@@ -200,12 +223,15 @@ function pageHead(eyebrow, title, sub) {
 function approvalCard(a) {
   const ui = state.approvalUi[a.id] || {};
   const details = paramRows(a.params);
+  // why the gate parked this one — the ruling's own reason, in plain words
+  const why = describeOutcome(a.note) || describeRule(a.rules_matched);
   const card = h("div", { class: "approval-card" },
     h("div", { class: "spread" },
       h("span", { class: "tool", text: describeTool(a.tool_name) }),
       h("span", { class: "badge pending", text: "waiting for you" })),
     h("div", { class: "meta", style: "color:var(--text-3);font-size:11px;margin-top:4px" },
       `asked ${fmtTime(a.created_at)} · expires ${fmtTime(a.expires_at)}`),
+    why ? h("div", { class: "approval-why", text: why }) : "",
     details.length
       ? h("dl", { class: "approval-details" }, ...details.flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: v })]))
       : "");
@@ -261,12 +287,15 @@ const ACTOR_LABELS = { agent: "Aether", scheduler: "Scheduled check", system: "A
 const AUDIT_DECISIONS = {
   allow: "Allowed", approve: "Asked you", require_approval: "Asked you",
   deny: "Blocked", filtered: "Filtered out", info: "Noted",
+  error: "Failed before the gate",
 };
 
 const OUTCOME_LABELS = {
   "parked for approval": "Waiting for your OK",
   "executed after approval": "Done after you approved",
+  "could not run after approval": "Couldn't run after you approved",
   "approval expired": "Expired without a decision",
+  "stored encrypted — value never recorded": "Saved an app key (the value was never recorded)",
   "entity note added": "Saved a note about someone",
   "identities merged": "Recognised two accounts as one person",
   "new identity created": "Met someone new",
@@ -277,6 +306,8 @@ const OUTCOME_LABELS = {
   "internal tool, touches only Aether's own state": "Only touched Aether's own memory",
   "reaches an external system or is hard to undo": "Needs your OK — it changes something outside Aether",
   "unknown tool — held for a human decision": "Unfamiliar action — held for you",
+  "changes who Aether listens to, what it may do, or what it's connected to — the user decides that with one tap": "Changes who Aether listens to or what it's connected to — your call",
+  "an unrecognized config path can never apply silently — held for the user to look at": "An unrecognized setting — held for you to look at",
 };
 
 function describeRule(rule) {
@@ -284,6 +315,7 @@ function describeRule(rule) {
   if (BUILTIN_PLAIN[rule]) return BUILTIN_PLAIN[rule][0];
   if (rule === "config:poll_tools") return "Your regular check-ins";
   if (rule.startsWith("user:")) return `Your rule: ${describeToolPattern(rule.slice(5)).toLowerCase()}`;
+  if (rule.startsWith("routine:")) return "One of your routines";
   return "";
 }
 
@@ -319,6 +351,7 @@ const PAGE_TITLES = {
   tasks: "Tasks",
   memory: "Memory & Context",
   audit: "Audit Log",
+  traces: "Decision Traces",
   policy: "Authorization & Policies",
   apps: "Apps & Permissions",
   settings: "Settings",
@@ -421,6 +454,20 @@ async function loadAttentionPolicy() {
   }
 }
 
+// audit outcomes that close an approval's story — the "recently decided"
+// strip is carved out of the already-polled audit feed, no extra endpoint
+const DECIDED_OUTCOME = /^(approved|denied) by \w+$/;
+const SETTLED_OUTCOMES = new Set([
+  "executed after approval", "could not run after approval", "approval expired",
+]);
+
+function decidedRow(entry) {
+  return h("div", { class: "decided-row" },
+    h("span", { class: "time mono", text: fmtTime(entry.at) }),
+    h("span", { class: "what", text: describeTool(entry.tool) }),
+    h("span", { class: "how", text: describeOutcome(entry.outcome) }));
+}
+
 function paintAttention() {
   const list = $("attention-list");
   if (!list) return;
@@ -428,11 +475,22 @@ function paintAttention() {
   if (!hasToken()) { list.appendChild(cardWrap(noTokenNotice())); return; }
   if (!state.approvals.length) {
     list.appendChild(h("div", { class: "card" }, emptyState("Nothing requires your attention.", "Aether is operating within its current authorization boundaries.")));
-    return;
+  } else {
+    const card = h("div", { class: "card" });
+    state.approvals.forEach((a) => card.appendChild(approvalCard(a)));
+    list.appendChild(card);
   }
-  const card = h("div", { class: "card" });
-  state.approvals.forEach((a) => card.appendChild(approvalCard(a)));
-  list.appendChild(card);
+  // what became of earlier asks — so a decided card never just vanishes
+  const settled = state.audit.entries
+    .filter((e) => DECIDED_OUTCOME.test(e.outcome || "") || SETTLED_OUTCOMES.has(e.outcome))
+    .slice(0, 5);
+  if (settled.length) {
+    list.appendChild(h("div", { class: "section-label", style: "margin-top:16px" },
+      h("span", {}, "Recently decided")));
+    const box = h("div", { class: "card" });
+    settled.forEach((e) => box.appendChild(decidedRow(e)));
+    list.appendChild(box);
+  }
 }
 
 function renderAudit() {
@@ -502,6 +560,148 @@ function paintAudit() {
   rows.forEach((e) => tbody.appendChild(auditRow(e)));
 }
 
+// --------------------------------------------------------------- traces
+
+const TRACE_KINDS = {
+  turn: ["conversation", "info"],
+  routine: ["routine", "active"],
+  scheduled: ["scheduled", "idle"],
+  carry_out: ["approved action", "warn"],
+};
+
+function renderTraces() {
+  const page = $("page");
+  page.innerHTML = "";
+  page.appendChild(h("div", {},
+    ...pageHead("The why", "Decision Traces", "What triggered each act, how the authorization gate ruled on every call, and what came back."),
+    h("div", { class: "card", id: "traces-body" }, h("div", { class: "skeleton", style: "height:60px" }))));
+  if (!hasToken()) {
+    const box = $("traces-body"); box.innerHTML = ""; box.appendChild(noTokenNotice());
+    return;
+  }
+  paintTraces();
+  ensurePeople().then(() => { if (state.page === "traces") paintTraces(); });
+}
+
+function paintTraces() {
+  const box = $("traces-body");
+  if (!box) return;
+  box.innerHTML = "";
+  if (state.tracesError) {
+    box.appendChild(emptyState("Decision traces aren't available.", state.tracesError));
+    return;
+  }
+  if (!state.traces.length) {
+    box.appendChild(emptyState("No traces yet.", "Aether records the why behind every act — turns, routines, scheduled actions and approved calls land here."));
+    return;
+  }
+  state.traces.forEach((t) => box.appendChild(traceRow(t)));
+}
+
+function traceRow(t) {
+  const [kindLabel, kindClass] = TRACE_KINDS[t.kind] || [t.kind, "idle"];
+  const open = state.tracesOpen.has(t.id);
+  const row = h("div", { class: `trace-row ${open ? "open" : ""}` },
+    h("button", { class: "trace-head", onclick: () => toggleTrace(t.id) },
+      h("span", { class: "time mono", text: fmtTime(t.at) }),
+      h("span", { class: `badge ${kindClass}`, text: kindLabel }),
+      h("span", { class: "trace-label", text: t.label || "(no label)" }),
+      h("span", { class: "trace-caret", "data-icon": "arrow" })));
+  if (open) {
+    const detail = state.traceDetails[t.id];
+    row.appendChild(detail
+      ? traceDetail(detail)
+      : h("div", { class: "trace-detail" }, h("div", { class: "skeleton", style: "height:40px" })));
+  }
+  mountIcons(row);
+  return row;
+}
+
+async function toggleTrace(id) {
+  if (state.tracesOpen.has(id)) {
+    state.tracesOpen.delete(id);
+    paintTraces();
+    return;
+  }
+  state.tracesOpen.add(id);
+  paintTraces();
+  if (!state.traceDetails[id]) {
+    try {
+      state.traceDetails[id] = await api(`/api/traces/${id}`);
+    } catch (err) {
+      state.traceDetails[id] = { id, kind: "error", label: "", at: "", payload: { error: err.message } };
+    }
+    if (state.page === "traces") paintTraces();
+  }
+}
+
+function traceCallRow(c) {
+  const cls = c.decision === "error" ? "bad" : c.decision;
+  return h("div", { class: "trace-call" },
+    h("div", { class: "spread" },
+      h("span", { class: "trace-call-name", text: describeTool(c.name) }),
+      h("span", { class: `badge ${cls}`, text: AUDIT_DECISIONS[c.decision] || c.decision })),
+    c.matched_rule && describeRule(c.matched_rule)
+      ? h("div", { class: "meta", text: describeRule(c.matched_rule) }) : "",
+    c.result
+      ? h("div", { class: `meta ${c.is_error ? "trace-err" : ""}`, text: c.is_error ? `failed: ${quote(c.result, 160)}` : summarizeResult(c.result) || quote(c.result, 160) })
+      : "",
+    c.approval_id
+      ? h("div", { class: "meta" }, "parked as ", h("a", { href: "#/attention", style: "color:var(--primary)" }, `approval #${c.approval_id}`))
+      : "");
+}
+
+function traceDetail(t) {
+  const p = t.payload || {};
+  const box = h("div", { class: "trace-detail" });
+  const line = (...kids) => box.appendChild(h("div", { class: "trace-line" }, ...kids));
+
+  if (t.kind === "turn" && p.trigger) {
+    (p.trigger.messages || []).forEach((m) =>
+      line(h("span", { class: "badge idle", text: appLabel(m.surface) || "chat" }),
+        h("span", { text: ` ${personName(m.surface, m.handle)} said: ${quote(m.text, 220)}` })));
+    (p.trigger.observations || []).forEach((o) =>
+      line(h("span", { class: "badge idle", text: appLabel(o.source) }),
+        h("span", { class: "meta", text: ` observed ${o.kind} — ${(o.line || "").slice(0, 220)}` })));
+  }
+  if (t.kind === "routine" && p.routine) {
+    line(h("span", { text: `Routine “${p.routine.label}” fired` }),
+      p.routine.trigger ? h("span", { class: "meta", text: ` — trigger: ${p.routine.trigger}` }) : "");
+    if (p.event) line(h("span", { class: "badge idle", text: appLabel(p.event.source) }),
+      h("span", { class: "meta", text: ` ${p.event.kind} — ${(p.event.line || "").slice(0, 220)}` }));
+  }
+  if (t.kind === "scheduled" && p.action) {
+    line(h("span", { text: `Scheduled action “${p.action.label}”` }),
+      h("span", { class: "meta", text: ` — due ${p.action.run_at || ""}` }));
+  }
+  if (t.kind === "carry_out") {
+    line(h("span", { text: `Carrying out approval #${p.approval_id}: ${describeTool(p.tool)}` }),
+      p.decided_by ? h("span", { class: "meta", text: ` — decided by ${p.decided_by === "user" ? "you" : p.decided_by}` }) : "");
+    const rows = paramRows(p.params);
+    if (rows.length) box.appendChild(h("dl", { class: "approval-details" },
+      ...rows.flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: v })])));
+  }
+
+  (p.calls || []).forEach((c) => box.appendChild(traceCallRow(c)));
+
+  if (Array.isArray(p.reasoning) && p.reasoning.length) {
+    box.appendChild(h("div", { class: "trace-sub" }, "What it thought"));
+    p.reasoning.forEach((r) => box.appendChild(h("div", { class: "trace-reason", text: r })));
+  }
+  if (p.reply) {
+    box.appendChild(h("div", { class: "trace-sub" }, "What it answered"));
+    box.appendChild(h("div", { class: "trace-reply", text: p.reply }));
+  }
+  if (p.result !== undefined && t.kind !== "turn") {
+    box.appendChild(h("div", { class: `meta ${p.is_error ? "trace-err" : ""}`, style: "margin-top:6px" },
+      `${p.is_error ? "failed: " : "result: "}${quote(String(p.result), 200)}`));
+  }
+  if (p.error) {
+    box.appendChild(h("div", { class: "meta trace-err", style: "margin-top:6px", text: `error: ${p.error}` }));
+  }
+  return box;
+}
+
 const APP_NAMES = {
   gmail: "Email", mail: "Email", email: "Email", outlook: "Email",
   calendar: "Calendar", gcal: "Calendar",
@@ -535,6 +735,14 @@ const NATIVE_TOOLS = {
   schedule_action: "Scheduling something for later",
   request_screen_capture: "Asking for a screenshot",
   send_chat_message: "Messaging you",
+  get_config: "Reading its own configuration",
+  set_config: "Changing its own configuration",
+  explain_decision: "Explaining a past decision",
+  verify_integrity: "Verifying the audit chain",
+  create_routine: "Learning a routine",
+  list_routines: "Listing its routines",
+  set_routine_enabled: "Turning a routine on or off",
+  delete_routine: "Forgetting a routine",
 };
 
 const EXTRA_SOURCES = { screen: "Screen", web: "Web", user: "You" };
@@ -663,9 +871,13 @@ const DECISION_LABELS = {
 };
 
 const BUILTIN_PLAIN = {
+  "builtin:config-tune": ["Personal tuning from chat", "A settings change you drove in chat (agent, salience or provider settings) — it applies right away."],
+  "builtin:config-security": ["A security-shaped settings change", "A change to your contacts, authorization, messaging or app servers — it always waits for your one-tap OK."],
   "builtin:internal": ["Keeping its own notes", "Remembering people and details, setting reminders, and asking for a screenshot only touch Aether's own memory."],
   "builtin:risky": ["Anything that reaches the outside world", "Sending, replying, posting, deleting, cancelling, paying, booking, inviting or creating something always waits for your OK."],
   "builtin:read-only": ["Looking things up", "Reading, searching and listing your mail, chats and calendar — nothing gets changed."],
+  "builtin:walk-connect": ["Connecting an app from the /apps walk", "You walked through connecting this app in chat — the walk itself was your OK."],
+  "builtin:oauth-consent": ["Connecting an app by signing in", "You approved the sign-in on the provider's own screen — that click was the OK."],
   "default:fail-safe": ["Anything unfamiliar", "If Aether doesn't recognise an action, it asks you before doing it."],
 };
 
@@ -742,7 +954,12 @@ function renderSettings() {
       }),
       h("div", { class: "row", style: "margin-top:10px" },
         h("button", { class: "btn primary", id: "s-personality-save" }, "Save personality"),
-        h("span", { id: "s-personality-status", style: "font-size:11px;color:var(--text-3)" })))));
+        h("span", { id: "s-personality-status", style: "font-size:11px;color:var(--text-3)" }))),
+    h("div", { class: "card" },
+      h("h2", {}, "Configuration"),
+      h("div", { style: "color:var(--text-2);font-size:12px;margin-bottom:10px" },
+        "What Aether is running with — config.yaml merged with changes made in chat. Read-only here; change it from chat with /config, under the same one-tap gate as everything else."),
+      h("div", { id: "s-config" }, h("div", { class: "skeleton", style: "height:60px" })))));
   $("s-save").addEventListener("click", () => {
     const val = $("s-token").value.trim();
     if (!val) { toast("enter a token first", "err"); return; }
@@ -755,10 +972,46 @@ function renderSettings() {
   });
   if (hasToken()) {
     loadPersonality();
+    loadConfig();
   } else {
     $("s-personality").disabled = true;
     $("s-personality").placeholder = "set your API token above first";
     $("s-personality-save").disabled = true;
+    const cfg = $("s-config");
+    cfg.innerHTML = "";
+    cfg.appendChild(h("div", { class: "empty-state" }, h("div", { class: "sub", text: "set your API token above first" })));
+  }
+}
+
+async function loadConfig() {
+  const box = $("s-config");
+  if (!box) return;
+  try {
+    const data = await api("/api/config");
+    const s = data.sections || {};
+    box.innerHTML = "";
+    const messagingOn = ["telegram", "discord", "slack"]
+      .filter((p) => s.messaging && s.messaging[p] && s.messaging[p].enabled);
+    const servers = (s.mcp_servers || []).filter((x) => x.enabled);
+    const summary = [
+      ["Messaging", messagingOn.length ? messagingOn.join(", ") : "all off"],
+      ["App servers (MCP)", servers.length ? servers.map((x) => x.name).join(", ") : "none"],
+      ["Contact allowlist", (s.contacts && s.contacts.mode) || "off"],
+      ["Approval window", s.authz ? `${s.authz.approval_ttl_hours} hours` : "—"],
+      ["Quiet hours", (s.agent && s.agent.quiet_hours) || "none"],
+      ["Provider", s.llm ? `${s.llm.provider} · ${s.llm.model}` : "—"],
+    ];
+    box.appendChild(h("dl", { class: "approval-details" },
+      ...summary.flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: String(v) })])));
+    if (data.overrides && data.overrides.length) {
+      box.appendChild(h("div", { class: "section-label", style: "margin-top:12px" },
+        h("span", {}, "Changed from chat")));
+      data.overrides.forEach((o) =>
+        box.appendChild(h("div", { class: "config-override mono", text: `${o.path} = ${JSON.stringify(o.value)}` })));
+    }
+  } catch (err) {
+    box.innerHTML = "";
+    box.appendChild(emptyState("Configuration isn't available.", err.message));
   }
 }
 
@@ -789,15 +1042,15 @@ async function loadPersonality() {
   });
 }
 
-const CONFIG_TOAST = "Edit config.yaml and restart Aether to change this.";
+const CONFIG_TOAST = "Change this from chat — /apps connects an app, /config changes settings.";
 
 function brandLogo(icon, extraClass, imgSrc) {
   if (extraClass === "slack") return h("span", { class: "brand-logo slack" }, h("i", {}), h("i", {}), h("i", {}), h("i", {}));
   if (imgSrc) return h("img", { class: "brand-logo", src: imgSrc, alt: "" });
-  return h("span", { class: `brand-logo ${extraClass || ""}`, "data-icon": icon });
+  return h("span", { class: `brand-logo ${extraClass || ""}`, "data-icon": icon || "apps" });
 }
 
-function integrationCard({ icon, iconClass, imgSrc, name, subtitle, enabled, permission, statusText }) {
+function integrationCard({ icon, iconClass, imgSrc, name, subtitle, enabled, permission, statusText, badgeClass }) {
   return h("div", { class: `integration-card ${enabled ? "" : "disabled"}` },
     brandLogo(icon, iconClass, imgSrc),
     h("div", {}, h("div", { role: "heading" }, name), h("p", {}, subtitle)),
@@ -807,25 +1060,56 @@ function integrationCard({ icon, iconClass, imgSrc, name, subtitle, enabled, per
     }, h("i", {})),
     h("div", { class: "integration-permission" }, h("span", { "data-icon": "lock" }), h("span", { text: permission })),
     h("div", { class: "integration-foot" },
-      h("span", { class: `badge ${enabled ? "ok" : "idle"}`, text: statusText || (enabled ? "connected" : "disabled") }),
+      h("span", { class: `badge ${badgeClass || (enabled ? "ok" : "idle")}`, text: statusText || (enabled ? "connected" : "disabled") }),
       h("button", { class: "text-button", onclick: () => toast(CONFIG_TOAST, "ok") },
         "Configure ", h("span", { "data-icon": "arrow" }))));
 }
 
-function availableCard(iconSrc, iconName, name) {
+// what connecting from chat looks like from the panel — the walk owns the
+// keys, so the card is a signpost, not a button
+function availableCard({ icon, iconClass, imgSrc, name, blurb }) {
   return h("div", { class: "available-card" },
-    iconSrc ? h("img", { src: iconSrc, alt: "" }) : brandLogo(iconName),
-    h("span", {}, h("b", { text: name }), h("small", {}, "Not built yet")),
-    h("button", {
-      class: "connect-button",
-      onclick: () => toast(`${name} isn't wired up yet — it needs a real connector or MCP server first.`, "err"),
-    }, "Connect"));
+    imgSrc ? h("img", { src: imgSrc, alt: "" }) : brandLogo(icon, iconClass),
+    h("span", {}, h("b", { text: name }), h("small", { text: blurb || "" })),
+    h("span", { class: "connect-hint", text: "connect: /apps in chat" }));
 }
 
 const CONNECTOR_META = {
   telegram: { imgSrc: `/assets/icon-telegram.png?v=${ASSET_V}`, subtitle: "Bot API", permission: "Read, reply, monitor" },
   discord: { imgSrc: `/assets/icon-discord.png?v=${ASSET_V}`, subtitle: "Gateway", permission: "Read selected servers" },
   slack: { iconClass: "slack", subtitle: "Socket mode", permission: "Read, search, draft" },
+};
+
+// icons for the apps the chat walk can connect, keyed by catalog key
+const CATALOG_ICONS = {
+  telegram: { imgSrc: `/assets/icon-telegram.png?v=${ASSET_V}` },
+  discord: { imgSrc: `/assets/icon-discord.png?v=${ASSET_V}` },
+  slack: { iconClass: "slack" },
+  gmail: { imgSrc: `/assets/icon-gmail.png?v=${ASSET_V}` },
+  gcal: { imgSrc: `/assets/icon-calendar.png?v=${ASSET_V}` },
+  github: { imgSrc: `/assets/icon-github.png?v=${ASSET_V}` },
+  notion: { icon: "apps" },
+};
+
+// an MCP server's display face — by the name its config entry carries
+const SERVER_FACES = {
+  gmail: { imgSrc: `/assets/icon-gmail.png?v=${ASSET_V}`, label: "Gmail" },
+  mail: { imgSrc: `/assets/icon-email.jpg?v=${ASSET_V}`, label: "Email" },
+  calendar: { imgSrc: `/assets/icon-calendar.png?v=${ASSET_V}`, label: "Calendar" },
+  github: { imgSrc: `/assets/icon-github.png?v=${ASSET_V}`, label: "GitHub" },
+  notion: { icon: "apps", label: "Notion" },
+};
+
+// an OAuth scope URL → what it lets Aether reach, in the panel's words
+function scopeCovers(scopes) {
+  const covers = [];
+  if (scopes.includes("gmail")) covers.push("mail");
+  if (scopes.includes("calendar")) covers.push("calendar");
+  return covers.length ? `covers ${covers.join(" · ")}` : "signed in";
+}
+
+const OAUTH_FACES = {
+  google: { imgSrc: `/assets/icon-gmail.png?v=${ASSET_V}`, label: "Google sign-in" },
 };
 
 function renderApps() {
@@ -843,11 +1127,39 @@ async function loadApps() {
   try {
     const data = await api("/api/settings/apps");
     const cards = [];
+    // native messaging surfaces — "on" honestly means the keys are in place
     data.connectors.forEach((c) => {
       const meta = CONNECTOR_META[c.name] || { icon: "apps", subtitle: "Messaging connector", permission: "Read, reply" };
+      const missingKeys = c.enabled && !c.has_token;
       cards.push(integrationCard({
         icon: meta.icon, iconClass: meta.iconClass, imgSrc: meta.imgSrc, subtitle: meta.subtitle, permission: meta.permission,
         name: c.name[0].toUpperCase() + c.name.slice(1), enabled: c.enabled,
+        statusText: !c.enabled ? "disabled" : missingKeys ? "on — no token yet" : "on",
+        badgeClass: !c.enabled ? "idle" : missingKeys ? "warn" : "ok",
+      }));
+    });
+    // MCP servers with the host's live verdict — up and answering, or not yet
+    data.mcp_servers.forEach((s) => {
+      const face = SERVER_FACES[s.name.toLowerCase()] || { icon: "apps", label: `MCP: ${s.name}` };
+      cards.push(integrationCard({
+        icon: face.icon, iconClass: face.iconClass, imgSrc: face.imgSrc,
+        name: face.label,
+        subtitle: `MCP server · ${s.transport}`, permission: "Tools exposed by this MCP server",
+        enabled: s.enabled,
+        statusText: !s.enabled ? "disabled"
+          : s.connected ? `connected · ${s.actions} action${s.actions === 1 ? "" : "s"}`
+          : "still connecting",
+        badgeClass: !s.enabled ? "idle" : s.connected ? "ok" : "warn",
+      }));
+    });
+    // OAuth sign-ins — provider and what the stored token covers, never the token
+    (data.oauth || []).forEach((o) => {
+      const face = OAUTH_FACES[o.provider] || { icon: "user", label: `${o.provider} sign-in` };
+      cards.push(integrationCard({
+        icon: face.icon, iconClass: face.iconClass, imgSrc: face.imgSrc,
+        name: face.label, subtitle: "OAuth — tokens stored encrypted, refreshed automatically",
+        permission: "Acts only within the granted scopes", enabled: true,
+        statusText: scopeCovers(o.scopes || ""),
       }));
     });
     cards.push(integrationCard({
@@ -860,14 +1172,6 @@ async function loadApps() {
       permission: "Filters senders before they reach memory", enabled: data.contacts_mode === "enforce",
       statusText: data.contacts_mode,
     }));
-    data.mcp_servers.forEach((s) => {
-      const isMail = s.name.toLowerCase().includes("mail");
-      cards.push(integrationCard({
-        icon: isMail ? undefined : "apps", imgSrc: isMail ? `/assets/icon-email.jpg?v=${ASSET_V}` : undefined,
-        name: isMail ? "Email" : `MCP: ${s.name}`,
-        subtitle: `MCP server · ${s.transport}`, permission: "Tools exposed by this MCP server", enabled: s.enabled,
-      }));
-    });
 
     box.innerHTML = "";
     box.appendChild(h("div", { class: "section-label" },
@@ -876,12 +1180,28 @@ async function loadApps() {
     cards.forEach((c) => grid.appendChild(c));
     box.appendChild(grid);
 
+    // what chat's /apps walk can add — the catalog minus what's connected
+    const connected = new Set();
+    data.connectors.forEach((c) => { if (c.enabled) connected.add(c.name); });
+    data.mcp_servers.forEach((s) => { if (s.enabled) connected.add(s.name); });
+    const addable = (data.catalog || []).filter((r) =>
+      r.kind === "messaging" ? !connected.has(r.key) : !connected.has(r.server_name || r.key));
     box.appendChild(h("div", { class: "section-label upcoming" },
-      h("span", {}, "Not yet connected"), h("small", {}, "Available when you configure them")));
+      h("span", {}, "Add an app"), h("small", {}, "say /apps in any chat — the walk gives the exact links and takes the keys there")));
     const available = h("div", { class: "available-grid" });
-    [[`/assets/icon-teams.png?v=${ASSET_V}`, null, "Microsoft Teams"], [`/assets/icon-gmail.png?v=${ASSET_V}`, null, "Gmail"], [`/assets/icon-whatsapp.png?v=${ASSET_V}`, null, "WhatsApp"],
-      [`/assets/icon-github.png?v=${ASSET_V}`, null, "GitHub"], [`/assets/icon-calendar.png?v=${ASSET_V}`, null, "Calendar"], [`/assets/icon-filesystem.png?v=${ASSET_V}`, null, "Filesystem"]]
-      .forEach(([src, iconName, name]) => available.appendChild(availableCard(src, iconName, name)));
+    if (addable.length) {
+      addable.forEach((r) => {
+        const meta = CATALOG_ICONS[r.key] || { icon: "apps" };
+        available.appendChild(availableCard({
+          icon: meta.icon, iconClass: meta.iconClass, imgSrc: meta.imgSrc,
+          name: r.name[0].toUpperCase() + r.name.slice(1), blurb: r.blurb,
+        }));
+      });
+    } else {
+      available.appendChild(h("div", { class: "empty-state" },
+        h("div", { class: "sub" }, "Every app in the catalog is connected — ",
+          h("a", { href: "#/activity", style: "color:var(--primary)" }, "live activity"), " shows what they see.")));
+    }
     box.appendChild(available);
     mountIcons(box);
   } catch (err) {
@@ -1035,7 +1355,8 @@ function paintMemory() {
 const RENDERERS = {
   activity: renderActivity, attention: renderAttention,
   tasks: renderTasks, memory: renderMemory,
-  audit: renderAudit, policy: renderPolicy, apps: renderApps, settings: renderSettings,
+  audit: renderAudit, traces: renderTraces,
+  policy: renderPolicy, apps: renderApps, settings: renderSettings,
 };
 
 // --------------------------------------------------------------- router
@@ -1058,6 +1379,27 @@ function navigate() {
 
 // --------------------------------------------------------------- shell chrome
 
+// The inline script in index.html sets documentElement.dataset.theme before
+// first paint; these helpers keep the toggle button, the meta theme-color
+// and (optionally) the saved preference in sync with it.
+function currentTheme() {
+  return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+}
+
+function applyTheme(t, persist) {
+  document.documentElement.dataset.theme = t;
+  if (persist) try { localStorage.setItem(THEME_KEY, t); } catch { /* private mode */ }
+  const meta = qs('meta[name="theme-color"]');
+  if (meta) meta.content = t === "dark" ? "#191c20" : "#f8f7f4";
+  const btn = $("theme-btn");
+  if (btn) {
+    btn.innerHTML = ICONS[t === "dark" ? "sun" : "moon"];
+    const label = t === "dark" ? "Switch to light theme" : "Switch to dark theme";
+    btn.setAttribute("aria-label", label);
+    btn.title = label;
+  }
+}
+
 function tickClock() {
   const inner = $("topbar-clock")?.querySelector(".t-inner");
   if (!inner) return;
@@ -1077,6 +1419,14 @@ function wireShell() {
   $("topbar-breadcrumb").textContent = `/ ${location.hostname || "localhost"}`;
   tickClock();
   setInterval(tickClock, 1000);
+  applyTheme(currentTheme(), false);
+  $("theme-btn").addEventListener("click", () => applyTheme(currentTheme() === "dark" ? "light" : "dark", true));
+  // follow the system theme only until the user picks one explicitly
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (mq) => {
+    let saved = null;
+    try { saved = localStorage.getItem(THEME_KEY); } catch { /* private mode */ }
+    if (saved !== "light" && saved !== "dark") applyTheme(mq.matches ? "dark" : "light", false);
+  });
   const collapsed = localStorage.getItem(COLLAPSE_KEY) === "1";
   $("shell").classList.toggle("collapsed", collapsed);
   $("collapse-btn").addEventListener("click", () => {

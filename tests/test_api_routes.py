@@ -11,6 +11,7 @@ from fakes import (
     FakeAudit,
     FakeConfigManager,
     FakeEventStore,
+    FakeTraces,
 )
 from fastapi import FastAPI
 
@@ -93,6 +94,7 @@ def _app(
     entities=None,
     scheduler=None,
     settings: Settings | None = None,
+    traces: FakeTraces | None = None,
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(router)
@@ -118,6 +120,8 @@ def _app(
         app.state.agent_settings = agent_settings
     if config_manager is not None:
         app.state.config_manager = config_manager
+    if traces is not None:
+        app.state.traces = traces
     return app
 
 
@@ -237,13 +241,17 @@ async def test_approvals_feed_lists_pending_rows() -> None:
         await approvals.create(
             tool_name="mail__send_message",
             params={"to": "a@b.c"},
-            note="risky",
+            rules_matched="builtin:risky",
+            note="reaches an external system or is hard to undo",
         )
         filled = await client.get("/api/approvals", params={"token": "secret"})
     pending = filled.json()["pending"]
     assert len(pending) == 1
     assert pending[0]["tool_name"] == "mail__send_message"
     assert pending[0]["params"] == {"to": "a@b.c"}
+    # why the gate parked it — the card's plain-language reason
+    assert pending[0]["rules_matched"] == "builtin:risky"
+    assert pending[0]["note"] == "reaches an external system or is hard to undo"
     assert pending[0]["created_at"].endswith("+00:00")  # ISO datetimes
 
 
@@ -482,17 +490,134 @@ async def test_apps_feed_reports_configured_connectors_and_capabilities() -> Non
     async with _client(_app(config=config, vision=FakeScreenVision())) as client:
         response = await client.get("/api/settings/apps", params={"token": "secret"})
     data = response.json()
-    assert {"name": "telegram", "enabled": True} in data["connectors"]
-    assert {"name": "discord", "enabled": False} in data["connectors"]
-    assert data["mcp_servers"] == [{"name": "mail", "transport": "http", "enabled": True}]
+    # no resolver wired → no keys known → has_token is honestly False
+    assert {"name": "telegram", "enabled": True, "has_token": False} in data["connectors"]
+    assert {"name": "discord", "enabled": False, "has_token": False} in data["connectors"]
+    # no tools registry wired → not connected, zero actions
+    assert data["mcp_servers"] == [
+        {"name": "mail", "transport": "http", "enabled": True, "connected": False, "actions": 0}
+    ]
+    assert data["oauth"] == []  # no oauth store wired
     assert data["screen_vision_available"] is True
     assert data["contacts_mode"] == "enforce"
+    # the catalog rides along so the panel never hardcodes the connectable list
+    assert {c["key"] for c in data["catalog"]} >= {"telegram", "gmail", "github"}
+    assert all(
+        set(c) == {"key", "name", "blurb", "kind", "oauth", "server_name"}
+        for c in data["catalog"]
+    )
+
+
+async def test_apps_feed_marks_connectors_with_keys_and_live_servers() -> None:
+    from aether.config import (
+        AppConfig,
+        MessagingConfig,
+        MCPServerConfig,
+        PlatformToggle,
+        TransportConfig,
+    )
+
+    class _Resolver:
+        async def known_names(self):
+            return {"TELEGRAM_BOT_TOKEN"}
+
+    class _Tools:
+        def mcp_status(self):
+            return {"mail": True}
+
+        def server_action_count(self, name):
+            return 7 if name == "mail" else 0
+
+    class _OAuthStore:
+        async def all(self):
+            return {
+                "google": TokenSet(
+                    access_token="never-served",
+                    refresh_token="never-served",
+                    scopes="mail calendar",
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
+                )
+            }
+
+    config = AppConfig(
+        messaging=MessagingConfig(telegram=PlatformToggle(enabled=True)),
+        mcp_servers=[
+            MCPServerConfig(name="mail", transport=TransportConfig(type="http", url="https://x")),
+        ],
+    )
+    app = _app(config=config)
+    app.state.resolver = _Resolver()
+    app.state.tools = _Tools()
+    app.state.oauth_store = _OAuthStore()
+    async with _client(app) as client:
+        response = await client.get("/api/settings/apps", params={"token": "secret"})
+    data = response.json()
+    assert {"name": "telegram", "enabled": True, "has_token": True} in data["connectors"]
+    assert data["mcp_servers"] == [
+        {"name": "mail", "transport": "http", "enabled": True, "connected": True, "actions": 7}
+    ]
+    # provider + scopes only — never a token value
+    assert data["oauth"] == [{"provider": "google", "scopes": "mail calendar"}]
 
 
 async def test_apps_feed_reports_screen_vision_unavailable_without_a_provider() -> None:
     async with _client(_app(None)) as client:  # no screen_vision on state
         response = await client.get("/api/settings/apps", params={"token": "secret"})
     assert response.json()["screen_vision_available"] is False
+
+
+# ---------------------------------------------------------------------------
+# /api/traces — decision traces for the web panel
+# ---------------------------------------------------------------------------
+
+
+async def test_traces_feed_is_token_guarded() -> None:
+    async with _client(_app(None, traces=FakeTraces())) as client:
+        assert (await client.get("/api/traces")).status_code == 401
+        assert (await client.get("/api/traces/1")).status_code == 401
+
+
+async def test_traces_feed_is_503_when_unwired() -> None:
+    async with _client(_app(None)) as client:  # no traces on state
+        response = await client.get("/api/traces", params={"token": "secret"})
+        assert response.status_code == 503
+        response = await client.get("/api/traces/1", params={"token": "secret"})
+        assert response.status_code == 503
+
+
+async def test_traces_feed_lists_summaries_newest_first() -> None:
+    traces = FakeTraces()
+    traces.add(kind="turn", label="telegram · vedant", payload={"calls": []})
+    traces.add(kind="carry_out", label="mail__send_message", payload={"result": "sent"})
+    async with _client(_app(None, traces=traces)) as client:
+        response = await client.get("/api/traces", params={"token": "secret"})
+    rows = response.json()["traces"]
+    assert [r["id"] for r in rows] == [2, 1]  # newest first
+    assert rows[0]["kind"] == "carry_out"
+    assert rows[0]["label"] == "mail__send_message"
+    assert rows[0]["at"].endswith("+00:00")
+    assert "payload" not in rows[0]  # summaries only — the detail endpoint decrypts
+
+
+async def test_trace_detail_serves_the_full_payload() -> None:
+    traces = FakeTraces()
+    trace = traces.add(
+        kind="turn",
+        label="telegram · vedant",
+        payload={"trigger": {"messages": []}, "calls": [], "reply": "on it"},
+    )
+    async with _client(_app(None, traces=traces)) as client:
+        response = await client.get(f"/api/traces/{trace.id}", params={"token": "secret"})
+    data = response.json()
+    assert data["id"] == trace.id
+    assert data["kind"] == "turn"
+    assert data["payload"]["reply"] == "on it"
+
+
+async def test_trace_detail_is_404_for_an_unknown_trace() -> None:
+    async with _client(_app(None, traces=FakeTraces())) as client:
+        response = await client.get("/api/traces/99", params={"token": "secret"})
+    assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------

@@ -22,8 +22,9 @@ def _set_token(page, token: str) -> None:
 
 def test_every_nav_route_loads(page, live_server, token) -> None:
     _set_token(page, token)
-    page.goto(f"{live_server}/#/control")
-    page.wait_for_selector("#chat-log")
+    # boot the SPA on a real page first, then hop routes
+    page.goto(f"{live_server}/#/activity")
+    page.wait_for_selector("h1#page-title")
 
     routes = {
         "activity": "Live Activity",
@@ -31,6 +32,7 @@ def test_every_nav_route_loads(page, live_server, token) -> None:
         "tasks": "Tasks",
         "memory": "Memory & Context",
         "audit": "Audit Log",
+        "traces": "Decision Traces",
         "policy": "Authorization & Policies",
         "apps": "Apps & Permissions",
         "settings": "Settings",
@@ -88,6 +90,25 @@ def test_personality_text_survives_a_full_reload(page, live_server, token) -> No
     page.reload()
     page.wait_for_selector("#s-personality")
     assert page.input_value("#s-personality") == text
+
+
+def test_trace_row_expands_to_show_its_detail(page, live_server, token) -> None:
+    _set_token(page, token)
+    page.goto(f"{live_server}/#/traces")
+    page.wait_for_selector(".trace-row")
+    assert page.locator(".trace-row").count() == 4  # one per kind in the dev fixture
+
+    # expand the turn trace — the detail lazy-fetches /api/traces/1
+    page.locator(".trace-row .trace-head", has_text="telegram · @sam").click()
+    page.wait_for_selector(".trace-row.open .trace-detail")
+    detail = page.locator(".trace-row.open .trace-detail")
+    assert "can you confirm thursday at 4?" in detail.inner_text()
+    assert "approval #1" in detail.inner_text()
+    assert page.locator(".trace-row.open .trace-call").count() == 2
+
+    # clicking again collapses it
+    page.locator(".trace-row.open .trace-head").click()
+    assert page.locator(".trace-row.open").count() == 0
 
 
 def test_no_token_shows_the_honest_empty_state_not_a_crash(page, live_server) -> None:

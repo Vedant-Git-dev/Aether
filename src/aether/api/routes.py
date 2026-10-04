@@ -14,6 +14,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, Response, Upl
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from ..apps_catalog import CATALOG, recipe_for
 from ..oauth import OAuthError, OAuthFlow, exchange_code
 
 log = logging.getLogger("aether.api")
@@ -183,6 +184,9 @@ async def list_approvals(request: Request, token: str | None = None) -> dict:
                 "id": a.id,
                 "tool_name": a.tool_name,
                 "params": a.params,
+                # why the gate parked it — the card's plain-language reason
+                "rules_matched": a.rules_matched,
+                "note": a.note,
                 "created_at": a.created_at.isoformat(),
                 "expires_at": a.expires_at.isoformat(),
             }
@@ -339,15 +343,42 @@ async def set_personality(
 @router.get("/api/settings/apps")
 async def apps_feed(request: Request, token: str | None = None) -> dict:
     """Read-only view of what's actually connected: the native messaging
-    toggles and MCP servers from config.yaml, whether screen-vision is
-    available this boot, and the contact allowlist mode. No edit path —
-    config.yaml and provider keys are the source of truth."""
+    toggles (and whether each one's keys are in place), the MCP servers
+    with their live connection state, any OAuth sign-ins (provider and
+    scopes only — never tokens), screen-vision availability, and the
+    contact allowlist mode. The catalog of connectable apps rides along so
+    the panel can show what chat's /apps walk can add. No edit path —
+    connecting happens in chat, where keys are pasted and consumed."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
     config = request.app.state.config
+
+    # which key names exist right now — names only, never values
+    resolver = getattr(request.app.state, "resolver", None)
+    known = await resolver.known_names() if resolver is not None else set()
+
+    def _has_token(platform: str) -> bool:
+        recipe = recipe_for(platform)
+        if recipe is None or not recipe.env_names:
+            return False
+        return all(name in known for name in recipe.env_names)
+
+    # live MCP state from the tool registry — a server that's up counts
+    # its actions; one that hasn't answered yet reads "still connecting"
+    tools = getattr(request.app.state, "tools", None)
+    status = tools.mcp_status() if tools is not None else {}
+
+    def _actions(server_name: str) -> int:
+        return tools.server_action_count(server_name) if tools is not None else 0
+
+    # OAuth sign-ins: provider + scopes only, so the panel can say what a
+    # sign-in covers without ever seeing a token
+    oauth_store = getattr(request.app.state, "oauth_store", None)
+    stored_tokens = await oauth_store.all() if oauth_store is not None else {}
+
     return {
         "connectors": [
-            {"name": name, "enabled": toggle.enabled}
+            {"name": name, "enabled": toggle.enabled, "has_token": _has_token(name)}
             for name, toggle in (
                 ("telegram", config.messaging.telegram),
                 ("discord", config.messaging.discord),
@@ -355,11 +386,34 @@ async def apps_feed(request: Request, token: str | None = None) -> dict:
             )
         ],
         "mcp_servers": [
-            {"name": s.name, "transport": s.transport.type, "enabled": s.enabled}
+            {
+                "name": s.name,
+                "transport": s.transport.type,
+                "enabled": s.enabled,
+                "connected": bool(status.get(s.name)),
+                "actions": _actions(s.name),
+            }
             for s in config.mcp_servers
+        ],
+        "oauth": [
+            {"provider": provider, "scopes": tokens.scopes}
+            for provider, tokens in sorted(stored_tokens.items())
         ],
         "screen_vision_available": getattr(request.app.state, "screen_vision", None) is not None,
         "contacts_mode": config.contacts.mode,
+        "catalog": [
+            {
+                "key": r.key,
+                "name": r.name,
+                "blurb": r.blurb,
+                "kind": r.kind,
+                "oauth": bool(r.oauth),
+                # the mcp_servers entry this recipe writes — how the panel
+                # tells "already connected" from "available to add"
+                "server_name": str(r.server.get("name", "")),
+            }
+            for r in CATALOG
+        ],
     }
 
 

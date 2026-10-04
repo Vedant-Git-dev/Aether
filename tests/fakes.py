@@ -151,6 +151,8 @@ class FakeApprovals:
             expires_at=self._now + timedelta(hours=24),
             decided_at=None,
             decided_by=None,
+            rules_matched=rules_matched,
+            note=note,
         )
         self.created.append(approval)
         return approval
