@@ -93,10 +93,8 @@ tax.
   app after is just a consent link sent in chat, which Aether receives at
   its own callback; a second Google app that needs more permissions asks for
   both in one re-approval, and the first app keeps working. Anything not in
-  the catalog gets the same standardized questions. For the long tail
-  there's a prebuilt hub: connect Composio once and 1000+ apps are each a
-  single approve-click away, their actions picked up the moment you approve
-  them. Every connection is verified in plain words — "connected ·
+  the catalog gets the same standardized questions. Every connection is
+  verified in plain words — "connected ·
   24 actions" or "hasn't answered yet — I'll tell you the moment it's up" —
   and a server that comes up late, or grows new actions after you approve
   them, says so, unprompted. Config references keys by name only (`$NAME`),
@@ -163,11 +161,6 @@ chat/approval surfaces. WhatsApp is a documented stub — both free routes
 - **LLM inference** happens at the configured provider. Zero-data-retention
   tiers and a dedicated secrets-management service are on the roadmap (a
   platform environment variable holds the encryption key today).
-- **The prebuilt hub** (Composio, one optional recipe in `/apps`) puts a
-  third party in the path of everything connected through it — the hub
-  provider sees that app activity, and its free tier is metered per month.
-  It's convenience, not a requirement: an app connected by its own recipe
-  talks only to Aether and the app, never to anyone else's infrastructure.
 
 ## Quick start
 

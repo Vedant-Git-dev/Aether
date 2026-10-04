@@ -26,8 +26,7 @@ _ADD_MENU = (
     "5 — google calendar — my schedule: events and invites\n"
     "6 — github — my code: repos, issues, pull requests\n"
     "7 — notion — my notes: pages and databases\n"
-    "8 — composio — 1000+ prebuilt apps — each connection is one click\n"
-    "9 — something else — any app that speaks MCP"
+    "8 — something else — any app that speaks MCP"
 )
 _GITHUB_RECIPE = (
     "github — my code: repos, issues, pull requests.\n"
@@ -492,7 +491,7 @@ async def test_the_generic_stdio_walk_writes_a_by_name_reference() -> None:
     wizard, applier, _, save, _ = _wizard(applier=FakeApplier(reply=_APPLY_WEATHER))
     await wizard.start()
     replies = await _say(
-        wizard, "1", "9", "weather", "1", "npx -y mcp-weather", "WEATHER_API_KEY"
+        wizard, "1", "8", "weather", "1", "npx -y mcp-weather", "WEATHER_API_KEY"
     )
     assert replies[1] == "what's the app called? (one word, like weather)"
     assert replies[2] == (
@@ -531,7 +530,7 @@ async def test_the_generic_stdio_walk_writes_a_by_name_reference() -> None:
 async def test_the_generic_http_walk_gets_a_bearer_header() -> None:
     wizard, applier, _, _, _ = _wizard(applier=FakeApplier(reply=_APPLY_WEATHER))
     await wizard.start()
-    await _say(wizard, "1", "9", "weather", "http", "https://mcp.example.com/mcp")
+    await _say(wizard, "1", "8", "weather", "http", "https://mcp.example.com/mcp")
     await _say(wizard, "WEATHER_API_KEY", "wx-123")
     assert applier.calls == [(
         "add", "mcp_servers",
@@ -550,7 +549,7 @@ async def test_the_generic_http_walk_gets_a_bearer_header() -> None:
 async def test_a_generic_app_with_no_key_applies_directly() -> None:
     wizard, applier, _, save, _ = _wizard(applier=FakeApplier(reply=_APPLY_WEATHER))
     await wizard.start()
-    await _say(wizard, "1", "9", "weather", "1", "npx -y mcp-weather")
+    await _say(wizard, "1", "8", "weather", "1", "npx -y mcp-weather")
     (applied,) = await _say(wizard, "none")
     assert applied == _APPLY_WEATHER  # no head — there was nothing to paste
     assert applier.calls == [(
@@ -567,7 +566,7 @@ async def test_the_generic_walk_nudges_each_question() -> None:
     wizard, _, _, _, _ = _wizard()
     await wizard.start()
     replies = await _say(
-        wizard, "1", "9", "two words", "weather", "maybe", "2", "not a url"
+        wizard, "1", "8", "two words", "weather", "maybe", "2", "not a url"
     )
     assert replies[2] == "just the name — one word, like weather"
     assert replies[4] == "I didn't get that — reply with 1-2, or stop"
@@ -577,7 +576,7 @@ async def test_the_generic_walk_nudges_each_question() -> None:
     # a command that doesn't parse is a nudge, not a dead end — the stdio path
     wizard, _, _, _, _ = _wizard()
     await wizard.start()
-    await _say(wizard, "1", "9", "weather", "1")
+    await _say(wizard, "1", "8", "weather", "1")
     (reask,) = await _say(wizard, "npx -y \"unterminated")
     assert reask == "that command didn't parse — check the quotes and try again"
     assert wizard.alive

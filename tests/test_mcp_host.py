@@ -278,7 +278,7 @@ async def test_url_refs_resolve_at_open_time(tmp_path, monkeypatch) -> None:
     name and is referenced exactly like env values and headers — expanded at
     every open, so a rotated key needs no restart."""
     env_file = tmp_path / ".env"
-    env_file.write_text("COMPOSIO_MCP_URL=https://hub.example/mcp?key=hush-hush\n")
+    env_file.write_text("HUB_MCP_URL=https://hub.example/mcp?key=hush-hush\n")
     captured: dict[str, str] = {}
 
     import mcp.client.streamable_http as streamable_http
@@ -288,7 +288,7 @@ async def test_url_refs_resolve_at_open_time(tmp_path, monkeypatch) -> None:
         raise RuntimeError("stop before any network")
 
     monkeypatch.setattr(streamable_http, "streamable_http_client", fake_client)
-    conn = MCPServerConnection(_hub_config("$COMPOSIO_MCP_URL"), EnvResolver(env_file))
+    conn = MCPServerConnection(_hub_config("$HUB_MCP_URL"), EnvResolver(env_file))
     with pytest.raises(RuntimeError):
         async with conn._open_session():
             pass
@@ -300,11 +300,11 @@ async def test_missing_url_name_fails_the_attempt_with_the_name(tmp_path) -> Non
     this attempt with its name in the error — the retry loop connects the
     hub the moment the URL lands in .env."""
     env_file = tmp_path / ".env"  # never written
-    conn = MCPServerConnection(_hub_config("$COMPOSIO_MCP_URL"), EnvResolver(env_file))
+    conn = MCPServerConnection(_hub_config("$HUB_MCP_URL"), EnvResolver(env_file))
     with pytest.raises(SecretEnvError) as boom:
         async with conn._open_session():
             pass
-    assert "COMPOSIO_MCP_URL" in str(boom.value)
+    assert "HUB_MCP_URL" in str(boom.value)
 
 
 # -- the re-list heartbeat: a hub grows after connect ----------------------------

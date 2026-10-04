@@ -372,12 +372,6 @@ config diff. No `.env` editing, no leaving chat.
    > sign-in didn't include, and both keep working after this:
    > open this and approve: https://accounts.google.com/o/oauth2/v2/auth?…
 
-5. The long tail, one click at a time: pick "8 — composio" and connect the
-   prebuilt hub the same way — a free account, its URL pasted once. After
-   that, every app you approve on its dashboard becomes real here without
-   touching this chat again:
-   > ✅ composio — 5 new actions in my vocabulary
-
 **The point**: connecting an app used to mean leaving chat to find the
 server, the credential flow, and the config syntax. `/apps` delivers all of
 it where you already are — the steps, the paste, the apply — and keeps the

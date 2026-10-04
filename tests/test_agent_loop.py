@@ -1348,8 +1348,7 @@ _ADD_MENU = (
     "5 — google calendar — my schedule: events and invites\n"
     "6 — github — my code: repos, issues, pull requests\n"
     "7 — notion — my notes: pages and databases\n"
-    "8 — composio — 1000+ prebuilt apps — each connection is one click\n"
-    "9 — something else — any app that speaks MCP"
+    "8 — something else — any app that speaks MCP"
 )
 
 

@@ -13,11 +13,6 @@ app, so the walk collects the client ID and secret once and every Google
 app after is just a consent link — and the tokens arrive
 provider→callback and live encrypted in Postgres.
 
-composio (the prebuilt hub) is the one recipe whose tools grow after
-connect — its URL carries the user's key, so it pastes like any other
-key, and the host re-lists on a cadence so apps approved later reach the
-vocabulary without a restart.
-
 Anything not in the catalog gets the same standardized walk over the
 generic questions — the catalog is convenience, not a gate.
 """
@@ -234,24 +229,6 @@ CATALOG: tuple[AppRecipe, ...] = (
                 "args": ["-y", "@notionhq/notion-mcp-server"],
                 "env": {"NOTION_TOKEN": "$NOTION_TOKEN"},
             },
-        },
-    ),
-    AppRecipe(
-        key="composio",
-        name="composio",
-        blurb="1000+ prebuilt apps — each connection is one click",
-        kind="mcp",
-        env_names=("COMPOSIO_MCP_URL",),
-        keys_line="one address needed:",
-        stake="everything you connect through it",
-        steps=(
-            "open https://app.composio.dev — create a free account, open the "
-            "MCP section, and create your server — copy its URL",
-        ),
-        asks=("paste the URL here — I'll take it from there.",),
-        server={
-            "name": "composio",
-            "transport": {"type": "http", "url": "$COMPOSIO_MCP_URL"},
         },
     ),
 )
