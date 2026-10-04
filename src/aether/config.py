@@ -45,12 +45,14 @@ class Settings(BaseSettings):
     slack_bot_token: str = ""
     slack_app_token: str = ""
 
-    # Google sign-in (the /apps OAuth recipes: gmail, google calendar)
-    google_client_id: str = ""
-    google_client_secret: str = ""
+    # Composio — the one connection hub for external apps (gmail, github,
+    # notion, ...). Boot reads this; the /apps walk's paste lands in the
+    # encrypted store and the bridge resolves it fresh from there.
+    composio_api_key: str = ""
 
     # this deployment's public address (https://your-app.onrender.com) —
-    # where a Google sign-in lands; /apps asks in chat when it's unset
+    # where externally-hosted flows would call back; reserved for a future
+    # webhook ingress, nothing reads it today
     public_url: str = Field(default="", validation_alias="AETHER_PUBLIC_URL")
 
     log_level: str = "INFO"

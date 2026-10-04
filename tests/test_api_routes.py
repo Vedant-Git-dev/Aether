@@ -9,6 +9,7 @@ from fakes import (
     FakeAgentSettings,
     FakeApprovals,
     FakeAudit,
+    FakeComposioBridge,
     FakeConfigManager,
     FakeEventStore,
     FakeTraces,
@@ -18,11 +19,10 @@ from fastapi import FastAPI
 from aether.agent.loop import CaptureRequestBox
 from aether.api.routes import router
 from aether.authz.approvals import Approval
+from aether.composio_bridge import ConnectedApp
 from aether.config import AppConfig, AuthzConfig, AuthzRule, Settings
-from aether.memory.crypto import generate_key_b64
 from aether.memory.entities import Entity, EntityNote
 from aether.memory.events import Event, IngestResult
-from aether.oauth import OAuthError, OAuthFlow, TokenSet
 from aether.scheduler.jobs import ScheduledAction
 
 
@@ -42,6 +42,7 @@ class FakeAgent:
         self.decision_result = decision_result
         self.calls: list[tuple[int, str]] = []
         self.notified = 0
+        self.watched: list[tuple[str, str]] = []
 
     async def decide(self, approval_id: int, decision: str):
         self.calls.append((approval_id, decision))
@@ -51,6 +52,9 @@ class FakeAgent:
 
     def notify(self) -> None:
         self.notified += 1
+
+    def watch_connect(self, toolkit: str, request_id: str) -> None:
+        self.watched.append((toolkit, request_id))
 
 
 def _approval(approval_id: int = 1, status: str = "approved") -> Approval:
@@ -90,6 +94,7 @@ def _app(
     agent: FakeAgent | None = None,
     config: AppConfig | None = None,
     agent_settings: FakeAgentSettings | None = None,
+    composio: FakeComposioBridge | None = None,
     config_manager: FakeConfigManager | None = None,
     entities=None,
     scheduler=None,
@@ -118,6 +123,8 @@ def _app(
         app.state.agent = agent
     if agent_settings is not None:
         app.state.agent_settings = agent_settings
+    if composio is not None:
+        app.state.composio = composio
     if config_manager is not None:
         app.state.config_manager = config_manager
     if traces is not None:
@@ -497,13 +504,13 @@ async def test_apps_feed_reports_configured_connectors_and_capabilities() -> Non
     assert data["mcp_servers"] == [
         {"name": "mail", "transport": "http", "enabled": True, "connected": False, "actions": 0}
     ]
-    assert data["oauth"] == []  # no oauth store wired
     assert data["screen_vision_available"] is True
     assert data["contacts_mode"] == "enforce"
-    # the catalog rides along so the panel never hardcodes the connectable list
-    assert {c["key"] for c in data["catalog"]} >= {"telegram", "gmail", "github"}
+    # the catalog rides along so the panel never hardcodes the chat-surface
+    # list — hub apps are /api/connections' job, fetched live
+    assert {c["key"] for c in data["catalog"]} == {"telegram", "discord", "slack"}
     assert all(
-        set(c) == {"key", "name", "blurb", "kind", "oauth", "server_name"}
+        set(c) == {"key", "name", "blurb", "kind"}
         for c in data["catalog"]
     )
 
@@ -528,17 +535,6 @@ async def test_apps_feed_marks_connectors_with_keys_and_live_servers() -> None:
         def server_action_count(self, name):
             return 7 if name == "mail" else 0
 
-    class _OAuthStore:
-        async def all(self):
-            return {
-                "google": TokenSet(
-                    access_token="never-served",
-                    refresh_token="never-served",
-                    scopes="mail calendar",
-                    expires_at=datetime.now(UTC) + timedelta(hours=1),
-                )
-            }
-
     config = AppConfig(
         messaging=MessagingConfig(telegram=PlatformToggle(enabled=True)),
         mcp_servers=[
@@ -548,7 +544,6 @@ async def test_apps_feed_marks_connectors_with_keys_and_live_servers() -> None:
     app = _app(config=config)
     app.state.resolver = _Resolver()
     app.state.tools = _Tools()
-    app.state.oauth_store = _OAuthStore()
     async with _client(app) as client:
         response = await client.get("/api/settings/apps", params={"token": "secret"})
     data = response.json()
@@ -556,8 +551,6 @@ async def test_apps_feed_marks_connectors_with_keys_and_live_servers() -> None:
     assert data["mcp_servers"] == [
         {"name": "mail", "transport": "http", "enabled": True, "connected": True, "actions": 7}
     ]
-    # provider + scopes only — never a token value
-    assert data["oauth"] == [{"provider": "google", "scopes": "mail calendar"}]
 
 
 async def test_apps_feed_reports_screen_vision_unavailable_without_a_provider() -> None:
@@ -733,172 +726,86 @@ async def test_tasks_feed_reports_scheduled_actions() -> None:
 
 
 # ---------------------------------------------------------------------------
-# /oauth/callback — the public landing of a Google sign-in
+# /api/connections — the app hub, driven from the panel
 # ---------------------------------------------------------------------------
 
-_KEY = generate_key_b64()  # the deployment's permanent key, as boot would have
+
+async def test_connections_feed_is_token_guarded() -> None:
+    async with _client(_app(None, composio=FakeComposioBridge())) as client:
+        assert (await client.get("/api/connections")).status_code == 401
+        assert (await client.post("/api/connections/gmail/connect")).status_code == 401
+        assert (await client.post("/api/connections/acc-1/disconnect")).status_code == 401
 
 
-class FakeExchange:
-    """exchange_code double: records the trade, answers canned (or refuses)."""
-
-    def __init__(self, tokens: TokenSet | None = None, error: OAuthError | None = None) -> None:
-        self.tokens = tokens
-        self.error = error
-        self.calls: list[dict] = []
-
-    async def __call__(self, provider, *, code, client_id, client_secret, redirect):
-        self.calls.append({
-            "provider": provider, "code": code, "client_id": client_id,
-            "client_secret": client_secret, "redirect": redirect,
-        })
-        if self.error is not None:
-            raise self.error
-        return self.tokens
+async def test_connections_feed_is_503_without_a_bridge_wired() -> None:
+    async with _client(_app(None)) as client:  # no composio on state
+        response = await client.get("/api/connections", params={"token": "secret"})
+        assert response.status_code == 503
 
 
-class FakeOAuthStore:
-    def __init__(self) -> None:
-        self.saved: list[tuple[str, TokenSet]] = []
-
-    async def save(self, provider: str, tokens: TokenSet) -> None:
-        self.saved.append((provider, tokens))
-
-
-class FakeResolver:
-    def __init__(self, **values: str) -> None:
-        self.values = values
-
-    async def resolve(self, name: str) -> str | None:
-        return self.values.get(name)
+async def test_connections_feed_answers_empty_and_unconfigured_without_a_key() -> None:
+    app = _app(None, composio=FakeComposioBridge(available=False))
+    async with _client(app) as client:
+        response = await client.get("/api/connections", params={"token": "secret"})
+    assert response.json() == {"configured": False, "connected": [], "toolkits": []}
 
 
-class FakeFinisher:
-    """The loop's finish_oauth double — the card it sends is loop-side."""
-
-    def __init__(self) -> None:
-        self.finished: list[tuple[str, str]] = []
-
-    async def finish_oauth(self, provider: str, app_key: str) -> None:
-        self.finished.append((provider, app_key))
-
-
-def _token_set() -> TokenSet:
-    return TokenSet(
-        access_token="ya29.a", refresh_token="1//r", scopes="gmail.modify",
-        expires_at=datetime.now(UTC) + timedelta(hours=1),
+async def test_connections_feed_lists_accounts_and_the_live_catalog() -> None:
+    bridge = FakeComposioBridge(
+        accounts=[
+            ConnectedApp(id="acc-1", toolkit="gmail", status="ACTIVE", identity="me@x.test")
+        ]
     )
+    async with _client(_app(None, composio=bridge)) as client:
+        response = await client.get("/api/connections", params={"token": "secret"})
+    data = response.json()
+    assert data["configured"] is True
+    assert data["connected"] == [
+        {"id": "acc-1", "toolkit": "gmail", "status": "ACTIVE", "identity": "me@x.test"}
+    ]
+    assert data["toolkits"] == [
+        {"slug": "gmail", "name": "Gmail",
+         "logo": "https://logo.test/gmail.png", "description": "your mail"},
+        {"slug": "github", "name": "GitHub", "logo": "", "description": "your code"},
+    ]
 
 
-def _oauth_app(
-    *, resolver: FakeResolver | None = None,
-    store: FakeOAuthStore | None = None,
-    finisher: FakeFinisher | None = None,
-    settings: Settings | None = None,
-) -> tuple[FastAPI, FakeOAuthStore, FakeFinisher | None]:
-    app = FastAPI()
-    app.include_router(router)
-    app.state.settings = settings or Settings(
-        _env_file=None, api_token="secret", encryption_key=_KEY
+async def test_connect_returns_the_link_and_the_loop_watches_it() -> None:
+    bridge = FakeComposioBridge()
+    agent = FakeAgent()
+    async with _client(_app(None, composio=bridge, agent=agent)) as client:
+        response = await client.post(
+            "/api/connections/gmail/connect", params={"token": "secret"}
+        )
+    assert response.json() == {"redirect_url": "https://hub.example.test/connect/gmail"}
+    assert bridge.authorized == ["gmail"]
+    # a panel-driven connect lands in chat exactly like a chat-driven one
+    assert agent.watched == [("gmail", "req-1")]
+
+
+async def test_connect_without_a_key_is_an_honest_503() -> None:
+    app = _app(None, composio=FakeComposioBridge(available=False))
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/connections/gmail/connect", params={"token": "secret"}
+        )
+    assert response.status_code == 503
+    assert "COMPOSIO_API_KEY" in response.json()["detail"]
+
+
+async def test_disconnect_removes_only_an_account_thats_ours() -> None:
+    bridge = FakeComposioBridge(
+        accounts=[
+            ConnectedApp(id="acc-1", toolkit="gmail", status="ACTIVE", identity="me@x.test")
+        ]
     )
-    store = store or FakeOAuthStore()
-    app.state.oauth_store = store
-    if resolver is not None:
-        app.state.resolver = resolver
-    if finisher is not None:
-        app.state.agent = finisher
-    return app, store, finisher
-
-
-def _state(expiry: float = 9999999999.0) -> str:
-    return OAuthFlow(_KEY)._sign("google", "gmail", "https://r.example/cb", expiry)
-
-
-async def test_the_callback_is_public_and_finishes_the_sign_in(monkeypatch) -> None:
-    exchange = FakeExchange(tokens=_token_set())
-    monkeypatch.setattr("aether.api.routes.exchange_code", exchange)
-    app, store, finisher = _oauth_app(finisher=FakeFinisher())
-    async with _client(app) as client:  # no token anywhere — the link is the proof
-        response = await client.get(
-            "/oauth/callback", params={"code": "4/0Abc", "state": _state()}
+    async with _client(_app(None, composio=bridge)) as client:
+        response = await client.post(
+            "/api/connections/acc-1/disconnect", params={"token": "secret"}
         )
-    assert response.status_code == 200
-    assert "authorized" in response.text
-    # the exchange replays the redirect from the signed state, exactly
-    (call,) = exchange.calls
-    assert call["provider"] == "google"
-    assert call["code"] == "4/0Abc"
-    assert call["redirect"] == "https://r.example/cb"
-    assert [provider for provider, _ in store.saved] == ["google"]
-    assert finisher is not None
-    assert finisher.finished == [("google", "gmail")]  # chat continues by itself
-
-
-async def test_the_callback_reads_client_keys_through_the_resolver(monkeypatch) -> None:
-    exchange = FakeExchange(tokens=_token_set())
-    monkeypatch.setattr("aether.api.routes.exchange_code", exchange)
-    resolver = FakeResolver(GOOGLE_CLIENT_ID="cid-fresh", GOOGLE_CLIENT_SECRET="cs-fresh")
-    app, _, _ = _oauth_app(resolver=resolver)
-    async with _client(app) as client:
-        await client.get("/oauth/callback", params={"code": "4/x", "state": _state()})
-    (call,) = exchange.calls
-    assert call["client_id"] == "cid-fresh"
-    assert call["client_secret"] == "cs-fresh"
-
-
-async def test_a_state_from_somewhere_else_is_refused_plainly(monkeypatch) -> None:
-    exchange = FakeExchange(tokens=_token_set())
-    monkeypatch.setattr("aether.api.routes.exchange_code", exchange)
-    app, store, _ = _oauth_app()
-    stranger = OAuthFlow(generate_key_b64())._sign(
-        "google", "gmail", "https://r.example/cb", 9999999999.0
-    )
-    async with _client(app) as client:
-        response = await client.get(
-            "/oauth/callback", params={"code": "4/x", "state": stranger}
+        missing = await client.post(
+            "/api/connections/acc-9/disconnect", params={"token": "secret"}
         )
-    assert response.status_code == 400
-    assert "fresh one" in response.text  # the honest ask: start again in chat
-    assert exchange.calls == []
-    assert store.saved == []
-
-
-async def test_the_provider_refusal_stores_nothing(monkeypatch) -> None:
-    exchange = FakeExchange(error=OAuthError("the provider refused: invalid_grant"))
-    monkeypatch.setattr("aether.api.routes.exchange_code", exchange)
-    app, store, finisher = _oauth_app(finisher=FakeFinisher())
-    async with _client(app) as client:
-        response = await client.get(
-            "/oauth/callback", params={"code": "4/x", "state": _state()}
-        )
-    assert response.status_code == 400
-    assert "nothing was stored" in response.text
-    assert "invalid_grant" in response.text
-    assert store.saved == []
-    assert finisher is not None and finisher.finished == []
-
-
-async def test_a_refused_or_incomplete_sign_in_gets_a_polite_page() -> None:
-    app, store, _ = _oauth_app()
-    async with _client(app) as client:
-        refused = await client.get("/oauth/callback", params={"error": "access_denied"})
-        empty = await client.get("/oauth/callback")
-    assert refused.status_code == 200  # the tab still closes politely
-    assert empty.status_code == 200
-    assert "Nothing was received" in refused.text
-    assert store.saved == []
-
-
-async def test_no_permanent_key_refuses_to_store_tokens(monkeypatch) -> None:
-    exchange = FakeExchange(tokens=_token_set())
-    monkeypatch.setattr("aether.api.routes.exchange_code", exchange)
-    settings = Settings(_env_file=None, api_token="secret")  # no encryption_key
-    app, store, _ = _oauth_app(settings=settings)
-    async with _client(app) as client:
-        response = await client.get(
-            "/oauth/callback", params={"code": "4/x", "state": _state()}
-        )
-    assert response.status_code == 400
-    assert "AETHER_ENCRYPTION_KEY" in response.text
-    assert exchange.calls == []
-    assert store.saved == []
+    assert response.json() == {"disconnected": "gmail", "id": "acc-1"}
+    assert bridge.disconnected == ["acc-1"]
+    assert missing.status_code == 404

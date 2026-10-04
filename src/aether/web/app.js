@@ -1080,15 +1080,11 @@ const CONNECTOR_META = {
   slack: { iconClass: "slack", subtitle: "Socket mode", permission: "Read, search, draft" },
 };
 
-// icons for the apps the chat walk can connect, keyed by catalog key
+// icons for the chat-surface recipes, keyed by catalog key
 const CATALOG_ICONS = {
   telegram: { imgSrc: `/assets/icon-telegram.png?v=${ASSET_V}` },
   discord: { imgSrc: `/assets/icon-discord.png?v=${ASSET_V}` },
   slack: { iconClass: "slack" },
-  gmail: { imgSrc: `/assets/icon-gmail.png?v=${ASSET_V}` },
-  gcal: { imgSrc: `/assets/icon-calendar.png?v=${ASSET_V}` },
-  github: { imgSrc: `/assets/icon-github.png?v=${ASSET_V}` },
-  notion: { icon: "apps" },
 };
 
 // an MCP server's display face — by the name its config entry carries
@@ -1098,18 +1094,6 @@ const SERVER_FACES = {
   calendar: { imgSrc: `/assets/icon-calendar.png?v=${ASSET_V}`, label: "Calendar" },
   github: { imgSrc: `/assets/icon-github.png?v=${ASSET_V}`, label: "GitHub" },
   notion: { icon: "apps", label: "Notion" },
-};
-
-// an OAuth scope URL → what it lets Aether reach, in the panel's words
-function scopeCovers(scopes) {
-  const covers = [];
-  if (scopes.includes("gmail")) covers.push("mail");
-  if (scopes.includes("calendar")) covers.push("calendar");
-  return covers.length ? `covers ${covers.join(" · ")}` : "signed in";
-}
-
-const OAUTH_FACES = {
-  google: { imgSrc: `/assets/icon-gmail.png?v=${ASSET_V}`, label: "Google sign-in" },
 };
 
 function renderApps() {
@@ -1122,10 +1106,16 @@ function renderApps() {
   else { const box = $("apps-body"); box.innerHTML = ""; box.appendChild(cardWrap(noTokenNotice())); }
 }
 
+// the /api/connections answer — null when no bridge is wired (the hub
+// section says so honestly instead of failing the page)
+let HUB = null;
+let hubQuery = "";
+
 async function loadApps() {
   const box = $("apps-body");
   try {
     const data = await api("/api/settings/apps");
+    try { HUB = await api("/api/connections"); } catch { HUB = null; }
     const cards = [];
     // native messaging surfaces — "on" honestly means the keys are in place
     data.connectors.forEach((c) => {
@@ -1152,16 +1142,6 @@ async function loadApps() {
         badgeClass: !s.enabled ? "idle" : s.connected ? "ok" : "warn",
       }));
     });
-    // OAuth sign-ins — provider and what the stored token covers, never the token
-    (data.oauth || []).forEach((o) => {
-      const face = OAUTH_FACES[o.provider] || { icon: "user", label: `${o.provider} sign-in` };
-      cards.push(integrationCard({
-        icon: face.icon, iconClass: face.iconClass, imgSrc: face.imgSrc,
-        name: face.label, subtitle: "OAuth — tokens stored encrypted, refreshed automatically",
-        permission: "Acts only within the granted scopes", enabled: true,
-        statusText: scopeCovers(o.scopes || ""),
-      }));
-    });
     cards.push(integrationCard({
       imgSrc: `/assets/icon-phone.png?v=${ASSET_V}`, name: "Screen vision", subtitle: "OCR, perception only",
       permission: "Screenshots become memory, never actions", enabled: data.screen_vision_available,
@@ -1180,14 +1160,16 @@ async function loadApps() {
     cards.forEach((c) => grid.appendChild(c));
     box.appendChild(grid);
 
-    // what chat's /apps walk can add — the catalog minus what's connected
+    // the app hub — every app Composio can connect, searchable, with the
+    // connected ones carrying their identity and a disconnect
+    renderHubSection(box);
+
+    // chat surfaces the walk can still switch on — native, tokens in chat
     const connected = new Set();
     data.connectors.forEach((c) => { if (c.enabled) connected.add(c.name); });
-    data.mcp_servers.forEach((s) => { if (s.enabled) connected.add(s.name); });
-    const addable = (data.catalog || []).filter((r) =>
-      r.kind === "messaging" ? !connected.has(r.key) : !connected.has(r.server_name || r.key));
+    const addable = (data.catalog || []).filter((r) => !connected.has(r.key));
     box.appendChild(h("div", { class: "section-label upcoming" },
-      h("span", {}, "Add an app"), h("small", {}, "say /apps in any chat — the walk gives the exact links and takes the keys there")));
+      h("span", {}, "Chat surfaces"), h("small", {}, "talk to Aether there — say /apps in any chat and the walk takes the tokens there")));
     const available = h("div", { class: "available-grid" });
     if (addable.length) {
       addable.forEach((r) => {
@@ -1199,8 +1181,7 @@ async function loadApps() {
       });
     } else {
       available.appendChild(h("div", { class: "empty-state" },
-        h("div", { class: "sub" }, "Every app in the catalog is connected — ",
-          h("a", { href: "#/activity", style: "color:var(--primary)" }, "live activity"), " shows what they see.")));
+        h("div", { class: "sub" }, "Every chat surface is on.")));
     }
     box.appendChild(available);
     mountIcons(box);
@@ -1208,6 +1189,100 @@ async function loadApps() {
     box.innerHTML = "";
     box.appendChild(h("div", { class: "card" }, emptyState("Could not load apps & permissions.", err.message)));
   }
+}
+
+// -- the app hub: Composio's catalog, searchable, connect in one click --------------
+
+function renderHubSection(box) {
+  box.appendChild(h("div", { class: "section-label upcoming" },
+    h("span", {}, "App hub"),
+    h("small", {}, "every app Composio can connect — the sign-in lives at the hub, never here")));
+  if (!HUB) {
+    box.appendChild(h("div", { class: "card" },
+      h("div", { class: "sub", style: "padding:6px 2px" }, "The app hub isn't wired on this instance.")));
+    return;
+  }
+  if (!HUB.configured) {
+    box.appendChild(h("div", { class: "card" },
+      h("div", { class: "sub", style: "padding:6px 2px" },
+        "No hub key yet — say /apps add <app> in chat and paste the COMPOSIO_API_KEY once. Every app after is one click.")));
+    return;
+  }
+  if (HUB.connected.length) {
+    const rows = h("div", { class: "available-grid" });
+    HUB.connected.forEach((a) => rows.appendChild(hubRow(a)));
+    box.appendChild(rows);
+  }
+  const search = h("input", { class: "field hub-search", type: "search", placeholder: "search apps…", value: hubQuery });
+  search.addEventListener("input", () => { hubQuery = search.value; renderHubGrid(); });
+  box.appendChild(search);
+  box.appendChild(h("div", { id: "hub-grid", class: "available-grid" }));
+  renderHubGrid();
+  box.appendChild(h("div", { class: "hub-note" },
+    "Connected means the hub holds the sign-in. What Aether may do with it is the policy gate — reads run free, sends and deletes ask first."));
+}
+
+function renderHubGrid() {
+  const grid = $("hub-grid");
+  if (!grid || !HUB) return;
+  grid.innerHTML = "";
+  const q = hubQuery.trim().toLowerCase();
+  const activeSlugs = new Set(HUB.connected.filter((a) => a.status === "ACTIVE").map((a) => a.toolkit));
+  const shown = HUB.toolkits.filter((t) => !activeSlugs.has(t.slug)
+    && (!q || t.name.toLowerCase().includes(q) || t.slug.toLowerCase().includes(q)));
+  if (!shown.length) {
+    grid.appendChild(h("div", { class: "empty-state" }, h("div", { class: "sub" },
+      q ? `no app matches "${q}"` : "everything the hub offers is connected.")));
+    return;
+  }
+  shown.forEach((t) => grid.appendChild(hubCard(t)));
+}
+
+// an app's face: the hub's logo URL, a letter tile when it has none (or it 404s)
+function hubLogo(toolkit, name) {
+  if (toolkit && toolkit.logo) {
+    const img = h("img", { src: toolkit.logo, alt: "" });
+    img.addEventListener("error", () => img.replaceWith(letterTile(name)));
+    return img;
+  }
+  return letterTile(name);
+}
+
+function letterTile(name) {
+  return h("span", { class: "letter-tile", text: (name || "?").slice(0, 1).toUpperCase() });
+}
+
+function hubCard(t) {
+  return h("div", { class: "available-card" },
+    hubLogo(t, t.name),
+    h("span", {}, h("b", { text: t.name }), h("small", { text: t.description || "connect via the app hub" })),
+    h("button", { class: "btn sm", onclick: () => connectHubApp(t) }, "Connect"));
+}
+
+function hubRow(a) {
+  const t = (HUB.toolkits || []).find((x) => x.slug === a.toolkit);
+  const name = t ? t.name : a.toolkit;
+  return h("div", { class: "available-card" },
+    hubLogo(t, name),
+    h("span", {}, h("b", { text: name }),
+      h("small", { text: a.status === "ACTIVE" ? (a.identity || "connected") : `${a.status.toLowerCase()} — reconnect` })),
+    h("button", { class: "btn sm", onclick: () => disconnectHubApp(a) }, "Disconnect"));
+}
+
+async function connectHubApp(t) {
+  try {
+    const r = await api(`/api/connections/${encodeURIComponent(t.slug)}/connect`, { method: "POST" });
+    window.open(r.redirect_url, "_blank", "noopener");
+    toast(`approve ${t.name} in the tab that just opened — Aether says in chat when it's connected`, "ok");
+  } catch (err) { toast(err.message, "err"); }
+}
+
+async function disconnectHubApp(a) {
+  try {
+    await api(`/api/connections/${encodeURIComponent(a.id)}/disconnect`, { method: "POST" });
+    toast(`disconnected ${a.toolkit}`, "ok");
+    loadApps();
+  } catch (err) { toast(err.message, "err"); }
 }
 
 const TASK_STATUSES = ["all", "pending", "running", "done", "failed"];

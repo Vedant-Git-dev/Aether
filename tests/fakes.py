@@ -610,3 +610,91 @@ class FakeConfigManager:
 
     async def effective(self) -> dict:
         return self.effective_payload
+
+
+class FakeComposioBridge:
+    """ComposioBridge double: scripted catalog, accounts, and authorize
+    answers — no SDK, no network. `wait_and_enable` returns a fresh ACTIVE
+    account (or raises the scripted error); `disconnect` removes only ids
+    the fake holds, the way the real one verifies ownership."""
+
+    def __init__(
+        self,
+        *,
+        toolkits: list | None = None,
+        accounts: list | None = None,
+        available: bool = True,
+        authorize_url: str = "https://hub.example.test/connect",
+        wait_error: Exception | None = None,
+    ) -> None:
+        from aether.composio_bridge import ConnectedApp, ToolkitInfo
+
+        self.toolkit_list = list(
+            toolkits
+            if toolkits is not None
+            else [
+                ToolkitInfo(slug="gmail", name="Gmail", logo="https://logo.test/gmail.png", description="your mail"),
+                ToolkitInfo(slug="github", name="GitHub", logo="", description="your code"),
+            ]
+        )
+        self.account_list = list(accounts or [])
+        self._available = available
+        self._authorize_url = authorize_url
+        self._wait_error = wait_error
+        self.authorized: list[str] = []
+        self.disconnected: list[str] = []
+        self._requests = 0
+
+    async def available(self) -> bool:
+        return self._available
+
+    async def ensure(self) -> bool:
+        return self._available
+
+    async def accounts(self) -> list:
+        return list(self.account_list)
+
+    async def toolkits(self) -> list:
+        return list(self.toolkit_list)
+
+    async def find_toolkits(self, query: str, limit: int = 5) -> list:
+        needle = query.strip().lower()
+        exact = [t for t in self.toolkit_list if needle in (t.slug.lower(), t.name.lower())]
+        if exact:
+            return exact[:1]
+        return [
+            t
+            for t in self.toolkit_list
+            if needle in t.slug.lower() or needle in t.name.lower()
+        ][:limit]
+
+    async def authorize(self, toolkit: str) -> tuple[str, str]:
+        from aether.composio_bridge import ComposioNotConfigured
+
+        if not self._available:
+            raise ComposioNotConfigured("no key in the fake")
+        self.authorized.append(toolkit)
+        self._requests += 1
+        return f"req-{self._requests}", f"{self._authorize_url}/{toolkit}"
+
+    async def wait_and_enable(self, toolkit: str, request_id: str, timeout: float = 0):
+        from aether.composio_bridge import ConnectedApp
+
+        if self._wait_error is not None:
+            raise self._wait_error
+        app = ConnectedApp(
+            id=f"acc-{toolkit}",
+            toolkit=toolkit,
+            status="ACTIVE",
+            identity=f"{toolkit}@example.test",
+        )
+        self.account_list.append(app)
+        return app
+
+    async def disconnect(self, account_id: str):
+        for app in self.account_list:
+            if app.id == account_id:
+                self.account_list.remove(app)
+                self.disconnected.append(account_id)
+                return app
+        return None

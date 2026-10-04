@@ -54,6 +54,10 @@ _ACTION_PHRASES = {
     "slack": "sending a message",
     "whatsapp": "sending a message",
     "calendar": "a calendar action",
+    "googlecalendar": "a calendar action",
+    "github": "a github action",
+    "notion": "a notion update",
+    "linear": "a linear action",
     "payments": "a payment",
 }
 
@@ -79,12 +83,16 @@ def _plain_action(name: str) -> str:
     """Plain words for a tool call, the way the user would say it."""
     server, sep, tool = name.partition("__")
     if sep:
+        lowered = tool.lower()
+        # a composio tool carries its toolkit as the name's prefix —
+        # composio__GMAIL_SEND_EMAIL reads as gmail, never as "composio"
+        app = lowered.split("_", 1)[0] if server == "composio" else server
         # a read-like tool must never read as a send — "I went ahead with
         # sending an email" about listing mail would be a lie
-        read_like = ("list", "search", "get", "read", "find", "check", "query")
-        if any(tool.startswith(verb) for verb in read_like):
-            return f"checking {server}"
-        return _ACTION_PHRASES.get(server, f"an action in {server}")
+        read_like = ("list", "search", "get", "read", "find", "check", "query", "fetch")
+        if any(lowered.startswith(verb) for verb in read_like):
+            return f"checking {app}"
+        return _ACTION_PHRASES.get(app, f"an action in {app}")
     return _NATIVE_PHRASES.get(name, "an internal step")
 
 

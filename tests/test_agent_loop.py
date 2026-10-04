@@ -8,6 +8,7 @@ become observations; configured source polls run on schedule.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -15,6 +16,7 @@ from fakes import (
     FakeAgentSettings,
     FakeApprovals,
     FakeAudit,
+    FakeComposioBridge,
     FakeConfigManager,
     FakeContextBuilder,
     FakeEntities,
@@ -41,6 +43,7 @@ from aether.agent.tools import register_native_tools
 from aether.authz.approvals import APPROVED, DENIED
 from aether.authz.audit import ChainVerification
 from aether.authz.policy import Policy
+from aether.composio_bridge import SERVER_ENTRY
 from aether.config import (
     AgentConfig,
     AppConfig,
@@ -1338,18 +1341,8 @@ def test_config_command_parser_shapes() -> None:
 # /apps — the app front door, and the promises it keeps (no model, no ingest)
 # ---------------------------------------------------------------------------
 
-_APPS_MENU = "1 — add an app    (or \"done\")"
-_ADD_MENU = (
-    "add which one?\n"
-    "1 — telegram — talk to me there\n"
-    "2 — discord — talk to me there\n"
-    "3 — slack — talk to me there\n"
-    "4 — gmail — my inbox: read threads, write drafts, sort labels\n"
-    "5 — google calendar — my schedule: events and invites\n"
-    "6 — github — my code: repos, issues, pull requests\n"
-    "7 — notion — my notes: pages and databases\n"
-    "8 — something else — any app that speaks MCP"
-)
+_ADD_HINT = "add one with /apps add <name> — like /apps add gmail"
+_GATE_LINE = "the gate: reads run free — sends, deletes and anything new ask first."
 
 
 class FakeMcpHost:
@@ -1375,7 +1368,12 @@ async def test_apps_opens_the_walk_without_waking_the_model() -> None:
     kit.loop.submit_message(_msg("/apps"))
     await kit.loop._tick()
 
-    assert kit.connector.sent == [f"📱 your apps: nothing connected yet.\n{_APPS_MENU}"]
+    # bare /apps is the status, the gate line, and the add hint — no
+    # question is outstanding, so nothing intercepts the next message
+    assert kit.connector.sent == [
+        f"📱 your apps: nothing connected yet.\n{_GATE_LINE}\n{_ADD_HINT}"
+    ]
+    assert kit.loop._apps_walk is None
     assert provider.calls == []
     assert kit.events.ingested == []  # a read never becomes memory
     assert kit.traces.created == []
@@ -1413,7 +1411,7 @@ async def test_the_apps_status_is_honest_about_both_halves(tmp_path) -> None:
         "· discord — on — no token yet\n"
         "· mail — connected · 1 action\n"
         "· calendar — still connecting — I'll tell you the moment it's up\n"
-        f"{_APPS_MENU}"
+        f"{_GATE_LINE}\n{_ADD_HINT}"
     )]
     assert provider.calls == []
     assert kit.events.ingested == []
@@ -1421,13 +1419,20 @@ async def test_the_apps_status_is_honest_about_both_halves(tmp_path) -> None:
 
 class FakeSecretStore:
     """SecretStore double: takes the paste, keeps it by name — the loop's
-    store call is the only place the value ever lands."""
+    store call is the only place the value ever lands. `get`/`names` are
+    the resolver's read side: a stored paste is immediately known."""
 
     def __init__(self) -> None:
         self.saved: dict[str, str] = {}
 
     async def set(self, name: str, value: str) -> None:
         self.saved[name] = value
+
+    async def get(self, name: str) -> str | None:
+        return self.saved.get(name)
+
+    async def names(self) -> set[str]:
+        return set(self.saved)
 
 
 async def test_a_pasted_key_connects_directly_and_never_reaches_the_model(
@@ -1439,47 +1444,39 @@ async def test_a_pasted_key_connects_directly_and_never_reaches_the_model(
     applies the connect directly — origin "walk" through the same gate."""
     provider = FakeProvider([Turn(text="done")])  # only the post-walk chat turn
     manager = FakeConfigManager(
-        set_reply="mcp_servers updated — 1 entries now (config.yaml has 0)."
+        set_reply="messaging.telegram.enabled set to true (config.yaml says false)."
     )
     kit = LoopKit(provider, config_manager=manager)
     kit.loop._resolver = EnvResolver(tmp_path / ".env")  # empty .env: nothing set
     store = FakeSecretStore()
     kit.loop._secret_store = store
 
-    kit.loop.submit_message(_msg("/apps"))
+    kit.loop.submit_message(_msg("/apps add telegram"))
     await kit.loop._tick()
-    for answer in ("1", "6", "ghp_paste_me_123"):  # menu → github → the paste
-        kit.loop.submit_message(_msg(answer))
-        await kit.loop._tick()
+    kit.loop.submit_message(_msg("123:AAbbCC"))  # the paste
+    await kit.loop._tick()
 
     # consumed before ingest: no event, no model turn, never echoed back
     assert kit.events.ingested == []
     assert provider.calls == []
-    assert not any("ghp_paste_me_123" in text for text in kit.connector.sent)
+    assert not any("123:AAbbCC" in text for text in kit.connector.sent)
 
     # it went to the encrypted store, and the audit row names it only
-    assert store.saved == {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_paste_me_123"}
+    assert store.saved == {"TELEGRAM_BOT_TOKEN": "123:AAbbCC"}
     stored = [e for e in kit.audit.entries if e["tool_name"] == "store_app_secret"][-1]
     assert stored["actor"] == "owner"
     assert stored["tool_name"] == "store_app_secret"
     assert stored["decision"] == "allow"
-    assert stored["params"] == {"name": "GITHUB_PERSONAL_ACCESS_TOKEN", "app": "github"}
+    assert stored["params"] == {"name": "TELEGRAM_BOT_TOKEN", "app": "telegram"}
     assert stored["outcome"] == "stored encrypted — value never recorded"
-    assert "ghp_paste_me_123" not in str(kit.audit.entries)
+    assert "123:AAbbCC" not in str(kit.audit.entries)
 
     # the pick-and-paste was the approval: applied, not parked
     assert kit.approvals.created == []
     assert manager.set_calls == [{
-        "op": "add",
-        "path": "mcp_servers",
-        "value": {
-            "name": "github",
-            "transport": {
-                "type": "http",
-                "url": "https://api.githubcopilot.com/mcp/",
-                "headers": {"Authorization": "Bearer $GITHUB_PERSONAL_ACCESS_TOKEN"},
-            },
-        },
+        "op": "set",
+        "path": "messaging.telegram.enabled",
+        "value": True,
         "source": "tool",
     }]
     applied = kit.audit.entries[-1]
@@ -1487,8 +1484,8 @@ async def test_a_pasted_key_connects_directly_and_never_reaches_the_model(
     assert applied["decision"] == "allow"
     assert applied["rules_matched"] == "builtin:walk-connect"
     assert kit.connector.sent[-1] == (
-        "stored — connecting github now.\n"
-        "mcp_servers updated — 1 entries now (config.yaml has 0)."
+        "stored — switching telegram on now.\n"
+        "messaging.telegram.enabled set to true (config.yaml says false)."
     )
     assert kit.loop._apps_walk is None  # done — nothing is waiting
 
@@ -1504,13 +1501,12 @@ async def test_an_unwired_store_refuses_a_paste_honestly(tmp_path) -> None:
     provider = FakeProvider([])
     kit = LoopKit(provider, config_manager=FakeConfigManager())
     kit.loop._resolver = EnvResolver(tmp_path / ".env")
-    kit.loop.submit_message(_msg("/apps"))
+    kit.loop.submit_message(_msg("/apps add telegram"))
     await kit.loop._tick()
-    for answer in ("1", "6", "ghp_paste_me_123"):
-        kit.loop.submit_message(_msg(answer))
-        await kit.loop._tick()
+    kit.loop.submit_message(_msg("123:AAbbCC"))
+    await kit.loop._tick()
     assert kit.connector.sent[-1] == (
-        "that didn't work — nothing was stored. add GITHUB_PERSONAL_ACCESS_TOKEN "
+        "that didn't work — nothing was stored. add TELEGRAM_BOT_TOKEN "
         'to .env and reply "done", or paste it again.'
     )
     assert kit.loop._apps_walk is not None  # still waiting — nothing was lost
@@ -1530,30 +1526,20 @@ async def test_a_user_rule_still_parks_a_walk_connect_and_chat_flows_again(
         config_manager=manager,
     )
     env_file = tmp_path / ".env"
-    env_file.write_text("GITHUB_PERSONAL_ACCESS_TOKEN=ghp_present\n")
+    env_file.write_text("TELEGRAM_BOT_TOKEN=123:present\n")
     kit.loop._resolver = EnvResolver(env_file)
 
-    kit.loop.submit_message(_msg("/apps"))
+    kit.loop.submit_message(_msg("/apps add telegram"))
     await kit.loop._tick()
-    for answer in ("1", "6"):  # menu → github → the key's already in .env
-        kit.loop.submit_message(_msg(answer))
-        await kit.loop._tick()
 
     # the walk's write went through the same gate — and the user's rule won
     assert kit.approvals.created[-1].params == {
-        "op": "add",
-        "path": "mcp_servers",
-        "value": {
-            "name": "github",
-            "transport": {
-                "type": "http",
-                "url": "https://api.githubcopilot.com/mcp/",
-                "headers": {"Authorization": "Bearer $GITHUB_PERSONAL_ACCESS_TOKEN"},
-            },
-        },
+        "op": "set",
+        "path": "messaging.telegram.enabled",
+        "value": True,
     }
     note = kit.connector.sent[-1]
-    assert note.startswith("the key's already there — connecting github now.")
+    assert note.startswith("the key's already there — connecting telegram now.")
     assert "one-tap approval" in note  # the card, relayed by the walk verbatim
     assert manager.set_calls == []  # parked, not applied — the user's rule
     assert provider.calls == []  # the whole walk: no model, no ingest
@@ -1566,36 +1552,39 @@ async def test_a_user_rule_still_parks_a_walk_connect_and_chat_flows_again(
 
 
 async def test_bare_apps_and_bare_config_replace_each_other() -> None:
-    provider = FakeProvider([])
+    provider = FakeProvider([Turn(text="ok")])
     kit = LoopKit(provider, config_manager=FakeConfigManager())
 
-    # a live config walk is replaced by bare /apps
+    # bare /apps is just the status: it replaces a live config walk and
+    # leaves nothing waiting — the next message is normal chat
     kit.loop.submit_message(_msg("/config"))
     await kit.loop._tick()
     assert "let's set me up" in kit.connector.sent[-1]
     kit.loop.submit_message(_msg("/apps"))
     await kit.loop._tick()
-    kit.loop.submit_message(_msg("1"))
+    assert kit.connector.sent[-1].endswith(_ADD_HINT)
+    assert kit.loop._apps_walk is None
+    kit.loop.submit_message(_msg("1"))  # no menu is waiting — this is chat
     await kit.loop._tick()
-    assert kit.connector.sent[-1] == _ADD_MENU  # the apps catalog answered, not the config areas
+    assert len(provider.calls) == 1
 
-    # and a live apps walk is replaced by bare /config
+    # and a live apps-add walk is replaced by bare /config
+    kit.loop.submit_message(_msg("/apps add telegram"))
+    await kit.loop._tick()
+    assert kit.connector.sent[-1].startswith("telegram — talk to me there.")
     kit.loop.submit_message(_msg("/config"))
     await kit.loop._tick()
     kit.loop.submit_message(_msg("2"))
     await kit.loop._tick()
     assert kit.connector.sent[-1].startswith("which area?")
-    assert provider.calls == []
 
 
 async def test_a_command_mid_apps_walk_ends_it_and_falls_through() -> None:
     provider = FakeProvider([Turn(text="done"), Turn(text="done")])
     kit = LoopKit(provider, config_manager=FakeConfigManager())
-    kit.loop.submit_message(_msg("/apps"))
+    kit.loop.submit_message(_msg("/apps add telegram"))
     await kit.loop._tick()
-    kit.loop.submit_message(_msg("1"))
-    await kit.loop._tick()
-    assert kit.connector.sent[-1] == _ADD_MENU
+    assert kit.connector.sent[-1].startswith("telegram — talk to me there.")
 
     # a slash command ends the walk quietly, and the message itself is chat
     kit.loop.submit_message(_msg("/remind me to water the plants"))
@@ -1603,7 +1592,7 @@ async def test_a_command_mid_apps_walk_ends_it_and_falls_through() -> None:
     assert len(provider.calls) == 1
     assert kit.events.ingested[-1]["payload"]["text"] == "/remind me to water the plants"
 
-    # the walk is gone: a later "1" reaches the model, not the menu
+    # the walk is gone: a later "1" reaches the model, not the walk
     kit.loop.submit_message(_msg("1"))
     await kit.loop._tick()
     assert len(provider.calls) == 2
@@ -1674,61 +1663,80 @@ async def test_a_tool_that_vanished_leaves_the_namespace() -> None:
     assert kit.connector.sent == []  # quiet — nothing was gained
 
 
-async def test_finish_oauth_applies_the_connect_directly() -> None:
-    """The browser click was the approval: the connect rides origin "oauth"
-    through the same executor and applies directly — same gate, same
-    audit, no park card."""
+async def test_the_hub_connect_announces_and_asks_the_gates_question(tmp_path) -> None:
+    """The hub transcript end to end: /apps add gmail pastes the hub key
+    once, serves the Connect Link, and the out-of-band waiter announces
+    the connect and asks the gate's question. 'Everything asks first'
+    writes its authz rule through the same executor — and authz being a
+    security root, it parks for the one-tap even from a walk."""
     provider = FakeProvider([])
-    manager = FakeConfigManager(set_reply="mcp_servers updated — 1 entries now.")
+    manager = FakeConfigManager(set_reply="applied.")
     kit = LoopKit(provider, config_manager=manager)
-    kit.loop._apps_walk = "a live walk"  # paused at the consent link
+    store = FakeSecretStore()
+    kit.loop._resolver = EnvResolver(tmp_path / ".env", secrets=store)  # no key yet
+    kit.loop._secret_store = store
+    kit.loop._composio = FakeComposioBridge()
 
-    await kit.loop.finish_oauth("google", "gmail")
+    kit.loop.submit_message(_msg("/apps add gmail"))
+    await kit.loop._tick()
+    # no hub key yet — the one-time paste comes before any link
+    assert "one key needed (one time — it connects every app)" in kit.connector.sent[-1]
 
-    assert kit.loop._apps_walk is None  # the pause is cleared out of band
-    assert kit.approvals.created == []  # applied, not parked
+    kit.loop.submit_message(_msg("csk-123"))
+    await kit.loop._tick()
+    assert store.saved == {"COMPOSIO_API_KEY": "csk-123"}
+    link = kit.connector.sent[-1]
+    assert link.startswith("Gmail — last step, let me in:")
+    assert "https://hub.example.test/connect/gmail" in link
+    assert kit.events.ingested == []  # the paste never became memory
+    assert provider.calls == []  # and the model never woke
+    # the first connect pins the composio server entry, origin "walk"
     assert manager.set_calls == [{
         "op": "add",
         "path": "mcp_servers",
-        "value": {
-            "name": "gmail",
-            "transport": {
-                "type": "http",
-                "url": "https://gmailmcp.googleapis.com/mcp",
-                "headers": {"Authorization": "Bearer $GOOGLE_OAUTH_ACCESS_TOKEN"},
-            },
-        },
+        "value": dict(SERVER_ENTRY),
         "source": "tool",
     }]
-    row = kit.audit.entries[-1]
-    assert row["tool_name"] == "set_config"
-    assert row["decision"] == "allow"
-    assert row["rules_matched"] == "builtin:oauth-consent"
-    assert kit.connector.sent == [(
-        "✅ Google authorized — adding gmail now.\n"
-        "mcp_servers updated — 1 entries now."
-    )]
-    assert provider.calls == []
+
+    # the click lands — the waiter announces and asks the gate's question
+    while kit.loop._connect_waits:
+        await asyncio.wait(kit.loop._connect_waits)
+    announcement = kit.connector.sent[-1]
+    assert announcement.startswith("✅ gmail connected — gmail@example.test.")
+    assert "what may I do with gmail?" in announcement
+
+    # "everything asks first" → an authz rule — which parks, honestly relayed
+    kit.loop.submit_message(_msg("2"))
+    await kit.loop._tick()
+    assert kit.approvals.created[-1].params == {
+        "op": "add",
+        "path": "authz.rules",
+        "value": {
+            "tool_pattern": "composio__GMAIL_",
+            "decision": "approve",
+            "note": "gmail connected in chat — everything asks first",
+        },
+    }
+    assert "one-tap approval" in kit.connector.sent[-1]
+    assert kit.loop._apps_walk is None  # done — nothing is waiting
 
 
-async def test_finish_oauth_with_a_user_hold_still_shows_the_card() -> None:
-    """A user rule that forces the hold wins over the origin — the callback
-    relays the familiar card, stake line and all."""
-    provider = FakeProvider([])
-    kit = LoopKit(
-        provider,
-        rules=[AuthzRule(tool_pattern=r"set_config", decision="approve")],
-        config_manager=FakeConfigManager(),
+async def test_a_failed_connect_says_so_in_chat(tmp_path) -> None:
+    """A link that never gets its click doesn't hang the walk or stay
+    silent — the waiter's honest line lands in chat."""
+    kit = LoopKit(None)
+    store = FakeSecretStore()
+    kit.loop._resolver = EnvResolver(tmp_path / ".env", secrets=store)
+    kit.loop._secret_store = store
+    kit.loop._composio = FakeComposioBridge(wait_error=TimeoutError("expired"))
+
+    kit.loop.submit_message(_msg("/apps add gmail"))
+    await kit.loop._tick()
+    kit.loop.submit_message(_msg("csk-123"))
+    await kit.loop._tick()
+    while kit.loop._connect_waits:
+        await asyncio.wait(kit.loop._connect_waits)
+    assert kit.connector.sent[-1] == (
+        "⚠️ the gmail connection didn't finish — the link may have expired. "
+        "/apps add gmail to try again."
     )
-    await kit.loop.finish_oauth("google", "gmail")
-    approval = kit.approvals.created[-1]
-    note = kit.connector.sent[-1]
-    assert note.startswith("✅ Google authorized — adding gmail now.")
-    assert "it touches your mail, so it needs your one-tap approval." in note
-    assert f"one-tap approval (#{approval.id})" in note
-
-
-async def test_finish_oauth_for_an_unknown_app_keeps_the_tokens_and_says_nothing() -> None:
-    kit = LoopKit(None, config_manager=FakeConfigManager())
-    await kit.loop.finish_oauth("google", "not-a-known-app")
-    assert kit.connector.sent == []  # nothing was added; chat wasn't disturbed

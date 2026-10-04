@@ -1,65 +1,52 @@
 """The guided /apps walk — the state machine alone, with fake callbacks.
 
-These pin the transcripts from the design (they are the spec): every
-menu, every recipe with its links and its paste ask, the one-at-a-time
-token queues, the honest "not yet", the BYOA credential walk, the union
-consent for a second Google app — and that each completed walk hands the
-right (op, path, value, origin) to the loop's shared applier, origin
-"walk" and all. No recorded reply ever carries a value: the save double
-takes it, and every transcript asserts names only. The gate's half —
-that "walk" really does allow through the real policy — lives in
-test_agent_loop.
+These pin the transcripts from the design (they are the spec): bare
+/apps is the status and the add hint, /apps add <name> resolves a chat
+surface's recipe first, then the app hub's live catalog (exact, fuzzy
+with a numbered pick, or nothing → the generic walk offered); the hub's
+connect is a one-time COMPOSIO_API_KEY paste and then a hosted link,
+waited out of band; and the walk's last question is the gate's — what
+the app may do — with the stricter answers writing an authz rule
+through the same applier, origin "walk" and all. No recorded reply ever
+carries a value: the save double takes it, and every transcript asserts
+names only. The gate's half — that "walk" really does allow through the
+real policy — lives in test_agent_loop.
 """
 
 from __future__ import annotations
 
 from aether.agent.apps_wizard import AppsWizard
 
-_MENU = "1 — add an app    (or \"done\")"
-_MENU_NUDGE = "reply 1 to add an app — or \"done\""
-_ADD_MENU = (
-    "add which one?\n"
-    "1 — telegram — talk to me there\n"
-    "2 — discord — talk to me there\n"
-    "3 — slack — talk to me there\n"
-    "4 — gmail — my inbox: read threads, write drafts, sort labels\n"
-    "5 — google calendar — my schedule: events and invites\n"
-    "6 — github — my code: repos, issues, pull requests\n"
-    "7 — notion — my notes: pages and databases\n"
-    "8 — something else — any app that speaks MCP"
+_ADD_HINT = "add one with /apps add <name> — like /apps add gmail"
+_GOODBYE = "ok — anytime. /apps to start again."
+_LINK_WAITING = (
+    "still waiting — open the link I sent and approve it there; "
+    "say stop to give up."
 )
-_GITHUB_RECIPE = (
-    "github — my code: repos, issues, pull requests.\n"
-    "one key needed:\n"
-    "1 — open https://github.com/settings/personal-access-tokens/new and "
-    "create a token (repo, issues and pull requests permissions are enough)\n"
-    "paste the token here — I'll take it from there."
-)
-_GITHUB_SERVER = {
-    "name": "github",
-    "transport": {
-        "type": "http",
-        "url": "https://api.githubcopilot.com/mcp/",
-        "headers": {"Authorization": "Bearer $GITHUB_PERSONAL_ACCESS_TOKEN"},
-    },
-}
 _TELEGRAM_RECIPE = (
     "telegram — talk to me there.\n"
     "one token needed:\n"
     "1 — open https://t.me/BotFather and send it /newbot — it hands you a token\n"
     "paste the token here — I'll take it from there."
 )
-_ADDRESS_ASK = (
-    "this one signs in with Google — first, what's this deployment's "
-    "public address? (the address you open this chat at, like "
-    "https://your-app.onrender.com)"
+_SLACK_RECIPE = (
+    "slack — talk to me there.\n"
+    "two tokens needed:\n"
+    "1 — open https://api.slack.com/apps and create an app — under OAuth & "
+    "Permissions, Install to Workspace copies the bot token (xoxb…)\n"
+    "2 — under Basic Info, App-Level Tokens generates the app token "
+    "(xapp…) with the connections:write scope\n"
+    "paste the bot token (xoxb…) here — I'll take it from there."
+)
+_HUB_KEY_RECIPE = (
+    "the app hub — one key connects every app in the catalog.\n"
+    "one key needed (one time — it connects every app):\n"
+    "1 — open https://platform.composio.dev and sign in — under "
+    "Settings → API Keys, copy your project key\n"
+    "paste the key here — I'll take it from there."
 )
 # the loop's executor reply, relayed verbatim — the honest verdict is the
 # applier's own words, the walk only adds its head line
-_APPLY_GITHUB = (
-    "mcp_servers updated — 1 entries now (config.yaml has 0). — github "
-    "connected · 24 actions in my vocabulary"
-)
 _APPLY_TELEGRAM = (
     "messaging.telegram.enabled set to true (config.yaml says false). — "
     "telegram is starting up"
@@ -77,15 +64,6 @@ _PARK_CARD = (
     "🔒 that one's security-shaped — held for your one-tap approval (#21). "
     "Tap approve and it's done."
 )
-_GOODBYE = "ok — anytime. /apps to start again."
-_WAITING = (
-    "still waiting on Google — open the link I sent and approve it there; "
-    "say stop to give up."
-)
-_KEY_NEEDED = (
-    "google sign-in needs AETHER_ENCRYPTION_KEY set in .env — a permanent "
-    "one, since the tokens are stored encrypted. add it, then /apps again."
-)
 
 _UNSET = object()
 
@@ -94,7 +72,7 @@ class FakeApplier:
     """The loop's _apply_config double: records the handoff (origin and
     all), answers canned — the executor's own reply, whatever it is."""
 
-    def __init__(self, reply: str = _APPLY_GITHUB) -> None:
+    def __init__(self, reply: str = _APPLY_TELEGRAM) -> None:
         self.calls: list[tuple[str, str, object, str | None]] = []
         self.reply = reply
 
@@ -105,59 +83,66 @@ class FakeApplier:
         return self.reply
 
 
-class FakeConsent:
-    """consent_url(app_key, redirect) — records both, answers canned."""
-
-    def __init__(self, url: str | None = "https://accounts.test/consent?x=1") -> None:
-        self.url = url
-        self.calls: list[tuple[str, str]] = []
-
-    async def __call__(self, app_key: str, redirect: str) -> str | None:
-        self.calls.append((app_key, redirect))
-        return self.url
-
-
 class FakeSave:
     """save_secret(name, value, app) — records the handoff, answers canned.
-    The value is kept here so tests can pin stripping; no reply ever
-    carries it back — that's the production contract, pinned in
-    test_agent_loop."""
+    A stored name joins the env set, like the real store feeding the
+    resolver; the value is kept here so tests can pin stripping — no
+    reply ever carries it back."""
 
-    def __init__(self, ok: bool = True) -> None:
+    def __init__(self, ok: bool = True, env: set[str] | None = None) -> None:
         self.ok = ok
+        self.env = env
         self.calls: list[tuple[str, str, str]] = []  # (name, value, app)
 
     async def __call__(self, name: str, value: str, app: str) -> bool:
         self.calls.append((name, value, app))
+        if self.ok and self.env is not None:
+            self.env.add(name)
         return self.ok
 
 
-class FakeOAuthState:
-    """oauth_state(provider, scopes) — covers | partial | none."""
+class FakeToolkits:
+    """find_toolkits(query) — the hub catalog double: records the ask,
+    answers a scripted list of (slug, name) matches."""
 
-    def __init__(self, state: str = "none") -> None:
-        self.state = state
-        self.calls: list[tuple[str, str]] = []
+    def __init__(self, matches: list[tuple[str, str]] | None = None) -> None:
+        self.matches = list(matches) if matches else []
+        self.calls: list[str] = []
 
-    async def __call__(self, provider: str, scopes: str) -> str:
-        self.calls.append((provider, scopes))
-        return self.state
+    async def __call__(self, query: str) -> list[tuple[str, str]]:
+        self.calls.append(query)
+        return list(self.matches)
+
+
+class FakeAuthorize:
+    """authorize(toolkit) — the hub's connect-link double: records the
+    toolkit, answers (request id, link), or None when the hub said no."""
+
+    def __init__(self, url: str | None = "https://hub.example.test/connect") -> None:
+        self.url = url
+        self.calls: list[str] = []
+
+    async def __call__(self, toolkit: str) -> tuple[str, str] | None:
+        self.calls.append(toolkit)
+        if self.url is None:
+            return None
+        return f"req-{toolkit}", f"{self.url}/{toolkit}"
 
 
 def _wizard(
     *,
     status: str = "📱 your apps: nothing connected yet.",
     env: set[str] | None = None,
-    redirect: str = "",
-    consent: FakeConsent | None = None,
-    oauth_state: FakeOAuthState | None = None,
     save: FakeSave | None = None,
     applier: FakeApplier | None = None,
-) -> tuple[AppsWizard, FakeApplier, FakeConsent, FakeSave, set[str]]:
+    toolkits: FakeToolkits | None = None,
+    authorize: FakeAuthorize | None = None,
+) -> tuple[AppsWizard, FakeApplier, FakeSave, set[str], FakeToolkits, FakeAuthorize]:
     env = set() if env is None else env
     applier = applier or FakeApplier()
-    consent = consent or FakeConsent()
-    save = save or FakeSave()
+    save = save or FakeSave(env=env)
+    toolkits = toolkits or FakeToolkits([("gmail", "Gmail")])
+    authorize = authorize or FakeAuthorize()
 
     async def env_names() -> set[str]:
         return set(env)
@@ -170,145 +155,58 @@ def _wizard(
         status=status_fn,
         env_names=env_names,
         save_secret=save,
-        consent_url=consent,
-        oauth_state=oauth_state or FakeOAuthState(),
-        redirect=redirect,
+        find_toolkits=toolkits,
+        authorize=authorize,
     )
-    return wizard, applier, consent, save, env
+    return wizard, applier, save, env, toolkits, authorize
 
 
 async def _say(wizard: AppsWizard, *texts: str) -> list[str]:
     return [reply for text in texts if (reply := await wizard.handle(text)) is not None]
 
 
-# -- the opening and the pick menus ----------------------------------------------
+# -- the opening: status, and the name ask ----------------------------------------
 
 
-async def test_start_opens_with_the_status_and_the_menu() -> None:
-    wizard, applier, _, _, _ = _wizard()
-    assert await wizard.start() == f"📱 your apps: nothing connected yet.\n{_MENU}"
-    assert wizard.alive
+async def test_bare_apps_is_the_status_and_the_hint() -> None:
+    wizard, applier, *_ = _wizard()
+    assert await wizard.start() == f"📱 your apps: nothing connected yet.\n{_ADD_HINT}"
+    assert not wizard.alive  # no question is outstanding — nothing intercepts
     assert applier.calls == []
 
 
-async def test_the_add_menu_lists_the_catalog_and_the_generic_option() -> None:
-    wizard, _, _, _, _ = _wizard()
-    await wizard.start()
-    (reply,) = await _say(wizard, "1")
-    assert reply == _ADD_MENU
-    assert wizard.alive  # the pick is still ahead
+async def test_apps_add_without_a_name_asks_for_one() -> None:
+    wizard, *_ = _wizard()
+    assert await wizard.start_add("") == "which app? say the name — like gmail"
+    assert wizard.alive
+    (recipe,) = await _say(wizard, "telegram")
+    assert recipe == _TELEGRAM_RECIPE
 
 
-async def test_menu_answers_that_are_not_picks_get_the_nudge() -> None:
-    wizard, _, _, _, _ = _wizard()
-    await wizard.start()
-    assert await _say(wizard, "yes", "7") == [_MENU_NUDGE, _MENU_NUDGE]
-    assert wizard.alive  # a nudge never ends the walk
+async def test_a_sentence_at_the_name_ask_steps_aside() -> None:
+    wizard, *_ = _wizard()
+    await wizard.start_add("")
+    assert await _say(wizard, "hey can you just add github for me please") == []
+    assert not wizard.alive  # nothing is waiting; the message is normal chat
 
 
-# -- a pasteable-key app: the github transcript ----------------------------------
+# -- a chat surface: the recipe, the paste, the toggle ------------------------------
 
 
-async def test_the_github_walk_pastes_the_key_and_connects_directly() -> None:
-    wizard, applier, _, save, _ = _wizard()
-    await wizard.start()
-    _menu, recipe = await _say(wizard, "1", "6")
-    assert _menu == _ADD_MENU
-    assert recipe == _GITHUB_RECIPE
-
-    (applied,) = await _say(wizard, "ghp_abc123")
-    assert applied == f"stored — connecting github now.\n{_APPLY_GITHUB}"
-    assert save.calls == [("GITHUB_PERSONAL_ACCESS_TOKEN", "ghp_abc123", "github")]
+async def test_the_telegram_walk_pastes_and_switches_on() -> None:
+    wizard, applier, save, *_ = _wizard()
+    assert await wizard.start_add("telegram") == _TELEGRAM_RECIPE
+    (applied,) = await _say(wizard, "123:AAbbCC")
+    assert applied == f"stored — switching telegram on now.\n{_APPLY_TELEGRAM}"
+    assert save.calls == [("TELEGRAM_BOT_TOKEN", "123:AAbbCC", "telegram")]
     # the pick-and-paste was the approval — the connect rides origin "walk"
-    assert applier.calls == [("add", "mcp_servers", _GITHUB_SERVER, "walk")]
+    assert applier.calls == [("set", "messaging.telegram.enabled", True, "walk")]
     assert not wizard.alive
-
-
-async def test_done_before_the_key_checks_the_env_honestly() -> None:
-    wizard, applier, _, save, env = _wizard()
-    await wizard.start()
-    await _say(wizard, "1", "6")
-    (not_yet,) = await _say(wizard, "done")
-    assert not_yet == (
-        "not yet — GITHUB_PERSONAL_ACCESS_TOKEN isn't set. paste it here, "
-        "or add to .env and reply \"done\"."
-    )
-    assert wizard.alive
-    assert save.calls == []
-
-    # .env by hand is still a way in — done checks honestly and connects
-    env.add("GITHUB_PERSONAL_ACCESS_TOKEN")
-    (applied,) = await _say(wizard, "done")
-    assert applied == f"the key's there — connecting github now.\n{_APPLY_GITHUB}"
-    assert applier.calls == [("add", "mcp_servers", _GITHUB_SERVER, "walk")]
-    assert not wizard.alive
-
-
-async def test_keys_already_set_connect_without_asking_again() -> None:
-    wizard, applier, _, save, _ = _wizard(env={"GITHUB_PERSONAL_ACCESS_TOKEN"})
-    await wizard.start()
-    _menu, applied = await _say(wizard, "1", "6")
-    assert applied == f"the key's already there — connecting github now.\n{_APPLY_GITHUB}"
-    assert save.calls == []  # nothing was asked for — it was all there
-    assert applier.calls == [("add", "mcp_servers", _GITHUB_SERVER, "walk")]
-    assert not wizard.alive
-
-
-async def test_a_mis_paste_is_reasked_and_a_menu_number_refused() -> None:
-    wizard, applier, _, save, _ = _wizard()
-    await wizard.start()
-    await _say(wizard, "1", "6")
-    # two words is a mis-paste, not a changed subject — re-ask, keep waiting
-    (reask,) = await _say(wizard, "ghp_one ghp_two")
-    assert reask == "just the value itself — paste only the value"
-    # a short all-digits paste is a menu number — storing it would shadow
-    # a good .env line, so it's refused before anything is stored
-    (refused,) = await _say(wizard, "1")
-    assert refused == "that's a menu number — paste the key's value itself"
-    assert save.calls == []
-    assert applier.calls == []
-    assert wizard.alive
-
-    # a long numeric value is a value — tokens can legitimately be digits
-    (applied,) = await _say(wizard, "1234567890")
-    assert applied == f"stored — connecting github now.\n{_APPLY_GITHUB}"
-    assert save.calls == [("GITHUB_PERSONAL_ACCESS_TOKEN", "1234567890", "github")]
-
-
-async def test_surrounding_quotes_are_stripped_before_storing() -> None:
-    wizard, _, _, save, _ = _wizard()
-    await wizard.start()
-    await _say(wizard, "1", "6")
-    await _say(wizard, '"ghp_abc123"')
-    assert save.calls == [("GITHUB_PERSONAL_ACCESS_TOKEN", "ghp_abc123", "github")]
-
-
-async def test_a_failed_save_falls_back_to_env_honestly() -> None:
-    wizard, applier, _, _, _ = _wizard(save=FakeSave(ok=False))
-    await wizard.start()
-    await _say(wizard, "1", "6")
-    (refused,) = await _say(wizard, "ghp_abc123")
-    assert refused == (
-        "that didn't work — nothing was stored. add GITHUB_PERSONAL_ACCESS_TOKEN "
-        "to .env and reply \"done\", or paste it again."
-    )
-    assert wizard.alive  # the paste is re-askable — nothing was lost
-    assert applier.calls == []
 
 
 async def test_slack_asks_for_its_two_tokens_one_at_a_time() -> None:
-    wizard, applier, _, save, _ = _wizard(applier=FakeApplier(reply=_APPLY_SLACK))
-    await wizard.start()
-    _menu, recipe = await _say(wizard, "1", "3")
-    assert recipe == (
-        "slack — talk to me there.\n"
-        "two tokens needed:\n"
-        "1 — open https://api.slack.com/apps and create an app — under OAuth & "
-        "Permissions, Install to Workspace copies the bot token (xoxb…)\n"
-        "2 — under Basic Info, App-Level Tokens generates the app token "
-        "(xapp…) with the connections:write scope\n"
-        "paste the bot token (xoxb…) here — I'll take it from there."
-    )
+    wizard, applier, save, *_ = _wizard(applier=FakeApplier(reply=_APPLY_SLACK))
+    assert await wizard.start_add("slack") == _SLACK_RECIPE
     (next_ask,) = await _say(wizard, "xoxb-111")
     assert next_ask == "stored. now the app token (xapp…) — paste it here."
     (applied,) = await _say(wizard, "xapp-222")
@@ -321,190 +219,210 @@ async def test_slack_asks_for_its_two_tokens_one_at_a_time() -> None:
     assert not wizard.alive
 
 
-async def test_the_telegram_walk_pastes_and_switches_on_directly() -> None:
-    wizard, applier, _, save, _ = _wizard(applier=FakeApplier(reply=_APPLY_TELEGRAM))
-    await wizard.start()
-    _menu, recipe = await _say(wizard, "1", "1")
-    assert recipe == _TELEGRAM_RECIPE
-    (applied,) = await _say(wizard, "123:AAbbCC")
-    assert applied == f"stored — switching telegram on now.\n{_APPLY_TELEGRAM}"
-    assert save.calls == [("TELEGRAM_BOT_TOKEN", "123:AAbbCC", "telegram")]
+async def test_done_before_the_key_checks_the_env_honestly() -> None:
+    wizard, applier, save, env, *_ = _wizard()
+    await wizard.start_add("telegram")
+    (not_yet,) = await _say(wizard, "done")
+    assert not_yet == (
+        "not yet — TELEGRAM_BOT_TOKEN isn't set. paste it here, "
+        "or add to .env and reply \"done\"."
+    )
+    assert wizard.alive
+    assert save.calls == []
+
+    # .env by hand is still a way in — done checks honestly and connects
+    env.add("TELEGRAM_BOT_TOKEN")
+    (applied,) = await _say(wizard, "done")
+    assert applied == f"the key's there — connecting telegram now.\n{_APPLY_TELEGRAM}"
     assert applier.calls == [("set", "messaging.telegram.enabled", True, "walk")]
     assert not wizard.alive
+
+
+async def test_keys_already_set_connect_without_asking_again() -> None:
+    wizard, applier, save, *_ = _wizard(env={"TELEGRAM_BOT_TOKEN"})
+    applied = await wizard.start_add("telegram")
+    assert applied == f"the key's already there — connecting telegram now.\n{_APPLY_TELEGRAM}"
+    assert save.calls == []  # nothing was asked for — it was all there
+    assert applier.calls == [("set", "messaging.telegram.enabled", True, "walk")]
+    assert not wizard.alive
+
+
+async def test_a_mis_paste_is_reasked_and_a_menu_number_refused() -> None:
+    wizard, applier, save, *_ = _wizard()
+    await wizard.start_add("telegram")
+    # two words is a mis-paste, not a changed subject — re-ask, keep waiting
+    (reask,) = await _say(wizard, "abc123 def456")
+    assert reask == "just the value itself — paste only the value"
+    # a short all-digits paste is a menu number — storing it would shadow
+    # a good .env line, so it's refused before anything is stored
+    (refused,) = await _say(wizard, "1")
+    assert refused == "that's a menu number — paste the key's value itself"
+    assert save.calls == []
+    assert applier.calls == []
+    assert wizard.alive
+
+    # a long numeric value is a value — tokens can legitimately be digits
+    (applied,) = await _say(wizard, "1234567890")
+    assert applied == f"stored — switching telegram on now.\n{_APPLY_TELEGRAM}"
+    assert save.calls == [("TELEGRAM_BOT_TOKEN", "1234567890", "telegram")]
+
+
+async def test_surrounding_quotes_are_stripped_before_storing() -> None:
+    wizard, _, save, *_ = _wizard()
+    await wizard.start_add("telegram")
+    await _say(wizard, '"123:AAbbCC"')
+    assert save.calls == [("TELEGRAM_BOT_TOKEN", "123:AAbbCC", "telegram")]
+
+
+async def test_a_failed_save_falls_back_to_env_honestly() -> None:
+    wizard, applier, _, *_ = _wizard(save=FakeSave(ok=False))
+    await wizard.start_add("telegram")
+    (refused,) = await _say(wizard, "123:AAbbCC")
+    assert refused == (
+        "that didn't work — nothing was stored. add TELEGRAM_BOT_TOKEN "
+        "to .env and reply \"done\", or paste it again."
+    )
+    assert wizard.alive  # the paste is re-askable — nothing was lost
+    assert applier.calls == []
 
 
 async def test_a_user_rule_forcing_a_hold_relays_its_card_verbatim() -> None:
     """Origin "walk" is the loop's argument, not a promise: a user rule
     that says park still parks, and the walk relays the card as-is."""
-    wizard, _, _, save, _ = _wizard(applier=FakeApplier(reply=_PARK_CARD))
-    await wizard.start()
-    await _say(wizard, "1", "6")
-    (card,) = await _say(wizard, "ghp_abc123")
-    assert card == f"stored — connecting github now.\n{_PARK_CARD}"
-    assert save.calls == [("GITHUB_PERSONAL_ACCESS_TOKEN", "ghp_abc123", "github")]
+    wizard, _, save, *_ = _wizard(applier=FakeApplier(reply=_PARK_CARD))
+    await wizard.start_add("telegram")
+    (card,) = await _say(wizard, "123:AAbbCC")
+    assert card == f"stored — switching telegram on now.\n{_PARK_CARD}"
+    assert save.calls == [("TELEGRAM_BOT_TOKEN", "123:AAbbCC", "telegram")]
     assert not wizard.alive
 
 
-# -- an oauth app: the address, the BYOA credentials, the link -------------------
+# -- the hub connect: the key once, the link per app --------------------------------
 
 
-async def test_the_gmail_walk_collects_the_byoa_credentials_then_the_link() -> None:
-    wizard, applier, consent, save, _ = _wizard()
-    await wizard.start()
-    _menu, address_ask = await _say(wizard, "1", "4")
-    assert address_ask == _ADDRESS_ASK
-    (recipe,) = await _say(wizard, "https://your-app.onrender.com")
-    assert recipe == (
-        "gmail — my inbox: read threads, write drafts, sort labels.\n"
-        "this one signs in with Google, so there's a one-time setup (every "
-        "Google app after is just a link):\n"
-        "1 — open https://console.cloud.google.com/apis/library — enable "
-        "\"Gmail API\" and \"Gmail MCP API\" in your project\n"
-        "2 — open https://console.cloud.google.com/apis/credentials/consent — "
-        "create an External consent screen and publish it to Production "
-        "(Testing status drops refresh tokens after 7 days; the unverified-app "
-        "warning is a one-time click-through for you)\n"
-        "3 — open https://console.cloud.google.com/apis/credentials — create "
-        "an OAuth client (Web application) with redirect URI "
-        "https://your-app.onrender.com/oauth/callback\n"
-        "paste the client ID here — I'll take it from there."
-    )
-    (next_ask,) = await _say(wizard, "id-123.apps.googleusercontent.com")
-    assert next_ask == "stored. now the client secret — paste it here."
-    (link,) = await _say(wizard, "GOCSPX-xyz")
-    assert link == (
-        "stored. last step — let me in:\n"
-        "open this and approve: https://accounts.test/consent?x=1\n"
+async def test_a_hub_app_serves_the_connect_link() -> None:
+    wizard, applier, _, _, toolkits, authorize = _wizard(env={"COMPOSIO_API_KEY"})
+    reply = await wizard.start_add("gmail")
+    assert reply == (
+        "Gmail — last step, let me in:\n"
+        "open this and approve: https://hub.example.test/connect/gmail\n"
         "(I'll take it from there)"
     )
-    assert save.calls == [
-        ("GOOGLE_CLIENT_ID", "id-123.apps.googleusercontent.com", "gmail"),
-        ("GOOGLE_CLIENT_SECRET", "GOCSPX-xyz", "gmail"),
-    ]
-    # the link was asked for with the redirect the walk collected — the one
-    # the state carries, so the exchange replays the exact same URI
-    assert consent.calls == [("gmail", "https://your-app.onrender.com/oauth/callback")]
-    assert applier.calls == []  # nothing is applied until the callback lands
+    assert toolkits.calls == ["gmail"]
+    assert authorize.calls == ["gmail"]
+    # the loop's handoff: read once to spawn the background waiter
+    assert wizard.pending_connect == ("gmail", "req-gmail")
+    assert wizard.alive  # the link wait holds until the waiter lands it
+    assert applier.calls == []  # nothing is applied for a hosted link
 
-    # the pause holds: chat can't complete it, only the callback can
-    (still,) = await _say(wizard, "done")
-    assert still == _WAITING
+
+async def test_the_link_wait_nudges_and_a_changed_subject_steps_aside() -> None:
+    wizard, *_ = _wizard(env={"COMPOSIO_API_KEY"})
+    await wizard.start_add("gmail")
+    (still,) = await _say(wizard, "ok")
+    assert still == _LINK_WAITING
     assert wizard.alive
+    assert await _say(wizard, "what's the weather like today") == []
+    assert not wizard.alive  # the message is normal chat; the waiter still lands
 
 
-async def test_the_ask_is_for_the_first_missing_key_only() -> None:
-    """Per provider, not per app — and per key: with the ID already set
-    from gmail's walk, only the secret is asked for, by the recipe's own
-    wording for that key."""
-    wizard, _, _, save, _ = _wizard(
-        env={"GOOGLE_CLIENT_ID"},
-        redirect="https://aether.example.com/oauth/callback",
-    )
-    await wizard.start()
-    _menu, recipe = await _say(wizard, "1", "4")
-    assert recipe.endswith("now the client secret — paste it here.")
-    (link,) = await _say(wizard, "GOCSPX-xyz")
-    assert link.startswith("stored. last step — let me in:")
-    assert save.calls == [("GOOGLE_CLIENT_SECRET", "GOCSPX-xyz", "gmail")]
-
-
-async def test_a_pinned_public_address_skips_the_address_question() -> None:
-    # the loop passes the full callback URI (callback_url(public_url))
-    wizard, _, consent, _, _ = _wizard(redirect="https://aether.example.com/oauth/callback")
-    await wizard.start()
-    replies = await _say(wizard, "1", "4")
-    assert len(replies) == 2  # menu → recipe directly, no address ask
-    assert "redirect URI https://aether.example.com/oauth/callback" in replies[1]
-    assert consent.calls == []  # the link only comes after the pastes
-
-
-async def test_no_encryption_key_ends_the_walk_with_plain_instructions() -> None:
-    wizard, applier, _, save, _ = _wizard(consent=FakeConsent(url=None))
-    await wizard.start()
-    await _say(wizard, "1", "4", "https://your-app.onrender.com")
-    replies = await _say(wizard, "id-123.apps.googleusercontent.com", "GOCSPX-xyz")
-    assert replies == ["stored. now the client secret — paste it here.", _KEY_NEEDED]
-    assert not wizard.alive
-    assert applier.calls == []
-    assert wizard.alive is False
-
-
-async def test_a_covering_sign_in_connects_the_second_app_directly() -> None:
-    wizard, applier, consent, save, _ = _wizard(
-        redirect="https://aether.example.com/oauth/callback",
-        oauth_state=FakeOAuthState(state="covers"),
-    )
-    await wizard.start()
-    _menu, applied = await _say(wizard, "1", "5")
-    assert applied == (
-        "you already let me in with Google — connecting google calendar now.\n"
-        f"{_APPLY_GITHUB}"
-    )
-    assert applier.calls == [(
-        "add", "mcp_servers",
-        {
-            "name": "calendar",
-            "transport": {
-                "type": "http",
-                "url": "https://calendarmcp.googleapis.com/mcp",
-                "headers": {"Authorization": "Bearer $GOOGLE_OAUTH_ACCESS_TOKEN"},
-            },
-        },
-        "walk",
-    )]
-    assert consent.calls == []  # no new approval — the sign-in covers it
-    assert save.calls == []
-    assert not wizard.alive
-
-
-async def test_a_second_google_app_gets_the_union_consent_and_the_enable_note() -> None:
-    """gcal after gmail: the credentials are per provider so they aren't
-    asked for again, but a gmail-scoped token can't drive the calendar
-    MCP — one union consent, and the enable note says what the walk can't
-    check (the app's APIs may not be on in the project)."""
-    wizard, applier, consent, save, _ = _wizard(
-        env={"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"},
-        redirect="https://aether.example.com/oauth/callback",
-        oauth_state=FakeOAuthState(state="partial"),
-    )
-    await wizard.start()
-    _menu, link = await _say(wizard, "1", "5")
+async def test_no_hub_key_asks_for_it_once_then_serves_the_link() -> None:
+    wizard, _, save, _, toolkits, authorize = _wizard()
+    recipe = await wizard.start_add("gmail")
+    assert recipe == _HUB_KEY_RECIPE
+    assert toolkits.calls == []  # the catalog can't answer before the key
+    (link,) = await _say(wizard, "csk-123")
+    # the key paste continues the connect it was asked for
     assert link == (
-        "google calendar — my schedule: events and invites.\n"
-        "first enable \"Calendar API\" and \"Calendar MCP API\" in the same "
-        "Google Cloud project — https://console.cloud.google.com/apis/library\n"
-        "one more approval — google calendar needs a permission your last "
-        "sign-in didn't include, and both keep working after this:\n"
-        "open this and approve: https://accounts.test/consent?x=1\n"
+        "Gmail — last step, let me in:\n"
+        "open this and approve: https://hub.example.test/connect/gmail\n"
         "(I'll take it from there)"
     )
-    assert consent.calls == [("gcal", "https://aether.example.com/oauth/callback")]
-    assert save.calls == []  # the provider's credentials are already there
-    assert applier.calls == []  # the callback finishes it, not chat
-    assert wizard.alive  # oauth_wait holds
+    assert save.calls == [("COMPOSIO_API_KEY", "csk-123", "the app hub")]
+    assert toolkits.calls == ["gmail"]
+    assert authorize.calls == ["gmail"]
+    assert wizard.pending_connect == ("gmail", "req-gmail")
+
+
+async def test_a_hub_that_doesnt_answer_says_so_honestly() -> None:
+    wizard, *_ = _wizard(env={"COMPOSIO_API_KEY"}, authorize=FakeAuthorize(url=None))
+    reply = await wizard.start_add("gmail")
+    assert reply == (
+        "couldn't start the Gmail connection — the app hub didn't answer. "
+        "nothing was connected; try again in a bit."
+    )
+    assert not wizard.alive
+    assert wizard.pending_connect is None
+
+
+async def test_a_fuzzy_name_offers_the_numbered_pick() -> None:
+    wizard, *_ = _wizard(
+        env={"COMPOSIO_API_KEY"},
+        toolkits=FakeToolkits([("gmail", "Gmail"), ("google-mail", "Google Mail")]),
+    )
+    menu = await wizard.start_add("gmil")
+    assert menu == "which gmil?\n1 — Gmail\n2 — Google Mail\n3 — none of these"
+    (nudge,) = await _say(wizard, "maybe")
+    assert nudge == "I didn't get that — reply with 1-3, or stop"
+    assert wizard.alive
+    (link,) = await _say(wizard, "1")
+    assert link.startswith("Gmail — last step, let me in:")
+    assert wizard.pending_connect == ("gmail", "req-gmail")
+
+
+async def test_none_of_these_offers_the_generic_walk() -> None:
+    wizard, *_ = _wizard(
+        env={"COMPOSIO_API_KEY"},
+        toolkits=FakeToolkits([("gmail", "Gmail"), ("google-mail", "Google Mail")]),
+    )
+    await wizard.start_add("gmil")
+    (offer,) = await _say(wizard, "3")
+    assert offer == (
+        "fair enough. Set it up by hand over MCP?\n"
+        "1 — yes, walk me through it\n"
+        "2 — no"
+    )
+    (bye,) = await _say(wizard, "2")
+    assert bye == _GOODBYE
+    assert not wizard.alive
+
+
+async def test_an_unknown_app_offers_the_generic_walk() -> None:
+    wizard, *_ = _wizard(env={"COMPOSIO_API_KEY"}, toolkits=FakeToolkits([]))
+    offer = await wizard.start_add("flurmbo")
+    assert offer == (
+        "I don't know an app called flurmbo — the hub's catalog has "
+        "nothing by that name either. Set it up by hand over MCP?\n"
+        "1 — yes, walk me through it\n"
+        "2 — no"
+    )
+    (bye,) = await _say(wizard, "no")
+    assert bye == _GOODBYE
+    assert not wizard.alive
 
 
 # -- the generic walk: any app that speaks mcp ------------------------------------
 
 
 async def test_the_generic_stdio_walk_writes_a_by_name_reference() -> None:
-    wizard, applier, _, save, _ = _wizard(applier=FakeApplier(reply=_APPLY_WEATHER))
-    await wizard.start()
-    replies = await _say(
-        wizard, "1", "8", "weather", "1", "npx -y mcp-weather", "WEATHER_API_KEY"
+    wizard, applier, save, *_ = _wizard(
+        env={"COMPOSIO_API_KEY"},
+        toolkits=FakeToolkits([]),
+        applier=FakeApplier(reply=_APPLY_WEATHER),
     )
-    assert replies[1] == "what's the app called? (one word, like weather)"
-    assert replies[2] == (
+    await wizard.start_add("weather")
+    replies = await _say(wizard, "1", "1", "npx -y mcp-weather", "WEATHER_API_KEY")
+    assert replies[0] == (
         "how does weather connect?\n"
         "1 — stdio — a command run locally\n"
         "2 — http — a URL I call"
     )
-    assert replies[3] == "what's the command? (e.g. npx -y mcp-weather)"
-    assert replies[4] == (
+    assert replies[1] == "what's the command? (e.g. npx -y mcp-weather)"
+    assert replies[2] == (
         "does weather need a key or token? reply with the key's name "
         "(like WEATHER_API_KEY), or \"none\""
     )
-    assert replies[5] == (
+    assert replies[3] == (
         "weather needs a key.\n"
         "paste the WEATHER_API_KEY here — I'll take it from there."
     )
@@ -528,9 +446,13 @@ async def test_the_generic_stdio_walk_writes_a_by_name_reference() -> None:
 
 
 async def test_the_generic_http_walk_gets_a_bearer_header() -> None:
-    wizard, applier, _, _, _ = _wizard(applier=FakeApplier(reply=_APPLY_WEATHER))
-    await wizard.start()
-    await _say(wizard, "1", "8", "weather", "http", "https://mcp.example.com/mcp")
+    wizard, applier, _, *_ = _wizard(
+        env={"COMPOSIO_API_KEY"},
+        toolkits=FakeToolkits([]),
+        applier=FakeApplier(reply=_APPLY_WEATHER),
+    )
+    await wizard.start_add("weather")
+    await _say(wizard, "yes", "http", "https://mcp.example.com/mcp")
     await _say(wizard, "WEATHER_API_KEY", "wx-123")
     assert applier.calls == [(
         "add", "mcp_servers",
@@ -547,9 +469,13 @@ async def test_the_generic_http_walk_gets_a_bearer_header() -> None:
 
 
 async def test_a_generic_app_with_no_key_applies_directly() -> None:
-    wizard, applier, _, save, _ = _wizard(applier=FakeApplier(reply=_APPLY_WEATHER))
-    await wizard.start()
-    await _say(wizard, "1", "8", "weather", "1", "npx -y mcp-weather")
+    wizard, applier, save, *_ = _wizard(
+        env={"COMPOSIO_API_KEY"},
+        toolkits=FakeToolkits([]),
+        applier=FakeApplier(reply=_APPLY_WEATHER),
+    )
+    await wizard.start_add("weather")
+    await _say(wizard, "1", "stdio", "npx -y mcp-weather")
     (applied,) = await _say(wizard, "none")
     assert applied == _APPLY_WEATHER  # no head — there was nothing to paste
     assert applier.calls == [(
@@ -563,61 +489,137 @@ async def test_a_generic_app_with_no_key_applies_directly() -> None:
 
 
 async def test_the_generic_walk_nudges_each_question() -> None:
-    wizard, _, _, _, _ = _wizard()
-    await wizard.start()
-    replies = await _say(
-        wizard, "1", "8", "two words", "weather", "maybe", "2", "not a url"
-    )
-    assert replies[2] == "just the name — one word, like weather"
-    assert replies[4] == "I didn't get that — reply with 1-2, or stop"
-    assert replies[6] == "just the URL — like https://mcp.example.com/mcp"
+    wizard, *_ = _wizard(env={"COMPOSIO_API_KEY"}, toolkits=FakeToolkits([]))
+    await wizard.start_add("weather")
+    replies = await _say(wizard, "1", "maybe", "2", "not a url")
+    assert replies[1] == "I didn't get that — reply with 1-2, or stop"
+    assert replies[3] == "just the URL — like https://mcp.example.com/mcp"
     assert wizard.alive
 
     # a command that doesn't parse is a nudge, not a dead end — the stdio path
-    wizard, _, _, _, _ = _wizard()
-    await wizard.start()
-    await _say(wizard, "1", "8", "weather", "1")
+    wizard, *_ = _wizard(env={"COMPOSIO_API_KEY"}, toolkits=FakeToolkits([]))
+    await wizard.start_add("weather")
+    await _say(wizard, "1", "1")
     (reask,) = await _say(wizard, "npx -y \"unterminated")
     assert reask == "that command didn't parse — check the quotes and try again"
     assert wizard.alive
+
+
+# -- the permissions ask: the gate's question, after the link lands -----------------
+
+
+async def test_the_connected_announcement_asks_what_the_app_may_do() -> None:
+    wizard, *_ = _wizard()
+    reply = wizard.enter_permissions("gmail", "me@gmail.com")
+    assert reply == (
+        "✅ gmail connected — me@gmail.com.\n"
+        "what may I do with gmail?\n"
+        "1 — read freely, ask before acting (the default)\n"
+        "2 — everything asks first\n"
+        "3 — act freely"
+    )
+    assert wizard.alive
+
+
+async def test_the_default_answer_writes_no_rule() -> None:
+    wizard, applier, *_ = _wizard()
+    wizard.enter_permissions("gmail", "me@gmail.com")
+    (reply,) = await _say(wizard, "1")
+    assert reply == (
+        "that's the default — gmail reads run free; sends, deletes and "
+        "anything new will ask first."
+    )
+    assert applier.calls == []  # the builtin ladder already does exactly this
+    assert not wizard.alive
+
+
+async def test_everything_asks_first_parks_an_authz_rule() -> None:
+    """authz is a security root — it parks for the one-tap even from a
+    walk, and the walk relays the applier's card verbatim."""
+    wizard, applier, *_ = _wizard(applier=FakeApplier(reply=_PARK_CARD))
+    wizard.enter_permissions("gmail", "me@gmail.com")
+    (card,) = await _say(wizard, "2")
+    assert card == _PARK_CARD
+    assert applier.calls == [(
+        "add", "authz.rules",
+        {
+            "tool_pattern": "composio__GMAIL_",
+            "decision": "approve",
+            "note": "gmail connected in chat — everything asks first",
+        },
+        "walk",
+    )]
+    assert not wizard.alive
+
+
+async def test_act_freely_writes_the_allow_rule() -> None:
+    wizard, applier, *_ = _wizard()
+    wizard.enter_permissions("gmail", "")
+    (reply,) = await _say(wizard, "free")
+    assert reply == _APPLY_TELEGRAM  # the applier's own words, relayed
+    assert applier.calls == [(
+        "add", "authz.rules",
+        {
+            "tool_pattern": "composio__GMAIL_",
+            "decision": "allow",
+            "note": "gmail connected in chat — freed to act",
+        },
+        "walk",
+    )]
+
+
+async def test_the_permissions_menu_takes_words_and_nudges() -> None:
+    wizard, applier, *_ = _wizard()
+    wizard.enter_permissions("gmail", "")
+    (nudge,) = await _say(wizard, "hmm")
+    assert nudge == "I didn't get that — reply with 1-3, or stop"
+    assert wizard.alive
+    (reply,) = await _say(wizard, "ask")
+    assert applier.calls[0][2]["decision"] == "approve"
+    assert not wizard.alive
+
+    # a sentence at the menu is a changed subject — the walk steps aside
+    wizard, *_ = _wizard()
+    wizard.enter_permissions("gmail", "")
+    assert await _say(wizard, "what's the weather like today") == []
+    assert not wizard.alive
 
 
 # -- the walk mechanics -------------------------------------------------------------
 
 
 async def test_cancel_words_end_the_walk_from_any_stage() -> None:
-    for goodbye in ("stop", "done", "quit", "never mind"):
-        wizard, _, _, _, _ = _wizard()
-        await wizard.start()
+    for goodbye in ("stop", "cancel", "quit", "never mind"):
+        wizard, *_ = _wizard()
+        await wizard.start_add("telegram")
         (bye,) = await _say(wizard, goodbye)
         assert bye == _GOODBYE
         assert not wizard.alive
 
     # mid-paste, "stop" is still the way out — and nothing was stored
-    wizard, applier, _, save, _ = _wizard()
-    await wizard.start()
-    await _say(wizard, "1", "6")
+    wizard, applier, save, *_ = _wizard()
+    await wizard.start_add("telegram")
     (bye,) = await _say(wizard, "stop")
     assert bye == _GOODBYE
     assert applier.calls == []
     assert save.calls == []
     assert not wizard.alive
 
-
-async def test_a_sentence_at_a_menu_steps_aside_for_normal_chat() -> None:
-    wizard, _, _, _, _ = _wizard()
-    await wizard.start()
-    await _say(wizard, "1")  # now at the catalog menu
-    assert await _say(wizard, "hey can you just add github for me please") == []
-    assert not wizard.alive  # nothing is waiting; the message is normal chat
+    # "done" only answers at the paste stage — at the link wait it's a way out
+    wizard, *_ = _wizard(env={"COMPOSIO_API_KEY"})
+    await wizard.start_add("gmail")
+    (bye,) = await _say(wizard, "done")
+    assert bye == _GOODBYE
+    assert not wizard.alive
 
 
 async def test_fifteen_minutes_of_silence_quits_intercepting() -> None:
-    wizard, _, _, _, _ = _wizard()
-    await wizard.start()
-    assert await wizard.handle("1", now=100.0) == _ADD_MENU
+    wizard, *_ = _wizard()
+    await wizard.start_add("telegram")
+    mis_paste = "just the value itself — paste only the value"
+    assert await wizard.handle("abc def", now=100.0) == mis_paste
     # the clock restarts at every answer — 899 seconds later is still in
-    assert await wizard.handle("6", now=999.0) == _GITHUB_RECIPE
+    assert await wizard.handle("abc def", now=999.0) == mis_paste
     # 900.6 after the last one, the walk is gone and the message is normal chat
-    assert await wizard.handle("ghp_abc", now=1899.6) is None
+    assert await wizard.handle("abc def", now=1899.6) is None
     assert not wizard.alive

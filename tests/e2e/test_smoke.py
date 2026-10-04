@@ -100,7 +100,8 @@ def test_trace_row_expands_to_show_its_detail(page, live_server, token) -> None:
 
     # expand the turn trace — the detail lazy-fetches /api/traces/1
     page.locator(".trace-row .trace-head", has_text="telegram · @sam").click()
-    page.wait_for_selector(".trace-row.open .trace-detail")
+    # wait for real detail rows — the skeleton matches .trace-detail while the fetch is in flight
+    page.wait_for_selector(".trace-row.open .trace-detail .trace-line")
     detail = page.locator(".trace-row.open .trace-detail")
     assert "can you confirm thursday at 4?" in detail.inner_text()
     assert "approval #1" in detail.inner_text()
@@ -109,6 +110,44 @@ def test_trace_row_expands_to_show_its_detail(page, live_server, token) -> None:
     # clicking again collapses it
     page.locator(".trace-row.open .trace-head").click()
     assert page.locator(".trace-row.open").count() == 0
+
+
+def test_the_hub_grid_searches_connects_and_disconnects(page, live_server, token) -> None:
+    _set_token(page, token)
+    page.goto(f"{live_server}/#/apps")
+    page.wait_for_selector("#hub-grid .available-card")
+
+    # the connected account shows with its identity, outside the add grid
+    connected = page.locator(".available-card", has_text="Gmail").first
+    assert connected.is_visible()
+    assert "me@example.com" in connected.inner_text()
+    cards = page.locator("#hub-grid .available-card")
+    assert cards.count() == 2  # gmail is connected — not in the add grid
+    assert page.locator("#hub-grid .available-card", has_text="GitHub").is_visible()
+    assert page.locator("#hub-grid .letter-tile").first.is_visible()  # no logo → letter
+
+    # the search filters the grid client-side
+    page.fill(".hub-search", "not")
+    assert page.locator("#hub-grid .available-card").count() == 1
+    assert page.locator("#hub-grid .available-card", has_text="Notion").is_visible()
+    page.fill(".hub-search", "zzz")
+    assert page.locator("#hub-grid .empty-state").is_visible()
+    page.fill(".hub-search", "")
+
+    # connect POSTs and opens the hub's link in a new tab (stubbed)
+    # function form, not a bare assignment — an evaluate string whose completion
+    # value is the arrow gets *invoked* by playwright, pushing a phantom undefined
+    page.evaluate("() => { window.__opened = []; window.open = (u) => window.__opened.push(u); }")
+    page.locator("#hub-grid .available-card", has_text="GitHub").locator("button").click()
+    page.wait_for_function("window.__opened.length === 1")
+    assert page.evaluate("window.__opened[0]") == "https://hub.example.test/connect/github"
+
+    # disconnect updates the list — gmail moves back into the add grid
+    page.locator(".available-card", has_text="Gmail").first.locator("button").click()
+    page.wait_for_function(
+        "document.querySelectorAll('#hub-grid .available-card').length === 3"
+    )
+    assert page.locator("#hub-grid .available-card", has_text="Gmail").is_visible()
 
 
 def test_no_token_shows_the_honest_empty_state_not_a_crash(page, live_server) -> None:

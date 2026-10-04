@@ -21,6 +21,7 @@ dependencies = [
     "openai>=1.60",
     "google-genai>=1.0",
     "mcp>=2.0",
+    "composio>=0.22.1",  # the one connection hub for external apps — sessions + hosted MCP
     "python-telegram-bot>=22.0",
     "py-cord>=2.6",
     "slack-bolt>=1.20",

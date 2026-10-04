@@ -502,6 +502,16 @@ table.data tbody tr:hover { background: var(--bg-2); cursor: pointer; }
   white-space: nowrap;
 }
 
+/* the app hub — search, logo fallback, and the connection-vs-permission note */
+.hub-search { width: 100%; margin: 2px 0 10px; }
+.letter-tile {
+  flex: none; width: 40px; height: 40px; border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-2); border: 1px solid var(--border);
+  font-weight: 600; font-size: 16px; color: var(--text-2);
+}
+.hub-note { margin-top: 8px; font-size: 11px; color: var(--text-3); }
+
 /* attention page — why the gate parked a call, and what became of past asks */
 .approval-why {
   margin-top: 6px; font-size: 12px; color: var(--amber);

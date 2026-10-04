@@ -35,7 +35,7 @@ from .memory.db import create_pool, run_migrations
 from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
 from .memory.salience import LLMJudge, Salience
-from .oauth import OAuthRefresher, OAuthTokenStore
+from .composio_bridge import ComposioBridge
 from .routines import Routines
 from .scheduler import Scheduler, SchedulerWorker
 from .secret_env import EnvResolver
@@ -93,16 +93,24 @@ def create_app(
         applied = await run_migrations(pool)
         log.info("database ready (migrations applied this boot: %s)", applied or "none")
 
-        # --- oauth tokens + secrets by name --------------------------------
-        # provider-received tokens (never typed in chat) and keys pasted in
-        # the /apps walk (consumed before ingest) live encrypted like
-        # everything else; the resolver is how every act reads a key — by
-        # name, fresh — so a key added after boot needs no restart
-        oauth_store = OAuthTokenStore(pool, cipher)
+        # --- secrets by name + the app hub ---------------------------------
+        # keys pasted in the /apps walk (consumed before ingest) live
+        # encrypted like everything else; the resolver is how every act
+        # reads a key — by name, fresh — so a key added after boot needs no
+        # restart. The Composio bridge rides it: a COMPOSIO_API_KEY pasted
+        # in chat works without a boot.
         secret_store = SecretStore(pool, cipher)
-        env_resolver = EnvResolver(token_store=oauth_store, secrets=secret_store)
-        app.state.oauth_store = oauth_store
+        env_resolver = EnvResolver(secrets=secret_store)
         app.state.resolver = env_resolver
+        composio = ComposioBridge(env_resolver, secret_store)
+        app.state.composio = composio
+        try:
+            if await composio.ensure():
+                log.info("composio session open — the app hub is live")
+        except Exception:
+            # the hub being down must never keep Aether from booting —
+            # /apps answers honestly and the next connect retries
+            log.exception("composio session couldn't open — apps connect on demand")
 
         # --- chat-made config: rows merge onto the live config, in place ----
         # Before anything reads a section — an authz or allowlist override
@@ -195,6 +203,7 @@ def create_app(
             resolver=env_resolver,
             secret_store=secret_store,
             settings=settings,
+            composio=composio,
         )
         app.state.agent = agent
         native = register_native_tools(
@@ -236,10 +245,8 @@ def create_app(
         )
 
         worker = SchedulerWorker(scheduler, agent.execute_scheduled)
-        refresher = OAuthRefresher(oauth_store, resolver=env_resolver)
         agent.start()
         worker.start()
-        refresher.start()
         log.info(
             "aether running — surfaces: web%s, agent loop + scheduler live",
             "".join(f", {c.name}" for c in connectors),
@@ -249,7 +256,6 @@ def create_app(
 
         await worker.stop()
         await agent.stop()
-        await refresher.stop()
         for connector in connectors:
             await connector.stop()
         await host.stop()

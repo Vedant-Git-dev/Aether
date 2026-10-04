@@ -30,7 +30,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ..apps_catalog import recipe_for
+from ..composio_bridge import SERVER_ENTRY, SERVER_NAME, ComposioBridge
 from ..authz.approvals import APPROVED, DENIED, Approval, Approvals
 from ..authz.audit import AuditLog, verification_text
 from ..authz.policy import Decision, Policy
@@ -52,7 +52,6 @@ from ..memory.context import ContextBuilder
 from ..memory.entities import Sender
 from ..memory.events import Event, EventStore
 from ..memory.salience import Salience
-from ..oauth import PROVIDERS, OAuthError, OAuthFlow, callback_url
 from ..routines import Routines, trigger_matches
 from ..scheduler.jobs import ScheduledAction, Scheduler
 from ..secret_env import EnvResolver
@@ -277,6 +276,7 @@ class AgentLoop:
         resolver: EnvResolver | None = None,
         secret_store: SecretStore | None = None,
         settings: Any = None,
+        composio: ComposioBridge | None = None,
     ) -> None:
         self._providers = providers
         self._tools = tools
@@ -298,6 +298,7 @@ class AgentLoop:
         self._resolver = resolver
         self._secret_store = secret_store
         self._settings = settings
+        self._composio = composio
         # the guided /config walk in progress, if any — memory only
         self._wizard: ConfigWizard | None = None
         # the guided /apps walk in progress, if any — same rules, memory only
@@ -309,6 +310,9 @@ class AgentLoop:
         # connection hub grows as the user approves apps, and this is how a
         # tick notices without diffing full tool lists every time
         self._synced_tool_versions: dict[str, int] = {}
+        # in-flight Connect Link waits — tracked so a completed task is
+        # never garbage-collected mid-flight
+        self._connect_waits: set[asyncio.Task[None]] = set()
 
         self._queue: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._woken = asyncio.Event()
@@ -524,20 +528,21 @@ class AgentLoop:
                 await self._surfaces.send_to_user(reply)
                 return True
         if first == "/apps":
-            # the app front door: status plus the add menu. Any /apps works
-            # the same — the status IS the answer — and it replaces a live
-            # config walk, as a bare /config replaces an apps one.
+            # the app front door: bare /apps is the status, /apps add <name>
+            # starts the connect walk. Either replaces a live config walk,
+            # as a bare /config replaces an apps one.
             self._wizard = None
-            self._apps_walk = AppsWizard(
-                apply=self._apply_config,
-                status=self._apps_status,
-                env_names=self._env_names,
-                save_secret=self._store_secret,
-                consent_url=self._consent_url,
-                oauth_state=self._oauth_state,
-                redirect=self._oauth_redirect(),
-            )
-            await self._surfaces.send_to_user(await self._apps_walk.start())
+            self._apps_walk = self._new_apps_wizard()
+            parts = text.split(maxsplit=2)
+            if len(parts) >= 2 and parts[1].lower() == "add":
+                name = parts[2] if len(parts) > 2 else ""
+                reply = await self._apps_walk.start_add(name)
+            else:
+                reply = await self._apps_walk.start()
+            await self._surfaces.send_to_user(reply)
+            self._maybe_spawn_connect_waiter()
+            if not self._apps_walk.alive:
+                self._apps_walk = None
             return True
         if self._apps_walk is not None:
             if text.startswith("/"):
@@ -549,6 +554,7 @@ class AgentLoop:
                     # the walk let go of the message — it's normal chat
                     self._apps_walk = None
                     return False
+                self._maybe_spawn_connect_waiter()
                 if not walk.alive:
                     self._apps_walk = None  # done, or goodbye — nothing is waiting
                 await self._surfaces.send_to_user(reply)
@@ -624,9 +630,8 @@ class AgentLoop:
         the one-line grammar), so a write is classified, audited, parked or
         applied exactly like a model proposal. `value` absent means reset,
         which carries none. `origin` marks a connect the user just drove in
-        chat ("walk", "oauth") — the /apps pick-and-paste and a sign-in
-        completing at the callback apply directly, where /config lines and
-        model proposals still park."""
+        chat ("walk") — the /apps pick-and-paste applies directly, where
+        /config lines and model proposals still park."""
         params: dict[str, Any] = {"op": op, "path": path}
         if value is not _MISSING:
             params["value"] = value
@@ -644,7 +649,7 @@ class AgentLoop:
             )
         return result.content
 
-    # -- /apps: the status render and the oauth plumbing ---------------------------
+    # -- /apps: the status render and the connect plumbing ---------------------------
 
     async def _env_names(self) -> set[str]:
         """Which secret names exist right now — names only, never values:
@@ -654,27 +659,6 @@ class AgentLoop:
         if self._resolver is None:
             return set()
         return await self._resolver.known_names()
-
-    def _oauth_redirect(self) -> str:
-        """The pinned public address as an OAuth callback — empty when it
-        isn't set, and the walk asks for the address in chat instead."""
-        public_url = getattr(self._settings, "public_url", "") if self._settings else ""
-        return callback_url(public_url) if public_url else ""
-
-    async def _oauth_state(self, provider: str, scopes: str) -> str:
-        """Does the stored sign-in cover this app's scopes? "covers" — a
-        second Google app is nothing but the apply; "partial" — signed in,
-        but a gmail-scoped token can't drive the calendar MCP, so one
-        union consent re-fills both; "none" — no sign-in yet, the recipe
-        comes first."""
-        if self._resolver is None:
-            return "none"
-        stored = await self._resolver.oauth_scopes(provider)
-        if not stored:
-            return "none"
-        if set(stored.split()) >= set(scopes.split()):
-            return "covers"
-        return "partial"
 
     async def _store_secret(self, name: str, value: str, app: str) -> bool:
         """One pasted key into the encrypted store. Called from the
@@ -695,43 +679,13 @@ class AgentLoop:
         )
         return True
 
-    async def _consent_url(self, app_key: str, redirect: str) -> str | None:
-        """The consent link for one OAuth app, or None when this deployment
-        can't do OAuth yet — no permanent key, no client id, no address —
-        which the walk turns into its honest refusal. The client id is
-        resolved fresh: an act reads the resolver, never boot-time
-        settings, so one added after boot just works. The scopes are the
-        union of what's stored and what this app asks for — a gmail-scoped
-        token can't drive the calendar MCP, so a second app asks for both
-        and the refreshed token keeps the first one alive too."""
-        recipe = recipe_for(app_key)
-        if recipe is None or not recipe.oauth or not redirect:
-            return None
-        if self._resolver is None or self._settings is None:
-            return None
-        client_id = await self._resolver.resolve("GOOGLE_CLIENT_ID")
-        if not client_id:
-            return None  # the walk's recipe step adds it first, so this is rare
-        try:
-            flow = OAuthFlow(self._settings.encryption_key)
-        except OAuthError:
-            log.info("consent link refused: no permanent encryption key")
-            return None
-        stored = await self._resolver.oauth_scopes(recipe.oauth)
-        union = " ".join(dict.fromkeys((stored + " " + recipe.scopes).split()))
-        return flow.consent_url(
-            provider=recipe.oauth,
-            app=recipe.key,
-            client_id=client_id,
-            redirect=redirect,
-            scopes=union,
-        )
-
     async def _apps_status(self) -> str:
         """What's connected, honestly — the same render at bare /apps and
-        at the walk's menu. A messaging surface that's on without its
-        token says so; an mcp server counts its actions when it has
-        answered and makes the promise when it hasn't."""
+        after a connect. A messaging surface that's on without its token
+        says so; a hub app names its identity (or its non-active status);
+        an mcp server counts its actions when it has answered and makes
+        the promise when it hasn't. The footer is the gate, in one line —
+        connection status and what Aether may do are separate truths."""
         names = await self._env_names()
         lines: list[str] = []
         messaging = self._config.messaging
@@ -742,6 +696,21 @@ class AgentLoop:
                 lines.append(f"· {platform} — on")
             else:
                 lines.append(f"· {platform} — on — no token yet")
+        if self._composio is not None:
+            try:
+                apps = await self._composio.accounts()
+            except Exception:
+                log.exception("reading the hub's connected apps failed")
+                apps = []
+            for app in apps:
+                if app.status == "ACTIVE":
+                    who = f" — {app.identity}" if app.identity else ""
+                    lines.append(f"· {app.toolkit}{who} — connected")
+                else:
+                    lines.append(
+                        f"· {app.toolkit} — {app.status.lower()} — "
+                        f"/apps add {app.toolkit} to reconnect"
+                    )
         status = self._tools.mcp_status()
         for server in self._config.mcp_servers:
             if not server.enabled:
@@ -754,42 +723,107 @@ class AgentLoop:
                     f"· {server.name} — still connecting — I'll tell you "
                     "the moment it's up"
                 )
-        if not lines:
-            return "📱 your apps: nothing connected yet."
-        return "📱 your apps:\n" + "\n".join(lines)
+        head = "📱 your apps:\n" + "\n".join(lines) if lines else "📱 your apps: nothing connected yet."
+        return f"{head}\nthe gate: reads run free — sends, deletes and anything new ask first."
 
-    async def finish_oauth(self, provider: str, app_key: str) -> None:
-        """The OAuth callback landed: the tokens are stored, the sign-in
-        is done, and a pending walk is finished — this is its answer, out
-        of band. The browser click was the approval, so the connect rides
-        origin "oauth" through the same executor and applies directly —
-        same gate, same audit, no park card; a user rule that forces a
-        hold anyway still gets its verbatim card. Solicited by the browser
-        click, so it never waits out quiet hours."""
-        recipe = recipe_for(app_key)
-        prov = PROVIDERS.get(provider)
-        if recipe is None or recipe.kind != "mcp" or prov is None:
-            log.warning(
-                "oauth callback for unknown %s/%r — tokens kept, nothing added",
-                provider,
-                app_key,
+    def _new_apps_wizard(self) -> AppsWizard:
+        """Every walk wires the same loop functions — the connect command
+        path and the background waiter's permissions walk alike."""
+        return AppsWizard(
+            apply=self._apply_config,
+            status=self._apps_status,
+            env_names=self._env_names,
+            save_secret=self._store_secret,
+            find_toolkits=self._find_toolkits,
+            authorize=self._authorize_composio,
+        )
+
+    async def _find_toolkits(self, query: str) -> list[tuple[str, str]]:
+        """The hub's live catalog, fuzzy-matched — [] when there's no hub
+        wired, which the walk reads as 'nothing by that name'."""
+        if self._composio is None:
+            return []
+        try:
+            found = await self._composio.find_toolkits(query)
+        except Exception:
+            log.exception("toolkit lookup failed")
+            return []
+        return [(t.slug, t.name) for t in found]
+
+    async def _authorize_composio(self, toolkit: str) -> tuple[str, str] | None:
+        """Start one app's Connect Link. The first connect also pins the
+        composio mcp_servers entry — the walk's pick is the approval, so
+        it rides origin "walk" through the same executor; a user rule that
+        parks it anyway gets its card relayed and the link still served
+        (the tools arrive when the one-tap lands)."""
+        bridge = self._composio
+        if bridge is None:
+            return None
+        try:
+            entry = next(
+                (s for s in self._config.mcp_servers if s.name == SERVER_NAME), None
+            )
+            reply = ""
+            if entry is None:
+                reply = await self._apply_config(
+                    "add", "mcp_servers", dict(SERVER_ENTRY), origin="walk"
+                )
+            elif not entry.enabled:
+                reply = await self._apply_config(
+                    "set", f"mcp_servers.{SERVER_NAME}.enabled", True, origin="walk"
+                )
+            if reply.startswith("🔒"):
+                await self._surfaces.send_to_user(reply)
+            return await bridge.authorize(toolkit)
+        except Exception:
+            log.exception("starting the %s connect failed", toolkit)
+            return None
+
+    def _maybe_spawn_connect_waiter(self) -> None:
+        """The walk just served a Connect Link — wait for the click out of
+        band so the user isn't stuck watching. The walk hands over
+        (toolkit, request id) exactly once."""
+        walk = self._apps_walk
+        if walk is None or walk.pending_connect is None:
+            return
+        toolkit, request_id = walk.pending_connect
+        walk.pending_connect = None
+        self.watch_connect(toolkit, request_id)
+
+    def watch_connect(self, toolkit: str, request_id: str) -> None:
+        """A Connect Link waiting on its click — from the chat walk or the
+        web panel alike; the same out-of-band wait, the same announcement."""
+        if self._composio is None:
+            return
+        task = asyncio.create_task(
+            self._wait_for_connect(toolkit, request_id), name="composio-connect"
+        )
+        self._connect_waits.add(task)
+        task.add_done_callback(self._connect_waits.discard)
+
+    async def _wait_for_connect(self, toolkit: str, request_id: str) -> None:
+        """The out-of-band half of a Connect Link: block until the click
+        lands (or the link dies), then ask the gate's question — what may
+        Aether do with the new app. Solicited by the user's own click, so
+        the answer never waits out quiet hours."""
+        bridge = self._composio
+        assert bridge is not None
+        try:
+            app = await bridge.wait_and_enable(toolkit, request_id)
+        except Exception:
+            log.exception("the %s connect never completed", toolkit)
+            await self._surfaces.send_to_user(
+                f"⚠️ the {toolkit} connection didn't finish — the link may "
+                f"have expired. /apps add {toolkit} to try again."
             )
             return
-        self._apps_walk = None
-        try:
-            reply = await self._apply_config(
-                "add", "mcp_servers", recipe.server, origin="oauth"
-            )
-        except Exception:
-            log.exception("adding %s after sign-in failed", recipe.name)
-            reply = (
-                "⚠️ that didn't work — the configuration is untouched. "
-                "Nothing else is affected."
-            )
-        head = f"✅ {prov.label} authorized — adding {recipe.name} now."
-        if recipe.stake and reply.startswith("🔒"):
-            head += f" it touches {recipe.stake}, so it needs your one-tap approval."
-        await self._surfaces.send_to_user(f"{head}\n{reply}")
+        walk = self._apps_walk
+        if walk is None or not walk.alive:
+            walk = self._new_apps_wizard()
+            self._apps_walk = walk
+        await self._surfaces.send_to_user(
+            walk.enter_permissions(app.toolkit, app.identity)
+        )
 
     async def _try_explain_reply(self, message: InboundMessage) -> bool:
         """A reply that is just 'why?' (or 'explain') about one of my own

@@ -38,12 +38,22 @@ salience:
   threshold: 6.0                 # 0-10; events below are stored but never surface
   rate_cap_per_hour: 20          # heuristic pre-gate: events above this are noise
 
-mcp_servers: []                  # connect apps from chat: /apps — or by hand here
-  # - name: mail
-  #   transport: {type: stdio, command: npx, args: ["-y", "mcp-mail-server"]}
-  #   poll_tools: [{tool: list_unread, every_minutes: 5}]
-  # - name: calendar
-  #   transport: {type: http, url: "https://mcp.example.com/mcp"}
+mcp_servers: []                  # connect apps from chat: /apps add <name> — or by hand here
+  # gmail, github, notion, … connect through Composio (the app hub): paste
+  # COMPOSIO_API_KEY once in chat and each app is a hosted link; the walk
+  # writes this entry itself, with the session's coordinates referenced by
+  # name ($NAME) from the encrypted store — a regenerated session flows in
+  # at the next reconnect, no edit here:
+  # - name: composio
+  #   transport:
+  #     type: http
+  #     url: "$COMPOSIO_MCP_URL"
+  #     headers: {x-api-key: "$COMPOSIO_MCP_KEY"}
+  #   # events arrive by polling the hub's read tools — this phase has no
+  #   # webhook ingress:
+  #   poll_tools: [{tool: GMAIL_FETCH_EMAILS, every_minutes: 5}]
+  # - name: weather                # anything that speaks MCP directly
+  #   transport: {type: stdio, command: npx, args: ["-y", "mcp-weather"]}
 
 messaging:
   telegram: {enabled: false}     # set true + TELEGRAM_BOT_TOKEN in .env

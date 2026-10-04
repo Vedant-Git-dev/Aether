@@ -34,10 +34,10 @@ from aether.config import (
     Settings,
     TransportConfig,
 )
+from aether.composio_bridge import ConnectedApp, ToolkitInfo
 from aether.connectors.base import InboundMessage
 from aether.memory.entities import Entity, EntityNote
 from aether.memory.events import Event
-from aether.oauth import TokenSet
 from aether.scheduler.jobs import ScheduledAction
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "src" / "aether" / "web"
@@ -112,6 +112,9 @@ class FakeAgent:
         pass
 
     def submit_message(self, msg: InboundMessage) -> None:
+        pass
+
+    def watch_connect(self, toolkit: str, request_id: str) -> None:
         pass
 
 
@@ -435,19 +438,44 @@ class FakeResolver:
         return {"TELEGRAM_BOT_TOKEN"}
 
 
-class FakeOAuthStore:
-    """One Google sign-in, so the apps page shows the OAuth card. Provider
-    and scopes only — the token values are never read here."""
+class FakeHubBridge:
+    """The Composio bridge double: one connected account and a small live
+    catalog, so the apps page shows the hub section, the search, and the
+    connect/disconnect round-trip. Credentials never appear — the connect
+    is just a link."""
 
-    async def all(self) -> dict:
-        return {
-            "google": TokenSet(
-                access_token="fake-access",
-                refresh_token="fake-refresh",
-                scopes="mail calendar",
-                expires_at=datetime.now(UTC) + timedelta(hours=1),
-            )
-        }
+    def __init__(self) -> None:
+        self.account_list = [
+            ConnectedApp(id="acc-gmail", toolkit="gmail", status="ACTIVE",
+                         identity="me@example.com"),
+        ]
+        self.toolkit_list = [
+            ToolkitInfo(slug="gmail", name="Gmail", logo="",
+                        description="your mail"),
+            ToolkitInfo(slug="github", name="GitHub", logo="",
+                        description="your code"),
+            ToolkitInfo(slug="notion", name="Notion", logo="",
+                        description="your notes"),
+        ]
+
+    async def available(self) -> bool:
+        return True
+
+    async def accounts(self) -> list:
+        return list(self.account_list)
+
+    async def toolkits(self) -> list:
+        return list(self.toolkit_list)
+
+    async def authorize(self, toolkit: str) -> tuple[str, str]:
+        return f"req-{toolkit}", f"https://hub.example.test/connect/{toolkit}"
+
+    async def disconnect(self, account_id: str):
+        for app in self.account_list:
+            if app.id == account_id:
+                self.account_list.remove(app)
+                return app
+        return None
 
 
 def build_app() -> FastAPI:
@@ -492,7 +520,7 @@ def build_app() -> FastAPI:
     app.state.config_manager = FakeConfigManager()
     app.state.tools = FakeTools()
     app.state.resolver = FakeResolver()
-    app.state.oauth_store = FakeOAuthStore()
+    app.state.composio = FakeHubBridge()
 
     @app.get("/")
     async def index() -> FileResponse:

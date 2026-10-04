@@ -36,6 +36,9 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_integration)
         if not E2E_ENABLED and "e2e" in item.keywords:
             item.add_marker(skip_e2e)
+    # run e2e last: playwright's sync dispatcher, once started, keeps pytest-asyncio
+    # auto mode from claiming any async test that runs after it in the same process
+    items.sort(key=lambda i: "e2e" in i.keywords)
 
 
 @pytest.fixture

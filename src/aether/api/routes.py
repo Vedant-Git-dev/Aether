@@ -1,21 +1,19 @@
 """REST endpoints. `settings` and component instances are read from
 `request.app.state`, which the lifespan in main.py populates before the
-server accepts traffic. Everything except /healthz and /oauth/callback is
-token-guarded — the callback is its own proof (its state is HMAC-signed).
+server accepts traffic. Everything except /healthz is token-guarded —
+the panel sends its token with every call.
 """
 
 from __future__ import annotations
 
 import hmac
-import html
 import logging
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from ..apps_catalog import CATALOG, recipe_for
-from ..oauth import OAuthError, OAuthFlow, exchange_code
+from ..composio_bridge import ComposioNotConfigured
 
 log = logging.getLogger("aether.api")
 
@@ -36,91 +34,6 @@ class DecisionBody(BaseModel):
 
 class PersonalityBody(BaseModel):
     text: str
-
-
-def _oauth_page(title: str, body: str, status_code: int) -> HTMLResponse:
-    """The tiny standalone page the browser round-trip ends on — a few
-    plain words, never the panel (which is not ours to shape)."""
-    return HTMLResponse(
-        f'<!doctype html><html><head><meta charset="utf-8">'
-        f'<meta name="viewport" content="width=device-width, initial-scale=1">'
-        f"<title>{html.escape(title)}</title></head>"
-        f'<body style="font-family: system-ui, sans-serif; max-width: 34rem; '
-        f'margin: 4rem auto; padding: 0 1rem; line-height: 1.6; color: #1a1a1a">'
-        f"<h2>{html.escape(title)}</h2><p>{body}</p></body></html>",
-        status_code=status_code,
-    )
-
-
-@router.get("/oauth/callback")
-async def oauth_callback(request: Request, code: str = "", state: str = "", error: str = "") -> HTMLResponse:
-    """Where a Google sign-in lands. Public on purpose: the state riding
-    the consent link is HMAC-signed with the encryption key and expires in
-    ten minutes, so the link itself is the proof — AETHER_TOKEN never
-    appears in a URL. Verifies the state, exchanges the code for tokens,
-    stores them encrypted (the one narrow receive-channel; no secret is
-    ever typed in chat), and hands the connection to the loop, which
-    answers in chat. The page says so in three words and the tab closes."""
-    if error or not code:
-        # refused on Google's own screen, or an incomplete round-trip —
-        # nothing was received either way
-        return _oauth_page(
-            "Sign-in wasn't completed",
-            "Nothing was received. Close this tab — if you still want to "
-            "connect the app, say <code>/apps</code> in chat and start again.",
-            200,
-        )
-    settings = request.app.state.settings
-    try:
-        flow = OAuthFlow(settings.encryption_key)
-    except OAuthError as exc:
-        log.error("oauth callback refused: %s", exc)
-        return _oauth_page("Sign-in can't finish", html.escape(str(exc)), 400)
-    verified = flow.verify_state(state) if state else None
-    if verified is None:
-        return _oauth_page(
-            "Sign-in link expired",
-            "This link works for ten minutes and only where it was issued. "
-            "Close this tab and ask me for a fresh one in chat — "
-            "<code>/apps</code>.",
-            400,
-        )
-    provider, app, redirect = verified
-    # acts read the resolver, never boot-time settings — but a deployment
-    # that never wired one still finishes its round-trip
-    resolver = getattr(request.app.state, "resolver", None)
-    client_id = client_secret = ""
-    if resolver is not None:
-        client_id = (await resolver.resolve("GOOGLE_CLIENT_ID")) or ""
-        client_secret = (await resolver.resolve("GOOGLE_CLIENT_SECRET")) or ""
-    client_id = client_id or settings.google_client_id
-    client_secret = client_secret or settings.google_client_secret
-    try:
-        tokens = await exchange_code(
-            provider,
-            code=code,
-            client_id=client_id,
-            client_secret=client_secret,
-            redirect=redirect,  # from the signed state — the exact URI registered
-        )
-    except OAuthError as exc:
-        log.warning("oauth exchange failed: %s", exc)
-        return _oauth_page(
-            "Sign-in failed",
-            f"{html.escape(str(exc))} — nothing was stored. "
-            "Close this tab and try again from chat.",
-            400,
-        )
-    await request.app.state.oauth_store.save(provider, tokens)
-    agent = getattr(request.app.state, "agent", None)
-    if agent is not None:
-        await agent.finish_oauth(provider, app)
-    return _oauth_page(
-        "✅ authorized",
-        "That's everything — close this tab. The app connects in chat, "
-        "with the same one-tap approval as always.",
-        200,
-    )
 
 
 @router.post("/api/screen-capture", status_code=202)
@@ -344,11 +257,11 @@ async def set_personality(
 async def apps_feed(request: Request, token: str | None = None) -> dict:
     """Read-only view of what's actually connected: the native messaging
     toggles (and whether each one's keys are in place), the MCP servers
-    with their live connection state, any OAuth sign-ins (provider and
-    scopes only — never tokens), screen-vision availability, and the
-    contact allowlist mode. The catalog of connectable apps rides along so
-    the panel can show what chat's /apps walk can add. No edit path —
-    connecting happens in chat, where keys are pasted and consumed."""
+    with their live connection state, screen-vision availability, and the
+    contact allowlist mode. The chat-surface recipes ride along so the
+    panel can show what chat's /apps walk can add — hub apps come from
+    /api/connections instead, fetched live. No edit path — connecting
+    happens in chat, where keys are pasted and consumed."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
     config = request.app.state.config
@@ -371,11 +284,6 @@ async def apps_feed(request: Request, token: str | None = None) -> dict:
     def _actions(server_name: str) -> int:
         return tools.server_action_count(server_name) if tools is not None else 0
 
-    # OAuth sign-ins: provider + scopes only, so the panel can say what a
-    # sign-in covers without ever seeing a token
-    oauth_store = getattr(request.app.state, "oauth_store", None)
-    stored_tokens = await oauth_store.all() if oauth_store is not None else {}
-
     return {
         "connectors": [
             {"name": name, "enabled": toggle.enabled, "has_token": _has_token(name)}
@@ -395,26 +303,92 @@ async def apps_feed(request: Request, token: str | None = None) -> dict:
             }
             for s in config.mcp_servers
         ],
-        "oauth": [
-            {"provider": provider, "scopes": tokens.scopes}
-            for provider, tokens in sorted(stored_tokens.items())
-        ],
         "screen_vision_available": getattr(request.app.state, "screen_vision", None) is not None,
         "contacts_mode": config.contacts.mode,
         "catalog": [
-            {
-                "key": r.key,
-                "name": r.name,
-                "blurb": r.blurb,
-                "kind": r.kind,
-                "oauth": bool(r.oauth),
-                # the mcp_servers entry this recipe writes — how the panel
-                # tells "already connected" from "available to add"
-                "server_name": str(r.server.get("name", "")),
-            }
+            {"key": r.key, "name": r.name, "blurb": r.blurb, "kind": r.kind}
             for r in CATALOG
         ],
     }
+
+
+# -- the app hub: Composio connections, driven from the panel -----------------------
+
+
+@router.get("/api/connections")
+async def connections_feed(request: Request, token: str | None = None) -> dict:
+    """The app hub, live: every toolkit Composio can connect for this
+    project (the panel searches and filters client-side) and this
+    instance's connected accounts — toolkit, status, identity, never a
+    credential. `configured: false` means no COMPOSIO_API_KEY yet; the
+    shape still answers, empty."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    bridge = getattr(request.app.state, "composio", None)
+    if bridge is None:
+        raise HTTPException(status_code=503, detail="the app hub isn't wired on this instance")
+    if not await bridge.available():
+        return {"configured": False, "connected": [], "toolkits": []}
+    accounts = await bridge.accounts()
+    toolkits = await bridge.toolkits()
+    return {
+        "configured": True,
+        "connected": [
+            {"id": a.id, "toolkit": a.toolkit, "status": a.status, "identity": a.identity}
+            for a in accounts
+        ],
+        "toolkits": [
+            {"slug": t.slug, "name": t.name, "logo": t.logo, "description": t.description}
+            for t in toolkits
+        ],
+    }
+
+
+@router.post("/api/connections/{toolkit}/connect")
+async def connect_app(request: Request, toolkit: str, token: str | None = None) -> dict:
+    """Start one toolkit's Connect Link — the panel opens the returned URL
+    in a new tab; credentials pass between the user and the hub only. The
+    loop waits out of band and announces in chat, exactly like a
+    chat-driven connect."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    bridge = getattr(request.app.state, "composio", None)
+    if bridge is None:
+        raise HTTPException(status_code=503, detail="the app hub isn't wired on this instance")
+    try:
+        request_id, url = await bridge.authorize(toolkit)
+    except ComposioNotConfigured:
+        raise HTTPException(
+            status_code=503,
+            detail="no COMPOSIO_API_KEY yet — say /apps add in chat and paste it once",
+        ) from None
+    except Exception:
+        log.exception("connect start failed for %s", toolkit)
+        raise HTTPException(
+            status_code=502, detail="the hub couldn't start that connect"
+        ) from None
+    agent = getattr(request.app.state, "agent", None)
+    if agent is not None:
+        agent.watch_connect(toolkit, request_id)
+    return {"redirect_url": url}
+
+
+@router.post("/api/connections/{account_id}/disconnect")
+async def disconnect_app(request: Request, account_id: str, token: str | None = None) -> dict:
+    """Remove one connected account — the bridge verifies the id is this
+    instance's own before anything is deleted; 404 when it isn't."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    bridge = getattr(request.app.state, "composio", None)
+    if bridge is None:
+        raise HTTPException(status_code=503, detail="the app hub isn't wired on this instance")
+    try:
+        removed = await bridge.disconnect(account_id)
+    except ComposioNotConfigured:
+        raise HTTPException(status_code=503, detail="no COMPOSIO_API_KEY set") from None
+    if removed is None:
+        raise HTTPException(status_code=404, detail="no such connected account")
+    return {"disconnected": removed.toolkit, "id": removed.id}
 
 
 @router.get("/api/audit")

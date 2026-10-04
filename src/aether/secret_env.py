@@ -1,4 +1,4 @@
-"""Secrets by name — pastes, .env, and the OAuth store, resolved on demand.
+"""Secrets by name — pastes, .env, the environment — resolved on demand.
 
 Chat never carries a secret's value: a key pasted in an /apps answer is
 consumed before ingest (the walk handles it in the deterministic command
@@ -26,7 +26,6 @@ from typing import TYPE_CHECKING
 from dotenv import dotenv_values
 
 if TYPE_CHECKING:
-    from .oauth import OAuthTokenStore
     from .secret_store import SecretStore
 
 # $NAME and ${NAME} — a lone $ (or $lowercase) stays literal
@@ -41,12 +40,6 @@ class SecretEnvError(Exception):
     key lands."""
 
 
-# names that resolve through the OAuth token store, not .env — tokens
-# arrive provider→callback (never typed in chat), so they live encrypted in
-# Postgres and are handed to apps by name like any other key
-_OAUTH_ACCESS = {"google": "GOOGLE_OAUTH_ACCESS_TOKEN"}
-
-
 def _read_file(path: Path) -> dict[str, str | None]:
     try:
         return dict(dotenv_values(path))
@@ -57,28 +50,20 @@ def _read_file(path: Path) -> dict[str, str | None]:
 class EnvResolver:
     """One place that turns a secret's name into its value, freshly.
 
-    Precedence: reserved OAuth names, the paste store, the real
-    environment, then the .env file re-read on demand. The path is
-    injectable so tests stay hermetic (the Settings(_env_file=None) rule).
+    Precedence: the paste store, the real environment, then the .env file
+    re-read on demand. The path is injectable so tests stay hermetic (the
+    Settings(_env_file=None) rule).
     """
 
     def __init__(
         self,
         env_file: str | Path = ".env",
-        token_store: OAuthTokenStore | None = None,
         secrets: SecretStore | None = None,
     ) -> None:
         self._path = Path(env_file)
-        self._tokens = token_store
         self._secrets = secrets
 
     async def resolve(self, name: str) -> str | None:
-        provider = _provider_for(name)
-        if provider:
-            if self._tokens is None:
-                return None
-            tokens = await self._tokens.get(provider)
-            return tokens.access_token if tokens is not None else None
         if self._secrets is not None and _ENV_NAME.fullmatch(name):
             pasted = await self._secrets.get(name)
             if pasted:
@@ -106,16 +91,6 @@ class EnvResolver:
                 present.add(name)
         return present
 
-    async def oauth_scopes(self, provider: str) -> str:
-        """The scopes a stored sign-in actually carries, "" when there's no
-        sign-in — the honest input to 'does the last sign-in cover this
-        app?' A gmail-scoped token can't drive the calendar MCP, so the
-        answer has to read the scopes, not just the presence."""
-        if self._tokens is None:
-            return ""
-        tokens = await self._tokens.get(provider)
-        return tokens.scopes if tokens is not None else ""
-
     async def expand_map(self, mapping: dict[str, str]) -> dict[str, str]:
         """Every value's $NAME / ${NAME} references resolved. A mapping of
         app config is turned into a mapping of real values — but only at
@@ -140,12 +115,3 @@ class EnvResolver:
             pos = match.end()
         out.append(value[pos:])
         return "".join(out)
-
-
-def _provider_for(name: str) -> str:
-    """The provider whose reserved OAuth access-token name this is ("" when
-    it isn't one)."""
-    for provider, reserved in _OAUTH_ACCESS.items():
-        if name == reserved:
-            return provider
-    return ""

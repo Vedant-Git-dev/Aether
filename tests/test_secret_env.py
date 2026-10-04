@@ -3,33 +3,20 @@
 The /apps promise rests on this module: chat carries a key's name and
 never its value, config references keys as $NAME, and every resolve is
 fresh (the .env file re-read on demand), so a key added after boot needs
-no restart. Precedence is the whole design: reserved OAuth names, then
-the paste store (a paste is the most recent deliberate act), then the
-environment, then the file. These tests pin the expansion syntax, that
-precedence, the missing-name contract, and the reserved OAuth name's
-route to the token store. Hermetic by construction: every resolver
-points at a tmp .env and a fake paste store.
+no restart. Precedence is the whole design: the paste store (a paste is
+the most recent deliberate act), then the environment, then the file.
+These tests pin the expansion syntax, that precedence, and the
+missing-name contract. Hermetic by construction: every resolver points
+at a tmp .env and a fake paste store.
 """
 
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from aether.oauth import TokenSet
 from aether.secret_env import EnvResolver, SecretEnvError
-
-
-class FakeTokenStore:
-    """The OAuthTokenStore double — just the surface the resolver reads."""
-
-    def __init__(self, tokens: TokenSet | None = None) -> None:
-        self.tokens = tokens
-
-    async def get(self, provider: str) -> TokenSet | None:
-        return self.tokens
 
 
 class FakeSecretStore:
@@ -45,26 +32,14 @@ class FakeSecretStore:
         return set(self.secrets)
 
 
-def _tokens(access: str = "ya29.in-store") -> TokenSet:
-    return TokenSet(
-        access_token=access,
-        refresh_token="1//keep-me-secret",
-        scopes="https://www.googleapis.com/auth/gmail.modify",
-        expires_at=datetime.now(UTC) + timedelta(hours=1),
-    )
-
-
 def _resolver(
     tmp_path,
     env_text: str = "",
-    tokens: TokenSet | None = None,
     secrets: dict[str, str] | None = None,
 ) -> EnvResolver:
     env_file = tmp_path / ".env"
     env_file.write_text(env_text)
-    return EnvResolver(
-        env_file, token_store=FakeTokenStore(tokens), secrets=FakeSecretStore(secrets)
-    )
+    return EnvResolver(env_file, secrets=FakeSecretStore(secrets))
 
 
 # -- expansion syntax --------------------------------------------------------------
@@ -108,7 +83,7 @@ async def test_the_real_environment_wins_over_the_env_file(monkeypatch, tmp_path
 
 
 async def test_a_missing_name_resolves_to_none(tmp_path) -> None:
-    resolver = _resolver(tmp_path)  # no .env contents, no token store rows
+    resolver = _resolver(tmp_path)  # no .env contents, no paste-store rows
     assert await resolver.resolve("NOT_SET_ANYWHERE") is None
 
 
@@ -182,34 +157,3 @@ async def test_a_key_added_to_the_file_after_boot_resolves(tmp_path) -> None:
     env_file.write_text("LATE_KEY=now-its-here\n")
     assert await resolver.resolve("LATE_KEY") == "now-its-here"
     assert "LATE_KEY" in await resolver.known_names()
-
-
-# -- the reserved OAuth name ----------------------------------------------------------
-
-
-async def test_reserved_oauth_names_route_to_the_token_store(tmp_path) -> None:
-    """$GOOGLE_OAUTH_ACCESS_TOKEN is not a .env line: it resolves through
-    the encrypted store, and a same-spelled .env line can't shadow it."""
-    resolver = _resolver(
-        tmp_path,
-        env_text="GOOGLE_OAUTH_ACCESS_TOKEN=should-be-ignored\n",
-        tokens=_tokens("ya29.the-real-one"),
-    )
-    assert await resolver.resolve("GOOGLE_OAUTH_ACCESS_TOKEN") == "ya29.the-real-one"
-
-
-async def test_oauth_scopes_reads_the_store_not_the_file(tmp_path) -> None:
-    """'Does the last sign-in cover this app?' reads the scopes the token
-    actually carries — a gmail-scoped sign-in is not a calendar one, so
-    the answer must be scopes, not mere presence."""
-    with_tokens = _resolver(tmp_path, tokens=_tokens())
-    assert await with_tokens.oauth_scopes("google") == (
-        "https://www.googleapis.com/auth/gmail.modify"
-    )
-    without_tokens = _resolver(tmp_path)
-    assert await without_tokens.oauth_scopes("google") == ""
-
-
-async def test_a_resolver_without_a_token_store_answers_none_for_reserved_names(tmp_path) -> None:
-    resolver = EnvResolver(tmp_path / ".env")
-    assert await resolver.resolve("GOOGLE_OAUTH_ACCESS_TOKEN") is None
