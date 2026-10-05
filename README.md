@@ -81,7 +81,11 @@ chat/approval surfaces. WhatsApp is a documented stub — both free routes
   backup, a breached storage provider — and still lets the agent reason over
   the history while your devices are offline. It does **not** protect against
   a compromise of the server process itself; that is a separate, harder
-  problem.
+  problem. Keys and OAuth tokens live in this same encrypted store — never
+  in config.yaml, never in the audit record (which names keys only). The
+  honest caveat on pasting: a key transits the chat platform and sits in
+  its history until you delete the message — delete it right after the
+  "stored." reply.
 - **Free-tier hosting** (Render + Neon) is kept awake by a lightweight
   external uptime ping. Free Render services spin down after 15 idle minutes
   and are capped at 750 instance-hours/month; scheduled actions survive that

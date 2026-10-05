@@ -13,6 +13,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from fakes import FakeApprovals, FakeConfigStore, FakeSurfaceConnector
 
 import aether.config_store
 from aether.agent.loop import SurfaceFanout
@@ -21,7 +22,7 @@ from aether.config import AppConfig, AuthzRule, ContactRule, MCPServerConfig, Se
 from aether.config_store import ConfigError, ConfigManager
 from aether.connectors.registry import ToolRegistry
 from aether.llm.types import ToolSpec
-from fakes import FakeApprovals, FakeConfigStore, FakeSurfaceConnector
+from aether.secret_env import EnvResolver
 
 
 def _settings() -> Settings:
@@ -550,7 +551,7 @@ async def test_messaging_enabled_without_a_token_is_said_honestly() -> None:
     reply = await manager.set(op="set", path="messaging.telegram.enabled", value=True)
     assert reply == (
         "messaging.telegram.enabled set to true (config.yaml says false). "
-        "— telegram has no token in .env — it starts once one is there"
+        "— telegram has no token yet — it starts once one is pasted or set"
     )
     assert live.messaging.telegram.enabled is True
 
@@ -592,7 +593,9 @@ async def test_mcp_removal_drops_the_apps_actions_from_the_namespace() -> None:
 async def test_mcp_addition_starts_the_app_and_publishes_its_actions() -> None:
     live = AppConfig(mcp_servers=[MCPServerConfig(name="mail")])
     manager, _, _ = _manager(live=live)
-    host = FakeHost(diff={"started": [SimpleNamespace(name="calendar")], "stopped": []})
+    host = FakeHost(
+        diff={"started": [SimpleNamespace(name="calendar", ready=True)], "stopped": []}
+    )
     registry = await _registry_with(
         host, [ToolSpec(name="mail__act", description="mail action", source="mail")]
     )
@@ -602,12 +605,87 @@ async def test_mcp_addition_starts_the_app_and_publishes_its_actions() -> None:
     reply = await manager.set(op="add", path="mcp_servers", value={"name": "calendar"})
     assert reply == (
         "mcp_servers updated — 2 entries now (config.yaml has 1). "
-        "— calendar started — their actions are in my vocabulary"
+        "— calendar connected · 1 action in my vocabulary"
     )
     assert host.applied == [["mail", "calendar"]]
     assert registry.get("calendar__act") is not None
     assert registry.get("mail__act") is not None  # the untouched app keeps its actions
     assert loop.rebuilt == 1
+
+
+async def test_mcp_addition_of_a_silent_server_makes_the_promise() -> None:
+    """A server that hasn't answered yet is never claimed as connected —
+    the note says what's true and promises the announce."""
+    live = AppConfig(mcp_servers=[MCPServerConfig(name="mail")])
+    manager, _, _ = _manager(live=live)
+    host = FakeHost(
+        diff={"started": [SimpleNamespace(name="calendar", ready=False)], "stopped": []}
+    )
+    registry = await _registry_with(
+        host, [ToolSpec(name="mail__act", description="mail action", source="mail")]
+    )
+    loop = FakeLoop()
+    manager.wire(loop=loop, tools=registry, host=host)
+
+    reply = await manager.set(op="add", path="mcp_servers", value={"name": "calendar"})
+    assert reply == (
+        "mcp_servers updated — 2 entries now (config.yaml has 1). "
+        "— calendar hasn't answered yet — still trying, I'll tell you the moment it's up"
+    )
+
+
+async def test_mcp_restart_gets_the_connected_note_not_a_stopped_one() -> None:
+    """A changed app restarts — its name is in both halves of the diff. The
+    note speaks only of the fresh connection; 'stopped' is for apps that
+    actually left, and 'their actions are gone' would be a lie here."""
+    live = AppConfig(mcp_servers=[MCPServerConfig(name="mail")])
+    manager, _, _ = _manager(live=live)
+    host = FakeHost(
+        diff={"started": [SimpleNamespace(name="mail", ready=True)], "stopped": ["mail"]}
+    )
+    registry = await _registry_with(
+        host, [ToolSpec(name="mail__act", description="mail action", source="mail")]
+    )
+    loop = FakeLoop()
+    manager.wire(loop=loop, tools=registry, host=host)
+
+    changed = [
+        {
+            "name": "mail",
+            "transport": {"type": "http", "url": "https://mcp.example.com/mcp"},
+        }
+    ]
+    reply = await manager.set(op="set", path="mcp_servers", value=changed)
+    assert reply == (
+        "mcp_servers set — 1 entries now (config.yaml has 1). "
+        "— mail connected · 1 action in my vocabulary"
+    )
+    assert loop.rebuilt == 1
+
+
+async def test_a_same_value_messaging_write_still_reconciles(tmp_path, monkeypatch) -> None:
+    """'It starts once the token is there,' made true: every messaging
+    write rebuilds the connectors — even a same-value one — and the build
+    reads tokens fresh through the resolver, so a key added after the
+    toggle was set connects with no restart."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("TELEGRAM_BOT_TOKEN=fresh-token\n")
+    manager, _, live = _manager()
+    manager.wire(loop=FakeLoop(), surfaces=SurfaceFanout([]), resolver=EnvResolver(env_file))
+
+    builds: list[Settings] = []
+
+    def fake_factory(settings, config, *, approvals=None, on_decision=None, on_inbound=None):
+        builds.append(settings)
+        return []
+
+    monkeypatch.setattr(aether.config_store, "build_messaging_connectors", fake_factory)
+
+    await manager.set(op="set", path="messaging.telegram.enabled", value=True)
+    assert builds[-1].telegram_bot_token == "fresh-token"  # fresh, not boot-time
+
+    await manager.set(op="set", path="messaging.telegram.enabled", value=True)  # same value
+    assert len(builds) == 2  # rebuilt anyway — that's the whole promise
 
 
 # -- the render story, in miniature -------------------------------------------------

@@ -1,6 +1,7 @@
 """REST endpoints. `settings` and component instances are read from
 `request.app.state`, which the lifespan in main.py populates before the
-server accepts traffic. Everything except /healthz is token-guarded.
+server accepts traffic. Everything except /healthz is token-guarded —
+the panel sends its token with every call.
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, Response, Upl
 from pydantic import BaseModel
 
 from ..workspace import SecretRejected, WorkspaceEntry, WorkspaceWriteError
+from ..apps_catalog import CATALOG, recipe_for
+from ..composio_bridge import ComposioNotConfigured
 
 log = logging.getLogger("aether.api")
 
@@ -99,6 +102,9 @@ async def list_approvals(request: Request, token: str | None = None) -> dict:
                 "id": a.id,
                 "tool_name": a.tool_name,
                 "params": a.params,
+                # why the gate parked it — the card's plain-language reason
+                "rules_matched": a.rules_matched,
+                "note": a.note,
                 "created_at": a.created_at.isoformat(),
                 "expires_at": a.expires_at.isoformat(),
             }
@@ -255,15 +261,37 @@ async def set_personality(
 @router.get("/api/settings/apps")
 async def apps_feed(request: Request, token: str | None = None) -> dict:
     """Read-only view of what's actually connected: the native messaging
-    toggles and MCP servers from config.yaml, whether screen-vision is
-    available this boot, and the contact allowlist mode. No edit path —
-    config.yaml and provider keys are the source of truth."""
+    toggles (and whether each one's keys are in place), the MCP servers
+    with their live connection state, screen-vision availability, and the
+    contact allowlist mode. The chat-surface recipes ride along so the
+    panel can show what chat's /apps walk can add — hub apps come from
+    /api/connections instead, fetched live. No edit path — connecting
+    happens in chat, where keys are pasted and consumed."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
     config = request.app.state.config
+
+    # which key names exist right now — names only, never values
+    resolver = getattr(request.app.state, "resolver", None)
+    known = await resolver.known_names() if resolver is not None else set()
+
+    def _has_token(platform: str) -> bool:
+        recipe = recipe_for(platform)
+        if recipe is None or not recipe.env_names:
+            return False
+        return all(name in known for name in recipe.env_names)
+
+    # live MCP state from the tool registry — a server that's up counts
+    # its actions; one that hasn't answered yet reads "still connecting"
+    tools = getattr(request.app.state, "tools", None)
+    status = tools.mcp_status() if tools is not None else {}
+
+    def _actions(server_name: str) -> int:
+        return tools.server_action_count(server_name) if tools is not None else 0
+
     return {
         "connectors": [
-            {"name": name, "enabled": toggle.enabled}
+            {"name": name, "enabled": toggle.enabled, "has_token": _has_token(name)}
             for name, toggle in (
                 ("telegram", config.messaging.telegram),
                 ("discord", config.messaging.discord),
@@ -271,12 +299,101 @@ async def apps_feed(request: Request, token: str | None = None) -> dict:
             )
         ],
         "mcp_servers": [
-            {"name": s.name, "transport": s.transport.type, "enabled": s.enabled}
+            {
+                "name": s.name,
+                "transport": s.transport.type,
+                "enabled": s.enabled,
+                "connected": bool(status.get(s.name)),
+                "actions": _actions(s.name),
+            }
             for s in config.mcp_servers
         ],
         "screen_vision_available": getattr(request.app.state, "screen_vision", None) is not None,
         "contacts_mode": config.contacts.mode,
+        "catalog": [
+            {"key": r.key, "name": r.name, "blurb": r.blurb, "kind": r.kind}
+            for r in CATALOG
+        ],
     }
+
+
+# -- the app hub: Composio connections, driven from the panel -----------------------
+
+
+@router.get("/api/connections")
+async def connections_feed(request: Request, token: str | None = None) -> dict:
+    """The app hub, live: every toolkit Composio can connect for this
+    project (the panel searches and filters client-side) and this
+    instance's connected accounts — toolkit, status, identity, never a
+    credential. `configured: false` means no COMPOSIO_API_KEY yet; the
+    shape still answers, empty."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    bridge = getattr(request.app.state, "composio", None)
+    if bridge is None:
+        raise HTTPException(status_code=503, detail="the app hub isn't wired on this instance")
+    if not await bridge.available():
+        return {"configured": False, "connected": [], "toolkits": []}
+    accounts = await bridge.accounts()
+    toolkits = await bridge.toolkits()
+    return {
+        "configured": True,
+        "connected": [
+            {"id": a.id, "toolkit": a.toolkit, "status": a.status, "identity": a.identity}
+            for a in accounts
+        ],
+        "toolkits": [
+            {"slug": t.slug, "name": t.name, "logo": t.logo, "description": t.description}
+            for t in toolkits
+        ],
+    }
+
+
+@router.post("/api/connections/{toolkit}/connect")
+async def connect_app(request: Request, toolkit: str, token: str | None = None) -> dict:
+    """Start one toolkit's Connect Link — the panel opens the returned URL
+    in a new tab; credentials pass between the user and the hub only. The
+    loop waits out of band and announces in chat, exactly like a
+    chat-driven connect."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    bridge = getattr(request.app.state, "composio", None)
+    if bridge is None:
+        raise HTTPException(status_code=503, detail="the app hub isn't wired on this instance")
+    try:
+        request_id, url = await bridge.authorize(toolkit)
+    except ComposioNotConfigured:
+        raise HTTPException(
+            status_code=503,
+            detail="no COMPOSIO_API_KEY yet — say /apps add in chat and paste it once",
+        ) from None
+    except Exception:
+        log.exception("connect start failed for %s", toolkit)
+        raise HTTPException(
+            status_code=502, detail="the hub couldn't start that connect"
+        ) from None
+    agent = getattr(request.app.state, "agent", None)
+    if agent is not None:
+        agent.watch_connect(toolkit, request_id)
+    return {"redirect_url": url}
+
+
+@router.post("/api/connections/{account_id}/disconnect")
+async def disconnect_app(request: Request, account_id: str, token: str | None = None) -> dict:
+    """Remove one connected account — the bridge verifies the id is this
+    instance's own before anything is deleted; 404 when it isn't."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    bridge = getattr(request.app.state, "composio", None)
+    if bridge is None:
+        raise HTTPException(status_code=503, detail="the app hub isn't wired on this instance")
+    try:
+        removed = await bridge.disconnect(account_id)
+    except ComposioNotConfigured:
+        raise HTTPException(status_code=503, detail="no COMPOSIO_API_KEY set") from None
+    if removed is None:
+        raise HTTPException(status_code=404, detail="no such connected account")
+    return {"disconnected": removed.toolkit, "id": removed.id}
 
 
 @router.get("/api/audit")

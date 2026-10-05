@@ -269,3 +269,102 @@ def test_user_rules_beat_the_set_config_branch_both_directions() -> None:
     ruling = locks.classify("set_config", {"op": "set", "path": "llm.model", "value": "x"})
     assert ruling.decision is Decision.DENY
     assert ruling.matched_rule == "user:set_config"
+
+
+# -- origin: a connect the user just drove in chat --------------------------------
+
+
+def test_a_walk_origin_allows_a_connect_directly() -> None:
+    """The /apps pick-and-paste (origin "walk") is the user's own approval —
+    the connect applies instead of parking, and the audit says so."""
+    policy = Policy([])
+    add = policy.classify(
+        "set_config",
+        {"op": "add", "path": "mcp_servers", "value": {"name": "github"}},
+        origin="walk",
+    )
+    assert add.decision is Decision.ALLOW
+    assert add.matched_rule == "builtin:walk-connect"
+    toggle = policy.classify(
+        "set_config",
+        {"op": "set", "path": "messaging.telegram.enabled", "value": True},
+        origin="walk",
+    )
+    assert toggle.decision is Decision.ALLOW
+    assert toggle.matched_rule == "builtin:walk-connect"
+
+
+def test_only_the_connect_shaped_roots_ride_an_origin() -> None:
+    """contacts and authz park under any origin — an in-chat walk must never
+    become a way to widen who Aether listens to."""
+    policy = Policy([])
+    for path in ("contacts.allowlist", "authz.rules"):
+        ruling = policy.classify(
+            "set_config", {"op": "set", "path": path, "value": True}, origin="walk"
+        )
+        assert ruling.decision is Decision.REQUIRE_APPROVAL, path
+        assert ruling.matched_rule == "builtin:config-security", path
+
+
+def test_no_or_unrecognized_origin_keeps_todays_rules_exactly() -> None:
+    """The origin argument is loop-internal — a model proposal can never
+    produce it, and its absence (or anything unrecognized) must classify
+    exactly as before."""
+    policy = Policy([])
+    for origin in (None, "model", "", "oauth"):
+        ruling = policy.classify(
+            "set_config", {"op": "add", "path": "mcp_servers", "value": {}}, origin=origin
+        )
+        assert ruling.decision is Decision.REQUIRE_APPROVAL, origin
+        assert ruling.matched_rule == "builtin:config-security", origin
+
+
+def test_user_rules_still_beat_the_origin_branch() -> None:
+    """A user rule that forces a hold or a deny wins over the walk's direct
+    apply — their rule, their standing decision; the walk relays the card."""
+    holds = _policy(
+        {"tool_pattern": r"set_config", "param_pattern": r"mcp_servers", "decision": "approve"}
+    )
+    ruling = holds.classify(
+        "set_config", {"op": "add", "path": "mcp_servers", "value": {}}, origin="walk"
+    )
+    assert ruling.decision is Decision.REQUIRE_APPROVAL
+    assert ruling.matched_rule == "user:set_config"
+    denies = _policy({"tool_pattern": r"set_config", "decision": "deny"})
+    ruling = denies.classify(
+        "set_config", {"op": "add", "path": "mcp_servers", "value": {}}, origin="walk"
+    )
+    assert ruling.decision is Decision.DENY
+    assert ruling.matched_rule == "user:set_config"
+
+
+def test_origin_never_touches_any_other_tool() -> None:
+    """Only set_config reads origin — a walk in progress must never make a
+    risky verb any less risky."""
+    policy = Policy([])
+    ruling = policy.classify("send_message", {"text": "hi"}, origin="walk")
+    assert ruling.decision is Decision.REQUIRE_APPROVAL
+    assert ruling.matched_rule == "builtin:risky"
+
+
+# -- Composio's UPPER_SNAKE tool names classify by the same verbs --------------------
+
+
+def test_upper_snake_hub_tools_hit_the_same_verb_ladder() -> None:
+    """composio__GMAIL_SEND_EMAIL is a send in any case — without the
+    lowercase pass every hub tool would park at fail-safe, and a destructive
+    one would slip past the risky list."""
+    policy = Policy([])
+    send = policy.classify("composio__GMAIL_SEND_EMAIL", {"to": "a@b.c"})
+    assert send.decision is Decision.REQUIRE_APPROVAL
+    assert send.matched_rule == "builtin:risky"
+    delete = policy.classify("composio__GITHUB_DELETE_REPOSITORY")
+    assert delete.matched_rule == "builtin:risky"
+    fetch = policy.classify("composio__GMAIL_FETCH_EMAILS")
+    assert fetch.decision is Decision.ALLOW
+    assert fetch.matched_rule == "builtin:read-only"
+    # case-insensitivity must not invent verbs: no 'send' in RESEND-style
+    # compounds, no 'book' in 'FACEBOOK'
+    assert policy.classify("composio__FACEBOOK_GET_USER").matched_rule == "builtin:read-only"
+    parked = policy.classify("composio__LINEAR_UPDATE_ISSUE")
+    assert parked.matched_rule == "default:fail-safe"  # unknown verb — held, honestly

@@ -7,7 +7,16 @@
 # this file until you /config reset them — personal tuning applies immediately,
 # the security sections (contacts, authz, messaging, mcp_servers) wait for
 # your one-tap approval, llm changes restart the agent themselves, and
-# secrets stay in .env where chat can never touch them.
+# secrets never ride a /config line — keys paste in /apps instead (.env
+# keeps working for every one of them).
+#
+# Apps connect from chat too: /apps walks you through adding one — the link
+# to make the key, the numbered steps, and a paste that takes it right there
+# (consumed before the agent sees it, stored encrypted, never echoed back).
+# The verdict reads the live connection, not the diff: "connected ·
+# N actions" or "hasn't answered yet — I'll tell you the moment it's up".
+# mcp_servers entries written that way reference keys by name ($NAME),
+# never the value.
 
 llm:
   provider: anthropic            # anthropic | openai | gemini | ollama
@@ -29,12 +38,22 @@ salience:
   threshold: 6.0                 # 0-10; events below are stored but never surface
   rate_cap_per_hour: 20          # heuristic pre-gate: events above this are noise
 
-mcp_servers: []                  # connect anything via MCP
-  # - name: mail
-  #   transport: {type: stdio, command: npx, args: ["-y", "mcp-mail-server"]}
-  #   poll_tools: [{tool: list_unread, every_minutes: 5}]
-  # - name: calendar
-  #   transport: {type: http, url: "https://mcp.example.com/mcp"}
+mcp_servers: []                  # connect apps from chat: /apps add <name> — or by hand here
+  # gmail, github, notion, … connect through Composio (the app hub): paste
+  # COMPOSIO_API_KEY once in chat and each app is a hosted link; the walk
+  # writes this entry itself, with the session's coordinates referenced by
+  # name ($NAME) from the encrypted store — a regenerated session flows in
+  # at the next reconnect, no edit here:
+  # - name: composio
+  #   transport:
+  #     type: http
+  #     url: "$COMPOSIO_MCP_URL"
+  #     headers: {x-api-key: "$COMPOSIO_MCP_KEY"}
+  #   # events arrive by polling the hub's read tools — this phase has no
+  #   # webhook ingress:
+  #   poll_tools: [{tool: GMAIL_FETCH_EMAILS, every_minutes: 5}]
+  # - name: weather                # anything that speaks MCP directly
+  #   transport: {type: stdio, command: npx, args: ["-y", "mcp-weather"]}
 
 messaging:
   telegram: {enabled: false}     # set true + TELEGRAM_BOT_TOKEN in .env

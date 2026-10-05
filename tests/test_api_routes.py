@@ -9,14 +9,17 @@ from fakes import (
     FakeAgentSettings,
     FakeApprovals,
     FakeAudit,
+    FakeComposioBridge,
     FakeConfigManager,
     FakeEventStore,
+    FakeTraces,
 )
 from fastapi import FastAPI
 
 from aether.agent.loop import CaptureRequestBox
 from aether.api.routes import router
 from aether.authz.approvals import Approval
+from aether.composio_bridge import ConnectedApp
 from aether.config import AppConfig, AuthzConfig, AuthzRule, Settings
 from aether.memory.entities import Entity, EntityNote
 from aether.memory.events import Event, IngestResult
@@ -40,6 +43,7 @@ class FakeAgent:
         self.decision_result = decision_result
         self.calls: list[tuple[int, str]] = []
         self.notified = 0
+        self.watched: list[tuple[str, str]] = []
 
     async def decide(self, approval_id: int, decision: str):
         self.calls.append((approval_id, decision))
@@ -49,6 +53,9 @@ class FakeAgent:
 
     def notify(self) -> None:
         self.notified += 1
+
+    def watch_connect(self, toolkit: str, request_id: str) -> None:
+        self.watched.append((toolkit, request_id))
 
 
 def _approval(approval_id: int = 1, status: str = "approved") -> Approval:
@@ -88,14 +95,17 @@ def _app(
     agent: FakeAgent | None = None,
     config: AppConfig | None = None,
     agent_settings: FakeAgentSettings | None = None,
+    composio: FakeComposioBridge | None = None,
     config_manager: FakeConfigManager | None = None,
     entities=None,
     scheduler=None,
     workspace=None,
+    settings: Settings | None = None,
+    traces: FakeTraces | None = None,
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(router)
-    app.state.settings = Settings(_env_file=None, api_token="secret")
+    app.state.settings = settings or Settings(_env_file=None, api_token="secret")
     app.state.config = config or AppConfig()
     if entities is not None:
         app.state.entities = entities
@@ -115,10 +125,14 @@ def _app(
         app.state.agent = agent
     if agent_settings is not None:
         app.state.agent_settings = agent_settings
+    if composio is not None:
+        app.state.composio = composio
     if config_manager is not None:
         app.state.config_manager = config_manager
     if workspace is not None:
         app.state.workspace = workspace
+    if traces is not None:
+        app.state.traces = traces
     return app
 
 
@@ -238,13 +252,17 @@ async def test_approvals_feed_lists_pending_rows() -> None:
         await approvals.create(
             tool_name="mail__send_message",
             params={"to": "a@b.c"},
-            note="risky",
+            rules_matched="builtin:risky",
+            note="reaches an external system or is hard to undo",
         )
         filled = await client.get("/api/approvals", params={"token": "secret"})
     pending = filled.json()["pending"]
     assert len(pending) == 1
     assert pending[0]["tool_name"] == "mail__send_message"
     assert pending[0]["params"] == {"to": "a@b.c"}
+    # why the gate parked it — the card's plain-language reason
+    assert pending[0]["rules_matched"] == "builtin:risky"
+    assert pending[0]["note"] == "reaches an external system or is hard to undo"
     assert pending[0]["created_at"].endswith("+00:00")  # ISO datetimes
 
 
@@ -483,17 +501,120 @@ async def test_apps_feed_reports_configured_connectors_and_capabilities() -> Non
     async with _client(_app(config=config, vision=FakeScreenVision())) as client:
         response = await client.get("/api/settings/apps", params={"token": "secret"})
     data = response.json()
-    assert {"name": "telegram", "enabled": True} in data["connectors"]
-    assert {"name": "discord", "enabled": False} in data["connectors"]
-    assert data["mcp_servers"] == [{"name": "mail", "transport": "http", "enabled": True}]
+    # no resolver wired → no keys known → has_token is honestly False
+    assert {"name": "telegram", "enabled": True, "has_token": False} in data["connectors"]
+    assert {"name": "discord", "enabled": False, "has_token": False} in data["connectors"]
+    # no tools registry wired → not connected, zero actions
+    assert data["mcp_servers"] == [
+        {"name": "mail", "transport": "http", "enabled": True, "connected": False, "actions": 0}
+    ]
     assert data["screen_vision_available"] is True
     assert data["contacts_mode"] == "enforce"
+    # the catalog rides along so the panel never hardcodes the chat-surface
+    # list — hub apps are /api/connections' job, fetched live
+    assert {c["key"] for c in data["catalog"]} == {"telegram", "discord", "slack"}
+    assert all(
+        set(c) == {"key", "name", "blurb", "kind"}
+        for c in data["catalog"]
+    )
+
+
+async def test_apps_feed_marks_connectors_with_keys_and_live_servers() -> None:
+    from aether.config import (
+        AppConfig,
+        MessagingConfig,
+        MCPServerConfig,
+        PlatformToggle,
+        TransportConfig,
+    )
+
+    class _Resolver:
+        async def known_names(self):
+            return {"TELEGRAM_BOT_TOKEN"}
+
+    class _Tools:
+        def mcp_status(self):
+            return {"mail": True}
+
+        def server_action_count(self, name):
+            return 7 if name == "mail" else 0
+
+    config = AppConfig(
+        messaging=MessagingConfig(telegram=PlatformToggle(enabled=True)),
+        mcp_servers=[
+            MCPServerConfig(name="mail", transport=TransportConfig(type="http", url="https://x")),
+        ],
+    )
+    app = _app(config=config)
+    app.state.resolver = _Resolver()
+    app.state.tools = _Tools()
+    async with _client(app) as client:
+        response = await client.get("/api/settings/apps", params={"token": "secret"})
+    data = response.json()
+    assert {"name": "telegram", "enabled": True, "has_token": True} in data["connectors"]
+    assert data["mcp_servers"] == [
+        {"name": "mail", "transport": "http", "enabled": True, "connected": True, "actions": 7}
+    ]
 
 
 async def test_apps_feed_reports_screen_vision_unavailable_without_a_provider() -> None:
     async with _client(_app(None)) as client:  # no screen_vision on state
         response = await client.get("/api/settings/apps", params={"token": "secret"})
     assert response.json()["screen_vision_available"] is False
+
+
+# ---------------------------------------------------------------------------
+# /api/traces — decision traces for the web panel
+# ---------------------------------------------------------------------------
+
+
+async def test_traces_feed_is_token_guarded() -> None:
+    async with _client(_app(None, traces=FakeTraces())) as client:
+        assert (await client.get("/api/traces")).status_code == 401
+        assert (await client.get("/api/traces/1")).status_code == 401
+
+
+async def test_traces_feed_is_503_when_unwired() -> None:
+    async with _client(_app(None)) as client:  # no traces on state
+        response = await client.get("/api/traces", params={"token": "secret"})
+        assert response.status_code == 503
+        response = await client.get("/api/traces/1", params={"token": "secret"})
+        assert response.status_code == 503
+
+
+async def test_traces_feed_lists_summaries_newest_first() -> None:
+    traces = FakeTraces()
+    traces.add(kind="turn", label="telegram · vedant", payload={"calls": []})
+    traces.add(kind="carry_out", label="mail__send_message", payload={"result": "sent"})
+    async with _client(_app(None, traces=traces)) as client:
+        response = await client.get("/api/traces", params={"token": "secret"})
+    rows = response.json()["traces"]
+    assert [r["id"] for r in rows] == [2, 1]  # newest first
+    assert rows[0]["kind"] == "carry_out"
+    assert rows[0]["label"] == "mail__send_message"
+    assert rows[0]["at"].endswith("+00:00")
+    assert "payload" not in rows[0]  # summaries only — the detail endpoint decrypts
+
+
+async def test_trace_detail_serves_the_full_payload() -> None:
+    traces = FakeTraces()
+    trace = traces.add(
+        kind="turn",
+        label="telegram · vedant",
+        payload={"trigger": {"messages": []}, "calls": [], "reply": "on it"},
+    )
+    async with _client(_app(None, traces=traces)) as client:
+        response = await client.get(f"/api/traces/{trace.id}", params={"token": "secret"})
+    data = response.json()
+    assert data["id"] == trace.id
+    assert data["kind"] == "turn"
+    assert data["payload"]["reply"] == "on it"
+
+
+async def test_trace_detail_is_404_for_an_unknown_trace() -> None:
+    async with _client(_app(None, traces=FakeTraces())) as client:
+        response = await client.get("/api/traces/99", params={"token": "secret"})
+    assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -710,3 +831,86 @@ async def test_workspace_search_feed_finds_entries(tmp_path) -> None:
         )
     hits = response.json()["hits"]
     assert any("working on Aether" in h["text"] for h in hits)
+# /api/connections — the app hub, driven from the panel
+# ---------------------------------------------------------------------------
+
+
+async def test_connections_feed_is_token_guarded() -> None:
+    async with _client(_app(None, composio=FakeComposioBridge())) as client:
+        assert (await client.get("/api/connections")).status_code == 401
+        assert (await client.post("/api/connections/gmail/connect")).status_code == 401
+        assert (await client.post("/api/connections/acc-1/disconnect")).status_code == 401
+
+
+async def test_connections_feed_is_503_without_a_bridge_wired() -> None:
+    async with _client(_app(None)) as client:  # no composio on state
+        response = await client.get("/api/connections", params={"token": "secret"})
+        assert response.status_code == 503
+
+
+async def test_connections_feed_answers_empty_and_unconfigured_without_a_key() -> None:
+    app = _app(None, composio=FakeComposioBridge(available=False))
+    async with _client(app) as client:
+        response = await client.get("/api/connections", params={"token": "secret"})
+    assert response.json() == {"configured": False, "connected": [], "toolkits": []}
+
+
+async def test_connections_feed_lists_accounts_and_the_live_catalog() -> None:
+    bridge = FakeComposioBridge(
+        accounts=[
+            ConnectedApp(id="acc-1", toolkit="gmail", status="ACTIVE", identity="me@x.test")
+        ]
+    )
+    async with _client(_app(None, composio=bridge)) as client:
+        response = await client.get("/api/connections", params={"token": "secret"})
+    data = response.json()
+    assert data["configured"] is True
+    assert data["connected"] == [
+        {"id": "acc-1", "toolkit": "gmail", "status": "ACTIVE", "identity": "me@x.test"}
+    ]
+    assert data["toolkits"] == [
+        {"slug": "gmail", "name": "Gmail",
+         "logo": "https://logo.test/gmail.png", "description": "your mail"},
+        {"slug": "github", "name": "GitHub", "logo": "", "description": "your code"},
+    ]
+
+
+async def test_connect_returns_the_link_and_the_loop_watches_it() -> None:
+    bridge = FakeComposioBridge()
+    agent = FakeAgent()
+    async with _client(_app(None, composio=bridge, agent=agent)) as client:
+        response = await client.post(
+            "/api/connections/gmail/connect", params={"token": "secret"}
+        )
+    assert response.json() == {"redirect_url": "https://hub.example.test/connect/gmail"}
+    assert bridge.authorized == ["gmail"]
+    # a panel-driven connect lands in chat exactly like a chat-driven one
+    assert agent.watched == [("gmail", "req-1")]
+
+
+async def test_connect_without_a_key_is_an_honest_503() -> None:
+    app = _app(None, composio=FakeComposioBridge(available=False))
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/connections/gmail/connect", params={"token": "secret"}
+        )
+    assert response.status_code == 503
+    assert "COMPOSIO_API_KEY" in response.json()["detail"]
+
+
+async def test_disconnect_removes_only_an_account_thats_ours() -> None:
+    bridge = FakeComposioBridge(
+        accounts=[
+            ConnectedApp(id="acc-1", toolkit="gmail", status="ACTIVE", identity="me@x.test")
+        ]
+    )
+    async with _client(_app(None, composio=bridge)) as client:
+        response = await client.post(
+            "/api/connections/acc-1/disconnect", params={"token": "secret"}
+        )
+        missing = await client.post(
+            "/api/connections/acc-9/disconnect", params={"token": "secret"}
+        )
+    assert response.json() == {"disconnected": "gmail", "id": "acc-1"}
+    assert bridge.disconnected == ["acc-1"]
+    assert missing.status_code == 404

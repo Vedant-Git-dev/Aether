@@ -66,9 +66,7 @@ def trigger_matches(trigger: dict[str, Any], event: Event) -> bool:
     if sender and sender != "*" and not sender_matches(sender, event):
         return False
     contains = str(trigger.get("contains", "")).strip()
-    if contains and contains.lower() not in event_text(event).lower():
-        return False
-    return True
+    return not contains or contains.lower() in event_text(event).lower()
 
 
 @dataclass
@@ -104,29 +102,28 @@ class Routines:
         """Persist one routine — it exists (and can fire) the moment this
         returns. Arming a standing instruction is audited, like scheduling
         one: the row itself deserves a trail entry."""
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                row = await conn.fetchrow(
-                    "INSERT INTO routines (label, trigger_enc, action_enc,"
-                    " cooldown_seconds) VALUES ($1, $2, $3, $4)"
-                    " RETURNING id, created_at",
-                    label,
-                    b"",  # placeholders until the id exists; replaced below, same transaction
-                    b"",
-                    cooldown_seconds,
-                )
-                routine_id = row["id"]
-                await conn.execute(
-                    "UPDATE routines SET trigger_enc = $1, action_enc = $2"
-                    " WHERE id = $3",
-                    self._cipher.encrypt_json(
-                        trigger, aad=_aad(routine_id, "trigger_enc")
-                    ),
-                    self._cipher.encrypt_json(
-                        action, aad=_aad(routine_id, "action_enc")
-                    ),
-                    routine_id,
-                )
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "INSERT INTO routines (label, trigger_enc, action_enc,"
+                " cooldown_seconds) VALUES ($1, $2, $3, $4)"
+                " RETURNING id, created_at",
+                label,
+                b"",  # placeholders until the id exists; replaced below, same transaction
+                b"",
+                cooldown_seconds,
+            )
+            routine_id = row["id"]
+            await conn.execute(
+                "UPDATE routines SET trigger_enc = $1, action_enc = $2"
+                " WHERE id = $3",
+                self._cipher.encrypt_json(
+                    trigger, aad=_aad(routine_id, "trigger_enc")
+                ),
+                self._cipher.encrypt_json(
+                    action, aad=_aad(routine_id, "action_enc")
+                ),
+                routine_id,
+            )
         await self._audit.append(
             actor=actor,
             tool_name="create_routine",

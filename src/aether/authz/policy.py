@@ -6,12 +6,21 @@ before it executes. First match wins:
 1. user rules from config.yaml — explicit trust or distrust, a regex on the
    tool name, optionally combined with a regex on the call parameters
 2. set_config — personal tuning (agent.*, salience.*, llm.*) -> ALLOW;
-   every other config path (the security sections, an unknown or missing
-   one) -> REQUIRE_APPROVAL
+   a connect the user just drove in chat (origin "walk" from the /apps
+   pick-and-paste — a loop-internal argument the model can never produce)
+   on mcp_servers or messaging -> ALLOW, because the user's pick was the
+   approval; every other config path (the security sections, an unknown or
+   missing one, contacts/authz under any origin) -> REQUIRE_APPROVAL
 3. internal Aether tools (memory, scheduling, capture requests) -> ALLOW
 4. risky verbs (send, delete, pay, ...) -> REQUIRE_APPROVAL
 5. read-only verbs (list, search, get, ...) -> ALLOW
 6. anything else -> REQUIRE_APPROVAL
+
+The verb ladders (4 and 5) run against the lowercased tool name: Composio
+names its tools UPPER_SNAKE (composio__GMAIL_SEND_EMAIL), and a verb is a
+verb in either case — without it every hub tool would park at fail-safe.
+A composio tool's name is TOOLKIT_ACTION (gmail is metadata, send_email is
+the act), so the hub's tools are classified on the action part alone.
 
 The fail-safe direction matters: an unknown tool can never run silently —
 the worst case is an extra approval tap, never an unreviewed action.
@@ -37,7 +46,7 @@ class Decision(StrEnum):
 @dataclass(frozen=True)
 class Ruling:
     decision: Decision
-    matched_rule: str  # "user:<pattern>" | "builtin:config-tune" | "builtin:config-security" | "builtin:internal" | "builtin:risky" | "builtin:read-only" | "default:fail-safe"
+    matched_rule: str  # "user:<pattern>" | "builtin:walk-connect" | "builtin:config-tune" | "builtin:config-security" | "builtin:internal" | "builtin:risky" | "builtin:read-only" | "default:fail-safe"
     reason: str
 
 
@@ -117,7 +126,12 @@ class Policy:
                 raise PolicyError(f"bad regex in authz rule {rule.tool_pattern!r}: {exc}") from exc
             self._rules.append((tool_re, param_re, _DECISIONS[rule.decision], rule.note))
 
-    def classify(self, tool_name: str, params: dict[str, Any] | None = None) -> Ruling:
+    def classify(
+        self,
+        tool_name: str,
+        params: dict[str, Any] | None = None,
+        origin: str | None = None,
+    ) -> Ruling:
         params = params or {}
         for tool_re, param_re, decision, note in self._rules:
             if tool_re.search(tool_name) and (
@@ -129,23 +143,53 @@ class Policy:
                     note or f"user rule {tool_re.pattern!r}",
                 )
         if tool_name == "set_config":
+            connect = self._classify_connect(params, origin)
+            if connect is not None:
+                return connect
             return self._classify_set_config(params)
         if _INTERNAL.match(tool_name):
             return Ruling(
                 Decision.ALLOW, "builtin:internal", "internal tool, touches only Aether's own state"
             )
-        if _RISKY.search(tool_name):
+        lowered = tool_name.lower()  # Composio's UPPER_SNAKE names classify by the same verbs
+        if lowered.startswith("composio__"):
+            # composio names are TOOLKIT_ACTION — the toolkit segment is
+            # metadata; classify on the action alone (gmail_fetch_emails
+            # reads as a fetch, gmail_send_email as a send)
+            action = lowered.split("__", 1)[1]
+            lowered = action.split("_", 1)[-1] if "_" in action else action
+        if _RISKY.search(lowered):
             return Ruling(
                 Decision.REQUIRE_APPROVAL,
                 "builtin:risky",
                 "reaches an external system or is hard to undo",
             )
-        if _READONLY.search(tool_name):
+        if _READONLY.search(lowered):
             return Ruling(Decision.ALLOW, "builtin:read-only", "read-only tool, no side effects")
         return Ruling(
             Decision.REQUIRE_APPROVAL,
             "default:fail-safe",
             "unknown tool — held for a human decision",
+        )
+
+    @staticmethod
+    def _classify_connect(params: dict[str, Any], origin: str | None) -> Ruling | None:
+        """A connect the user just drove in chat — the /apps walk's
+        pick-and-paste — applies directly, because the pick was the
+        approval. `origin` is a loop-internal argument the model can never
+        produce, and only the connect-shaped roots can ride it: contacts
+        and authz park under any origin, and an absent or unrecognized
+        origin keeps today's rules exactly."""
+        if origin != "walk":
+            return None
+        root = str(params.get("path", "")).strip().partition(".")[0].lower()
+        if root not in ("mcp_servers", "messaging"):
+            return None
+        return Ruling(
+            Decision.ALLOW,
+            "builtin:walk-connect",
+            "an app connect the user just drove in chat — the "
+            "pick-and-paste is the approval",
         )
 
     @staticmethod

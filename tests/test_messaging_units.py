@@ -9,11 +9,12 @@ the MessagingConnector base class.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import discord
 import pytest
+from fakes import FakeApprovals
 from telegram import Chat, Message, Update
 from telegram.error import NetworkError
 
@@ -30,7 +31,6 @@ from aether.connectors.slack import (
     event_to_inbound,
 )
 from aether.connectors.telegram import SEND_ATTEMPTS, TelegramConnector
-from fakes import FakeApprovals
 
 # ---------------------------------------------------------------------------
 # shared decide/inbound plumbing (base class)
@@ -261,7 +261,7 @@ async def test_telegram_commands_reach_the_loop_not_the_void() -> None:
     update = Update(
         update_id=1,
         message=Message(
-            message_id=10, date=datetime.now(timezone.utc),
+            message_id=10, date=datetime.now(UTC),
             chat=Chat(id=42, type=Chat.PRIVATE), text="/verify",
         ),
     )
