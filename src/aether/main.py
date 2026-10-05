@@ -38,6 +38,7 @@ from .memory.salience import LLMJudge, Salience
 from .composio_bridge import ComposioBridge
 from .routines import Routines
 from .scheduler import Scheduler, SchedulerWorker
+from .workspace import Workspace, WorkspaceWriteError
 from .secret_env import EnvResolver
 from .secret_store import SecretStore
 
@@ -173,6 +174,24 @@ def create_app(
         traces = Traces(pool, cipher)
         app.state.traces = traces
 
+        # --- workspace: the human-editable Markdown identity/memory layer ---
+        # an enhancement layer, not core plumbing: a workspace that can't be
+        # set up (bad permissions, a full disk) degrades to "no workspace"
+        # rather than taking the whole boot down with it.
+        workspace: Workspace | None = None
+        if config.workspace.enabled:
+            candidate = Workspace(config.workspace.path)
+            try:
+                first_run = candidate.ensure_scaffold()
+            except WorkspaceWriteError as exc:
+                log.warning("workspace unavailable (%s) — continuing without it", exc)
+            else:
+                workspace = candidate
+                log.info(
+                    "workspace ready at %s (first run: %s)", workspace.root, first_run
+                )
+        app.state.workspace = workspace
+
         # --- chat + the agent ------------------------------------------------
         chat_history = ChatHistory(pool, cipher)
         chat_hub = ChatHub(chat_history)
@@ -200,6 +219,7 @@ def create_app(
             traces=traces,
             agent_settings=agent_settings,
             config_manager=config_manager,
+            workspace=workspace,
             resolver=env_resolver,
             secret_store=secret_store,
             settings=settings,
@@ -218,6 +238,7 @@ def create_app(
             traces=traces,
             audit=audit,
             config_manager=config_manager,
+            workspace=workspace,
         )
         log.info("native tools registered: %d", native)
 

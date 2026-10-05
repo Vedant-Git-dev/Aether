@@ -157,6 +157,15 @@ class AuthzConfig(BaseModel):
     approval_ttl_hours: float = 24.0
 
 
+class WorkspaceConfig(BaseModel):
+    """The human-editable Markdown workspace (identity, personality, user
+    preferences, long-term and daily memory) — separate from, and much
+    smaller than, the Postgres event memory."""
+
+    enabled: bool = True
+    path: str = "aether-workspace"
+
+
 class AppConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
@@ -165,6 +174,7 @@ class AppConfig(BaseModel):
     messaging: MessagingConfig = Field(default_factory=MessagingConfig)
     contacts: ContactsConfig = Field(default_factory=ContactsConfig)
     authz: AuthzConfig = Field(default_factory=AuthzConfig)
+    workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:

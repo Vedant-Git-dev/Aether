@@ -12,6 +12,7 @@ import logging
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel
 
+from ..workspace import SecretRejected, WorkspaceEntry, WorkspaceWriteError
 from ..apps_catalog import CATALOG, recipe_for
 from ..composio_bridge import ComposioNotConfigured
 
@@ -33,6 +34,10 @@ class DecisionBody(BaseModel):
 
 
 class PersonalityBody(BaseModel):
+    text: str
+
+
+class WorkspaceTextBody(BaseModel):
     text: str
 
 
@@ -523,3 +528,96 @@ async def tasks_feed(request: Request, limit: int = 50, token: str | None = None
             for a in actions
         ]
     }
+
+
+_WORKSPACE_FILES = ("identity", "soul", "agents", "user", "memory")
+
+
+def _entry_dict(entry: WorkspaceEntry) -> dict:
+    return {
+        "id": entry.id,
+        "text": entry.text,
+        "source": entry.source,  # "agent" | "user" | "human" (typed straight into the file)
+        "at": entry.at,
+        "status": entry.status,
+        "confidence": entry.confidence,
+    }
+
+
+@router.get("/api/workspace")
+async def workspace_feed(request: Request, token: str | None = None) -> dict:
+    """Read-only view of the human-editable workspace: each curated file's
+    parsed entries, so the panel can show generated vs human-authored
+    content distinctly, plus whether first-run setup is still pending."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    workspace = getattr(request.app.state, "workspace", None)
+    if workspace is None:
+        raise HTTPException(status_code=503, detail="workspace is not enabled")
+    return {
+        "needs_bootstrap": workspace.needs_bootstrap(),
+        "files": {
+            key: {
+                "raw": workspace.read(key),
+                "entries": [_entry_dict(e) for e in workspace.entries(key)],
+            }
+            for key in _WORKSPACE_FILES
+        },
+    }
+
+
+@router.put("/api/workspace/{file}")
+async def workspace_write(
+    file: str, body: WorkspaceTextBody, request: Request, token: str | None = None
+) -> dict:
+    """Save a direct edit to one of the curated workspace files — the
+    control center's save path for human-authored content. Goes through
+    the same secret guard as the agent's own writes."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    workspace = getattr(request.app.state, "workspace", None)
+    if workspace is None:
+        raise HTTPException(status_code=503, detail="workspace is not enabled")
+    try:
+        workspace.write_raw(file, body.text)
+    except SecretRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except WorkspaceWriteError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+@router.get("/api/workspace/daily")
+async def workspace_daily_feed(
+    request: Request, date: str | None = None, token: str | None = None
+) -> dict:
+    """One day's working notes — defaults to today."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    workspace = getattr(request.app.state, "workspace", None)
+    if workspace is None:
+        raise HTTPException(status_code=503, detail="workspace is not enabled")
+    resolved = date or workspace.today()
+    try:
+        entries = workspace.entries("daily", date_str=resolved)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"date": resolved, "entries": [_entry_dict(e) for e in entries]}
+
+
+@router.get("/api/workspace/search")
+async def workspace_search_feed(
+    request: Request, query: str = "", limit: int = 10, token: str | None = None
+) -> dict:
+    """Deterministic keyword search across the whole workspace — identity,
+    soul, agent instructions, user preferences, long-term memory, and
+    recent daily notes."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    workspace = getattr(request.app.state, "workspace", None)
+    if workspace is None:
+        raise HTTPException(status_code=503, detail="workspace is not enabled")
+    hits = workspace.search(query, limit=min(limit, 50))
+    return {"hits": [{"file": h.file, "id": h.id, "text": h.text, "score": h.score} for h in hits]}

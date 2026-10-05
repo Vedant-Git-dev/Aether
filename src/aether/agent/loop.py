@@ -273,6 +273,7 @@ class AgentLoop:
         traces: Traces | None = None,
         agent_settings: AgentSettings | None = None,
         config_manager: ConfigManager | None = None,
+        workspace: Any = None,
         resolver: EnvResolver | None = None,
         secret_store: SecretStore | None = None,
         settings: Any = None,
@@ -295,6 +296,7 @@ class AgentLoop:
         self._traces = traces
         self._agent_settings = agent_settings
         self._config_manager = config_manager
+        self._workspace = workspace
         self._resolver = resolver
         self._secret_store = secret_store
         self._settings = settings
@@ -1065,6 +1067,10 @@ class AgentLoop:
 
     async def _system_prompt(self) -> str:
         base = SYSTEM_PROMPT.format(owner="the user", apps=self._connected_apps())
+        if self._workspace is not None:
+            block = self._workspace.context_block()
+            if block:
+                base = f"{base}\n\n{block}"
         if self._agent_settings is None:
             return base
         personality = await self._agent_settings.get_personality()

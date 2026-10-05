@@ -24,6 +24,7 @@ from aether.config import AppConfig, AuthzConfig, AuthzRule, Settings
 from aether.memory.entities import Entity, EntityNote
 from aether.memory.events import Event, IngestResult
 from aether.scheduler.jobs import ScheduledAction
+from aether.workspace import Workspace
 
 
 class FakeScreenVision:
@@ -98,6 +99,7 @@ def _app(
     config_manager: FakeConfigManager | None = None,
     entities=None,
     scheduler=None,
+    workspace=None,
     settings: Settings | None = None,
     traces: FakeTraces | None = None,
 ) -> FastAPI:
@@ -127,6 +129,8 @@ def _app(
         app.state.composio = composio
     if config_manager is not None:
         app.state.config_manager = config_manager
+    if workspace is not None:
+        app.state.workspace = workspace
     if traces is not None:
         app.state.traces = traces
     return app
@@ -726,6 +730,107 @@ async def test_tasks_feed_reports_scheduled_actions() -> None:
 
 
 # ---------------------------------------------------------------------------
+# /api/workspace* — the human-editable Markdown identity/memory layer
+# ---------------------------------------------------------------------------
+
+
+def _workspace(tmp_path) -> Workspace:
+    ws = Workspace(tmp_path / "ws")
+    ws.ensure_scaffold()
+    return ws
+
+
+async def test_workspace_feed_is_token_guarded(tmp_path) -> None:
+    async with _client(_app(None, workspace=_workspace(tmp_path))) as client:
+        assert (await client.get("/api/workspace")).status_code == 401
+        assert (await client.get("/api/workspace/daily")).status_code == 401
+        assert (await client.get("/api/workspace/search")).status_code == 401
+        assert (await client.put("/api/workspace/soul", json={"text": "x"})).status_code == 401
+
+
+async def test_workspace_feed_is_503_without_a_workspace_wired() -> None:
+    async with _client(_app(None)) as client:  # no workspace on state
+        response = await client.get("/api/workspace", params={"token": "secret"})
+    assert response.status_code == 503
+
+
+async def test_workspace_feed_reports_every_file_with_parsed_entries(tmp_path) -> None:
+    workspace = _workspace(tmp_path)
+    workspace.remember("prefers concise notifications", "preference")
+    async with _client(_app(None, workspace=workspace)) as client:
+        response = await client.get("/api/workspace", params={"token": "secret"})
+    body = response.json()
+    assert body["needs_bootstrap"] is True
+    assert set(body["files"]) == {"identity", "soul", "agents", "user", "memory"}
+    user_entries = body["files"]["user"]["entries"]
+    assert any(e["text"] == "prefers concise notifications" and e["source"] == "agent" for e in user_entries)
+    assert "Name: Aether" in body["files"]["identity"]["raw"]
+
+
+async def test_workspace_write_saves_a_human_edit(tmp_path) -> None:
+    workspace = _workspace(tmp_path)
+    async with _client(_app(None, workspace=workspace)) as client:
+        response = await client.put(
+            "/api/workspace/soul",
+            params={"token": "secret"},
+            json={"text": "# SOUL.md\n\n- Be terse.\n"},
+        )
+    assert response.json() == {"ok": True}
+    assert workspace.read("soul") == "# SOUL.md\n\n- Be terse.\n"
+
+
+async def test_workspace_write_rejects_secrets_and_bad_files(tmp_path) -> None:
+    workspace = _workspace(tmp_path)
+    async with _client(_app(None, workspace=workspace)) as client:
+        secret = await client.put(
+            "/api/workspace/memory",
+            params={"token": "secret"},
+            json={"text": "api_key: sk-abcdefghijklmnopqrstuvwxyz0123456789"},
+        )
+        assert secret.status_code == 422
+
+        bad_file = await client.put(
+            "/api/workspace/bootstrap",  # not in the editable set
+            params={"token": "secret"},
+            json={"text": "anything"},
+        )
+        assert bad_file.status_code == 400
+
+        traversal = await client.put(
+            "/api/workspace/..%2F..%2Fetc%2Fpasswd",
+            params={"token": "secret"},
+            json={"text": "anything"},
+        )
+        assert traversal.status_code in (400, 404)  # never a filesystem write outside the workspace
+
+
+async def test_workspace_daily_feed_defaults_to_today(tmp_path) -> None:
+    workspace = _workspace(tmp_path)
+    workspace.remember("deploy went out", "daily")
+    async with _client(_app(None, workspace=workspace)) as client:
+        response = await client.get("/api/workspace/daily", params={"token": "secret"})
+    body = response.json()
+    assert body["date"] == workspace.today()
+    assert any(e["text"] == "deploy went out" for e in body["entries"])
+
+
+async def test_workspace_daily_feed_rejects_a_malformed_date(tmp_path) -> None:
+    async with _client(_app(None, workspace=_workspace(tmp_path))) as client:
+        response = await client.get(
+            "/api/workspace/daily", params={"token": "secret", "date": "not-a-date"}
+        )
+    assert response.status_code == 400
+
+
+async def test_workspace_search_feed_finds_entries(tmp_path) -> None:
+    workspace = _workspace(tmp_path)
+    workspace.remember("the user is working on Aether", "fact", category="Projects")
+    async with _client(_app(None, workspace=workspace)) as client:
+        response = await client.get(
+            "/api/workspace/search", params={"token": "secret", "query": "working on Aether"}
+        )
+    hits = response.json()["hits"]
+    assert any("working on Aether" in h["text"] for h in hits)
 # /api/connections — the app hub, driven from the panel
 # ---------------------------------------------------------------------------
 

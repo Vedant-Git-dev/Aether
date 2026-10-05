@@ -11,6 +11,24 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
+
+from fakes import (
+    FakeAgentSettings,
+    FakeApprovals,
+    FakeAudit,
+    FakeConfigManager,
+    FakeContextBuilder,
+    FakeEntities,
+    FakeEventStore,
+    FakeProvider,
+    FakeRegistry,
+    FakeRoutines,
+    FakeSalience,
+    FakeScheduler,
+    FakeSurfaceConnector,
+    FakeTraces,
+)
 
 from fakes import (
     FakeAgentSettings,
@@ -59,6 +77,7 @@ from aether.connectors.registry import ToolRegistry
 from aether.llm.types import ToolCall, ToolSpec, Turn
 from aether.memory.events import Event, IngestResult
 from aether.scheduler.jobs import ScheduledAction
+from aether.workspace import Workspace
 from aether.secret_env import EnvResolver
 
 
@@ -101,6 +120,7 @@ class LoopKit:
         config: AppConfig | None = None,
         agent_settings: FakeAgentSettings | None = None,
         config_manager: FakeConfigManager | None = None,
+        workspace: Any = None,
     ):
         self.tools = ToolRegistry()
         self.events = FakeEventStore()
@@ -132,6 +152,7 @@ class LoopKit:
             traces=self.traces,
             agent_settings=agent_settings,
             config_manager=config_manager,
+            workspace=workspace,
         )
         if config_manager is not None:
             # the real native config tools, so a /config write goes through
@@ -840,6 +861,28 @@ async def test_system_prompt_is_unchanged_with_no_personality_configured() -> No
 
 async def test_system_prompt_is_unchanged_with_no_settings_store_wired() -> None:
     kit = LoopKit(None)  # agent_settings defaults to None
+    assert await kit.loop._system_prompt() == SYSTEM_PROMPT.format(
+        owner="the user", apps=kit.loop._connected_apps()
+    )
+
+
+async def test_system_prompt_carries_the_workspace_context(tmp_path) -> None:
+    workspace = Workspace(tmp_path / "ws")
+    workspace.ensure_scaffold()
+    workspace.remember("prefers concise notifications", "preference")
+    kit = LoopKit(None, workspace=workspace)
+    prompt = await kit.loop._system_prompt()
+    base = SYSTEM_PROMPT.format(owner="the user", apps=kit.loop._connected_apps())
+    assert prompt.startswith(base)
+    assert "[workspace]" in prompt
+    assert "prefers concise notifications" in prompt
+    # the first-run BOOTSTRAP.md that ensure_scaffold() just created rides
+    # along too, so the agent actually sees the setup questions
+    assert "First-run setup" in prompt
+
+
+async def test_system_prompt_is_unchanged_with_no_workspace_wired() -> None:
+    kit = LoopKit(None)  # workspace defaults to None
     assert await kit.loop._system_prompt() == SYSTEM_PROMPT.format(
         owner="the user", apps=kit.loop._connected_apps()
     )
