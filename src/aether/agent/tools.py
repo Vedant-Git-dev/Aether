@@ -45,6 +45,17 @@ def _clip(text: str, limit: int = 300) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _parse_int_param(params: dict[str, Any], key: str, default: int, *, minimum: int | None = None) -> int | None:
+    """Parse an integer tool parameter, returning None (instead of raising)
+    if the model passed something that isn't one — callers either report
+    that in plain words or fall back to `default`, their choice."""
+    try:
+        value = int(params.get(key, default))
+    except (TypeError, ValueError):
+        return None
+    return max(minimum, value) if minimum is not None else value
+
+
 # how a tool call is said in plain words — the record keeps the exact
 # name, chat never shows one
 _ACTION_PHRASES = {
@@ -261,7 +272,10 @@ def register_native_tools(
         query = str(params.get("query", "")).strip()
         if not query:
             return "memory_search needs a query."
-        found = await events.search(query, limit=int(params.get("limit", 5)))
+        limit = _parse_int_param(params, "limit", 5)
+        if limit is None:
+            return "memory_search needs limit to be a number."
+        found = await events.search(query, limit=limit)
         if not found:
             return "No matching memories."
         lines = []
@@ -386,7 +400,10 @@ def register_native_tools(
         query = str(params.get("query", "")).strip()
         if not query:
             return "workspace_search needs a query."
-        hits = workspace.search(query, limit=int(params.get("limit", 5)))
+        limit = _parse_int_param(params, "limit", 5)
+        if limit is None:
+            return "workspace_search needs limit to be a number."
+        hits = workspace.search(query, limit=limit)
         if not hits:
             return "No matching workspace memory."
         return "\n".join(f"[{h.file}#{h.id or '-'}] {h.text}" for h in hits)
@@ -495,9 +512,8 @@ def register_native_tools(
                 "when_kind, when_from, or when_contains. A reaction to "
                 "'every event' is not something the user would want."
             )
-        try:
-            cooldown = int(params.get("cooldown_seconds", 300))
-        except (TypeError, ValueError):
+        cooldown = _parse_int_param(params, "cooldown_seconds", 300)
+        if cooldown is None:
             return "cooldown_seconds must be an integer (seconds between fires)."
         routine = await routines.create(
             label=label,
@@ -557,9 +573,8 @@ def register_native_tools(
         raw_trace = str(params.get("trace_id", "")).strip()
         raw_approval = str(params.get("approval_id", "")).strip()
         about = str(params.get("about", "")).strip()
-        try:
-            limit = max(1, int(params.get("limit", 3)))
-        except (TypeError, ValueError):
+        limit = _parse_int_param(params, "limit", 3, minimum=1)
+        if limit is None:
             limit = 3
 
         if raw_trace:
