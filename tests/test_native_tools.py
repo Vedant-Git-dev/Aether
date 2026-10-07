@@ -116,6 +116,12 @@ async def test_memory_search_formats_hits_and_misses() -> None:
     assert await empty.run("memory_search", {"query": "  "}) == "memory_search needs a query."
 
 
+async def test_memory_search_rejects_a_non_numeric_limit() -> None:
+    kit = NativeKit(FakeEventStore(search_results=[_event(3)]))
+    out = await kit.run("memory_search", {"query": "alice reply", "limit": "many"})
+    assert out == "memory_search needs limit to be a number."
+
+
 async def test_note_entity_resolves_then_records() -> None:
     kit = NativeKit()
     out = await kit.run(
@@ -490,6 +496,13 @@ async def test_workspace_remember_and_search_round_trip(tmp_path) -> None:
     assert await kit.run("workspace_remember", {"text": "x"}) == (
         "workspace_remember needs text and a kind: preference, fact, or daily."
     )
+
+
+async def test_workspace_search_rejects_a_non_numeric_limit(tmp_path) -> None:
+    kit = NativeKit(workspace=_workspace(tmp_path))
+    await kit.run("workspace_remember", {"text": "note about coffee", "kind": "fact"})
+    out = await kit.run("workspace_search", {"query": "coffee", "limit": "many"})
+    assert out == "workspace_search needs limit to be a number."
 
 
 async def test_workspace_remember_refuses_secrets(tmp_path) -> None:

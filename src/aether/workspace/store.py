@@ -41,9 +41,8 @@ log = logging.getLogger("aether.workspace")
 _CONTEXT_BUDGET_CHARS = 6_000
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_ENTRY_RE = re.compile(r"^- (?P<text>.*?) <!-- (?P<meta>.*?) -->\s*$")
+_ENTRY_RE = re.compile(r"^- (?P<text>.*) <!-- (?P<meta>[^<>]*?) -->\s*$")
 _META_RE = re.compile(r"(\w+):(\S+)")
-_PROVENANCE_RE = re.compile(r"\s*<!--.*?-->")
 _KNOWN_META = {"id", "source", "at", "status", "confidence"}
 
 VALID_KINDS = ("preference", "fact", "daily")
@@ -233,7 +232,20 @@ def _new_id() -> str:
 
 
 def _strip_provenance(text: str) -> str:
-    return _PROVENANCE_RE.sub("", text)
+    """Removes only the real, appended provenance comment from a bullet
+    entry — never a '<!-- ... -->'-shaped substring the entry's own text
+    happens to contain. Reuses _ENTRY_RE so the two never disagree about
+    where the text ends and the provenance comment begins."""
+    out = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        m = _ENTRY_RE.match(stripped)
+        if m is None:
+            out.append(line)
+            continue
+        indent = line[: len(line) - len(line.lstrip())]
+        out.append(f"{indent}- {m.group('text')}")
+    return "\n".join(out)
 
 
 def _format_entry(
@@ -248,7 +260,10 @@ def _format_entry(
 ) -> str:
     meta = [f"id:{entry_id}", f"source:{source}", f"at:{at}", f"status:{status}"]
     if confidence is not None:
-        meta.append(f"confidence:{confidence:.2f}")
+        try:
+            meta.append(f"confidence:{float(confidence):.2f}")
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"confidence must be a number, got {confidence!r}") from exc
     for key, value in (extra or {}).items():
         meta.append(f"{key}:{value}")
     return f"- {text.strip()} <!-- {' '.join(meta)} -->"
@@ -259,7 +274,10 @@ def _parse_entry(line: str) -> WorkspaceEntry | None:
     if not m:
         return None
     meta = dict(_META_RE.findall(m.group("meta")))
-    confidence = float(meta["confidence"]) if "confidence" in meta else None
+    try:
+        confidence = float(meta["confidence"]) if "confidence" in meta else None
+    except ValueError:
+        confidence = None
     extra = {k: v for k, v in meta.items() if k not in _KNOWN_META}
     return WorkspaceEntry(
         id=meta.get("id", ""),
@@ -464,7 +482,10 @@ class Workspace:
         else:  # daily
             day = when or datetime.now(UTC).date()
             path = self._daily_path(day.isoformat())
-            path.parent.mkdir(exist_ok=True)
+            try:
+                path.parent.mkdir(exist_ok=True)
+            except OSError as exc:
+                raise WorkspaceWriteError(f"could not create {path.parent}: {exc}") from exc
             content = _read_text(path) or f"# {day.isoformat()}\n"
             content = content.rstrip("\n") + "\n" + line + "\n"
             _write_text(path, content)
@@ -495,6 +516,7 @@ class Workspace:
             entry_id=_new_id(),
             source=found.source,
             at=_now_iso(),
+            confidence=found.confidence,
             extra={"promoted_from": f"{date_str}#{entry_id}"},
         )
         mem_content = _append_under_heading(mem_content, (category or "Notes").strip(), new_line)

@@ -426,6 +426,10 @@ async def test_explain_with_no_arguments_lists_recent_traces() -> None:
     assert "Trace #3" in two
     assert "Trace #1" not in two  # the limit is respected
 
+    non_numeric = await kit.run("explain_decision", {"limit": "many"})
+    assert "Trace #3" in non_numeric
+    assert "Trace #1" in non_numeric  # a bad limit falls back to the default of 3, not an error
+
 
 # ---------------------------------------------------------------------------
 # integration: the real store

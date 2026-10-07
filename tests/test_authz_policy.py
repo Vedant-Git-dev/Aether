@@ -54,6 +54,18 @@ def test_internal_tools_are_allowed() -> None:
         assert ruling.matched_rule == "builtin:internal"
 
 
+def test_internal_prefix_does_not_swallow_mcp_namespaced_tools() -> None:
+    """An MCP server literally named 'workspace' or 'memory' must not have
+    its tools auto-allowed via the internal-tool carve-out — the flat name
+    uses '__' as its namespace separator, and workspace_\\w+ / memory_\\w+
+    must not absorb that double underscore into the wildcard."""
+    policy = Policy([])
+    for name in ("workspace__delete_everything", "memory__delete_everything"):
+        ruling = policy.classify(name)
+        assert ruling.matched_rule != "builtin:internal", name
+        assert ruling.decision is Decision.REQUIRE_APPROVAL, name  # "delete" still wins
+
+
 def test_routine_management_beats_the_risky_verbs() -> None:
     """delete_routine and create_routine carry risky verb stems — they may
     only pass because `builtin:internal` is checked before `builtin:risky`.
