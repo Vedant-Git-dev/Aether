@@ -131,6 +131,28 @@ def test_context_block_is_empty_before_scaffolding(tmp_path) -> None:
     assert _ws(tmp_path).context_block() == ""
 
 
+def test_context_block_preserves_text_containing_html_comment_markers(tmp_path) -> None:
+    """A literal '<!--' inside the user's own text must survive into the
+    model's actual per-turn context — only the real, appended provenance
+    comment gets stripped."""
+    ws = _ws(tmp_path)
+    ws.ensure_scaffold()
+    ws.remember("explain what <!-- means in HTML", "preference")
+    block = ws.context_block()
+    assert "explain what <!-- means in HTML" in block
+    assert "status:active" not in block  # the real provenance is still gone
+
+
+def test_context_block_preserves_text_with_multiple_comment_blocks(tmp_path) -> None:
+    ws = _ws(tmp_path)
+    ws.ensure_scaffold()
+    text = "see <!-- note a --> and also <!-- note b --> for details"
+    ws.remember(text, "preference")
+    block = ws.context_block()
+    assert text in block
+    assert "status:active" not in block
+
+
 # ---------------------------------------------------------------------------
 # remember — preferences, facts, daily notes
 # ---------------------------------------------------------------------------
@@ -203,6 +225,48 @@ def test_remember_each_entry_gets_a_unique_id(tmp_path) -> None:
     assert first != second
 
 
+def test_remember_preserves_text_containing_html_comment_markers(tmp_path) -> None:
+    """A literal '<!--' inside the user's own text must not be mistaken for
+    the start of the provenance comment — the non-greedy version of this
+    regex used to truncate the stored text right after it."""
+    ws = _ws(tmp_path)
+    ws.ensure_scaffold()
+    ws.remember("explain what <!-- means in HTML", "fact")
+    entry = ws.entries("memory")[0]
+    assert entry.text == "explain what <!-- means in HTML"
+
+
+def test_remember_preserves_text_containing_multiple_comment_blocks(tmp_path) -> None:
+    """More than one '<!-- ... -->'-shaped substring in the user's own text
+    must not confuse which block is the real, appended provenance comment —
+    the greedy text match has to land on the last one, not the first."""
+    ws = _ws(tmp_path)
+    ws.ensure_scaffold()
+    text = "see <!-- note a --> and also <!-- note b --> for details"
+    ws.remember(text, "fact")
+    entry = ws.entries("memory")[0]
+    assert entry.text == text
+    assert entry.id  # the real provenance comment was still parsed out correctly
+    assert entry.source == "agent"
+
+
+def test_remember_rejects_non_numeric_confidence(tmp_path) -> None:
+    ws = _ws(tmp_path)
+    ws.ensure_scaffold()
+    with pytest.raises(ValueError):
+        ws.remember("x", "fact", confidence=["not", "a", "number"])
+
+
+def test_remember_daily_raises_workspace_write_error_when_memory_dir_is_blocked(tmp_path) -> None:
+    """If the daily directory can't be created, remember() must raise a
+    clean WorkspaceWriteError instead of a raw OSError."""
+    ws = _ws(tmp_path)
+    ws.root.mkdir(parents=True)
+    (ws.root / "memory").write_text("i am a file, not a directory", encoding="utf-8")
+    with pytest.raises(WorkspaceWriteError):
+        ws.remember("note", "daily")
+
+
 # ---------------------------------------------------------------------------
 # promote — daily -> long-term memory, with provenance
 # ---------------------------------------------------------------------------
@@ -239,6 +303,16 @@ def test_promote_twice_is_false_the_second_time(tmp_path) -> None:
     assert ws.promote(today, entry_id) is False  # already marked promoted, no longer active
 
 
+def test_promote_carries_the_confidence_forward(tmp_path) -> None:
+    ws = _ws(tmp_path)
+    ws.ensure_scaffold()
+    today = date.today().isoformat()
+    entry_id = ws.remember("might ship Friday", "daily", confidence=0.6)
+    assert ws.promote(today, entry_id) is True
+    promoted = next(e for e in ws.entries("memory") if e.text == "might ship Friday")
+    assert promoted.confidence == pytest.approx(0.6)
+
+
 # ---------------------------------------------------------------------------
 # search
 # ---------------------------------------------------------------------------
@@ -267,6 +341,19 @@ def test_search_respects_the_limit(tmp_path) -> None:
     for i in range(5):
         ws.remember(f"note number {i} about coffee", "fact")
     assert len(ws.search("coffee", limit=2)) == 2
+
+
+def test_search_tolerates_a_malformed_confidence_value(tmp_path) -> None:
+    """A human hand-editing a workspace file can leave a non-numeric
+    confidence token behind — search must skip over it, not crash."""
+    ws = _ws(tmp_path)
+    ws.ensure_scaffold()
+    ws.remember("note about coffee", "fact")
+    memory_path = ws.root / "MEMORY.md"
+    corrupted = memory_path.read_text(encoding="utf-8").replace("-->", "confidence:n/a -->", 1)
+    memory_path.write_text(corrupted, encoding="utf-8")
+    hits = ws.search("coffee")  # must not raise
+    assert any("coffee" in h.text for h in hits)
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +400,20 @@ def test_remember_confidence_is_retained_not_rounded_away(tmp_path) -> None:
     ws.remember("might prefer mornings", "fact", confidence=0.35)
     entry = ws.entries("memory")[0]
     assert entry.confidence == pytest.approx(0.35)
+
+
+def test_entries_tolerates_a_malformed_confidence_value(tmp_path) -> None:
+    """A corrupted confidence token must degrade to confidence=None rather
+    than raising and taking down the whole entries() call."""
+    ws = _ws(tmp_path)
+    ws.ensure_scaffold()
+    ws.remember("some fact", "fact")
+    memory_path = ws.root / "MEMORY.md"
+    corrupted = memory_path.read_text(encoding="utf-8").replace("-->", "confidence:n/a -->", 1)
+    memory_path.write_text(corrupted, encoding="utf-8")
+    entries = ws.entries("memory")  # must not raise
+    entry = next(e for e in entries if e.text == "some fact")
+    assert entry.confidence is None
 
 
 # ---------------------------------------------------------------------------
