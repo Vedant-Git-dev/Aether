@@ -147,6 +147,7 @@ class ComposioBridge:
         Composio only."""
         if not await self.ensure():
             raise ComposioNotConfigured(f"no {API_KEY_NAME} set")
+        await self._sync_toolkits(extra=toolkit)
         request = await asyncio.to_thread(self._session.authorize, toolkit)
         if not request.redirect_url:
             raise ComposioUnavailable(f"composio gave no connect link for {toolkit}")
@@ -226,8 +227,9 @@ class ComposioBridge:
                 kwargs["cursor"] = cursor
             page = self._sdk.client.toolkits.list(**kwargs)
             for item in page.items:
-                if item.deprecated:
-                    continue
+                # note: the list response's `deprecated` is a legacy id-mapping
+                # object present on every toolkit, not a flag — nothing here
+                # marks a toolkit as deprecated, so nothing is dropped for it
                 if not item.no_auth and not item.composio_managed_auth_schemes:
                     continue
                 meta = item.meta
@@ -306,6 +308,10 @@ class ComposioBridge:
                 toolkits=toolkits,
                 session_preset=SESSION_PRESET_DIRECT_TOOLS,
                 mcp=True,
+                # the preset preloads "all", which the API rejects against an empty
+                # allowlist — the first-ever session has nothing connected yet, so
+                # it starts silent; the first connect's _sync_toolkits fills it in
+                **({"preload": {"tools": []}} if not toolkits else {}),
             )
         )
         await self._persist_mcp(session)
@@ -323,14 +329,23 @@ class ComposioBridge:
         await self._secrets.set(MCP_URL_NAME, session.mcp.url)
         await self._secrets.set(MCP_KEY_NAME, key)
 
-    async def _sync_toolkits(self) -> None:
-        """The session's allowlist mirrors exactly what's connected —
-        connect grows it, disconnect shrinks it, and the host's re-list
-        makes the namespace follow."""
+    async def _sync_toolkits(self, extra: str | None = None) -> None:
+        """The session's allowlist mirrors what's connected — connect grows
+        it, disconnect shrinks it, and the host's re-list makes the
+        namespace follow. `extra` lets a pending connect in: the session
+        refuses to even *authorize* a toolkit outside its allowlist, so the
+        link step needs the app let in before any account is ACTIVE."""
         toolkits = sorted(
             {app.toolkit for app in await self._list_apps() if app.status == "ACTIVE"}
+            | ({extra} if extra else set())
         )
-        await asyncio.to_thread(self._session.update, toolkits={"enable": toolkits})
+        await asyncio.to_thread(
+            self._session.update,
+            toolkits={"enable": toolkits},
+            # "all" is only legal with a positive allowlist — match the preload
+            # to the allowlist so the MCP listing follows what's connected
+            preload={"tools": "all" if toolkits else []},
+        )
 
     async def _list_apps(self) -> list[ConnectedApp]:
         items = await asyncio.to_thread(self._list_accounts)
