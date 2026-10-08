@@ -24,33 +24,42 @@ _TYPE_NAMES = {
 }
 
 
+# the keys the genai Schema model declares (a subset — $schema and the
+# draft-07 combiners Composio ships are rejected outright). Module-level:
+# the recursion below touches every node of every tool on every call.
+_SCHEMA_KEYS = frozenset({
+    "type",
+    "format",
+    "description",
+    "properties",
+    "items",
+    "anyOf",
+    "default",
+    "enum",
+    "example",
+    "required",
+    "title",
+    "nullable",
+    "pattern",
+})
+
+# these hold literal payloads, not subschemas — recursing into them would
+# rewrite a default like {"type": "text"} into {"type": "TEXT"}
+_SCHEMA_PAYLOAD_KEYS = frozenset({"default", "enum", "example"})
+
+
 def _schema_to_gemini(schema: Any) -> Any:
     """Recursively uppercase `type` names and drop keys the SDK's Schema
     model doesn't declare — Composio's draft-07 schemas carry $schema and
     other combiners the genai SDK rejects outright."""
     if isinstance(schema, dict):
-        # the allowlist is a subset of the Schema model's field set, so a
-        # Composio tool never tanks the whole request
-        allowed = {
-            "type",
-            "format",
-            "description",
-            "properties",
-            "items",
-            "anyOf",
-            "default",
-            "enum",
-            "example",
-            "required",
-            "title",
-            "nullable",
-            "pattern",
-        }
         out: dict[str, Any] = {}
         for key, value in schema.items():
-            if key not in allowed:
+            if key not in _SCHEMA_KEYS:
                 continue
-            if key == "type" and isinstance(value, str):
+            if key in _SCHEMA_PAYLOAD_KEYS:
+                out[key] = value
+            elif key == "type" and isinstance(value, str):
                 out[key] = _TYPE_NAMES.get(value.lower(), value.upper())
             elif key == "properties" and isinstance(value, dict):
                 # keys here are property names, not schema keywords —
