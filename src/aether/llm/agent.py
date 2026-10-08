@@ -23,12 +23,17 @@ ToolExecutor = Callable[[ToolCall], Awaitable[ToolResult]]
 
 DEFAULT_MAX_ITERATIONS = 12
 
+#: Callable that maps (already-active tool names, conversation so far) ->
+#: the next call's tool list. Injected by the agent loop so search_tools
+#: results and the model's own words can widen the set mid-turn.
+ToolGate = Callable[[set[str], list[Message]], list[ToolSpec]]
+
 
 async def run_tool_loop(
     provider: Provider,
     system: str,
     messages: list[Message],
-    tools: list[ToolSpec],
+    tools: list[ToolSpec] | ToolGate,
     execute: ToolExecutor,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
 ) -> tuple[Turn, list[Message]]:
@@ -38,13 +43,20 @@ async def run_tool_loop(
     gate there) and returns a ToolResult. Tool errors are fed back to the
     model as error results instead of crashing the loop.
 
+    `tools` may be a plain list (static) or a ToolGate: called with the
+    names already in play before every completion, returning that call's
+    tool list — this is how a search_tools result unlocks more tools for
+    the very next iteration.
+
     Returns (final_turn, full_history): the last completion, plus the input
     messages extended with everything the loop appended.
     """
     history = list(messages)
     turn = Turn()
+    active: set[str] = {t.name for t in tools} if isinstance(tools, list) else set()
     for _ in range(max_iterations):
-        turn = await provider.complete(system, history, tools)
+        offered = tools(active, history) if callable(tools) else list(tools)
+        turn = await provider.complete(system, history, offered)
         if not turn.tool_calls:
             if turn.text:
                 history.append(Message.assistant(turn.text))
@@ -52,6 +64,7 @@ async def run_tool_loop(
 
         # Record the proposal, then execute every call and feed results back.
         history.append(Message.assistant(turn.text, turn.tool_calls, turn.provider_extra))
+        active.update(c.name for c in turn.tool_calls)  # search_tools unlocks ride along
         results: list[ToolResult] = []
         for call in turn.tool_calls:
             try:

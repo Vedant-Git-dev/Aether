@@ -29,7 +29,7 @@ def _schema_to_gemini(schema: Any) -> Any:
     model doesn't declare — Composio's draft-07 schemas carry $schema and
     other combiners the genai SDK rejects outright."""
     if isinstance(schema, dict):
-        # the allowlist is exactly the Schema model's field set, so a
+        # the allowlist is a subset of the Schema model's field set, so a
         # Composio tool never tanks the whole request
         allowed = {
             "type",
@@ -45,8 +45,6 @@ def _schema_to_gemini(schema: Any) -> Any:
             "title",
             "nullable",
             "pattern",
-            "$defs",
-            "$ref",
         }
         out: dict[str, Any] = {}
         for key, value in schema.items():
@@ -54,7 +52,7 @@ def _schema_to_gemini(schema: Any) -> Any:
                 continue
             if key == "type" and isinstance(value, str):
                 out[key] = _TYPE_NAMES.get(value.lower(), value.upper())
-            elif key in ("properties", "$defs") and isinstance(value, dict):
+            elif key == "properties" and isinstance(value, dict):
                 # keys here are property names, not schema keywords —
                 # keep them and sanitize each subschema
                 out[key] = {name: _schema_to_gemini(sub) for name, sub in value.items()}

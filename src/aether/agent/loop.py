@@ -1162,20 +1162,26 @@ class AgentLoop:
         }
         full_history: list[Message] = []
         reply = ""
-        # tool gating: the model sees the natives plus only the MCP tools
-        # this turn's trigger text mentions — 61 full schemas every call is
-        # what was blowing the input-token quota
+        # tool gating: natives always; MCP tools whose names match the
+        # trigger text OR anything the model has said/called this turn —
+        # a search_tools result (or the model's own reasoning text) naming
+        # "calendar" makes the calendar tools appear on the next iteration.
         trigger_text = " ".join(
             [m.text for m in messages]
             + [f"{e.source} {e.kind} {json.dumps(e.payload, default=str)[:200]}" for e in observations]
         )
-        tools = self._tools.gated_specs(trigger_text)
+        def _gate(active: set[str], so_far: list[Message]) -> list[ToolSpec]:
+            said = trigger_text + " " + " ".join(
+                m.text + " " + " ".join(c.name for c in m.tool_calls) for m in so_far
+            )
+            return self._tools.gated_specs(said, unlocked=active)
+
         try:
             final, full_history = await run_tool_loop(
                 provider,
                 await self._system_prompt(),
                 history,
-                tools,
+                _gate,
                 lambda call: self._execute(call, trace=calls),
                 max_iterations=self._config.agent.max_tool_iterations,
             )
