@@ -289,6 +289,7 @@ def create_app(
     app.mount("/assets", StaticFiles(directory=WEB_DIR), name="web-assets")
 
     @app.get("/healthz")
+    @app.get("/health")  # some pingers default here; same plain 200
     async def healthz() -> dict:
         """Plain 200 — this is the endpoint the external uptime pinger hits."""
         return {"ok": True}

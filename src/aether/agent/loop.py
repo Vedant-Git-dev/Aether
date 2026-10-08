@@ -68,6 +68,32 @@ log = logging.getLogger("aether.agent")
 
 _MAX_OBSERVATIONS = 20
 
+# History windowing (token control): a turn's prompt is capped at this many
+# messages — the context block and the newest triggers always stay, the
+# oldest middle entries fall off first. The tool loop's own back-and-forth
+# appends after this, so it isn't truncated mid-flight.
+_MAX_HISTORY_MESSAGES = 12
+# ~4 chars/token; 12k chars ≈ 3k tokens of trigger text per call
+_MAX_HISTORY_CHARS = 12_000
+
+
+def _window_history(messages: list["Message"]) -> list["Message"]:
+    """Bound a turn's input history so repeated LLM calls stay cheap.
+
+    Keeps the leading context block and the newest messages; drops oldest
+    middle entries until both the count and the rough char budget fit."""
+    if len(messages) <= _MAX_HISTORY_MESSAGES:
+        windowed = list(messages)
+    else:
+        windowed = messages[:1] + messages[-(_MAX_HISTORY_MESSAGES - 1):]
+
+    def size(ms: list["Message"]) -> int:
+        return sum(len(m.text) for m in ms)
+
+    while len(windowed) > 2 and size(windowed) > _MAX_HISTORY_CHARS:
+        del windowed[1]  # oldest after the context block
+    return windowed
+
 # the words that make a reply a question about the message it answers —
 # anything else replies normally and the model handles it
 WHY_REPLY_WORDS = frozenset({"why", "explain"})
@@ -1107,6 +1133,7 @@ class AgentLoop:
                 # answered when the platform hands the text over
                 line += f"\n(replying to my earlier message: \"{message.reply_to_text[:200]}\")"
             history.append(Message.user(line))
+        history = _window_history(history)
 
         calls: list[dict[str, Any]] = []  # filled by _execute as the turn runs
         trace: dict[str, Any] = {
@@ -1135,12 +1162,20 @@ class AgentLoop:
         }
         full_history: list[Message] = []
         reply = ""
+        # tool gating: the model sees the natives plus only the MCP tools
+        # this turn's trigger text mentions — 61 full schemas every call is
+        # what was blowing the input-token quota
+        trigger_text = " ".join(
+            [m.text for m in messages]
+            + [f"{e.source} {e.kind} {json.dumps(e.payload, default=str)[:200]}" for e in observations]
+        )
+        tools = self._tools.gated_specs(trigger_text)
         try:
             final, full_history = await run_tool_loop(
                 provider,
                 await self._system_prompt(),
                 history,
-                self._tools.specs(),
+                tools,
                 lambda call: self._execute(call, trace=calls),
                 max_iterations=self._config.agent.max_tool_iterations,
             )

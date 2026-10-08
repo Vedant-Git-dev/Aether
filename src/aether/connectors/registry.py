@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -88,6 +89,26 @@ class ToolRegistry:
 
     def specs(self) -> list[ToolSpec]:
         return [t.spec for t in self._tools.values()]
+
+    def gated_specs(self, text: str = "") -> list[ToolSpec]:
+        """Token-frugal tool list: every native tool, plus only the MCP
+        tools whose names match words in the trigger text. Composio ships
+        ~60 schemas per server; passing all of them on every call is what
+        blows the free-tier input quota, so the model only sees the apps
+        this turn actually mentions. No text (event-only turn) = natives
+        only — the model can still schedule an MCP call by name via
+        schedule_action, which the gate and dispatch accept regardless."""
+        specs: list[ToolSpec] = []
+        words = set(re.findall(r"[a-z0-9]+", text.lower()))
+        for tool in self._tools.values():
+            if tool.kind == "native":
+                specs.append(tool.spec)
+                continue
+            haystack = f"{tool.spec.name} {tool.spec.description}".lower()
+            tokens = set(re.findall(r"[a-z0-9]+", haystack))
+            if words & tokens:
+                specs.append(tool.spec)
+        return specs
 
     def get(self, name: str) -> RegisteredTool | None:
         return self._tools.get(name)
