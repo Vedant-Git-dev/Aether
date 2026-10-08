@@ -64,7 +64,7 @@ async def run_tool_loop(
 
         # Record the proposal, then execute every call and feed results back.
         history.append(Message.assistant(turn.text, turn.tool_calls, turn.provider_extra))
-        active.update(c.name for c in turn.tool_calls)  # search_tools unlocks ride along
+        active.update(c.name for c in turn.tool_calls)  # called tools stay offered
         results: list[ToolResult] = []
         for call in turn.tool_calls:
             try:

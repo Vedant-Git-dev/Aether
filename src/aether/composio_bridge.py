@@ -167,7 +167,17 @@ class ComposioBridge:
         request = await asyncio.to_thread(
             ConnectionRequest.from_id, request_id, self._sdk.client
         )
-        connection = await asyncio.to_thread(request.wait_for_connection, timeout)
+        try:
+            connection = await asyncio.to_thread(request.wait_for_connection, timeout)
+        except Exception:
+            # the link was abandoned or failed — drop the toolkit
+            # authorize() pre-admitted, or the session keeps listing tools
+            # for an app that never connected
+            try:
+                await self._sync_toolkits()
+            except Exception:
+                log.warning("composio rollback sync failed", exc_info=True)
+            raise
         await self._sync_toolkits()
         return self._to_app(connection)
 

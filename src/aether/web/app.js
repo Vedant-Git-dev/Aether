@@ -1226,11 +1226,19 @@ function renderHubGrid() {
   const shown = HUB.toolkits
     .filter((t) => !q || t.name.toLowerCase().includes(q) || t.slug.toLowerCase().includes(q))
     .sort((a, b) => Number(bySlug.has(b.slug)) - Number(bySlug.has(a.slug)));
-  if (!shown.length) {
+  // a connected account whose toolkit left the catalog (renamed/removed
+  // upstream) isn't in `shown` — render it anyway or it becomes impossible
+  // to disconnect from this page
+  const orphans = HUB.connected.filter((a) =>
+    !HUB.toolkits.some((t) => t.slug === a.toolkit)
+    && (!q || a.toolkit.toLowerCase().includes(q)));
+  if (!shown.length && !orphans.length) {
     grid.appendChild(h("div", { class: "empty-state" }, h("div", { class: "sub" },
       q ? `no app matches "${q}"` : "the hub has no apps to offer.")));
     return;
   }
+  orphans.forEach((a) => grid.appendChild(hubCard(
+    { slug: a.toolkit, name: a.toolkit, logo: "", description: "" }, a)));
   shown.forEach((t) => grid.appendChild(hubCard(t, bySlug.get(t.slug))));
 }
 

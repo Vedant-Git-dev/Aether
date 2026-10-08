@@ -23,6 +23,27 @@ log = logging.getLogger("aether.connectors.registry")
 
 NativeHandler = Callable[[dict[str, Any]], Awaitable[Any]]
 
+# grammatical filler — without it, "[message from X via Y]" prefixes hand the
+# gate 'from'/'via'/'you', which intersect with the same words in every prose
+# tool description and pass nearly every schema through on every turn
+_STOPWORDS = frozenset({
+    "a", "an", "the", "to", "of", "in", "on", "for", "and", "or", "is",
+    "are", "was", "were", "be", "it", "its", "this", "that", "these",
+    "those", "you", "your", "me", "my", "we", "our", "i", "they", "them",
+    "from", "via", "with", "at", "by", "as", "do", "does", "did", "can",
+    "could", "will", "would", "should", "may", "might", "have", "has",
+    "not", "no", "if", "what", "which", "how", "all", "any", "some",
+})
+
+
+def _tokens(text: str) -> set[str]:
+    """Significant lowercase word tokens — no stopwords, no one-char junk
+    (a 1-char query would substring-match nearly every description)."""
+    return {
+        t for t in re.findall(r"[a-z0-9]+", text.lower())
+        if len(t) > 1 and t not in _STOPWORDS
+    }
+
 
 @dataclass(frozen=True)
 class RegisteredTool:
@@ -98,7 +119,7 @@ class ToolRegistry:
         quota, so the model only sees the apps this turn actually mentions."""
         unlocked = unlocked or set()
         specs: list[ToolSpec] = []
-        words = set(re.findall(r"[a-z0-9]+", text.lower()))
+        words = _tokens(text)
         for tool in self._tools.values():
             if tool.kind == "native":
                 specs.append(tool.spec)
@@ -106,9 +127,7 @@ class ToolRegistry:
             if tool.spec.name in unlocked:
                 specs.append(tool.spec)
                 continue
-            haystack = f"{tool.spec.name} {tool.spec.description}".lower()
-            tokens = set(re.findall(r"[a-z0-9]+", haystack))
-            if words & tokens:
+            if words & _tokens(f"{tool.spec.name} {tool.spec.description}"):
                 specs.append(tool.spec)
         return specs
 
@@ -116,13 +135,12 @@ class ToolRegistry:
         """Keyword search over every registered tool (native included) —
         backs the search_tools meta-tool the model uses to pull in schemas
         the keyword gate didn't offer."""
-        words = set(re.findall(r"[a-z0-9]+", query.lower()))
+        words = _tokens(query)
         if not words:
             return []
         scored: list[tuple[int, ToolSpec]] = []
         for tool in self._tools.values():
-            haystack = f"{tool.spec.name} {tool.spec.description}".lower()
-            hits = sum(1 for w in words if w in haystack)
+            hits = len(words & _tokens(f"{tool.spec.name} {tool.spec.description}"))
             if hits:
                 scored.append((hits, tool.spec))
         scored.sort(key=lambda pair: -pair[0])

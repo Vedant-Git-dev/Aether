@@ -77,21 +77,23 @@ _MAX_HISTORY_MESSAGES = 12
 _MAX_HISTORY_CHARS = 12_000
 
 
-def _window_history(messages: list["Message"]) -> list["Message"]:
+def _window_history(messages: list["Message"], keep_head: int = 1) -> list["Message"]:
     """Bound a turn's input history so repeated LLM calls stay cheap.
 
-    Keeps the leading context block and the newest messages; drops oldest
-    middle entries until both the count and the rough char budget fit."""
+    Pins the first `keep_head` messages (the context block, when one was
+    prepended — without one, nothing is pinned, or a stale event would
+    survive every window) plus the newest messages; drops oldest middle
+    entries until both the count and the rough char budget fit."""
     if len(messages) <= _MAX_HISTORY_MESSAGES:
         windowed = list(messages)
     else:
-        windowed = messages[:1] + messages[-(_MAX_HISTORY_MESSAGES - 1):]
+        windowed = messages[:keep_head] + messages[-(_MAX_HISTORY_MESSAGES - keep_head):]
 
     def size(ms: list["Message"]) -> int:
         return sum(len(m.text) for m in ms)
 
-    while len(windowed) > 2 and size(windowed) > _MAX_HISTORY_CHARS:
-        del windowed[1]  # oldest after the context block
+    while len(windowed) > keep_head + 1 and size(windowed) > _MAX_HISTORY_CHARS:
+        del windowed[keep_head]  # oldest after the pinned head
     return windowed
 
 # the words that make a reply a question about the message it answers —
@@ -1133,7 +1135,7 @@ class AgentLoop:
                 # answered when the platform hands the text over
                 line += f"\n(replying to my earlier message: \"{message.reply_to_text[:200]}\")"
             history.append(Message.user(line))
-        history = _window_history(history)
+        history = _window_history(history, keep_head=1 if context_block else 0)
 
         calls: list[dict[str, Any]] = []  # filled by _execute as the turn runs
         trace: dict[str, Any] = {
@@ -1163,18 +1165,32 @@ class AgentLoop:
         full_history: list[Message] = []
         reply = ""
         # tool gating: natives always; MCP tools whose names match the
-        # trigger text OR anything the model has said/called this turn —
-        # a search_tools result (or the model's own reasoning text) naming
-        # "calendar" makes the calendar tools appear on the next iteration.
+        # trigger text or anything the model has said/called this turn, plus
+        # whatever search_tools found — recorded by name in `unlocked`,
+        # since tool results never reach the gate's text (Message.text
+        # excludes them)
         trigger_text = " ".join(
             [m.text for m in messages]
             + [f"{e.source} {e.kind} {json.dumps(e.payload, default=str)[:200]}" for e in observations]
         )
+        unlocked: set[str] = set()
+
         def _gate(active: set[str], so_far: list[Message]) -> list[ToolSpec]:
             said = trigger_text + " " + " ".join(
                 m.text + " " + " ".join(c.name for c in m.tool_calls) for m in so_far
             )
-            return self._tools.gated_specs(said, unlocked=active)
+            return self._tools.gated_specs(said, unlocked=active | unlocked)
+
+        async def _execute_unlocking(call: ToolCall) -> ToolResult:
+            result = await self._execute(call, trace=calls)
+            if call.name == "search_tools":
+                # re-run the same search the handler did and offer its
+                # matches on the next iteration — the result text itself
+                # can't carry them through the gate
+                unlocked.update(
+                    s.name for s in self._tools.search(str(call.arguments.get("query", "")))
+                )
+            return result
 
         try:
             final, full_history = await run_tool_loop(
@@ -1182,7 +1198,7 @@ class AgentLoop:
                 await self._system_prompt(),
                 history,
                 _gate,
-                lambda call: self._execute(call, trace=calls),
+                _execute_unlocking,
                 max_iterations=self._config.agent.max_tool_iterations,
             )
             reply = final.text.strip()

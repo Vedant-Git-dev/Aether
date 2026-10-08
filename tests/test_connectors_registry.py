@@ -132,3 +132,42 @@ async def test_drop_server_removes_only_that_servers_tools() -> None:
     assert registry.get("calendar__get_events") is not None
     # and dropping what's already gone is a no-op
     assert registry.drop_server("mail") == 0
+
+
+def _gated_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.add_native(_native("memory_search"), _echo_handler)
+    host = FakeHost([
+        ToolSpec(name="hub__GMAIL_SEND_EMAIL", description="Send an email to a recipient", source="hub"),
+        ToolSpec(name="hub__CALENDAR_LIST_EVENTS", description="List events from your calendar", source="hub"),
+    ])
+    registry.attach_mcp(host)
+    registry.sync_mcp_tools()
+    return registry
+
+
+def test_gate_ignores_stopwords_from_message_prefixes() -> None:
+    registry = _gated_registry()
+    # "[message from X via Y]" hands the gate from/via/you for free — those
+    # must not match the same filler words in every prose description
+    offered = {s.name for s in registry.gated_specs("[message from sam via telegram]\ncan you check this for me")}
+    assert offered == {"memory_search"}  # natives only
+
+
+def test_gate_matches_real_keywords_and_unlocked_names() -> None:
+    registry = _gated_registry()
+    offered = {s.name for s in registry.gated_specs("what's on my calendar today")}
+    assert "hub__CALENDAR_LIST_EVENTS" in offered
+    assert "hub__GMAIL_SEND_EMAIL" not in offered
+    # explicit unlock (search_tools matches) wins regardless of text
+    offered = {s.name for s in registry.gated_specs("", unlocked={"hub__GMAIL_SEND_EMAIL"})}
+    assert "hub__GMAIL_SEND_EMAIL" in offered
+
+
+def test_search_scores_token_overlap_not_substrings() -> None:
+    registry = _gated_registry()
+    assert registry.search("a") == []  # one-char junk matches nothing
+    assert registry.search("the a") == []  # stopword-only query matches nothing
+    found = [s.name for s in registry.search("calendar events")]
+    assert found[0] == "hub__CALENDAR_LIST_EVENTS"  # both tokens hit
+    assert "hub__GMAIL_SEND_EMAIL" not in found
