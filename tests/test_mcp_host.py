@@ -307,6 +307,77 @@ async def test_missing_url_name_fails_the_attempt_with_the_name(tmp_path) -> Non
     assert "HUB_MCP_URL" in str(boom.value)
 
 
+# -- a header-carrying server: the http client keeps mcp's tuned timeouts ------
+
+
+async def test_header_client_comes_from_mcps_own_factory(tmp_path, monkeypatch) -> None:
+    """Servers with headers (a hub's x-api-key) need a custom http client —
+    and it must come from mcp's own factory, which carries the transports'
+    timeouts (30s general, 300s SSE read). A bare AsyncClient defaults to
+    5s reads: the idle listen stream dies seconds after connect and the
+    session flaps in a reconnect loop."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("HUB_KEY=secret\n")
+    captured: dict = {}
+
+    class FakeHttpClient:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    import mcp.client.streamable_http as streamable_http
+    import mcp.shared._httpx_utils as httpx_utils
+
+    fake_http = FakeHttpClient()
+
+    def fake_factory(headers=None, timeout=None, auth=None):
+        captured["headers"] = headers
+        return fake_http
+
+    def fake_client(url, http_client=None):
+        captured["http_client"] = http_client
+        raise RuntimeError("stop before any network")
+
+    monkeypatch.setattr(httpx_utils, "create_mcp_http_client", fake_factory)
+    monkeypatch.setattr(streamable_http, "streamable_http_client", fake_client)
+
+    config = MCPServerConfig(
+        name="hub",
+        transport=TransportConfig(
+            type="http", url="https://hub.example/mcp", headers={"x-api-key": "$HUB_KEY"}
+        ),
+    )
+    conn = MCPServerConnection(config, EnvResolver(env_file))
+    with pytest.raises(RuntimeError):
+        async with conn._open_session():
+            pass
+
+    assert captured["headers"] == {"x-api-key": "secret"}  # $NAME expanded as usual
+    assert captured["http_client"] is fake_http
+    assert fake_http.closed  # the finally still closes the client it opened
+
+
+# -- _describe: a group logs its leaves, not "unhandled errors" ------------------
+
+
+def test_describe_unwraps_exception_groups() -> None:
+    assert mcp_host._describe(ValueError("boom")) == "ValueError: boom"
+
+    group = ExceptionGroup(
+        "unhandled errors in a TaskGroup",
+        [TimeoutError("read timed out"), RuntimeError("stream closed")],
+    )
+    described = mcp_host._describe(group)
+    assert "TimeoutError: read timed out" in described
+    assert "RuntimeError: stream closed" in described
+    assert "unhandled errors" not in described
+
+    nested = ExceptionGroup("outer", [ExceptionGroup("inner", [ValueError("deep")])])
+    assert "ValueError: deep" in mcp_host._describe(nested)
+
+
 # -- the re-list heartbeat: a hub grows after connect ----------------------------
 
 

@@ -32,6 +32,15 @@ _MAX_BACKOFF = 30.0
 _RELIST_SECONDS = 60.0
 
 
+def _describe(exc: BaseException) -> str:
+    """One line that carries the actual cause. str() of an ExceptionGroup is
+    just "unhandled errors in a TaskGroup (1 sub-exception)" — the cause
+    lives in the leaves, so unwrap groups (recursively) for the log line."""
+    if isinstance(exc, BaseExceptionGroup):
+        return "; ".join(_describe(e) for e in exc.exceptions)
+    return f"{type(exc).__name__}: {exc}"
+
+
 class MCPServerConnection:
     """One server: session lifecycle, tool listing, and calls.
 
@@ -106,7 +115,9 @@ class MCPServerConnection:
                     raise
                 except Exception as exc:
                     if not self._stopping:
-                        log.warning("mcp server %s connection problem: %s", self.name, exc)
+                        log.warning(
+                            "mcp server %s connection problem: %s", self.name, _describe(exc)
+                        )
                 finally:
                     self._session = None
                     self._ready.clear()
@@ -145,9 +156,14 @@ class MCPServerConnection:
                 url = await self._resolver.expand_value(url)
             http_client = None
             if transport.headers:
-                import httpx2  # mcp's HTTP stack; ships with the mcp package
+                # mcp's own factory, never a bare AsyncClient: the factory
+                # carries the transports' tuned timeouts (30s general, 300s
+                # SSE read). A default client's 5s read timeout kills the
+                # idle listen stream seconds after connect and flaps the
+                # session in a reconnect loop.
+                from mcp.shared._httpx_utils import create_mcp_http_client
 
-                http_client = httpx2.AsyncClient(headers=await self._expand(transport.headers))
+                http_client = create_mcp_http_client(headers=await self._expand(transport.headers))
             try:
                 async with (
                     streamable_http_client(url, http_client=http_client) as (
