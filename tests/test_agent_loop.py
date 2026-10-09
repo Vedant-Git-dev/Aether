@@ -261,6 +261,59 @@ async def test_a_denied_decision_never_runs() -> None:
     assert any("denied" in s for s in kit.connector.sent)
 
 
+async def test_a_carried_out_action_closes_the_loop_in_memory() -> None:
+    # the model's only picture of past turns is the event store — the
+    # request lands there (chat_message), so the fulfillment must too, or
+    # every later turn still sees the ask as open
+    kit = LoopKit(None)
+    kit.add_tool("mail__send_message", result="sent")
+
+    await kit.loop._execute(
+        ToolCall(id="t1", name="mail__send_message", arguments={"to": "a@b.c", "body": "hi"})
+    )
+    approval = kit.approvals.created[0]
+    approval.status = APPROVED
+
+    await kit.loop.execute_decision(approval.id, APPROVED)
+    remembered = [e for e in kit.events.ingested if e["kind"] == "action_done"]
+    assert len(remembered) == 1
+    assert remembered[0]["source"] == "agent"
+    assert remembered[0]["payload"]["tool"] == "mail__send_message"
+    assert remembered[0]["payload"]["params"] == {"to": "a@b.c", "body": "hi"}
+    assert remembered[0]["payload"]["approval_id"] == approval.id
+    assert "sent" in remembered[0]["payload"]["detail"]
+
+
+async def test_a_denied_action_is_remembered_as_denied() -> None:
+    kit = LoopKit(None)
+    kit.add_tool("mail__send_message")
+
+    await kit.loop._execute(
+        ToolCall(id="t1", name="mail__send_message", arguments={"to": "a@b.c"})
+    )
+    approval = kit.approvals.created[0]
+    approval.status = DENIED
+
+    await kit.loop.execute_decision(approval.id, DENIED)
+    remembered = [e for e in kit.events.ingested if e["kind"] == "action_denied"]
+    assert len(remembered) == 1
+    assert remembered[0]["payload"]["tool"] == "mail__send_message"
+
+
+async def test_a_failed_carry_out_is_remembered_as_failed() -> None:
+    kit = LoopKit(None)
+    approval = await kit.approvals.create(
+        tool_name="gmail__send_message", params={"to": "a@b.c"}
+    )
+    approval.status = APPROVED
+
+    await kit.loop.execute_decision(approval.id, APPROVED)
+    remembered = [e for e in kit.events.ingested if e["kind"] == "action_failed"]
+    assert len(remembered) == 1
+    assert remembered[0]["payload"]["tool"] == "gmail__send_message"
+    assert remembered[0]["payload"]["approval_id"] == approval.id
+
+
 async def test_the_web_panel_decide_path_carries_out_a_fresh_approval() -> None:
     kit = LoopKit(None)
     kit.add_tool("mail__send_message", result="sent")

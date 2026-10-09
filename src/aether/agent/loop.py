@@ -1454,6 +1454,7 @@ class AgentLoop:
     async def _carry_out(self, approval: Approval) -> None:
         if approval.status == DENIED:
             await self._surfaces.send_to_user(f"Not run — {approval.tool_name} was denied.")
+            await self._remember_outcome(approval, "action_denied", "denied by the user")
             return
         trace: dict[str, Any] = {
             "approval_id": approval.id,
@@ -1500,11 +1501,43 @@ class AgentLoop:
             trace["chat_refs"] = await self._surfaces.send_to_user(
                 f"✅ ran {approval.tool_name}: {result[:300]}"
             )
+        await self._remember_outcome(
+            approval,
+            "action_failed" if trace["is_error"] else "action_done",
+            str(trace["result"]),
+        )
         await self._save_trace(
             kind=CARRY_OUT,
             label=f"approval #{approval.id} — {approval.tool_name}",
             payload=trace,
         )
+
+    async def _remember_outcome(self, approval: Approval, kind: str, detail: str) -> None:
+        """Close the loop in memory. The model's only picture of past turns
+        is the event store — every turn rebuilds its history from memorable
+        events — and nothing else records the agent's *own* acts: an
+        approved action's outcome used to reach only the chat surface and
+        the trace store, neither of which a later turn ever reads, so the
+        request kept looking open ("which mail did you mean?") hours after
+        it ran. Recording must never break the act itself, so a failed
+        write is a log line, not a raise."""
+        try:
+            ingest = await self._events.ingest(
+                source="agent",
+                kind=kind,
+                payload={
+                    "tool": approval.tool_name,
+                    "params": dict(approval.params),
+                    "detail": detail[:1000],
+                    # unique per approval, so two identical sends both record
+                    "approval_id": approval.id,
+                },
+            )
+        except Exception:
+            log.warning("couldn't record the %s outcome", kind, exc_info=True)
+            return
+        if ingest.stored and ingest.event_id is not None:
+            await self._salience.score_event(ingest.event_id)
 
     # -- scheduled actions ------------------------------------------------------------
 
