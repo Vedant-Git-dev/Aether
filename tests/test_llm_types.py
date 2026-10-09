@@ -267,6 +267,43 @@ def test_gemini_schema_uppercases_type_names() -> None:
     assert out["required"] == ["q"]
 
 
+def test_gemini_schema_strips_what_the_sdk_forbids() -> None:
+    # Composio tools ship draft-07 schemas — $schema, $ref and friends make
+    # the genai SDK's Schema model reject the whole request
+    schema = {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "q": {"type": "string"},
+            "meta": {"$ref": "#/$defs/Meta"},
+        },
+        "$defs": {"Meta": {"type": "object"}},
+    }
+    out = _schema_to_gemini(schema)
+    assert "$schema" not in out
+    assert "additionalProperties" not in out
+    assert "$defs" not in out
+    assert out["properties"]["q"]["type"] == "STRING"  # property names survive
+    assert out["properties"]["meta"] == {}  # a $ref degrades, never crashes
+
+
+def test_gemini_schema_never_rewrites_payload_values() -> None:
+    # default/enum/example hold literals, not subschemas — a "type" key in a
+    # default must not get uppercased like a schema keyword
+    schema = {
+        "type": "object",
+        "properties": {
+            "cfg": {"type": "object", "default": {"type": "text", "value": ""}},
+            "mode": {"type": "string", "enum": ["a", "b"], "example": "a"},
+        },
+    }
+    out = _schema_to_gemini(schema)
+    assert out["properties"]["cfg"]["default"] == {"type": "text", "value": ""}
+    assert out["properties"]["mode"]["enum"] == ["a", "b"]
+    assert out["properties"]["mode"]["example"] == "a"
+
+
 def test_gemini_tools_shape() -> None:
     spec = ToolSpec(name="f", description="d", input_schema={"type": "object"})
     assert tools_to_gemini([spec]) == [

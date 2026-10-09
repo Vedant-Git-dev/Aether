@@ -200,7 +200,7 @@ def create_app(
         app.state.chat_hub = chat_hub
         app.state.capture_box = capture_box
 
-        surfaces = SurfaceFanout(hub=chat_hub)
+        surfaces = SurfaceFanout(hub=chat_hub, history=chat_history)
         agent = AgentLoop(
             providers=providers,
             tools=tools,
@@ -224,6 +224,7 @@ def create_app(
             secret_store=secret_store,
             settings=settings,
             composio=composio,
+            transcript=chat_history,
         )
         app.state.agent = agent
         native = register_native_tools(
@@ -289,6 +290,7 @@ def create_app(
     app.mount("/assets", StaticFiles(directory=WEB_DIR), name="web-assets")
 
     @app.get("/healthz")
+    @app.get("/health")  # some pingers default here; same plain 200
     async def healthz() -> dict:
         """Plain 200 — this is the endpoint the external uptime pinger hits."""
         return {"ok": True}

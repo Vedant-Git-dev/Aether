@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -21,6 +22,27 @@ from .mcp_host import MCPHost
 log = logging.getLogger("aether.connectors.registry")
 
 NativeHandler = Callable[[dict[str, Any]], Awaitable[Any]]
+
+# grammatical filler — without it, "[message from X via Y]" prefixes hand the
+# gate 'from'/'via'/'you', which intersect with the same words in every prose
+# tool description and pass nearly every schema through on every turn
+_STOPWORDS = frozenset({
+    "a", "an", "the", "to", "of", "in", "on", "for", "and", "or", "is",
+    "are", "was", "were", "be", "it", "its", "this", "that", "these",
+    "those", "you", "your", "me", "my", "we", "our", "i", "they", "them",
+    "from", "via", "with", "at", "by", "as", "do", "does", "did", "can",
+    "could", "will", "would", "should", "may", "might", "have", "has",
+    "not", "no", "if", "what", "which", "how", "all", "any", "some",
+})
+
+
+def _tokens(text: str) -> set[str]:
+    """Significant lowercase word tokens — no stopwords, no one-char junk
+    (a 1-char query would substring-match nearly every description)."""
+    return {
+        t for t in re.findall(r"[a-z0-9]+", text.lower())
+        if len(t) > 1 and t not in _STOPWORDS
+    }
 
 
 @dataclass(frozen=True)
@@ -88,6 +110,41 @@ class ToolRegistry:
 
     def specs(self) -> list[ToolSpec]:
         return [t.spec for t in self._tools.values()]
+
+    def gated_specs(self, text: str = "", unlocked: set[str] | None = None) -> list[ToolSpec]:
+        """Token-frugal tool list: every native tool, plus the MCP tools
+        whose names match words in the trigger text or that a search_tools
+        call unlocked this turn. Composio ships ~60 schemas per server;
+        passing all of them on every call is what blows the free-tier input
+        quota, so the model only sees the apps this turn actually mentions."""
+        unlocked = unlocked or set()
+        specs: list[ToolSpec] = []
+        words = _tokens(text)
+        for tool in self._tools.values():
+            if tool.kind == "native":
+                specs.append(tool.spec)
+                continue
+            if tool.spec.name in unlocked:
+                specs.append(tool.spec)
+                continue
+            if words & _tokens(f"{tool.spec.name} {tool.spec.description}"):
+                specs.append(tool.spec)
+        return specs
+
+    def search(self, query: str, limit: int = 8) -> list[ToolSpec]:
+        """Keyword search over every registered tool (native included) —
+        backs the search_tools meta-tool the model uses to pull in schemas
+        the keyword gate didn't offer."""
+        words = _tokens(query)
+        if not words:
+            return []
+        scored: list[tuple[int, ToolSpec]] = []
+        for tool in self._tools.values():
+            hits = len(words & _tokens(f"{tool.spec.name} {tool.spec.description}"))
+            if hits:
+                scored.append((hits, tool.spec))
+        scored.sort(key=lambda pair: -pair[0])
+        return [spec for _, spec in scored[:limit]]
 
     def get(self, name: str) -> RegisteredTool | None:
         return self._tools.get(name)

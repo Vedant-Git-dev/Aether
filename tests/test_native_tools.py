@@ -77,10 +77,10 @@ class NativeKit:
         return await self.registry.execute(name, params)
 
 
-async def test_six_native_tools_register() -> None:
+async def test_seven_native_tools_register() -> None:
     kit = NativeKit()
-    assert kit.count == 6
-    assert len(kit.registry) == 6
+    assert kit.count == 7
+    assert len(kit.registry) == 7
     names = {
         t.spec.name
         for t in (
@@ -238,7 +238,7 @@ async def test_audit_wiring_adds_the_integrity_tool() -> None:
     audit = FakeAudit()
     await audit.append(actor="agent", tool_name="mail__list_unread", decision="allow")
     kit = NativeKit(audit=audit)
-    assert kit.count == 7
+    assert kit.count == 8
 
     out = await kit.run("verify_integrity", {})
     assert "🛡️" in out
@@ -383,7 +383,7 @@ async def test_config_tools_register_only_when_wired() -> None:
     main.py logs at boot (the workspace tools are counted separately,
     below)."""
     bare = NativeKit(routines=FakeRoutines(), traces=FakeTraces(), audit=FakeAudit())
-    assert bare.count == 12
+    assert bare.count == 13
     assert bare.registry.get("get_config") is None
     assert bare.registry.get("set_config") is None
 
@@ -393,7 +393,7 @@ async def test_config_tools_register_only_when_wired() -> None:
         audit=FakeAudit(),
         config_manager=FakeConfigManager(),
     )
-    assert wired.count == 14
+    assert wired.count == 15
     assert wired.registry.get("get_config") is not None
     assert wired.registry.get("set_config") is not None
 
@@ -456,11 +456,11 @@ def _workspace(tmp_path) -> Workspace:
 
 async def test_workspace_tools_register_only_when_wired(tmp_path) -> None:
     bare = NativeKit()
-    assert bare.count == 6
+    assert bare.count == 7
     assert bare.registry.get("workspace_read") is None
 
     wired = NativeKit(workspace=_workspace(tmp_path))
-    assert wired.count == 12
+    assert wired.count == 13
     for name in (
         "workspace_read",
         "workspace_search",

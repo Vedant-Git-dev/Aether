@@ -94,6 +94,7 @@ _NATIVE_PHRASES = {
     "workspace_promote": "promoting a workspace note",
     "workspace_rewrite": "updating my identity or personality file",
     "workspace_finish_bootstrap": "finishing first-run setup",
+    "search_tools": "looking for the right tool",
 }
 
 
@@ -625,7 +626,32 @@ def register_native_tools(
             return "No decision traces recorded yet."
         return "\n\n".join(format_trace(t) for t in rows)
 
+    async def search_tools(params: dict[str, Any]) -> str:
+        query = str(params.get("query", "")).strip()
+        if not query:
+            return "search_tools needs a query — e.g. an app or action like 'calendar' or 'create issue'."
+        found = registry.search(query)
+        if not found:
+            return f"No tools match {query!r}. The app may not be connected — try the apps page."
+        lines = [f"{s.name} — {_clip(s.description, 120)}" for s in found]
+        return (
+            "Matching tools (now available to call directly this turn):\n" + "\n".join(lines)
+        )
+
     natives: list[tuple[ToolSpec, NativeHandler]] = [
+        (
+            _spec(
+                "search_tools",
+                "Find tools for an app or action that isn't in your current "
+                "tool list — e.g. 'calendar', 'send message', 'create issue'. "
+                "Matches become callable immediately after this returns.",
+                {
+                    "query": {"type": "string", "description": "app name or action to find tools for"},
+                },
+                ["query"],
+            ),
+            search_tools,
+        ),
         (
             _spec(
                 "memory_search",

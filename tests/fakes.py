@@ -397,6 +397,23 @@ class FakeTraces:
         return list(reversed(self.traces))[:limit]
 
 
+class FakeTranscript:
+    """ChatHistory double: append() records (surface, direction, text);
+    recent() answers oldest-first, bounded to the newest `limit` rows —
+    the shape the loop reads back as conversation memory."""
+
+    def __init__(self, rows: list[dict] | None = None) -> None:
+        self.rows: list[dict] = list(rows or [])
+        self.appended: list[tuple[str, str, str]] = []
+
+    async def append(self, surface: str, direction: str, text: str) -> None:
+        self.appended.append((surface, direction, text))
+        self.rows.append({"surface": surface, "direction": direction, "text": text, "at": ""})
+
+    async def recent(self, limit: int = 50) -> list[dict]:
+        return self.rows[-limit:]
+
+
 class FakeEntities:
     """Entities double: resolve mints fresh identities, note() records."""
 
@@ -643,12 +660,17 @@ class FakeComposioBridge:
         self._wait_error = wait_error
         self.authorized: list[str] = []
         self.disconnected: list[str] = []
+        self.resets = 0
         self._requests = 0
 
     async def available(self) -> bool:
         return self._available
 
     async def ensure(self) -> bool:
+        return self._available
+
+    async def reset_session(self) -> bool:
+        self.resets += 1
         return self._available
 
     async def accounts(self) -> list:

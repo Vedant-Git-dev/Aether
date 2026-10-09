@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import re
 from typing import Any
 
 from google import genai
@@ -22,20 +24,54 @@ _TYPE_NAMES = {
 }
 
 
+# the keys the genai Schema model declares (a subset — $schema and the
+# draft-07 combiners Composio ships are rejected outright). Module-level:
+# the recursion below touches every node of every tool on every call.
+_SCHEMA_KEYS = frozenset({
+    "type",
+    "format",
+    "description",
+    "properties",
+    "items",
+    "anyOf",
+    "default",
+    "enum",
+    "example",
+    "required",
+    "title",
+    "nullable",
+    "pattern",
+})
+
+# these hold literal payloads, not subschemas — recursing into them would
+# rewrite a default like {"type": "text"} into {"type": "TEXT"}
+_SCHEMA_PAYLOAD_KEYS = frozenset({"default", "enum", "example"})
+
+
 def _schema_to_gemini(schema: Any) -> Any:
-    """Recursively uppercase `type` names; pass everything else through."""
+    """Recursively uppercase `type` names and drop keys the SDK's Schema
+    model doesn't declare — Composio's draft-07 schemas carry $schema and
+    other combiners the genai SDK rejects outright."""
     if isinstance(schema, dict):
         out: dict[str, Any] = {}
         for key, value in schema.items():
-            if key == "type" and isinstance(value, str):
+            if key not in _SCHEMA_KEYS:
+                continue
+            if key in _SCHEMA_PAYLOAD_KEYS:
+                out[key] = value
+            elif key == "type" and isinstance(value, str):
                 out[key] = _TYPE_NAMES.get(value.lower(), value.upper())
-            elif isinstance(value, dict):
+            elif key == "properties" and isinstance(value, dict):
+                # keys here are property names, not schema keywords —
+                # keep them and sanitize each subschema
+                out[key] = {name: _schema_to_gemini(sub) for name, sub in value.items()}
+            elif isinstance(value, (dict, list)):
                 out[key] = _schema_to_gemini(value)
-            elif isinstance(value, list):
-                out[key] = [_schema_to_gemini(v) for v in value]
             else:
                 out[key] = value
         return out
+    if isinstance(schema, list):
+        return [_schema_to_gemini(item) for item in schema]
     return schema
 
 
@@ -153,6 +189,15 @@ def turn_from_gemini(response: Any) -> Turn:
     )
 
 
+def _retry_delay_seconds(exc: Exception) -> float | None:
+    """Pull the server's suggested delay out of a 429; None = not retryable."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    if status != 429:
+        return None
+    match = re.search(r"retry in ([\d.]+)s", str(exc), re.IGNORECASE)
+    return min(float(match.group(1)) + 1.0, 120.0) if match else 5.0
+
+
 class GeminiProvider:
     name = "gemini"
     supports_tools = True
@@ -190,12 +235,21 @@ class GeminiProvider:
         }
         if tools:
             config_kwargs["tools"] = tools_to_gemini(tools)
-        try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model,
-                contents=messages_to_gemini(messages),
-                config=gtypes.GenerateContentConfig(**config_kwargs),
-            )
-        except Exception as exc:
-            raise ProviderError(f"gemini call failed: {exc}") from exc
-        return turn_from_gemini(response)
+        # free-tier 429s carry a "Please retry in Xs" hint — wait it out a
+        # couple of times rather than tanking the whole agent tick
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                response = await self.client.aio.models.generate_content(
+                    model=self.model,
+                    contents=messages_to_gemini(messages),
+                    config=gtypes.GenerateContentConfig(**config_kwargs),
+                )
+                return turn_from_gemini(response)
+            except Exception as exc:
+                last_exc = exc
+                delay = _retry_delay_seconds(exc)
+                if delay is None or attempt == 2:
+                    break
+                await asyncio.sleep(delay)
+        raise ProviderError(f"gemini call failed: {last_exc}") from last_exc

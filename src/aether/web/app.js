@@ -1208,11 +1208,6 @@ function renderHubSection(box) {
         "No hub key yet — say /apps add <app> in chat and paste the COMPOSIO_API_KEY once. Every app after is one click.")));
     return;
   }
-  if (HUB.connected.length) {
-    const rows = h("div", { class: "available-grid" });
-    HUB.connected.forEach((a) => rows.appendChild(hubRow(a)));
-    box.appendChild(rows);
-  }
   const search = h("input", { class: "field hub-search", type: "search", placeholder: "search apps…", value: hubQuery });
   search.addEventListener("input", () => { hubQuery = search.value; renderHubGrid(); });
   box.appendChild(search);
@@ -1227,15 +1222,24 @@ function renderHubGrid() {
   if (!grid || !HUB) return;
   grid.innerHTML = "";
   const q = hubQuery.trim().toLowerCase();
-  const activeSlugs = new Set(HUB.connected.filter((a) => a.status === "ACTIVE").map((a) => a.toolkit));
-  const shown = HUB.toolkits.filter((t) => !activeSlugs.has(t.slug)
-    && (!q || t.name.toLowerCase().includes(q) || t.slug.toLowerCase().includes(q)));
-  if (!shown.length) {
+  const bySlug = new Map(HUB.connected.map((a) => [a.toolkit, a]));
+  const shown = HUB.toolkits
+    .filter((t) => !q || t.name.toLowerCase().includes(q) || t.slug.toLowerCase().includes(q))
+    .sort((a, b) => Number(bySlug.has(b.slug)) - Number(bySlug.has(a.slug)));
+  // a connected account whose toolkit left the catalog (renamed/removed
+  // upstream) isn't in `shown` — render it anyway or it becomes impossible
+  // to disconnect from this page
+  const orphans = HUB.connected.filter((a) =>
+    !HUB.toolkits.some((t) => t.slug === a.toolkit)
+    && (!q || a.toolkit.toLowerCase().includes(q)));
+  if (!shown.length && !orphans.length) {
     grid.appendChild(h("div", { class: "empty-state" }, h("div", { class: "sub" },
-      q ? `no app matches "${q}"` : "everything the hub offers is connected.")));
+      q ? `no app matches "${q}"` : "the hub has no apps to offer.")));
     return;
   }
-  shown.forEach((t) => grid.appendChild(hubCard(t)));
+  orphans.forEach((a) => grid.appendChild(hubCard(
+    { slug: a.toolkit, name: a.toolkit, logo: "", description: "" }, a)));
+  shown.forEach((t) => grid.appendChild(hubCard(t, bySlug.get(t.slug))));
 }
 
 // an app's face: the hub's logo URL, a letter tile when it has none (or it 404s)
@@ -1252,21 +1256,19 @@ function letterTile(name) {
   return h("span", { class: "letter-tile", text: (name || "?").slice(0, 1).toUpperCase() });
 }
 
-function hubCard(t) {
+function hubCard(t, account) {
+  if (account) {
+    const active = account.status === "ACTIVE";
+    return h("div", { class: `available-card${active ? " connected" : ""}` },
+      hubLogo(t, t.name),
+      h("span", {}, h("b", { text: t.name }),
+        h("small", { text: active ? (account.identity || "connected") : `${account.status.toLowerCase()} — reconnect` })),
+      h("button", { class: "btn sm", onclick: () => disconnectHubApp(account) }, "Disconnect"));
+  }
   return h("div", { class: "available-card" },
     hubLogo(t, t.name),
     h("span", {}, h("b", { text: t.name }), h("small", { text: t.description || "connect via the app hub" })),
     h("button", { class: "btn sm", onclick: () => connectHubApp(t) }, "Connect"));
-}
-
-function hubRow(a) {
-  const t = (HUB.toolkits || []).find((x) => x.slug === a.toolkit);
-  const name = t ? t.name : a.toolkit;
-  return h("div", { class: "available-card" },
-    hubLogo(t, name),
-    h("span", {}, h("b", { text: name }),
-      h("small", { text: a.status === "ACTIVE" ? (a.identity || "connected") : `${a.status.toLowerCase()} — reconnect` })),
-    h("button", { class: "btn sm", onclick: () => disconnectHubApp(a) }, "Disconnect"));
 }
 
 async function connectHubApp(t) {

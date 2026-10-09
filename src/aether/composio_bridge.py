@@ -133,6 +133,30 @@ class ComposioBridge:
                 raise ComposioUnavailable(str(exc)) from exc
             return True
 
+    async def reset_session(self) -> bool:
+        """Drop the cached session and cut a fresh one — new MCP URL and
+        key, persisted over the old $NAME secrets, so the host's next
+        reconnect re-resolves onto the new endpoint. This is the escape
+        hatch the reuse path can't take: a router that accepts initialize
+        but wedges on tools/list still answers sessions.use fine, so
+        ensure() would ride the dead session forever. False when no key
+        is set."""
+        async with self._lock:
+            key = await self._resolver.resolve(API_KEY_NAME)
+            if not key:
+                return False
+            if self._sdk is None:
+                from composio import Composio
+
+                self._sdk = Composio(api_key=key)
+            if not self._user_id:
+                self._user_id = await self._instance_user_id()
+            try:
+                self._session = await self._open_session(force_new=True)
+            except Exception as exc:
+                raise ComposioUnavailable(str(exc)) from exc
+            return True
+
     async def accounts(self) -> list[ConnectedApp]:
         """The instance's connected accounts — [] when Composio isn't
         configured (an honest empty list, not an error)."""
@@ -147,6 +171,7 @@ class ComposioBridge:
         Composio only."""
         if not await self.ensure():
             raise ComposioNotConfigured(f"no {API_KEY_NAME} set")
+        await self._sync_toolkits(extra=toolkit)
         request = await asyncio.to_thread(self._session.authorize, toolkit)
         if not request.redirect_url:
             raise ComposioUnavailable(f"composio gave no connect link for {toolkit}")
@@ -166,7 +191,17 @@ class ComposioBridge:
         request = await asyncio.to_thread(
             ConnectionRequest.from_id, request_id, self._sdk.client
         )
-        connection = await asyncio.to_thread(request.wait_for_connection, timeout)
+        try:
+            connection = await asyncio.to_thread(request.wait_for_connection, timeout)
+        except Exception:
+            # the link was abandoned or failed — drop the toolkit
+            # authorize() pre-admitted, or the session keeps listing tools
+            # for an app that never connected
+            try:
+                await self._sync_toolkits()
+            except Exception:
+                log.warning("composio rollback sync failed", exc_info=True)
+            raise
         await self._sync_toolkits()
         return self._to_app(connection)
 
@@ -226,8 +261,9 @@ class ComposioBridge:
                 kwargs["cursor"] = cursor
             page = self._sdk.client.toolkits.list(**kwargs)
             for item in page.items:
-                if item.deprecated:
-                    continue
+                # note: the list response's `deprecated` is a legacy id-mapping
+                # object present on every toolkit, not a flag — nothing here
+                # marks a toolkit as deprecated, so nothing is dropped for it
                 if not item.no_auth and not item.composio_managed_auth_schemes:
                     continue
                 meta = item.meta
@@ -280,13 +316,15 @@ class ComposioBridge:
         await self._secrets.set(_USER_ID_NAME, fresh)
         return fresh
 
-    async def _open_session(self) -> Any:
+    async def _open_session(self, force_new: bool = False) -> Any:
         """Reuse the stored session when it still exists server-side;
         otherwise create a fresh one carrying whatever is still connected,
-        so a lost session never loses the apps."""
+        so a lost session never loses the apps. `force_new` skips the
+        reuse entirely — reset_session's answer to a session that exists
+        but whose endpoint no longer answers."""
         from composio import SESSION_PRESET_DIRECT_TOOLS
 
-        session_id = await self._secrets.get(_SESSION_ID_NAME)
+        session_id = None if force_new else await self._secrets.get(_SESSION_ID_NAME)
         if session_id:
             try:
                 session = await asyncio.to_thread(
@@ -306,6 +344,10 @@ class ComposioBridge:
                 toolkits=toolkits,
                 session_preset=SESSION_PRESET_DIRECT_TOOLS,
                 mcp=True,
+                # the preset preloads "all", which the API rejects against an empty
+                # allowlist — the first-ever session has nothing connected yet, so
+                # it starts silent; the first connect's _sync_toolkits fills it in
+                **({"preload": {"tools": []}} if not toolkits else {}),
             )
         )
         await self._persist_mcp(session)
@@ -323,14 +365,23 @@ class ComposioBridge:
         await self._secrets.set(MCP_URL_NAME, session.mcp.url)
         await self._secrets.set(MCP_KEY_NAME, key)
 
-    async def _sync_toolkits(self) -> None:
-        """The session's allowlist mirrors exactly what's connected —
-        connect grows it, disconnect shrinks it, and the host's re-list
-        makes the namespace follow."""
+    async def _sync_toolkits(self, extra: str | None = None) -> None:
+        """The session's allowlist mirrors what's connected — connect grows
+        it, disconnect shrinks it, and the host's re-list makes the
+        namespace follow. `extra` lets a pending connect in: the session
+        refuses to even *authorize* a toolkit outside its allowlist, so the
+        link step needs the app let in before any account is ACTIVE."""
         toolkits = sorted(
             {app.toolkit for app in await self._list_apps() if app.status == "ACTIVE"}
+            | ({extra} if extra else set())
         )
-        await asyncio.to_thread(self._session.update, toolkits={"enable": toolkits})
+        await asyncio.to_thread(
+            self._session.update,
+            toolkits={"enable": toolkits},
+            # "all" is only legal with a positive allowlist — match the preload
+            # to the allowlist so the MCP listing follows what's connected
+            preload={"tools": "all" if toolkits else []},
+        )
 
     async def _list_apps(self) -> list[ConnectedApp]:
         items = await asyncio.to_thread(self._list_accounts)

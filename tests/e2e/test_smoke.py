@@ -117,13 +117,15 @@ def test_the_hub_grid_searches_connects_and_disconnects(page, live_server, token
     page.goto(f"{live_server}/#/apps")
     page.wait_for_selector("#hub-grid .available-card")
 
-    # the connected account shows with its identity, outside the add grid
-    connected = page.locator(".available-card", has_text="Gmail").first
-    assert connected.is_visible()
-    assert "me@example.com" in connected.inner_text()
+    # one grid, every app — the connected one carries its identity and sorts first
     cards = page.locator("#hub-grid .available-card")
-    assert cards.count() == 2  # gmail is connected — not in the add grid
-    assert page.locator("#hub-grid .available-card", has_text="GitHub").is_visible()
+    assert cards.count() == 3
+    assert "Gmail" in cards.first.inner_text()
+    assert "me@example.com" in cards.first.inner_text()
+    assert cards.first.locator("button", has_text="Disconnect").is_visible()
+    assert page.locator("#hub-grid .available-card", has_text="GitHub").locator(
+        "button", has_text="Connect"
+    ).is_visible()
     assert page.locator("#hub-grid .letter-tile").first.is_visible()  # no logo → letter
 
     # the search filters the grid client-side
@@ -142,12 +144,17 @@ def test_the_hub_grid_searches_connects_and_disconnects(page, live_server, token
     page.wait_for_function("window.__opened.length === 1")
     assert page.evaluate("window.__opened[0]") == "https://hub.example.test/connect/github"
 
-    # disconnect updates the list — gmail moves back into the add grid
-    page.locator(".available-card", has_text="Gmail").first.locator("button").click()
+    # disconnect flips the card in place — the app stays in the grid, now connectable
+    page.locator("#hub-grid .available-card", has_text="Gmail").locator("button").click()
     page.wait_for_function(
-        "document.querySelectorAll('#hub-grid .available-card').length === 3"
+        """() => {
+          const card = [...document.querySelectorAll('#hub-grid .available-card')]
+            .find((c) => c.textContent.includes('Gmail'));
+          return card && card.querySelector('button')
+            && card.querySelector('button').textContent === 'Connect';
+        }"""
     )
-    assert page.locator("#hub-grid .available-card", has_text="Gmail").is_visible()
+    assert page.locator("#hub-grid .available-card").count() == 3
 
 
 def test_no_token_shows_the_honest_empty_state_not_a_crash(page, live_server) -> None:

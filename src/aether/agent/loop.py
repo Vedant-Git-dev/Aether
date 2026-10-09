@@ -27,6 +27,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -67,6 +68,51 @@ from .traces import CARRY_OUT, ROUTINE, SCHEDULED, TURN, Traces
 log = logging.getLogger("aether.agent")
 
 _MAX_OBSERVATIONS = 20
+
+# Hub watchdog: a connection hub (composio) whose session exists but whose
+# endpoint has stopped answering tools/list flaps in a reconnect loop
+# forever — sessions.use still succeeds for it, so the bridge's reuse path
+# never escapes. After this much continuous unreadiness, the loop cuts one
+# fresh session (the host's next reconnect re-resolves the $NAME refs onto
+# it), then leaves it alone for the cooldown; a few fruitless resets per
+# boot mean the outage is Composio's, not the session's, and the normal
+# reconnect loop is what rides it out.
+_HUB_RESET_AFTER_SECONDS = 90.0  # boot grace + a few backoff cycles
+_HUB_RESET_COOLDOWN_SECONDS = 600.0
+_HUB_MAX_RESETS_PER_BOOT = 3
+
+# History windowing (token control): a turn's prompt is capped at this many
+# messages — the context block and the newest triggers always stay, the
+# oldest middle entries fall off first. The tool loop's own back-and-forth
+# appends after this, so it isn't truncated mid-flight.
+_MAX_HISTORY_MESSAGES = 12
+# ~4 chars/token; 12k chars ≈ 3k tokens of trigger text per call
+_MAX_HISTORY_CHARS = 12_000
+
+# how much of the cross-surface transcript (chat_messages, both directions)
+# is offered to each turn as conversation memory. The window above trims it
+# oldest-first under pressure — events and the fresh inbound always survive.
+_TRANSCRIPT_MESSAGES = 20
+
+
+def _window_history(messages: list["Message"], keep_head: int = 1) -> list["Message"]:
+    """Bound a turn's input history so repeated LLM calls stay cheap.
+
+    Pins the first `keep_head` messages (the context block, when one was
+    prepended — without one, nothing is pinned, or a stale event would
+    survive every window) plus the newest messages; drops oldest middle
+    entries until both the count and the rough char budget fit."""
+    if len(messages) <= _MAX_HISTORY_MESSAGES:
+        windowed = list(messages)
+    else:
+        windowed = messages[:keep_head] + messages[-(_MAX_HISTORY_MESSAGES - keep_head):]
+
+    def size(ms: list["Message"]) -> int:
+        return sum(len(m.text) for m in ms)
+
+    while len(windowed) > keep_head + 1 and size(windowed) > _MAX_HISTORY_CHARS:
+        del windowed[keep_head]  # oldest after the pinned head
+    return windowed
 
 # the words that make a reply a question about the message it answers —
 # anything else replies normally and the model handles it
@@ -131,9 +177,11 @@ class SurfaceFanout:
         self,
         connectors: list[MessagingConnector] | None = None,
         hub: Any = None,
+        history: Any = None,
     ) -> None:
         self.connectors = list(connectors or [])
         self.hub = hub
+        self.history = history
 
     def add_connectors(self, connectors: list[MessagingConnector]) -> None:
         self.connectors.extend(connectors)
@@ -168,6 +216,15 @@ class SurfaceFanout:
                 continue
             if ref:
                 refs[connector.name] = ref
+        # everything that actually landed joins the transcript so the next
+        # turn can see its own words; the hub persists the web line itself
+        # (broadcast), so only connector surfaces are written here
+        if self.history is not None:
+            for name in refs:
+                try:
+                    await self.history.append(name, "out", text)
+                except Exception:
+                    log.exception("transcript write failed for %s — continuing", name)
         return refs
 
     async def present_approval(self, approval_id: int, tool_name: str, summary: str) -> None:
@@ -278,6 +335,7 @@ class AgentLoop:
         secret_store: SecretStore | None = None,
         settings: Any = None,
         composio: ComposioBridge | None = None,
+        transcript: Any = None,
     ) -> None:
         self._providers = providers
         self._tools = tools
@@ -301,6 +359,9 @@ class AgentLoop:
         self._secret_store = secret_store
         self._settings = settings
         self._composio = composio
+        # the cross-surface transcript (chat_messages) — both directions,
+        # read back each turn as conversation memory
+        self._transcript = transcript
         # the guided /config walk in progress, if any — memory only
         self._wizard: ConfigWizard | None = None
         # the guided /apps walk in progress, if any — same rules, memory only
@@ -315,6 +376,12 @@ class AgentLoop:
         # in-flight Connect Link waits — tracked so a completed task is
         # never garbage-collected mid-flight
         self._connect_waits: set[asyncio.Task[None]] = set()
+        # hub watchdog state: when the composio connection first went
+        # unready (monotonic), when a session reset last ran, and how many
+        # this boot — see _watch_hub
+        self._hub_unready_since: float | None = None
+        self._hub_last_reset: float | None = None
+        self._hub_resets = 0
 
         self._queue: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._woken = asyncio.Event()
@@ -431,6 +498,10 @@ class AgentLoop:
         # keeping the "the moment it's up" promise is the tick's own job
         await self._reconcile_mcp()
 
+        # (a3) a hub whose endpoint has gone stale never gets ready on its
+        # own — the watchdog cuts it a fresh session
+        await self._watch_hub()
+
         # (b) inbound chat becomes memory (allowlist applies at ingest; a
         # dropped sender is never seen by the model at all)
         drained: list[InboundMessage] = []
@@ -462,6 +533,15 @@ class AgentLoop:
                     message.surface,
                 )
                 continue
+            # transcript write happens only past the allowlist — a filtered
+            # sender must never reach conversation memory, or their words
+            # would leak into a later prompt. Web inbound is persisted by
+            # the websocket handler itself, so it's skipped here.
+            if self._transcript is not None and message.surface != "web":
+                try:
+                    await self._transcript.append(message.surface, "in", message.text)
+                except Exception:
+                    log.exception("transcript write failed for inbound %s", message.surface)
             messages.append(message)
 
         # (c) everything else ingested since last tick becomes observations
@@ -980,6 +1060,53 @@ class AgentLoop:
                     f"✅ {name} — {gained} new {word} in my vocabulary"
                 )
 
+    # -- the hub watchdog ---------------------------------------------------------
+
+    async def _watch_hub(self) -> None:
+        """A hub session can go stale in a way the reuse path can't see:
+        the router still answers initialize and sessions.use, but tools/list
+        comes back as a dead stream, so the connection flaps in a reconnect
+        loop on the same URL forever. Sustained unreadiness → the bridge
+        cuts one fresh session; the host re-resolves the $NAME refs onto it
+        at its next reconnect, and the reconcile above announces the tools
+        when they land. Cooldown + per-boot cap: if resets don't fix it,
+        the outage is Composio's and only its own recovery ends it."""
+        if self._composio is None or self._host is None:
+            return
+        conn = next(
+            (c for c in self._host.connections if c.name == SERVER_NAME), None
+        )
+        if conn is None or conn.ready:
+            self._hub_unready_since = None
+            return
+        now = time.monotonic()
+        if self._hub_unready_since is None:
+            self._hub_unready_since = now
+            return
+        if now - self._hub_unready_since < _HUB_RESET_AFTER_SECONDS:
+            return
+        if (
+            self._hub_last_reset is not None
+            and now - self._hub_last_reset < _HUB_RESET_COOLDOWN_SECONDS
+        ):
+            return
+        if self._hub_resets >= _HUB_MAX_RESETS_PER_BOOT:
+            return
+        self._hub_resets += 1
+        self._hub_last_reset = now
+        self._hub_unready_since = None
+        try:
+            reset = await self._composio.reset_session()
+        except Exception:
+            log.warning("hub session reset failed", exc_info=True)
+            return
+        if reset:
+            log.info("composio endpoint stale — cut a fresh session")
+            await self._surfaces.send_to_user(
+                "composio's endpoint stopped answering, so I've cut a fresh "
+                "session — its tools rejoin in a few seconds."
+            )
+
     # -- routines ---------------------------------------------------------------
 
     async def _run_routines(self, observations: list[Event]) -> None:
@@ -1098,6 +1225,7 @@ class AgentLoop:
         context_block = self._format_context(ctx)
         if context_block:
             history.append(Message.user(f"[working context]\n{context_block}"))
+        history.extend(await self._transcript_messages(messages))
         for event in reversed(observations):  # oldest first inside the block
             history.append(Message.user(f"[new event] {self._event_line(event)}"))
         for message in messages:
@@ -1107,6 +1235,7 @@ class AgentLoop:
                 # answered when the platform hands the text over
                 line += f"\n(replying to my earlier message: \"{message.reply_to_text[:200]}\")"
             history.append(Message.user(line))
+        history = _window_history(history, keep_head=1 if context_block else 0)
 
         calls: list[dict[str, Any]] = []  # filled by _execute as the turn runs
         trace: dict[str, Any] = {
@@ -1135,13 +1264,41 @@ class AgentLoop:
         }
         full_history: list[Message] = []
         reply = ""
+        # tool gating: natives always; MCP tools whose names match the
+        # trigger text or anything the model has said/called this turn, plus
+        # whatever search_tools found — recorded by name in `unlocked`,
+        # since tool results never reach the gate's text (Message.text
+        # excludes them)
+        trigger_text = " ".join(
+            [m.text for m in messages]
+            + [f"{e.source} {e.kind} {json.dumps(e.payload, default=str)[:200]}" for e in observations]
+        )
+        unlocked: set[str] = set()
+
+        def _gate(active: set[str], so_far: list[Message]) -> list[ToolSpec]:
+            said = trigger_text + " " + " ".join(
+                m.text + " " + " ".join(c.name for c in m.tool_calls) for m in so_far
+            )
+            return self._tools.gated_specs(said, unlocked=active | unlocked)
+
+        async def _execute_unlocking(call: ToolCall) -> ToolResult:
+            result = await self._execute(call, trace=calls)
+            if call.name == "search_tools":
+                # re-run the same search the handler did and offer its
+                # matches on the next iteration — the result text itself
+                # can't carry them through the gate
+                unlocked.update(
+                    s.name for s in self._tools.search(str(call.arguments.get("query", "")))
+                )
+            return result
+
         try:
             final, full_history = await run_tool_loop(
                 provider,
                 await self._system_prompt(),
                 history,
-                self._tools.specs(),
-                lambda call: self._execute(call, trace=calls),
+                _gate,
+                _execute_unlocking,
                 max_iterations=self._config.agent.max_tool_iterations,
             )
             reply = final.text.strip()
@@ -1198,6 +1355,30 @@ class AgentLoop:
         "mail isn't connected" instead of an invented capability."""
         servers = self._tools.mcp_servers()
         return ", ".join(servers) if servers else "none"
+
+    async def _transcript_messages(self, current: list[InboundMessage]) -> list[Message]:
+        """The recent cross-surface dialogue as user/assistant messages —
+        the turn's conversation memory. Rows echoing this turn's own inbound
+        are dropped: they get the richer [message from …] line below. A
+        missing or broken transcript costs the turn nothing."""
+        if self._transcript is None:
+            return []
+        try:
+            rows = await self._transcript.recent(limit=_TRANSCRIPT_MESSAGES)
+        except Exception:
+            log.exception("transcript read failed — continuing without it")
+            return []
+        fresh = {m.text for m in current}
+        out: list[Message] = []
+        for row in rows:
+            text = row.get("text", "").strip()
+            if not text:
+                continue
+            if row["direction"] == "out":
+                out.append(Message.assistant(text))
+            elif text not in fresh:
+                out.append(Message.user(f"[{row.get('surface', '?')}] {text}"))
+        return out
 
     def _format_context(self, ctx: Any) -> str:
         lines: list[str] = []
@@ -1398,6 +1579,7 @@ class AgentLoop:
     async def _carry_out(self, approval: Approval) -> None:
         if approval.status == DENIED:
             await self._surfaces.send_to_user(f"Not run — {approval.tool_name} was denied.")
+            await self._remember_outcome(approval, "action_denied", "denied by the user")
             return
         trace: dict[str, Any] = {
             "approval_id": approval.id,
@@ -1444,11 +1626,43 @@ class AgentLoop:
             trace["chat_refs"] = await self._surfaces.send_to_user(
                 f"✅ ran {approval.tool_name}: {result[:300]}"
             )
+        await self._remember_outcome(
+            approval,
+            "action_failed" if trace["is_error"] else "action_done",
+            str(trace["result"]),
+        )
         await self._save_trace(
             kind=CARRY_OUT,
             label=f"approval #{approval.id} — {approval.tool_name}",
             payload=trace,
         )
+
+    async def _remember_outcome(self, approval: Approval, kind: str, detail: str) -> None:
+        """Close the loop in memory. The model's only picture of past turns
+        is the event store — every turn rebuilds its history from memorable
+        events — and nothing else records the agent's *own* acts: an
+        approved action's outcome used to reach only the chat surface and
+        the trace store, neither of which a later turn ever reads, so the
+        request kept looking open ("which mail did you mean?") hours after
+        it ran. Recording must never break the act itself, so a failed
+        write is a log line, not a raise."""
+        try:
+            ingest = await self._events.ingest(
+                source="agent",
+                kind=kind,
+                payload={
+                    "tool": approval.tool_name,
+                    "params": dict(approval.params),
+                    "detail": detail[:1000],
+                    # unique per approval, so two identical sends both record
+                    "approval_id": approval.id,
+                },
+            )
+        except Exception:
+            log.warning("couldn't record the %s outcome", kind, exc_info=True)
+            return
+        if ingest.stored and ingest.event_id is not None:
+            await self._salience.score_event(ingest.event_id)
 
     # -- scheduled actions ------------------------------------------------------------
 

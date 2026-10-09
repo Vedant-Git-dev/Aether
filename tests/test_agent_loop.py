@@ -9,6 +9,7 @@ become observations; configured source polls run on schedule.
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -46,9 +47,11 @@ from fakes import (
     FakeScheduler,
     FakeSurfaceConnector,
     FakeTraces,
+    FakeTranscript,
 )
 
 from aether.agent.loop import (
+    _HUB_RESET_AFTER_SECONDS,
     _MISSING,
     AgentLoop,
     CaptureRequestBox,
@@ -121,6 +124,7 @@ class LoopKit:
         agent_settings: FakeAgentSettings | None = None,
         config_manager: FakeConfigManager | None = None,
         workspace: Any = None,
+        transcript: Any = None,
     ):
         self.tools = ToolRegistry()
         self.events = FakeEventStore()
@@ -153,6 +157,7 @@ class LoopKit:
             agent_settings=agent_settings,
             config_manager=config_manager,
             workspace=workspace,
+            transcript=transcript,
         )
         if config_manager is not None:
             # the real native config tools, so a /config write goes through
@@ -259,6 +264,112 @@ async def test_a_denied_decision_never_runs() -> None:
     await kit.loop.execute_decision(approval.id, DENIED)
     assert kit.executed == []
     assert any("denied" in s for s in kit.connector.sent)
+
+
+async def test_a_carried_out_action_closes_the_loop_in_memory() -> None:
+    # the model's only picture of past turns is the event store — the
+    # request lands there (chat_message), so the fulfillment must too, or
+    # every later turn still sees the ask as open
+    kit = LoopKit(None)
+    kit.add_tool("mail__send_message", result="sent")
+
+    await kit.loop._execute(
+        ToolCall(id="t1", name="mail__send_message", arguments={"to": "a@b.c", "body": "hi"})
+    )
+    approval = kit.approvals.created[0]
+    approval.status = APPROVED
+
+    await kit.loop.execute_decision(approval.id, APPROVED)
+    remembered = [e for e in kit.events.ingested if e["kind"] == "action_done"]
+    assert len(remembered) == 1
+    assert remembered[0]["source"] == "agent"
+    assert remembered[0]["payload"]["tool"] == "mail__send_message"
+    assert remembered[0]["payload"]["params"] == {"to": "a@b.c", "body": "hi"}
+    assert remembered[0]["payload"]["approval_id"] == approval.id
+    assert "sent" in remembered[0]["payload"]["detail"]
+
+
+async def test_a_denied_action_is_remembered_as_denied() -> None:
+    kit = LoopKit(None)
+    kit.add_tool("mail__send_message")
+
+    await kit.loop._execute(
+        ToolCall(id="t1", name="mail__send_message", arguments={"to": "a@b.c"})
+    )
+    approval = kit.approvals.created[0]
+    approval.status = DENIED
+
+    await kit.loop.execute_decision(approval.id, DENIED)
+    remembered = [e for e in kit.events.ingested if e["kind"] == "action_denied"]
+    assert len(remembered) == 1
+    assert remembered[0]["payload"]["tool"] == "mail__send_message"
+
+
+async def test_a_failed_carry_out_is_remembered_as_failed() -> None:
+    kit = LoopKit(None)
+    approval = await kit.approvals.create(
+        tool_name="gmail__send_message", params={"to": "a@b.c"}
+    )
+    approval.status = APPROVED
+
+    await kit.loop.execute_decision(approval.id, APPROVED)
+    remembered = [e for e in kit.events.ingested if e["kind"] == "action_failed"]
+    assert len(remembered) == 1
+    assert remembered[0]["payload"]["tool"] == "gmail__send_message"
+    assert remembered[0]["payload"]["approval_id"] == approval.id
+
+
+def _stub_hub(*, ready: bool) -> Any:
+    """A host-shaped stub holding one connection named like the real hub."""
+    conn = SimpleNamespace(name="composio", ready=ready)
+    return SimpleNamespace(connections=[conn])
+
+
+async def test_a_stale_hub_session_gets_one_fresh_cut() -> None:
+    # a wedged router answers initialize but never tools/list, so the
+    # reconnect loop rides the same dead URL forever — after sustained
+    # unreadiness the watchdog has the bridge cut one fresh session
+    kit = LoopKit(None)
+    bridge = FakeComposioBridge()
+    kit.loop._composio = bridge
+    kit.loop._host = _stub_hub(ready=False)
+
+    await kit.loop._watch_hub()  # the first sighting only arms the timer
+    assert bridge.resets == 0
+
+    kit.loop._hub_unready_since = time.monotonic() - _HUB_RESET_AFTER_SECONDS - 1
+    await kit.loop._watch_hub()
+    assert bridge.resets == 1
+    assert any("fresh session" in s for s in kit.connector.sent)
+
+
+async def test_a_ready_hub_never_resets() -> None:
+    kit = LoopKit(None)
+    bridge = FakeComposioBridge()
+    kit.loop._composio = bridge
+    kit.loop._host = _stub_hub(ready=True)
+
+    kit.loop._hub_unready_since = time.monotonic() - 10_000
+    await kit.loop._watch_hub()
+    assert bridge.resets == 0
+    assert kit.loop._hub_unready_since is None  # the timer clears
+
+
+async def test_hub_resets_respect_the_cooldown() -> None:
+    # a Composio-side outage won't be fixed by minting sessions — after the
+    # first cut the watchdog leaves it alone for the cooldown
+    kit = LoopKit(None)
+    bridge = FakeComposioBridge()
+    kit.loop._composio = bridge
+    kit.loop._host = _stub_hub(ready=False)
+
+    kit.loop._hub_unready_since = time.monotonic() - 10_000
+    await kit.loop._watch_hub()
+    assert bridge.resets == 1
+
+    kit.loop._hub_unready_since = time.monotonic() - 10_000
+    await kit.loop._watch_hub()
+    assert bridge.resets == 1  # swallowed by the cooldown
 
 
 async def test_the_web_panel_decide_path_carries_out_a_fresh_approval() -> None:
@@ -470,6 +581,103 @@ async def test_filtered_senders_never_reach_the_model() -> None:
 
     assert provider.calls == []
     assert kit.connector.sent == []
+
+
+# ---------------------------------------------------------------------------
+# conversation memory: the transcript (chat_messages) re-enters every turn
+# ---------------------------------------------------------------------------
+
+
+async def test_transcript_reaches_the_model_with_roles() -> None:
+    provider = FakeProvider([Turn(text="the atoms one")])
+    transcript = FakeTranscript(
+        rows=[
+            {"surface": "telegram", "direction": "in", "text": "tell a joke", "at": ""},
+            {"surface": "telegram", "direction": "out", "text": "why don't scientists trust atoms?", "at": ""},
+        ]
+    )
+    kit = LoopKit(provider, transcript=transcript)
+    kit.loop.submit_message(_msg("what was the joke?"))
+    await kit.loop._tick()
+
+    messages = provider.calls[0][1]
+    assert any(m.role == "user" and "[telegram] tell a joke" in m.text for m in messages)
+    assert any(m.role == "assistant" and "atoms" in m.text for m in messages)
+
+
+async def test_current_turn_inbound_is_not_echoed_from_the_transcript() -> None:
+    provider = FakeProvider([Turn(text="hi")])
+    transcript = FakeTranscript()
+    kit = LoopKit(provider, transcript=transcript)
+    kit.loop.submit_message(_msg("hello there"))
+    await kit.loop._tick()
+
+    # the tick persisted the inbound line...
+    assert transcript.appended == [("telegram", "in", "hello there")]
+    # ...and the model still saw it exactly once, as the rich
+    # [message from …] line — not again as a transcript echo
+    messages = provider.calls[0][1]
+    assert sum("hello there" in m.text for m in messages) == 1
+    assert any("[message from @vedant via telegram]" in m.text for m in messages)
+
+
+async def test_turn_works_without_a_transcript() -> None:
+    provider = FakeProvider([Turn(text="hello back")])
+    kit = LoopKit(provider)  # transcript=None — the default everywhere else
+    kit.loop.submit_message(_msg("hi"))
+    await kit.loop._tick()
+
+    messages = provider.calls[0][1]
+    assert any("[message from @vedant via telegram]" in m.text for m in messages)
+
+
+async def test_web_inbound_is_not_double_persisted() -> None:
+    provider = FakeProvider([Turn(text="hi")])
+    transcript = FakeTranscript()
+    kit = LoopKit(provider, transcript=transcript)
+    kit.loop.submit_message(_msg("from the browser", surface="web"))
+    await kit.loop._tick()
+
+    # the websocket handler owns web rows; the loop must not write them again
+    assert transcript.appended == []
+
+
+async def test_filtered_senders_stay_out_of_the_transcript() -> None:
+    provider = FakeProvider([])  # would AssertionError if the model were called
+    transcript = FakeTranscript()
+    kit = LoopKit(provider, transcript=transcript)
+    kit.events.ingest_result = IngestResult(stored=False, reason="filtered:contacts")
+    kit.loop.submit_message(_msg("you should not see this"))
+    await kit.loop._tick()
+
+    # a dropped sender never enters conversation memory either — their words
+    # must not leak into a later prompt
+    assert transcript.appended == []
+
+
+async def test_send_to_user_persists_each_delivered_surface() -> None:
+    transcript = FakeTranscript()
+    connector = FakeSurfaceConnector("telegram")
+    fanout = SurfaceFanout([connector], history=transcript)
+
+    refs = await fanout.send_to_user("going out")
+
+    assert refs == {"telegram": "m1"}
+    assert transcript.appended == [("telegram", "out", "going out")]
+
+
+async def test_a_failing_transcript_never_breaks_a_send() -> None:
+    class BrokenTranscript(FakeTranscript):
+        async def append(self, surface: str, direction: str, text: str) -> None:
+            raise RuntimeError("db down")
+
+    connector = FakeSurfaceConnector("telegram")
+    fanout = SurfaceFanout([connector], history=BrokenTranscript())
+
+    refs = await fanout.send_to_user("still delivered")
+
+    assert refs == {"telegram": "m1"}
+    assert connector.sent == ["still delivered"]
 
 
 async def test_new_events_become_scored_observations() -> None:
