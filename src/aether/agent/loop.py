@@ -76,6 +76,11 @@ _MAX_HISTORY_MESSAGES = 12
 # ~4 chars/token; 12k chars ≈ 3k tokens of trigger text per call
 _MAX_HISTORY_CHARS = 12_000
 
+# how much of the cross-surface transcript (chat_messages, both directions)
+# is offered to each turn as conversation memory. The window above trims it
+# oldest-first under pressure — events and the fresh inbound always survive.
+_TRANSCRIPT_MESSAGES = 20
+
 
 def _window_history(messages: list["Message"], keep_head: int = 1) -> list["Message"]:
     """Bound a turn's input history so repeated LLM calls stay cheap.
@@ -159,9 +164,11 @@ class SurfaceFanout:
         self,
         connectors: list[MessagingConnector] | None = None,
         hub: Any = None,
+        history: Any = None,
     ) -> None:
         self.connectors = list(connectors or [])
         self.hub = hub
+        self.history = history
 
     def add_connectors(self, connectors: list[MessagingConnector]) -> None:
         self.connectors.extend(connectors)
@@ -196,6 +203,15 @@ class SurfaceFanout:
                 continue
             if ref:
                 refs[connector.name] = ref
+        # everything that actually landed joins the transcript so the next
+        # turn can see its own words; the hub persists the web line itself
+        # (broadcast), so only connector surfaces are written here
+        if self.history is not None:
+            for name in refs:
+                try:
+                    await self.history.append(name, "out", text)
+                except Exception:
+                    log.exception("transcript write failed for %s — continuing", name)
         return refs
 
     async def present_approval(self, approval_id: int, tool_name: str, summary: str) -> None:
@@ -306,6 +322,7 @@ class AgentLoop:
         secret_store: SecretStore | None = None,
         settings: Any = None,
         composio: ComposioBridge | None = None,
+        transcript: Any = None,
     ) -> None:
         self._providers = providers
         self._tools = tools
@@ -329,6 +346,9 @@ class AgentLoop:
         self._secret_store = secret_store
         self._settings = settings
         self._composio = composio
+        # the cross-surface transcript (chat_messages) — both directions,
+        # read back each turn as conversation memory
+        self._transcript = transcript
         # the guided /config walk in progress, if any — memory only
         self._wizard: ConfigWizard | None = None
         # the guided /apps walk in progress, if any — same rules, memory only
@@ -490,6 +510,15 @@ class AgentLoop:
                     message.surface,
                 )
                 continue
+            # transcript write happens only past the allowlist — a filtered
+            # sender must never reach conversation memory, or their words
+            # would leak into a later prompt. Web inbound is persisted by
+            # the websocket handler itself, so it's skipped here.
+            if self._transcript is not None and message.surface != "web":
+                try:
+                    await self._transcript.append(message.surface, "in", message.text)
+                except Exception:
+                    log.exception("transcript write failed for inbound %s", message.surface)
             messages.append(message)
 
         # (c) everything else ingested since last tick becomes observations
@@ -1126,6 +1155,7 @@ class AgentLoop:
         context_block = self._format_context(ctx)
         if context_block:
             history.append(Message.user(f"[working context]\n{context_block}"))
+        history.extend(await self._transcript_messages(messages))
         for event in reversed(observations):  # oldest first inside the block
             history.append(Message.user(f"[new event] {self._event_line(event)}"))
         for message in messages:
@@ -1255,6 +1285,30 @@ class AgentLoop:
         "mail isn't connected" instead of an invented capability."""
         servers = self._tools.mcp_servers()
         return ", ".join(servers) if servers else "none"
+
+    async def _transcript_messages(self, current: list[InboundMessage]) -> list[Message]:
+        """The recent cross-surface dialogue as user/assistant messages —
+        the turn's conversation memory. Rows echoing this turn's own inbound
+        are dropped: they get the richer [message from …] line below. A
+        missing or broken transcript costs the turn nothing."""
+        if self._transcript is None:
+            return []
+        try:
+            rows = await self._transcript.recent(limit=_TRANSCRIPT_MESSAGES)
+        except Exception:
+            log.exception("transcript read failed — continuing without it")
+            return []
+        fresh = {m.text for m in current}
+        out: list[Message] = []
+        for row in rows:
+            text = row.get("text", "").strip()
+            if not text:
+                continue
+            if row["direction"] == "out":
+                out.append(Message.assistant(text))
+            elif text not in fresh:
+                out.append(Message.user(f"[{row.get('surface', '?')}] {text}"))
+        return out
 
     def _format_context(self, ctx: Any) -> str:
         lines: list[str] = []

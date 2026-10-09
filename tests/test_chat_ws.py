@@ -154,6 +154,7 @@ async def test_chat_history_round_trips_encrypted(db) -> None:
     rows = await history.recent()
     assert [r["direction"] for r in rows] == ["in", "out"]
     assert [r["text"] for r in rows] == ["hello there", "hi right back"]
+    assert [r["surface"] for r in rows] == ["web", "web"]
 
     # on disk: ciphertext
     raw = await db.fetchval("SELECT payload_enc FROM chat_messages WHERE id = 1")

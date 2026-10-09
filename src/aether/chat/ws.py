@@ -61,6 +61,7 @@ class ChatHistory:
                 continue
             out.append(
                 {
+                    "surface": row["surface"],
                     "direction": row["direction"],
                     "text": payload.get("text", ""),
                     "at": row["created_at"].isoformat(),

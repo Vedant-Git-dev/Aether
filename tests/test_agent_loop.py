@@ -46,6 +46,7 @@ from fakes import (
     FakeScheduler,
     FakeSurfaceConnector,
     FakeTraces,
+    FakeTranscript,
 )
 
 from aether.agent.loop import (
@@ -121,6 +122,7 @@ class LoopKit:
         agent_settings: FakeAgentSettings | None = None,
         config_manager: FakeConfigManager | None = None,
         workspace: Any = None,
+        transcript: Any = None,
     ):
         self.tools = ToolRegistry()
         self.events = FakeEventStore()
@@ -153,6 +155,7 @@ class LoopKit:
             agent_settings=agent_settings,
             config_manager=config_manager,
             workspace=workspace,
+            transcript=transcript,
         )
         if config_manager is not None:
             # the real native config tools, so a /config write goes through
@@ -523,6 +526,103 @@ async def test_filtered_senders_never_reach_the_model() -> None:
 
     assert provider.calls == []
     assert kit.connector.sent == []
+
+
+# ---------------------------------------------------------------------------
+# conversation memory: the transcript (chat_messages) re-enters every turn
+# ---------------------------------------------------------------------------
+
+
+async def test_transcript_reaches_the_model_with_roles() -> None:
+    provider = FakeProvider([Turn(text="the atoms one")])
+    transcript = FakeTranscript(
+        rows=[
+            {"surface": "telegram", "direction": "in", "text": "tell a joke", "at": ""},
+            {"surface": "telegram", "direction": "out", "text": "why don't scientists trust atoms?", "at": ""},
+        ]
+    )
+    kit = LoopKit(provider, transcript=transcript)
+    kit.loop.submit_message(_msg("what was the joke?"))
+    await kit.loop._tick()
+
+    messages = provider.calls[0][1]
+    assert any(m.role == "user" and "[telegram] tell a joke" in m.text for m in messages)
+    assert any(m.role == "assistant" and "atoms" in m.text for m in messages)
+
+
+async def test_current_turn_inbound_is_not_echoed_from_the_transcript() -> None:
+    provider = FakeProvider([Turn(text="hi")])
+    transcript = FakeTranscript()
+    kit = LoopKit(provider, transcript=transcript)
+    kit.loop.submit_message(_msg("hello there"))
+    await kit.loop._tick()
+
+    # the tick persisted the inbound line...
+    assert transcript.appended == [("telegram", "in", "hello there")]
+    # ...and the model still saw it exactly once, as the rich
+    # [message from …] line — not again as a transcript echo
+    messages = provider.calls[0][1]
+    assert sum("hello there" in m.text for m in messages) == 1
+    assert any("[message from @vedant via telegram]" in m.text for m in messages)
+
+
+async def test_turn_works_without_a_transcript() -> None:
+    provider = FakeProvider([Turn(text="hello back")])
+    kit = LoopKit(provider)  # transcript=None — the default everywhere else
+    kit.loop.submit_message(_msg("hi"))
+    await kit.loop._tick()
+
+    messages = provider.calls[0][1]
+    assert any("[message from @vedant via telegram]" in m.text for m in messages)
+
+
+async def test_web_inbound_is_not_double_persisted() -> None:
+    provider = FakeProvider([Turn(text="hi")])
+    transcript = FakeTranscript()
+    kit = LoopKit(provider, transcript=transcript)
+    kit.loop.submit_message(_msg("from the browser", surface="web"))
+    await kit.loop._tick()
+
+    # the websocket handler owns web rows; the loop must not write them again
+    assert transcript.appended == []
+
+
+async def test_filtered_senders_stay_out_of_the_transcript() -> None:
+    provider = FakeProvider([])  # would AssertionError if the model were called
+    transcript = FakeTranscript()
+    kit = LoopKit(provider, transcript=transcript)
+    kit.events.ingest_result = IngestResult(stored=False, reason="filtered:contacts")
+    kit.loop.submit_message(_msg("you should not see this"))
+    await kit.loop._tick()
+
+    # a dropped sender never enters conversation memory either — their words
+    # must not leak into a later prompt
+    assert transcript.appended == []
+
+
+async def test_send_to_user_persists_each_delivered_surface() -> None:
+    transcript = FakeTranscript()
+    connector = FakeSurfaceConnector("telegram")
+    fanout = SurfaceFanout([connector], history=transcript)
+
+    refs = await fanout.send_to_user("going out")
+
+    assert refs == {"telegram": "m1"}
+    assert transcript.appended == [("telegram", "out", "going out")]
+
+
+async def test_a_failing_transcript_never_breaks_a_send() -> None:
+    class BrokenTranscript(FakeTranscript):
+        async def append(self, surface: str, direction: str, text: str) -> None:
+            raise RuntimeError("db down")
+
+    connector = FakeSurfaceConnector("telegram")
+    fanout = SurfaceFanout([connector], history=BrokenTranscript())
+
+    refs = await fanout.send_to_user("still delivered")
+
+    assert refs == {"telegram": "m1"}
+    assert connector.sent == ["still delivered"]
 
 
 async def test_new_events_become_scored_observations() -> None:
