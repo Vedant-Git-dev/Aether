@@ -40,7 +40,7 @@ _MAX_MENU_TOKEN = 24  # longer than this at a menu is a changed subject
 _STRIP_TAIL = "\"'.),!;"
 
 _TOP_MENU = (
-    "⚙️ let's set me up — answer each question with a number, or \"stop\" any time.\n"
+    "let's set me up — answer each question with a number, or \"stop\" any time.\n"
     "1 — see my settings\n"
     "2 — change something\n"
     "3 — put something back the way config.yaml had it"

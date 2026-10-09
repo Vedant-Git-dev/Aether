@@ -248,7 +248,7 @@ async def test_an_approved_decision_runs_the_held_call() -> None:
     await kit.loop.execute_decision(approval.id, APPROVED)
     assert kit.executed == [("mail__send_message", {"to": "a@b.c", "body": "hi"})]
     assert kit.approvals.executed == [approval.id]
-    assert any("ran mail__send_message" in s for s in kit.connector.sent)
+    assert any("Done — sent the email" in s for s in kit.connector.sent)
 
 
 async def test_a_denied_decision_never_runs() -> None:
@@ -386,7 +386,7 @@ async def test_the_web_panel_decide_path_carries_out_a_fresh_approval() -> None:
     assert await kit.loop.decide(approval.id, "approve") is approval
     assert kit.executed == [("mail__send_message", {"to": "a@b.c", "body": "hi"})]
     assert kit.approvals.executed == [approval.id]
-    assert any("ran mail__send_message" in s for s in kit.connector.sent)
+    assert any("Done — sent the email" in s for s in kit.connector.sent)
 
 
 async def test_a_stale_web_decide_touches_nothing() -> None:
@@ -465,7 +465,7 @@ async def test_a_wrong_name_in_a_linked_app_is_plain_about_what_is_missing() -> 
 
 async def test_a_risky_call_that_cannot_run_never_parks_an_approval() -> None:
     # the regression this guards: a risky name that isn't registered parked
-    # an approval anyway, the user approved certain failure, and the ⚠️
+    # an approval anyway, the user approved certain failure, and the error
     # that followed leaked the raw tool name. A call the namespace can't
     # run answers plainly up front — consent to certain failure is not a
     # decision worth interrupting the user for.
@@ -483,7 +483,7 @@ async def test_a_risky_call_that_cannot_run_never_parks_an_approval() -> None:
 
 async def test_a_failed_carry_out_speaks_plainly_and_closes_the_approval() -> None:
     # rows parked before the up-front check — or an app unlinked while one
-    # sat pending — can still fail at carry-out: the ⚠️ speaks plainly, the
+    # sat pending — can still fail at carry-out: the note speaks plainly, the
     # approval is closed as failed, and the record keeps exactly what the
     # chat line left out
     kit = LoopKit(None)
@@ -498,7 +498,7 @@ async def test_a_failed_carry_out_speaks_plainly_and_closes_the_approval() -> No
     assert kit.approvals.executed == []  # it didn't run; it must not read as ran
 
     note = kit.connector.sent[-1]
-    assert "⚠️" in note
+    assert "couldn't run" in note
     assert "gmail isn't connected right now" in note
     assert "gmail__send_message" not in note  # never the raw name in chat
     assert "unknown tool" not in note  # never the raw error either
@@ -853,7 +853,7 @@ async def test_a_routine_acts_at_night_but_its_note_waits() -> None:
 
     assert kit.executed == [("note_entity", {"note": "invoice"})]
     assert kit.connector.sent == []
-    assert any("🧭" in h and "billing" in h for h in kit.loop._held)
+    assert any("routine" in h and "billing" in h for h in kit.loop._held)
 
 
 # ---------------------------------------------------------------------------
@@ -1109,7 +1109,7 @@ async def test_verify_command_answers_from_the_record_without_waking_the_model()
     await kit.loop._tick()
 
     note = kit.connector.sent[-1]
-    assert "🛡️" in note and "chain intact" in note
+    assert "decision record" in note and "chain intact" in note
     assert "moments ago" in note  # the row was just written
     assert provider.calls == []  # deterministic — no LLM turn
     assert kit.events.ingested == []  # and nothing became memory
@@ -1127,7 +1127,7 @@ async def test_verify_command_reports_a_broken_chain_in_plain_words() -> None:
     await kit.loop._tick()
 
     note = kit.connector.sent[-1]
-    assert "⚠️" in note and "BROKEN at entry #892" in note
+    assert "decision record" in note and "BROKEN at entry #892" in note
     assert provider.calls == []
 
 
@@ -1153,7 +1153,7 @@ async def test_verify_answers_even_during_quiet_hours() -> None:
     kit.loop.submit_message(_msg("/verify"))
     await kit.loop._tick()
 
-    assert "🛡️" in kit.connector.sent[-1]
+    assert "decision record" in kit.connector.sent[-1]
     assert kit.loop._held == []
 
 
@@ -1206,7 +1206,7 @@ async def test_a_why_reply_is_answered_from_the_record() -> None:
     await kit.loop._tick()
 
     replay = kit.connector.sent[-1]
-    assert replay.startswith("🧵 that message, from the record")
+    assert replay.startswith("that message, from the record")
     assert "on it — sent once you approve" in replay
     assert provider.calls == []  # the record answered, not the model
     assert kit.traces.created == []  # a replay is a read — no new trace
@@ -1265,7 +1265,7 @@ async def test_a_routine_fire_records_where_its_ping_landed() -> None:
 
 async def test_config_opens_the_guided_walk_without_waking_the_model() -> None:
     provider = FakeProvider([])  # any LLM call would fail the test
-    manager = FakeConfigManager(show_reply="⚙️ current configuration")
+    manager = FakeConfigManager(show_reply="current configuration")
     kit = LoopKit(provider, config_manager=manager)
     kit.loop.submit_message(_msg("/config"))
     await kit.loop._tick()
@@ -1273,7 +1273,7 @@ async def test_config_opens_the_guided_walk_without_waking_the_model() -> None:
     # bare /config is the friendly front door: the walk's opening menu, with
     # no ingest, no model, no trace — exactly like the rest of the vocabulary
     assert kit.connector.sent == [(
-        "⚙️ let's set me up — answer each question with a number, "
+        "let's set me up — answer each question with a number, "
         "or \"stop\" any time.\n"
         "1 — see my settings\n"
         "2 — change something\n"
@@ -1287,7 +1287,7 @@ async def test_config_opens_the_guided_walk_without_waking_the_model() -> None:
     kit.loop.submit_message(_msg("1"))
     await kit.loop._tick()
     assert kit.connector.sent[-1] == (
-        "⚙️ current configuration\n\n"
+        "current configuration\n\n"
         "anything else? 1 — see my settings  2 — change something  "
         "3 — reset something  (or \"done\")"
     )
@@ -1298,13 +1298,13 @@ async def test_config_opens_the_guided_walk_without_waking_the_model() -> None:
 
 async def test_config_show_one_path_delegates_it() -> None:
     provider = FakeProvider([])
-    manager = FakeConfigManager(show_reply="⚙️ agent.tick_seconds = 30.0")
+    manager = FakeConfigManager(show_reply="agent.tick_seconds = 30.0")
     kit = LoopKit(provider, config_manager=manager)
     kit.loop.submit_message(_msg("/config show agent.tick_seconds"))
     await kit.loop._tick()
 
     assert manager.show_calls == ["agent.tick_seconds"]
-    assert kit.connector.sent == ["⚙️ agent.tick_seconds = 30.0"]
+    assert kit.connector.sent == ["agent.tick_seconds = 30.0"]
 
 
 async def test_config_set_tuning_applies_through_the_gate() -> None:
@@ -1339,10 +1339,10 @@ async def test_config_set_security_parks_for_one_tap() -> None:
     approval = kit.approvals.created[-1]
     assert approval.tool_name == "set_config"
     assert approval.params == {"op": "set", "path": "messaging.telegram.enabled", "value": True}
-    # the card went to the surfaces, named for the approval path
+    # the card went to the surfaces as one plain question
     presented = kit.connector.approvals_presented[-1]
     assert presented[0] == approval.id
-    assert presented[1] == "set_config"
+    assert presented[1] == "Change my configuration (path messaging.telegram.enabled)?"
     # the reply is in the user's own words, never the model-directed wording
     note = kit.connector.sent[-1]
     assert f"one-tap approval (#{approval.id})" in note
@@ -1392,7 +1392,7 @@ async def test_config_garbage_gets_the_usage_not_the_model() -> None:
     kit.loop.submit_message(_msg("/config frobnicate the moon"))
     await kit.loop._tick()
 
-    assert "⚙️ /config" in kit.connector.sent[-1]  # the usage text
+    assert "guided walk" in kit.connector.sent[-1]  # the usage text
     assert manager.set_calls == [] and manager.show_calls == []
     assert provider.calls == []
     assert kit.events.ingested == []
@@ -1404,7 +1404,7 @@ async def test_config_when_unwired_answers_deterministically() -> None:
     kit.loop.submit_message(_msg("/config"))
     await kit.loop._tick()
 
-    assert kit.connector.sent == ["⚙️ config management isn't wired on this instance."]
+    assert kit.connector.sent == ["config management isn't wired on this instance."]
     assert provider.calls == []
     assert kit.events.ingested == []
 
@@ -1460,7 +1460,7 @@ async def test_a_guided_security_walk_parks_for_one_tap() -> None:
     }
     presented = kit.connector.approvals_presented[-1]
     assert presented[0] == approval.id
-    assert presented[1] == "set_config"
+    assert presented[1] == "Change my configuration (path messaging.telegram.enabled)?"
     # the walk relays the park card, then offers the menu again
     note = kit.connector.sent[-1]
     assert f"one-tap approval (#{approval.id})" in note
@@ -1471,7 +1471,7 @@ async def test_a_guided_security_walk_parks_for_one_tap() -> None:
 
 async def test_an_expert_command_mid_walk_honors_expert_and_ends_the_walk() -> None:
     provider = FakeProvider([Turn(text="done")])  # the stray "2" reaches the model
-    manager = FakeConfigManager(show_reply="⚙️ agent.tick_seconds = 30.0")
+    manager = FakeConfigManager(show_reply="agent.tick_seconds = 30.0")
     kit = LoopKit(provider, config_manager=manager)
     kit.loop.submit_message(_msg("/config"))
     await kit.loop._tick()
@@ -1622,7 +1622,7 @@ async def test_apps_opens_the_walk_without_waking_the_model() -> None:
     # bare /apps is the status, the gate line, and the add hint — no
     # question is outstanding, so nothing intercepts the next message
     assert kit.connector.sent == [
-        f"📱 your apps: nothing connected yet.\n{_GATE_LINE}\n{_ADD_HINT}"
+        f"your apps: nothing connected yet.\n{_GATE_LINE}\n{_ADD_HINT}"
     ]
     assert kit.loop._apps_walk is None
     assert provider.calls == []
@@ -1657,7 +1657,7 @@ async def test_the_apps_status_is_honest_about_both_halves(tmp_path) -> None:
     kit.loop.submit_message(_msg("/apps"))
     await kit.loop._tick()
     assert kit.connector.sent == [(
-        "📱 your apps:\n"
+        "your apps:\n"
         "· telegram — on\n"
         "· discord — on — no token yet\n"
         "· mail — connected · 1 action\n"
@@ -1861,7 +1861,7 @@ async def test_the_tick_announces_a_late_ready_server_once() -> None:
 
     await kit.loop._tick()
     # it joined the namespace and said so, once, with its action count
-    assert kit.connector.sent == ["✅ stub is up — 1 action in my vocabulary"]
+    assert kit.connector.sent == ["stub is up — 1 action in my vocabulary"]
     assert kit.tools.has_server("stub")
     assert not kit.tools.has_server("mail")  # still silent — no false promise
 
@@ -1887,7 +1887,7 @@ async def test_the_tick_announces_hub_growth_once() -> None:
     hub.tool_version = 2
 
     await kit.loop._tick()
-    assert kit.connector.sent == ["✅ hub — 1 new action in my vocabulary"]
+    assert kit.connector.sent == ["hub — 1 new action in my vocabulary"]
     assert kit.tools.get("hub__calendar_add") is not None  # actually callable
 
     await kit.loop._tick()
@@ -1953,7 +1953,7 @@ async def test_the_hub_connect_announces_and_asks_the_gates_question(tmp_path) -
     while kit.loop._connect_waits:
         await asyncio.wait(kit.loop._connect_waits)
     announcement = kit.connector.sent[-1]
-    assert announcement.startswith("✅ gmail connected — gmail@example.test.")
+    assert announcement.startswith("gmail connected — gmail@example.test.")
     assert "what may I do with gmail?" in announcement
 
     # "everything asks first" → an authz rule — which parks, honestly relayed
@@ -1988,6 +1988,6 @@ async def test_a_failed_connect_says_so_in_chat(tmp_path) -> None:
     while kit.loop._connect_waits:
         await asyncio.wait(kit.loop._connect_waits)
     assert kit.connector.sent[-1] == (
-        "⚠️ the gmail connection didn't finish — the link may have expired. "
+        "the gmail connection didn't finish — the link may have expired. "
         "/apps add gmail to try again."
     )

@@ -354,7 +354,7 @@ class AppsWizard:
         self._stage = "permissions"
         who = f" — {identity}" if identity else ""
         return (
-            f"✅ {slug} connected{who}.\n"
+            f"{slug} connected{who}.\n"
             f"what may I do with {slug}?\n"
             "1 — read freely, ask before acting (the default)\n"
             "2 — everything asks first\n"

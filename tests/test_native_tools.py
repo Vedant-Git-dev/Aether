@@ -241,7 +241,7 @@ async def test_audit_wiring_adds_the_integrity_tool() -> None:
     assert kit.count == 8
 
     out = await kit.run("verify_integrity", {})
-    assert "🛡️" in out
+    assert "decision record" in out
     assert "1 decision, chain intact" in out
     assert "moments ago" in out  # the newest row was just written
 
@@ -252,14 +252,14 @@ async def test_verify_integrity_reports_a_broken_chain() -> None:
         problem="seq 892: stored hash does not match the entry contents",
     )))
     out = await kit.run("verify_integrity", {})
-    assert "⚠️" in out
+    assert "decision record" in out
     assert "BROKEN at entry #892" in out
 
 
 async def test_verify_integrity_on_an_empty_record_says_so() -> None:
     kit = NativeKit(audit=FakeAudit())
     assert await kit.run("verify_integrity", {}) == \
-        "🛡️ decision record: empty — nothing recorded yet."
+        "decision record: empty — nothing recorded yet."
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +291,7 @@ def test_plain_replay_speaks_in_plain_words() -> None:
         "chat_refs": {"telegram": "101"},
     })
     out = plain_replay(traces.traces[0])
-    assert out.startswith("🧵 that message, from the record (trace #1):")
+    assert out.startswith("that message, from the record (trace #1):")
     assert 'You asked: "email alice the invoice"' in out
     assert "I proposed sending an email; the gate held it for your one-tap approval (#12)." in out
     assert 'I replied: "on it — sent once you approve"' in out
@@ -399,18 +399,18 @@ async def test_config_tools_register_only_when_wired() -> None:
 
 
 async def test_get_config_delegates_show() -> None:
-    manager = FakeConfigManager(show_reply="⚙️ the whole config")
+    manager = FakeConfigManager(show_reply="the whole config")
     kit = NativeKit(config_manager=manager)
-    assert await kit.run("get_config", {}) == "⚙️ the whole config"
-    assert await kit.run("get_config", {"path": "agent.tick_seconds"}) == "⚙️ the whole config"
+    assert await kit.run("get_config", {}) == "the whole config"
+    assert await kit.run("get_config", {"path": "agent.tick_seconds"}) == "the whole config"
     assert manager.show_calls == [None, "agent.tick_seconds"]
 
 
 async def test_set_config_delegates_and_passes_explicit_null_through() -> None:
-    manager = FakeConfigManager(set_reply="⚙️ set")
+    manager = FakeConfigManager(set_reply="set")
     kit = NativeKit(config_manager=manager)
     out = await kit.run("set_config", {"op": "set", "path": "agent.tick_seconds", "value": 10})
-    assert out == "⚙️ set"
+    assert out == "set"
     assert manager.set_calls == [
         {"op": "set", "path": "agent.tick_seconds", "value": 10, "source": "tool"}
     ]

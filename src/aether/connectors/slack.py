@@ -42,14 +42,16 @@ def event_to_inbound(event: dict[str, Any]) -> InboundMessage | None:
     )
 
 
-def approval_blocks(approval_id: int, tool_name: str, summary: str) -> list[dict[str, Any]]:
-    """Block Kit payload for a pending approval: what, why, and two buttons."""
+def approval_blocks(approval_id: int, text: str) -> list[dict[str, Any]]:
+    """Block Kit payload for a pending approval: the plain-language
+    question and two buttons. The raw tool name never appears — the
+    decision record keeps it."""
     return [
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*Approval needed:* `{tool_name}`\n{summary}",
+                "text": text,
             },
         },
         {
@@ -57,14 +59,14 @@ def approval_blocks(approval_id: int, tool_name: str, summary: str) -> list[dict
             "elements": [
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "Approve ✅"},
+                    "text": {"type": "plain_text", "text": "Approve"},
                     "action_id": APPROVE_ACTION,
                     "value": str(approval_id),
                     "style": "primary",
                 },
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "Deny ❌"},
+                    "text": {"type": "plain_text", "text": "Deny"},
                     "action_id": DENY_ACTION,
                     "value": str(approval_id),
                     "style": "danger",
@@ -197,12 +199,14 @@ class SlackConnector(MessagingConnector):
             # linked back to
             return None
 
-    async def present_approval(self, approval_id: int, tool_name: str, summary: str) -> None:
+    async def present_approval(self, approval_id: int, text: str) -> None:
+        """One plain-language question plus one-tap Approve/Deny. The raw
+        tool name never reaches the user — the decision record keeps it."""
         if self._app is None or not self._chat_ref:
             log.info("slack: nowhere to send yet — approval visible in the web panel")
             return
         await self._app.client.chat_postMessage(
             channel=self._chat_ref,
-            text=f"Approval needed: {tool_name}",
-            blocks=approval_blocks(approval_id, tool_name, summary),
+            text=text,
+            blocks=approval_blocks(approval_id, text),
         )

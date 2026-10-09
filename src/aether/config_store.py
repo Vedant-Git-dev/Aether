@@ -270,7 +270,7 @@ class ConfigManager:
             return str(exc)
         except Exception:
             log.exception("config show failed")
-            return "⚠️ I couldn't read the configuration just now — nothing else is affected."
+            return "I couldn't read the configuration just now — nothing else is affected."
 
     async def effective(self) -> dict[str, Any]:
         """The config as the API serves it: the live sections plus every
@@ -310,7 +310,7 @@ class ConfigManager:
             return str(exc)
         except Exception:
             log.exception("config %s %s failed", op, path)
-            return "⚠️ that didn't work — nothing was changed."
+            return "that didn't work — nothing was changed."
 
     async def _set(self, op: str, raw_path: str, value: Any, source: str) -> str:
         if op not in ("set", "add", "remove", "reset"):
@@ -815,7 +815,7 @@ class ConfigManager:
         return self._one_show(self._resolve(path.strip()))
 
     def _overview(self) -> str:
-        lines = ["⚙️ my configuration — config.yaml plus whatever you've changed from chat:"]
+        lines = ["my configuration — config.yaml plus whatever you've changed from chat:"]
         for name in _SECTION_NAMES:
             lines.append(self._describe_section(name))
         changed = self._changed_paths()
@@ -891,7 +891,7 @@ class ConfigManager:
         return "mcp_servers: " + ", ".join(_plain_entry(s) for s in servers)
 
     def _section_show(self, name: str) -> str:
-        lines = [f"⚙️ {name} — config.yaml values with your chat changes marked:"]
+        lines = [f"{name} — config.yaml values with your chat changes marked:"]
         if name == "mcp_servers":
             if not self._live.mcp_servers:
                 lines.append("  (no apps configured)")

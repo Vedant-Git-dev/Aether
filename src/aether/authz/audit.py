@@ -138,7 +138,7 @@ def verification_text(verification: ChainVerification, newest_at: datetime | Non
     """A chain verification as the user reads it in chat — the same facts
     the panel badge shows, in plain words. Pure: the caller reads the rows."""
     if verification.entries == 0:
-        return "🛡️ decision record: empty — nothing recorded yet."
+        return "decision record: empty — nothing recorded yet."
     if verification.ok:
         last = (
             f", last act {_age(datetime.now(UTC), newest_at)}"
@@ -147,13 +147,13 @@ def verification_text(verification: ChainVerification, newest_at: datetime | Non
         )
         plural = "s" if verification.entries != 1 else ""
         return (
-            f"🛡️ decision record: {verification.entries:,} decision{plural}, "
+            f"decision record: {verification.entries:,} decision{plural}, "
             f"chain intact — every entry still hashes to the one before it{last}."
         )
     where = f" at entry #{verification.first_bad_seq}" if verification.first_bad_seq else ""
     problem = f" — {verification.problem}" if verification.problem else ""
     return (
-        f"⚠️ decision record: BROKEN{where}{problem}. "
+        f"decision record: BROKEN{where}{problem}. "
         "Everything from there on can't be trusted."
     )
 

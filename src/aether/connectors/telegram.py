@@ -150,20 +150,22 @@ class TelegramConnector(MessagingConnector):
         later "why?" reply back to the trace of this send."""
         return await self._send(text, reply_markup=None)
 
-    async def present_approval(self, approval_id: int, tool_name: str, summary: str) -> None:
+    async def present_approval(self, approval_id: int, text: str) -> None:
+        """One plain-language question plus one-tap Approve/Deny. The raw
+        tool name never reaches the user — the decision record keeps it."""
         keyboard = InlineKeyboardMarkup(
             [
                 [
                     InlineKeyboardButton(
-                        "Approve ✅", callback_data=f"{_CALLBACK_PREFIX}approve:{approval_id}"
+                        "Approve", callback_data=f"{_CALLBACK_PREFIX}approve:{approval_id}"
                     ),
                     InlineKeyboardButton(
-                        "Deny ❌", callback_data=f"{_CALLBACK_PREFIX}deny:{approval_id}"
+                        "Deny", callback_data=f"{_CALLBACK_PREFIX}deny:{approval_id}"
                     ),
                 ]
             ]
         )
-        await self._send(f"Approval needed: {tool_name}\n{summary}", reply_markup=keyboard)
+        await self._send(text, reply_markup=keyboard)
 
     async def _send(self, text: str, reply_markup: Any) -> str | None:
         app = self._app

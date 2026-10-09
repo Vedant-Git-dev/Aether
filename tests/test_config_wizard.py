@@ -15,7 +15,7 @@ from aether.agent.config_wizard import ConfigWizard
 from aether.config import AppConfig, AuthzRule, ContactRule, MCPServerConfig
 
 _TOP_MENU = (
-    "⚙️ let's set me up — answer each question with a number, or \"stop\" any time.\n"
+    "let's set me up — answer each question with a number, or \"stop\" any time.\n"
     "1 — see my settings\n"
     "2 — change something\n"
     "3 — put something back the way config.yaml had it"
@@ -32,7 +32,7 @@ _UNSET = object()
 class FakeApplier:
     """The loop's _apply_config double: records the handoff, answers canned."""
 
-    def __init__(self, reply: str = "✅ applied") -> None:
+    def __init__(self, reply: str = "applied") -> None:
         self.calls: list[tuple[str, str, object]] = []
         self.reply = reply
 
@@ -47,7 +47,7 @@ class FakeShow:
 
     async def __call__(self, path: str | None) -> str:
         self.calls.append(path)
-        return "⚙️ the overview"
+        return "the overview"
 
 
 def _wizard(
@@ -85,7 +85,7 @@ async def test_see_relays_the_overview_then_offers_the_menu_again() -> None:
     wizard, _, show = _wizard()
     wizard.start()
     (reply,) = await _say(wizard, "1")
-    assert reply == f"⚙️ the overview\n\n{_AGAIN}"
+    assert reply == f"the overview\n\n{_AGAIN}"
     assert show.calls == [None]  # the overview, not one path
     assert wizard.alive  # the walk continues
 
@@ -115,7 +115,7 @@ async def test_a_full_change_walk_applies_the_answered_value() -> None:
         "which one?"
     )
     assert question == "how many seconds between checks? (currently 30)"
-    assert done == f"✅ applied\n{_AGAIN}"
+    assert done == f"applied\n{_AGAIN}"
     assert applier.calls == [("set", "agent.tick_seconds", 10)]
 
 
@@ -158,7 +158,7 @@ async def test_provider_is_a_numbered_choice() -> None:
 
 async def test_a_security_shaped_answer_relays_the_park_card_verbatim() -> None:
     park = (
-        "🔒 that one's security-shaped — held for your one-tap approval (#14). "
+        "that one's security-shaped — held for your one-tap approval (#14). "
         "Tap approve and it's done."
     )
     wizard, applier, _ = _wizard(applier=FakeApplier(reply=park))
@@ -186,7 +186,7 @@ async def test_a_value_stage_takes_the_whole_message() -> None:
     (done,) = await _say(wizard, "thirty seconds please")
     # never cancelled for being long — it's the value; the gate refuses junk
     assert applier.calls == [("set", "agent.tick_seconds", "thirty seconds please")]
-    assert done == f"✅ applied\n{_AGAIN}"
+    assert done == f"applied\n{_AGAIN}"
 
 
 # -- reset, with the value on the table ---------------------------------------------
@@ -196,7 +196,7 @@ async def test_reset_confirms_with_the_yaml_value_then_applies() -> None:
     wizard, applier, _ = _wizard(yaml_values={"agent.tick_seconds": 30.0})
     _, _, confirm, done = await _say(wizard, "3", "2", "1", "1")
     assert confirm == "put tick_seconds back to config.yaml's 30?\n1 — yes  2 — no"
-    assert done == f"✅ applied\n{_AGAIN}"
+    assert done == f"applied\n{_AGAIN}"
     assert applier.calls == [("reset", "agent.tick_seconds", None)]
 
 
@@ -231,7 +231,7 @@ async def test_list_reset_counts_the_yaml_entries() -> None:
         "put the allowlist back to config.yaml's 1 entry?\n1 — yes  2 — no"
     )
     assert applier.calls == [("reset", "contacts.allowlist", None)]
-    assert done == f"✅ applied\n{_AGAIN}"
+    assert done == f"applied\n{_AGAIN}"
 
 
 async def test_rules_reset_counts_the_yaml_entries() -> None:
@@ -262,7 +262,7 @@ async def test_allowlist_add_is_platform_then_handle() -> None:
     assert platform == "which platform? (telegram, discord, slack — or * for any)"
     assert handle == "what's their handle?"
     assert applier.calls == [("add", "contacts.allowlist", "telegram @mom")]
-    assert done == f"✅ applied\n{_AGAIN}"
+    assert done == f"applied\n{_AGAIN}"
 
 
 async def test_allowlist_remove_picks_by_number() -> None:
@@ -273,7 +273,7 @@ async def test_allowlist_remove_picks_by_number() -> None:
     _, _, _, numbered, done = await _say(wizard, "2", "5", "2", "2", "1")
     assert numbered == "1 — telegram @mom\nreply with a number, or stop"
     assert applier.calls == [("remove", "contacts.allowlist", "telegram @mom")]
-    assert done == f"✅ applied\n{_AGAIN}"
+    assert done == f"applied\n{_AGAIN}"
 
 
 async def test_allowlist_remove_of_a_star_platform_uses_the_handle_alone() -> None:
@@ -327,7 +327,7 @@ async def test_authz_add_is_pattern_decision_note() -> None:
     assert applier.calls == [
         ("add", "authz.rules", "telegram__send approve telegram sends are one-tap")
     ]
-    assert done == f"✅ applied\n{_AGAIN}"
+    assert done == f"applied\n{_AGAIN}"
 
 
 async def test_authz_note_none_means_no_note() -> None:
@@ -351,7 +351,7 @@ async def test_authz_remove_picks_by_number() -> None:
     _, _, _, numbered, done = await _say(wizard, "2", "6", "1", "2", "1")
     assert numbered == "1 — telegram__send\nreply with a number, or stop"
     assert applier.calls == [("remove", "authz.rules", "telegram__send")]
-    assert done == f"✅ applied\n{_AGAIN}"
+    assert done == f"applied\n{_AGAIN}"
 
 
 # -- the mcp_servers flow ---------------------------------------------------------------
@@ -374,7 +374,7 @@ async def test_mcp_app_toggle_sets_the_item_path() -> None:
     _, _, question, done = await _say(wizard, "2", "7", "1", "off")
     assert question == "turn mail on or off? (currently on)"
     assert applier.calls == [("set", "mcp_servers.mail.enabled", False)]
-    assert done == f"✅ applied\n{_AGAIN}"
+    assert done == f"applied\n{_AGAIN}"
 
 
 async def test_mcp_add_stdio_builds_the_object() -> None:
@@ -430,7 +430,7 @@ async def test_mcp_remove_picks_the_app_by_number() -> None:
     _, _, numbered, done = await _say(wizard, "2", "7", "4", "2")  # 4 = remove an app
     assert numbered == "1 — mail\n2 — calendar\nreply with a number, or stop"
     assert applier.calls == [("remove", "mcp_servers", "calendar")]
-    assert done == f"✅ applied\n{_AGAIN}"
+    assert done == f"applied\n{_AGAIN}"
 
 
 async def test_mcp_reset_mode_resets_an_app_without_add_or_remove() -> None:
@@ -440,7 +440,7 @@ async def test_mcp_reset_mode_resets_an_app_without_add_or_remove() -> None:
     assert menu == "the apps today:\n1 — mail (on, 0 polls)\n2 — back"
     assert confirm == "put mail back the way config.yaml had it?\n1 — yes  2 — no"
     assert applier.calls == [("reset", "mcp_servers.mail.enabled", None)]
-    assert done == f"✅ applied\n{_AGAIN}"
+    assert done == f"applied\n{_AGAIN}"
 
 
 # -- stepping aside: nudges, changed subjects, goodbyes, stale walks -------------------
