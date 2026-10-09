@@ -113,7 +113,7 @@ async def test_matching_event_fires_the_action_through_the_gate() -> None:
     assert provenance["rules_matched"] == "routine:1"
     assert provenance["decision"] == "info"
     # the user sees that it fired
-    assert any("🧭" in s and "billing" in s for s in kit.connector.sent)
+    assert any("routine" in s and "billing" in s for s in kit.connector.sent)
 
 
 async def test_risky_routine_action_parks_instead_of_running() -> None:

@@ -272,9 +272,9 @@ async def test_telegram_present_approval_sends_buttons() -> None:
     connector, app = await _started_telegram()
     # an inbound DM establishes the reply target; before that there is nowhere to send
     await app.handlers[0].callback(_tg_update("hi"), None)
-    await connector.present_approval(7, "telegram__send_message", "send 'hi' to @friend")
+    await connector.present_approval(7, "send 'hi' to @friend")
     sent = app.bot.sent[-1]
-    assert sent["text"].startswith("Approval needed: telegram__send_message")
+    assert sent["text"] == "send 'hi' to @friend"
     buttons = [b for row in sent["reply_markup"].inline_keyboard for b in row]
     assert [b.callback_data for b in buttons] == ["aether:approve:7", "aether:deny:7"]
 
@@ -466,7 +466,7 @@ async def test_discord_approval_view_buttons_decide() -> None:
 
     # an inbound DM establishes the reply channel; before that there is nowhere to send
     await connector.on_message(_dc_message("hi"))
-    await connector.present_approval(3, "discord__send_dm", "dm a meme")
+    await connector.present_approval(3, "dm a meme")
     channel = connector._channel
     view = channel.sent[-1]["view"]
     assert isinstance(view, ApprovalView)
@@ -565,8 +565,8 @@ def test_slack_a_thread_reply_carries_what_it_answers() -> None:
 
 
 def test_slack_approval_blocks_carry_action_ids_and_values() -> None:
-    blocks = approval_blocks(11, "slack__send_dm", "dm the team")
-    assert blocks[0]["text"]["text"].startswith("*Approval needed:* `slack__send_dm`")
+    blocks = approval_blocks(11, "dm the team")
+    assert blocks[0]["text"]["text"] == "dm the team"
     elements = blocks[1]["elements"]
     assert [(e["action_id"], e["value"]) for e in elements] == [
         (APPROVE_ACTION, "11"),
@@ -614,7 +614,7 @@ async def test_slack_inbound_dm_reaches_the_handler_and_replies_work() -> None:
     await connector.send_to_user("all quiet")
     assert app.client.posted[-1] == {"channel": "D1", "text": "all quiet", "blocks": None}
 
-    await connector.present_approval(4, "slack__send_dm", "dm the team")
+    await connector.present_approval(4, "dm the team")
     posted = app.client.posted[-1]
     assert posted["blocks"][1]["elements"][0]["action_id"] == APPROVE_ACTION
 

@@ -63,6 +63,6 @@ def test_bad_key_material_rejected() -> None:
 
 
 def test_unicode_roundtrip(cipher: Cipher) -> None:
-    text = "héllo — 世界 🌍 — tabs\tand\nnewlines"
+    text = "héllo — 世界 𠀋 — tabs\tand\nnewlines"  # 𠀋: 4-byte utf-8, emoji-free
     blob = cipher.encrypt_text(text, aad="t:c:1")
     assert cipher.decrypt_text(blob, aad="t:c:1") == text

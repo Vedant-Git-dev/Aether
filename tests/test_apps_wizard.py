@@ -61,7 +61,7 @@ _APPLY_WEATHER = (
 )
 # what a user rule forcing a hold still answers — relayed verbatim too
 _PARK_CARD = (
-    "🔒 that one's security-shaped — held for your one-tap approval (#21). "
+    "that one's security-shaped — held for your one-tap approval (#21). "
     "Tap approve and it's done."
 )
 
@@ -131,7 +131,7 @@ class FakeAuthorize:
 
 def _wizard(
     *,
-    status: str = "📱 your apps: nothing connected yet.",
+    status: str = "your apps: nothing connected yet.",
     env: set[str] | None = None,
     save: FakeSave | None = None,
     applier: FakeApplier | None = None,
@@ -170,7 +170,7 @@ async def _say(wizard: AppsWizard, *texts: str) -> list[str]:
 
 async def test_bare_apps_is_the_status_and_the_hint() -> None:
     wizard, applier, *_ = _wizard()
-    assert await wizard.start() == f"📱 your apps: nothing connected yet.\n{_ADD_HINT}"
+    assert await wizard.start() == f"your apps: nothing connected yet.\n{_ADD_HINT}"
     assert not wizard.alive  # no question is outstanding — nothing intercepts
     assert applier.calls == []
 
@@ -512,7 +512,7 @@ async def test_the_connected_announcement_asks_what_the_app_may_do() -> None:
     wizard, *_ = _wizard()
     reply = wizard.enter_permissions("gmail", "me@gmail.com")
     assert reply == (
-        "✅ gmail connected — me@gmail.com.\n"
+        "gmail connected — me@gmail.com.\n"
         "what may I do with gmail?\n"
         "1 — read freely, ask before acting (the default)\n"
         "2 — everything asks first\n"

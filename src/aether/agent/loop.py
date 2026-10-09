@@ -62,7 +62,7 @@ from .config_wizard import ConfigWizard
 from .config_wizard import coerce_config_value as _coerce_config_value
 from .prompts import SYSTEM_PROMPT
 from .settings import AgentSettings
-from .tools import plain_replay
+from .tools import describe_ask, describe_denied, describe_outcome, plain_replay
 from .traces import CARRY_OUT, ROUTINE, SCHEDULED, TURN, Traces
 
 log = logging.getLogger("aether.agent")
@@ -227,19 +227,17 @@ class SurfaceFanout:
                     log.exception("transcript write failed for %s — continuing", name)
         return refs
 
-    async def present_approval(self, approval_id: int, tool_name: str, summary: str) -> None:
+    async def present_approval(self, approval_id: int, text: str) -> None:
+        """One plain-language question to every surface — "Send the email
+        (to rahul@gmail.com)?" Raw tool names and argument dumps never
+        reach the user; the decision record keeps the exact call."""
         for connector in self.connectors:
             try:
-                await connector.present_approval(approval_id, tool_name, summary)
+                await connector.present_approval(approval_id, text)
             except Exception:
                 log.exception("%s approval presentation failed", connector.name)
         if not self.connectors and self.hub is None:
-            log.warning("approval #%d for %s has no surface to appear on", approval_id, tool_name)
-
-
-def _summarize_call(call: ToolCall) -> str:
-    blob = json.dumps(call.arguments, ensure_ascii=False, default=str)
-    return f"{call.name} {blob[:180]}"
+            log.warning("approval #%d has no surface to appear on", approval_id)
 
 
 def _delivered_by_tool(calls: list[dict[str, Any]]) -> bool:
@@ -262,7 +260,7 @@ def _delivered_by_tool(calls: list[dict[str, Any]]) -> bool:
 _MISSING = object()
 
 _CONFIG_USAGE = (
-    "⚙️ /config — the guided walk: send just /config and answer the questions.\n"
+    "Aether /config — the guided walk: send just /config and answer the questions.\n"
     "Everything below is the one-line way to do the same.\n\n"
     "/config show — the overview, with everything changed from chat marked\n"
     "/config show <section|path> — one section's settings, or one value\n"
@@ -656,7 +654,7 @@ class AgentLoop:
         except Exception:
             log.exception("/verify could not read the decision record")
             await self._surfaces.send_to_user(
-                "⚠️ I couldn't verify the record just now — the decision "
+                "I couldn't verify the record just now — the decision "
                 "log isn't answering. Nothing else is affected."
             )
             return True
@@ -677,7 +675,7 @@ class AgentLoop:
         except Exception:
             log.exception("/config failed")
             reply = (
-                "⚠️ that didn't work — the configuration is untouched. "
+                "that didn't work — the configuration is untouched. "
                 "Nothing else is affected."
             )
         # solicited — the user asked, so it never waits out quiet hours
@@ -686,7 +684,7 @@ class AgentLoop:
 
     async def _run_config_command(self, text: str) -> str:
         if self._config_manager is None:
-            return "⚙️ config management isn't wired on this instance."
+            return "config management isn't wired on this instance."
         op, path, value = _parse_config_command(text)
         if op == "usage":
             return _CONFIG_USAGE
@@ -726,7 +724,7 @@ class AgentLoop:
         held = calls[0].get("approval_id") if calls else None
         if held is not None:
             return (
-                f"🔒 that one's security-shaped — held for your one-tap "
+                f"that one's security-shaped — held for your one-tap "
                 f"approval (#{held}). Tap approve and it's done."
             )
         return result.content
@@ -805,7 +803,7 @@ class AgentLoop:
                     f"· {server.name} — still connecting — I'll tell you "
                     "the moment it's up"
                 )
-        head = "📱 your apps:\n" + "\n".join(lines) if lines else "📱 your apps: nothing connected yet."
+        head = "your apps:\n" + "\n".join(lines) if lines else "your apps: nothing connected yet."
         return f"{head}\nthe gate: reads run free — sends, deletes and anything new ask first."
 
     def _new_apps_wizard(self) -> AppsWizard:
@@ -854,7 +852,9 @@ class AgentLoop:
                 reply = await self._apply_config(
                     "set", f"mcp_servers.{SERVER_NAME}.enabled", True, origin="walk"
                 )
-            if reply.startswith("🔒"):
+            # the held-for-approval reply must reach the user directly —
+            # checked by its stable words, never by a symbol
+            if "held for your one-tap approval" in reply:
                 await self._surfaces.send_to_user(reply)
             return await bridge.authorize(toolkit)
         except Exception:
@@ -895,7 +895,7 @@ class AgentLoop:
         except Exception:
             log.exception("the %s connect never completed", toolkit)
             await self._surfaces.send_to_user(
-                f"⚠️ the {toolkit} connection didn't finish — the link may "
+                f"the {toolkit} connection didn't finish — the link may "
                 f"have expired. /apps add {toolkit} to try again."
             )
             return
@@ -1044,7 +1044,7 @@ class AgentLoop:
             if name in self._announced_ready:
                 continue
             self._announced_ready.add(name)
-            note = f"✅ {name} is up"
+            note = f"{name} is up"
             count = self._tools.server_action_count(name)
             if count:
                 note += f" — {_actions_word(count)} in my vocabulary"
@@ -1057,7 +1057,7 @@ class AgentLoop:
             if gained > 0:
                 word = "action" if gained == 1 else "actions"
                 await self._surfaces.send_to_user(
-                    f"✅ {name} — {gained} new {word} in my vocabulary"
+                    f"{name} — {gained} new {word} in my vocabulary"
                 )
 
     # -- the hub watchdog ---------------------------------------------------------
@@ -1169,7 +1169,7 @@ class AgentLoop:
         refs = await self._notify(
             # the exact call stays in the audit row and the trace; the chat
             # note speaks plainly, never in internal tool names
-            f"🧭 routine '{routine.label}' fired: {result.content[:220]}"
+            f"routine '{routine.label}' fired: {result.content[:220]}"
         )
         payload = {
             "routine": {
@@ -1544,7 +1544,7 @@ class AgentLoop:
             note=ruling.reason,
         )
         await self._surfaces.present_approval(
-            approval.id, call.name, _summarize_call(call)
+            approval.id, describe_ask(call.name, call.arguments)
         )
         result = ToolResult(
             tool_call_id=call.id,
@@ -1578,7 +1578,9 @@ class AgentLoop:
 
     async def _carry_out(self, approval: Approval) -> None:
         if approval.status == DENIED:
-            await self._surfaces.send_to_user(f"Not run — {approval.tool_name} was denied.")
+            await self._surfaces.send_to_user(
+                describe_denied(approval.tool_name, approval.params)
+            )
             await self._remember_outcome(approval, "action_denied", "denied by the user")
             return
         trace: dict[str, Any] = {
@@ -1598,7 +1600,7 @@ class AgentLoop:
             trace["result"] = str(exc)
             trace["is_error"] = True
             trace["chat_refs"] = await self._surfaces.send_to_user(
-                f"⚠️ the approved action couldn't run — "
+                f"the approved action couldn't run — "
                 f"{self._plain_unavailable(approval.tool_name)}"
             )
         except ConnectorUnavailableError as exc:
@@ -1607,7 +1609,7 @@ class AgentLoop:
             trace["result"] = str(exc)
             trace["is_error"] = True
             trace["chat_refs"] = await self._surfaces.send_to_user(
-                f"⚠️ the approved action couldn't run — "
+                f"the approved action couldn't run — "
                 f"{self._plain_unresponsive(approval.tool_name)}"
             )
         except Exception as exc:
@@ -1616,15 +1618,17 @@ class AgentLoop:
             trace["result"] = str(exc)
             trace["is_error"] = True
             trace["chat_refs"] = await self._surfaces.send_to_user(
-                "⚠️ the approved action couldn't run — it failed unexpectedly. "
+                "the approved action couldn't run — it failed unexpectedly. "
                 "The decision record has exactly what happened."
             )
         else:
             await self._approvals.mark_executed(approval.id)
             trace["result"] = result
             trace["is_error"] = False
+            # plain words only — the exact result stays in the decision
+            # record and the trace; a raw dump never reaches the user
             trace["chat_refs"] = await self._surfaces.send_to_user(
-                f"✅ ran {approval.tool_name}: {result[:300]}"
+                describe_outcome(approval.tool_name, approval.params)
             )
         await self._remember_outcome(
             approval,

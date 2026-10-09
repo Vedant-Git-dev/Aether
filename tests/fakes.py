@@ -444,7 +444,7 @@ class FakeSurfaceConnector:
     def __init__(self, name: str = "fake") -> None:
         self.name = name
         self.sent: list[str] = []
-        self.approvals_presented: list[tuple[int, str, str]] = []
+        self.approvals_presented: list[tuple[int, str]] = []
         self.starts = 0
         self.stops = 0
         self._ids = 0
@@ -460,8 +460,8 @@ class FakeSurfaceConnector:
         self._ids += 1
         return f"m{self._ids}"
 
-    async def present_approval(self, approval_id: int, tool_name: str, summary: str) -> None:
-        self.approvals_presented.append((approval_id, tool_name, summary))
+    async def present_approval(self, approval_id: int, text: str) -> None:
+        self.approvals_presented.append((approval_id, text))
 
 
 class FakeSchedStore:
@@ -597,8 +597,8 @@ class FakeConfigManager:
 
     def __init__(
         self,
-        show_reply: str = "⚙️ fake config view",
-        set_reply: str = "⚙️ fake set confirmation",
+        show_reply: str = "fake config view",
+        set_reply: str = "fake set confirmation",
         effective_payload: dict | None = None,
         yaml_values: dict[str, object] | None = None,
     ) -> None:

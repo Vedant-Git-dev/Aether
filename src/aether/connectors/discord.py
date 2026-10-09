@@ -32,11 +32,11 @@ class ApprovalView(discord.ui.View):
         self._decide = decide
         self._approval_id = approval_id
 
-    @discord.ui.button(label="Approve ✅", style=discord.ButtonStyle.green)
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.green)
     async def approve(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         await self._finish(interaction, APPROVED)
 
-    @discord.ui.button(label="Deny ❌", style=discord.ButtonStyle.red)
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
     async def deny(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         await self._finish(interaction, DENIED)
 
@@ -160,11 +160,13 @@ class DiscordConnector(MessagingConnector):
         # getattr so test fakes without an id still send fine
         return str(getattr(sent, "id", "") or "") or None
 
-    async def present_approval(self, approval_id: int, tool_name: str, summary: str) -> None:
+    async def present_approval(self, approval_id: int, text: str) -> None:
+        """One plain-language question plus one-tap Approve/Deny. The raw
+        tool name never reaches the user — the decision record keeps it."""
         if self._channel is None:
             log.info("discord: no DM channel yet — approval visible in the web panel")
             return
         await self._channel.send(
-            content=f"Approval needed: **{tool_name}**\n{summary}",
+            content=text,
             view=ApprovalView(self._decide, approval_id),
         )

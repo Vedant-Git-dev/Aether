@@ -272,7 +272,7 @@ async def test_show_marks_what_chat_changed() -> None:
     manager, _, _ = _manager()
 
     overview = await manager.show()
-    assert overview.startswith("⚙️ my configuration — config.yaml plus whatever you've changed from chat:")
+    assert overview.startswith("my configuration — config.yaml plus whatever you've changed from chat:")
     assert "Nothing changed from config.yaml yet." in overview
 
     await manager.set(op="set", path="agent.tick_seconds", value=10)
@@ -285,7 +285,7 @@ async def test_show_marks_what_chat_changed() -> None:
     assert await manager.show("salience.threshold") == "salience.threshold = 6 (config.yaml's value)"
 
     section = await manager.show("agent")
-    assert section.startswith("⚙️ agent — config.yaml values with your chat changes marked:")
+    assert section.startswith("agent — config.yaml values with your chat changes marked:")
     assert "tick_seconds = 10 (changed from config.yaml)" in section
 
 

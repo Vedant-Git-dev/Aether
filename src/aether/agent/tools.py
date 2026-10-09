@@ -15,7 +15,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
 from ..authz.audit import verification_text
 from ..connectors.registry import ToolRegistry
@@ -56,50 +56,115 @@ def _parse_int_param(params: dict[str, Any], key: str, default: int, *, minimum:
     return max(minimum, value) if minimum is not None else value
 
 
-# how a tool call is said in plain words — the record keeps the exact
-# name, chat never shows one
-_ACTION_PHRASES = {
-    "mail": "sending an email",
-    "gmail": "sending an email",
-    "telegram": "sending a message",
-    "discord": "sending a message",
-    "slack": "sending a message",
-    "whatsapp": "sending a message",
-    "calendar": "a calendar action",
-    "googlecalendar": "a calendar action",
-    "github": "a github action",
-    "notion": "a notion update",
-    "linear": "a linear action",
-    "payments": "a payment",
+# how a tool call is said in plain words at each moment it reaches the
+# user: the question when it's held for approval, the words when it's
+# narrated, and the report after it ran. The record keeps the exact
+# name; chat never shows one.
+class ActionWords(NamedTuple):
+    ask: str  # "Send the email"
+    doing: str  # "sending an email"
+    done: str  # "sent the email"
+
+
+_ACTION_WORDS: dict[str, ActionWords] = {
+    "mail": ActionWords("Send the email", "sending an email", "sent the email"),
+    "gmail": ActionWords("Send the email", "sending an email", "sent the email"),
+    "telegram": ActionWords("Send the message", "sending a message", "sent the message"),
+    "discord": ActionWords("Send the message", "sending a message", "sent the message"),
+    "slack": ActionWords("Send the message", "sending a message", "sent the message"),
+    "whatsapp": ActionWords("Send the message", "sending a message", "sent the message"),
+    "calendar": ActionWords(
+        "Make the calendar change", "a calendar action", "made the calendar change"
+    ),
+    "googlecalendar": ActionWords(
+        "Make the calendar change", "a calendar action", "made the calendar change"
+    ),
+    "github": ActionWords("Make the github change", "a github action", "made the github change"),
+    "notion": ActionWords("Update notion", "a notion update", "updated notion"),
+    "linear": ActionWords("Make the linear change", "a linear action", "made the linear change"),
+    "payments": ActionWords("Send the payment", "a payment", "sent the payment"),
 }
 
-_NATIVE_PHRASES = {
-    "send_chat_message": "messaging you",
-    "memory_search": "searching my memory",
-    "note_entity": "keeping a note",
-    "get_pending_approvals": "checking pending approvals",
-    "schedule_action": "scheduling an action",
-    "request_screen_capture": "asking for a screenshot",
-    "create_routine": "arming a routine",
-    "list_routines": "listing routines",
-    "set_routine_enabled": "pausing or re-arming a routine",
-    "delete_routine": "deleting a routine",
-    "explain_decision": "replaying a decision",
-    "verify_integrity": "verifying my records",
-    "get_config": "reading my configuration",
-    "set_config": "changing my configuration",
-    "workspace_read": "checking my workspace notes",
-    "workspace_search": "searching my workspace notes",
-    "workspace_remember": "writing a workspace note",
-    "workspace_promote": "promoting a workspace note",
-    "workspace_rewrite": "updating my identity or personality file",
-    "workspace_finish_bootstrap": "finishing first-run setup",
-    "search_tools": "looking for the right tool",
+_NATIVE_WORDS: dict[str, ActionWords] = {
+    "send_chat_message": ActionWords("Send the message", "messaging you", "sent you the message"),
+    "memory_search": ActionWords("Search my memory", "searching my memory", "searched my memory"),
+    "note_entity": ActionWords("Keep the note", "keeping a note", "kept the note"),
+    "get_pending_approvals": ActionWords(
+        "Check pending approvals", "checking pending approvals", "checked pending approvals"
+    ),
+    "schedule_action": ActionWords(
+        "Schedule the action", "scheduling an action", "scheduled the action"
+    ),
+    "request_screen_capture": ActionWords(
+        "Take the screenshot", "asking for a screenshot", "asked for the screenshot"
+    ),
+    "create_routine": ActionWords("Arm the routine", "arming a routine", "armed the routine"),
+    "list_routines": ActionWords("List the routines", "listing routines", "listed the routines"),
+    "set_routine_enabled": ActionWords(
+        "Arm or pause the routine", "pausing or re-arming a routine", "changed the routine's armed state"
+    ),
+    "delete_routine": ActionWords("Delete the routine", "deleting a routine", "deleted the routine"),
+    "explain_decision": ActionWords(
+        "Replay the decision", "replaying a decision", "replayed the decision"
+    ),
+    "verify_integrity": ActionWords(
+        "Verify my records", "verifying my records", "verified my records"
+    ),
+    "get_config": ActionWords(
+        "Read my configuration", "reading my configuration", "read my configuration"
+    ),
+    "set_config": ActionWords(
+        "Change my configuration", "changing my configuration", "changed my configuration"
+    ),
+    "workspace_read": ActionWords(
+        "Read my workspace notes", "checking my workspace notes", "read my workspace notes"
+    ),
+    "workspace_search": ActionWords(
+        "Search my workspace notes", "searching my workspace notes", "searched my workspace notes"
+    ),
+    "workspace_remember": ActionWords(
+        "Write the workspace note", "writing a workspace note", "wrote the workspace note"
+    ),
+    "workspace_promote": ActionWords(
+        "Promote the workspace note", "promoting a workspace note", "promoted the workspace note"
+    ),
+    "workspace_rewrite": ActionWords(
+        "Update my identity file",
+        "updating my identity or personality file",
+        "updated my identity file",
+    ),
+    "workspace_finish_bootstrap": ActionWords(
+        "Finish first-run setup", "finishing first-run setup", "finished first-run setup"
+    ),
+    "search_tools": ActionWords(
+        "Look for the right tool", "looking for the right tool", "looked for the right tool"
+    ),
 }
 
+# the few parameters worth putting in front of the user, keyed to the
+# label they read under — everything else stays in the decision record
+_SALIENT_PARAMS: tuple[tuple[str, str], ...] = (
+    ("to", "to"),
+    ("recipient", "to"),
+    ("recipients", "to"),
+    ("email", "to"),
+    ("channel", "channel"),
+    ("channel_id", "channel"),
+    ("chat_id", "chat"),
+    ("username", "username"),
+    ("title", "title"),
+    ("subject", "subject"),
+    ("label", "label"),
+    ("name", "name"),
+    ("query", "query"),
+    ("description", "description"),
+    ("file_name", "file"),
+    ("path", "path"),
+)
 
-def _plain_action(name: str) -> str:
-    """Plain words for a tool call, the way the user would say it."""
+
+def _action_words(name: str) -> ActionWords:
+    """(ask, doing, done) for one tool call, the way the user would say it."""
     server, sep, tool = name.partition("__")
     if sep:
         lowered = tool.lower()
@@ -110,9 +175,66 @@ def _plain_action(name: str) -> str:
         # sending an email" about listing mail would be a lie
         read_like = ("list", "search", "get", "read", "find", "check", "query", "fetch")
         if any(lowered.startswith(verb) for verb in read_like):
-            return f"checking {app}"
-        return _ACTION_PHRASES.get(app, f"an action in {app}")
-    return _NATIVE_PHRASES.get(name, "an internal step")
+            return ActionWords(f"Check {app}", f"checking {app}", f"checked {app}")
+        return _ACTION_WORDS.get(
+            app, ActionWords(f"Run the {app} action", f"an action in {app}", f"made the {app} change")
+        )
+    return _NATIVE_WORDS.get(
+        name, ActionWords("Run the internal step", "an internal step", "ran the internal step")
+    )
+
+
+def _plain_action(name: str) -> str:
+    """Plain words for a tool call, the way the user would say it."""
+    return _action_words(name).doing
+
+
+def _salient_context(params: Any) -> str:
+    """The one or two details that make an action concrete — "to
+    rahul@gmail.com, subject hello" — never a full argument dump. The
+    decision record keeps everything."""
+    if not isinstance(params, dict):
+        return ""
+    bits: list[str] = []
+    for key, label in _SALIENT_PARAMS:
+        if len(bits) >= 3:
+            break
+        value = params.get(key)
+        if isinstance(value, (list, tuple)):
+            value = ", ".join(str(v) for v in value)
+        if not isinstance(value, (str, int, float)):
+            continue
+        text = str(value).strip()
+        if not text or len(text) > 80:
+            continue
+        shown = f"'{text}'" if " " in text else text
+        bits.append(f"{label} {shown}")
+    return ", ".join(bits)
+
+
+def describe_ask(name: str, params: Any = None) -> str:
+    """The approval question exactly as the user reads it — "Send the
+    email (to rahul@gmail.com, subject hello)?" Never the raw tool name,
+    never a JSON dump; the decision record keeps the exact call."""
+    ask = _action_words(name).ask
+    ctx = _salient_context(params)
+    return f"{ask} ({ctx})?" if ctx else f"{ask}?"
+
+
+def describe_outcome(name: str, params: Any = None) -> str:
+    """The after-run report — "Done — sent the email (to rahul@gmail.com)."
+    The exact result stays in the decision record."""
+    done = _action_words(name).done
+    ctx = _salient_context(params)
+    return f"Done — {done} ({ctx})." if ctx else f"Done — {done}."
+
+
+def describe_denied(name: str, params: Any = None) -> str:
+    """The not-run report — "Not run — you denied sending an email (to
+    rahul@gmail.com)." """
+    doing = _action_words(name).doing
+    ctx = _salient_context(params)
+    return f"Not run — you denied {doing} ({ctx})." if ctx else f"Not run — you denied {doing}."
 
 
 def format_trace(t: Any) -> str:
@@ -189,7 +311,7 @@ def plain_replay(trace: Any) -> str:
     plain words, with the trace id for everything exact. Internal call
     names and raw error text stay in the record — this never echoes them."""
     p = trace.payload or {}
-    lines = [f"🧵 that message, from the record (trace #{trace.id}):"]
+    lines = [f"that message, from the record (trace #{trace.id}):"]
 
     trigger = p.get("trigger") or {}
     messages = trigger.get("messages") or []
