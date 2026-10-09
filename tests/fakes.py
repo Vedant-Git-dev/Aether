@@ -660,12 +660,17 @@ class FakeComposioBridge:
         self._wait_error = wait_error
         self.authorized: list[str] = []
         self.disconnected: list[str] = []
+        self.resets = 0
         self._requests = 0
 
     async def available(self) -> bool:
         return self._available
 
     async def ensure(self) -> bool:
+        return self._available
+
+    async def reset_session(self) -> bool:
+        self.resets += 1
         return self._available
 
     async def accounts(self) -> list:

@@ -27,6 +27,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -67,6 +68,18 @@ from .traces import CARRY_OUT, ROUTINE, SCHEDULED, TURN, Traces
 log = logging.getLogger("aether.agent")
 
 _MAX_OBSERVATIONS = 20
+
+# Hub watchdog: a connection hub (composio) whose session exists but whose
+# endpoint has stopped answering tools/list flaps in a reconnect loop
+# forever — sessions.use still succeeds for it, so the bridge's reuse path
+# never escapes. After this much continuous unreadiness, the loop cuts one
+# fresh session (the host's next reconnect re-resolves the $NAME refs onto
+# it), then leaves it alone for the cooldown; a few fruitless resets per
+# boot mean the outage is Composio's, not the session's, and the normal
+# reconnect loop is what rides it out.
+_HUB_RESET_AFTER_SECONDS = 90.0  # boot grace + a few backoff cycles
+_HUB_RESET_COOLDOWN_SECONDS = 600.0
+_HUB_MAX_RESETS_PER_BOOT = 3
 
 # History windowing (token control): a turn's prompt is capped at this many
 # messages — the context block and the newest triggers always stay, the
@@ -363,6 +376,12 @@ class AgentLoop:
         # in-flight Connect Link waits — tracked so a completed task is
         # never garbage-collected mid-flight
         self._connect_waits: set[asyncio.Task[None]] = set()
+        # hub watchdog state: when the composio connection first went
+        # unready (monotonic), when a session reset last ran, and how many
+        # this boot — see _watch_hub
+        self._hub_unready_since: float | None = None
+        self._hub_last_reset: float | None = None
+        self._hub_resets = 0
 
         self._queue: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._woken = asyncio.Event()
@@ -478,6 +497,10 @@ class AgentLoop:
         # (a2) a server that answered late joins the namespace here —
         # keeping the "the moment it's up" promise is the tick's own job
         await self._reconcile_mcp()
+
+        # (a3) a hub whose endpoint has gone stale never gets ready on its
+        # own — the watchdog cuts it a fresh session
+        await self._watch_hub()
 
         # (b) inbound chat becomes memory (allowlist applies at ingest; a
         # dropped sender is never seen by the model at all)
@@ -1036,6 +1059,53 @@ class AgentLoop:
                 await self._surfaces.send_to_user(
                     f"✅ {name} — {gained} new {word} in my vocabulary"
                 )
+
+    # -- the hub watchdog ---------------------------------------------------------
+
+    async def _watch_hub(self) -> None:
+        """A hub session can go stale in a way the reuse path can't see:
+        the router still answers initialize and sessions.use, but tools/list
+        comes back as a dead stream, so the connection flaps in a reconnect
+        loop on the same URL forever. Sustained unreadiness → the bridge
+        cuts one fresh session; the host re-resolves the $NAME refs onto it
+        at its next reconnect, and the reconcile above announces the tools
+        when they land. Cooldown + per-boot cap: if resets don't fix it,
+        the outage is Composio's and only its own recovery ends it."""
+        if self._composio is None or self._host is None:
+            return
+        conn = next(
+            (c for c in self._host.connections if c.name == SERVER_NAME), None
+        )
+        if conn is None or conn.ready:
+            self._hub_unready_since = None
+            return
+        now = time.monotonic()
+        if self._hub_unready_since is None:
+            self._hub_unready_since = now
+            return
+        if now - self._hub_unready_since < _HUB_RESET_AFTER_SECONDS:
+            return
+        if (
+            self._hub_last_reset is not None
+            and now - self._hub_last_reset < _HUB_RESET_COOLDOWN_SECONDS
+        ):
+            return
+        if self._hub_resets >= _HUB_MAX_RESETS_PER_BOOT:
+            return
+        self._hub_resets += 1
+        self._hub_last_reset = now
+        self._hub_unready_since = None
+        try:
+            reset = await self._composio.reset_session()
+        except Exception:
+            log.warning("hub session reset failed", exc_info=True)
+            return
+        if reset:
+            log.info("composio endpoint stale — cut a fresh session")
+            await self._surfaces.send_to_user(
+                "composio's endpoint stopped answering, so I've cut a fresh "
+                "session — its tools rejoin in a few seconds."
+            )
 
     # -- routines ---------------------------------------------------------------
 

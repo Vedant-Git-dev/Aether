@@ -9,6 +9,7 @@ become observations; configured source polls run on schedule.
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -50,6 +51,7 @@ from fakes import (
 )
 
 from aether.agent.loop import (
+    _HUB_RESET_AFTER_SECONDS,
     _MISSING,
     AgentLoop,
     CaptureRequestBox,
@@ -315,6 +317,59 @@ async def test_a_failed_carry_out_is_remembered_as_failed() -> None:
     assert len(remembered) == 1
     assert remembered[0]["payload"]["tool"] == "gmail__send_message"
     assert remembered[0]["payload"]["approval_id"] == approval.id
+
+
+def _stub_hub(*, ready: bool) -> Any:
+    """A host-shaped stub holding one connection named like the real hub."""
+    conn = SimpleNamespace(name="composio", ready=ready)
+    return SimpleNamespace(connections=[conn])
+
+
+async def test_a_stale_hub_session_gets_one_fresh_cut() -> None:
+    # a wedged router answers initialize but never tools/list, so the
+    # reconnect loop rides the same dead URL forever — after sustained
+    # unreadiness the watchdog has the bridge cut one fresh session
+    kit = LoopKit(None)
+    bridge = FakeComposioBridge()
+    kit.loop._composio = bridge
+    kit.loop._host = _stub_hub(ready=False)
+
+    await kit.loop._watch_hub()  # the first sighting only arms the timer
+    assert bridge.resets == 0
+
+    kit.loop._hub_unready_since = time.monotonic() - _HUB_RESET_AFTER_SECONDS - 1
+    await kit.loop._watch_hub()
+    assert bridge.resets == 1
+    assert any("fresh session" in s for s in kit.connector.sent)
+
+
+async def test_a_ready_hub_never_resets() -> None:
+    kit = LoopKit(None)
+    bridge = FakeComposioBridge()
+    kit.loop._composio = bridge
+    kit.loop._host = _stub_hub(ready=True)
+
+    kit.loop._hub_unready_since = time.monotonic() - 10_000
+    await kit.loop._watch_hub()
+    assert bridge.resets == 0
+    assert kit.loop._hub_unready_since is None  # the timer clears
+
+
+async def test_hub_resets_respect_the_cooldown() -> None:
+    # a Composio-side outage won't be fixed by minting sessions — after the
+    # first cut the watchdog leaves it alone for the cooldown
+    kit = LoopKit(None)
+    bridge = FakeComposioBridge()
+    kit.loop._composio = bridge
+    kit.loop._host = _stub_hub(ready=False)
+
+    kit.loop._hub_unready_since = time.monotonic() - 10_000
+    await kit.loop._watch_hub()
+    assert bridge.resets == 1
+
+    kit.loop._hub_unready_since = time.monotonic() - 10_000
+    await kit.loop._watch_hub()
+    assert bridge.resets == 1  # swallowed by the cooldown
 
 
 async def test_the_web_panel_decide_path_carries_out_a_fresh_approval() -> None:

@@ -133,6 +133,30 @@ class ComposioBridge:
                 raise ComposioUnavailable(str(exc)) from exc
             return True
 
+    async def reset_session(self) -> bool:
+        """Drop the cached session and cut a fresh one — new MCP URL and
+        key, persisted over the old $NAME secrets, so the host's next
+        reconnect re-resolves onto the new endpoint. This is the escape
+        hatch the reuse path can't take: a router that accepts initialize
+        but wedges on tools/list still answers sessions.use fine, so
+        ensure() would ride the dead session forever. False when no key
+        is set."""
+        async with self._lock:
+            key = await self._resolver.resolve(API_KEY_NAME)
+            if not key:
+                return False
+            if self._sdk is None:
+                from composio import Composio
+
+                self._sdk = Composio(api_key=key)
+            if not self._user_id:
+                self._user_id = await self._instance_user_id()
+            try:
+                self._session = await self._open_session(force_new=True)
+            except Exception as exc:
+                raise ComposioUnavailable(str(exc)) from exc
+            return True
+
     async def accounts(self) -> list[ConnectedApp]:
         """The instance's connected accounts — [] when Composio isn't
         configured (an honest empty list, not an error)."""
@@ -292,13 +316,15 @@ class ComposioBridge:
         await self._secrets.set(_USER_ID_NAME, fresh)
         return fresh
 
-    async def _open_session(self) -> Any:
+    async def _open_session(self, force_new: bool = False) -> Any:
         """Reuse the stored session when it still exists server-side;
         otherwise create a fresh one carrying whatever is still connected,
-        so a lost session never loses the apps."""
+        so a lost session never loses the apps. `force_new` skips the
+        reuse entirely — reset_session's answer to a session that exists
+        but whose endpoint no longer answers."""
         from composio import SESSION_PRESET_DIRECT_TOOLS
 
-        session_id = await self._secrets.get(_SESSION_ID_NAME)
+        session_id = None if force_new else await self._secrets.get(_SESSION_ID_NAME)
         if session_id:
             try:
                 session = await asyncio.to_thread(
