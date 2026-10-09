@@ -1492,6 +1492,7 @@ class AgentLoop:
 
     async def decide(self, approval_id: int, decision: str) -> Approval | None:
         """The web panel's path: decide, then carry out a fresh approval."""
+        decision = {"approve": APPROVED, "deny": DENIED}.get(decision, decision)
         approval = await self._approvals.decide(approval_id, decision)
         if approval is not None:
             await self._carry_out(approval)
