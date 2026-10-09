@@ -500,6 +500,15 @@ class AgentLoop:
         # own — the watchdog cuts it a fresh session
         await self._watch_hub()
 
+        # (a4) pending approvals past their TTL flip to expired and are
+        # audited — without this they'd sit as 'pending' forever, and every
+        # pending-approvals reader would keep offering dead decisions
+        if self._approvals is not None:
+            try:
+                await self._approvals.expire_overdue()
+            except Exception:
+                log.exception("expiring overdue approvals failed — continuing")
+
         # (b) inbound chat becomes memory (allowlist applies at ingest; a
         # dropped sender is never seen by the model at all)
         drained: list[InboundMessage] = []

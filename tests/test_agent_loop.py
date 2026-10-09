@@ -355,6 +355,38 @@ async def test_a_ready_hub_never_resets() -> None:
     assert kit.loop._hub_unready_since is None  # the timer clears
 
 
+async def test_the_tick_expires_overdue_approvals() -> None:
+    # a pending row past its TTL must never read as waiting — the tick
+    # flips it to expired (and the store audits it), so no surface keeps
+    # offering a dead decision
+    kit = LoopKit(None)
+    approval = await kit.approvals.create(
+        tool_name="mail__send_message", params={"to": "a@b.c"}
+    )
+    assert [approval] == await kit.approvals.list_pending()  # staged, waiting
+    approval.expires_at = datetime.now(UTC) - timedelta(hours=1)
+
+    await kit.loop._tick()
+    assert approval.status == "expired"
+    assert await kit.approvals.list_pending() == []
+
+
+async def test_list_pending_never_shows_an_expired_row() -> None:
+    # even before the tick's expire_overdue runs, a pending-but-expired
+    # row is hidden from every reader — the store's own filter
+    kit = LoopKit(None)
+    fresh = await kit.approvals.create(
+        tool_name="mail__send_message", params={"to": "a@b.c"}
+    )
+    stale = await kit.approvals.create(
+        tool_name="mail__send_message", params={"to": "d@e.f"}
+    )
+    stale.expires_at = datetime.now(UTC) - timedelta(minutes=5)
+
+    pending = await kit.approvals.list_pending()
+    assert pending == [fresh]
+
+
 async def test_hub_resets_respect_the_cooldown() -> None:
     # a Composio-side outage won't be fixed by minting sessions — after the
     # first cut the watchdog leaves it alone for the cooldown
