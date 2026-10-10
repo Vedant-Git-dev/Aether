@@ -48,7 +48,7 @@ from ..connectors.mcp_host import MCPHost
 from ..connectors.registry import ToolRegistry
 from ..llm.agent import run_tool_loop
 from ..llm.registry import ProviderRegistry
-from ..llm.types import Message, ToolCall, ToolResult
+from ..llm.types import PLAIN_PARAM, Message, ToolCall, ToolResult
 from ..memory.context import ContextBuilder
 from ..memory.entities import Sender
 from ..memory.events import Event, EventStore
@@ -62,7 +62,14 @@ from .config_wizard import ConfigWizard
 from .config_wizard import coerce_config_value as _coerce_config_value
 from .prompts import SYSTEM_PROMPT
 from .settings import AgentSettings
-from .tools import describe_ask, describe_denied, describe_outcome, plain_replay
+from .tools import (
+    describe_ask,
+    describe_call,
+    describe_denied,
+    describe_outcome,
+    plain_outcome,
+    plain_replay,
+)
 from .traces import CARRY_OUT, ROUTINE, SCHEDULED, TURN, Traces
 
 log = logging.getLogger("aether.agent")
@@ -1438,6 +1445,9 @@ class AgentLoop:
             {
                 "id": call.id,
                 "name": call.name,
+                # the model's own sentence when it offered one, the backend's
+                # vocabulary otherwise — the panel never needs the raw name
+                "plain": call.plain or describe_call(call.name, call.arguments),
                 "params": dict(call.arguments),
                 "decision": decision,
                 "matched_rule": matched_rule,
@@ -1486,6 +1496,17 @@ class AgentLoop:
         A call the namespace cannot run never parks: the user is not asked
         to consent to certain failure — it comes back in the same plain
         words as any other missing tool."""
+        # the model's one-sentence account of the call rides in as `_plain`
+        # (see PLAIN_PARAM): lift it onto the record and hand the policy,
+        # the audit, and the tool a call that never carries it
+        plain = call.arguments.get(PLAIN_PARAM)
+        if plain is not None:
+            call = ToolCall(
+                call.id,
+                call.name,
+                {k: v for k, v in call.arguments.items() if k != PLAIN_PARAM},
+                plain=str(plain),
+            )
         ruling = self._policy.classify(call.name, call.arguments, origin=origin)
 
         if ruling.decision is Decision.DENY:
@@ -1666,6 +1687,7 @@ class AgentLoop:
                 payload={
                     "tool": approval.tool_name,
                     "params": dict(approval.params),
+                    "plain": plain_outcome(approval.tool_name, approval.params, kind),
                     "detail": detail[:1000],
                     # unique per approval, so two identical sends both record
                     "approval_id": approval.id,

@@ -72,8 +72,13 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
 
     # the backend's "approval #N — <raw tool>" label reads plainly
     assert "Approval #1 — Sending" in text
+    # the model's own `plain` sentence wins where the loop recorded one
+    assert "Emailing Sam the Thursday confirmation" in text
+    # a call without `plain` (legacy row) is backfilled by the real route
+    # from the backend vocabulary — "telegram__send_message" never shows
+    assert "Sending a message (to @sam)" in text
     # a composio UPPER_SNAKE action reads as the app, never "composio"
-    assert "Sending email" in text
+    assert "Sending an email" in text
     assert "composio" not in text.lower()
     # a parked call's result is a model instruction — never quoted
     assert "held for approval (#" not in text
@@ -100,6 +105,8 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     assert "sam@example.com" in text
     assert "log_id" not in text
     assert "successful" not in text
+    # a legacy agent event without `plain` is backfilled by the real route
+    assert "Aether · Sending a message (to @sam)" in text
 
     page.goto(f"{live_server}/#/attention")
     page.wait_for_selector('[data-testid="approval-card"]')

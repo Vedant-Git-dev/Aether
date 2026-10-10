@@ -9,7 +9,10 @@ function CallRow({ c }) {
   return (
     <div data-testid="trace-call" className="mt-2.5 rounded-md border border-line bg-card px-3 py-2.5">
       <div className="flex items-baseline justify-between gap-3">
-        <span className="text-sm text-ink">{describeTool(c.name)}</span>
+        {/* the recorded plain sentence (the model's own, or the backend's
+            vocabulary) — scrubbed, since model text is untrusted; the raw
+            name is only a fallback for rows nothing described */}
+        <span className="text-sm text-ink">{c.plain ? plainText(c.plain) : describeTool(c.name)}</span>
         <span className={`shrink-0 text-xs font-medium ${statusColor(c.decision === "error" ? "error" : c.decision)}`}>
           {AUDIT_DECISIONS[c.decision] || humanize(c.decision)}
         </span>

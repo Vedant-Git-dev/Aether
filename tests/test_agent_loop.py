@@ -218,6 +218,55 @@ async def test_allow_classified_calls_execute_and_are_audited() -> None:
     assert kit.audit.entries[-1]["rules_matched"] == "builtin:read-only"
 
 
+async def test_a_calls_plain_line_is_recorded_and_never_reaches_the_tool() -> None:
+    kit = LoopKit(None)
+    kit.add_tool("mail__list_messages", result="2 unread")
+    trace: list[dict] = []
+
+    result = await kit.loop._execute(
+        ToolCall(
+            id="t1",
+            name="mail__list_messages",
+            arguments={"limit": 2, "_plain": "Checking mail for Sam's reply"},
+        ),
+        trace=trace,
+    )
+    assert result.is_error is False
+    # `_plain` is stripped before the tool, the policy, and the audit see
+    # the arguments — it is display text, never part of the call
+    assert kit.executed == [("mail__list_messages", {"limit": 2})]
+    assert kit.audit.entries[-1]["params"] == {"limit": 2}
+    assert trace[0]["plain"] == "Checking mail for Sam's reply"
+    assert trace[0]["params"] == {"limit": 2}
+
+
+async def test_a_call_without_plain_gets_the_backend_sentence() -> None:
+    kit = LoopKit(None)
+    kit.add_tool("mail__list_messages", result="2 unread")
+    trace: list[dict] = []
+
+    await kit.loop._execute(ToolCall(id="t1", name="mail__list_messages", arguments={}), trace=trace)
+    assert trace[0]["plain"] == "Checking mail"
+
+
+async def test_a_parked_call_keeps_its_plain_line_and_clean_params() -> None:
+    kit = LoopKit(None)
+    kit.add_tool("mail__send_message")
+    trace: list[dict] = []
+
+    await kit.loop._execute(
+        ToolCall(
+            id="t1",
+            name="mail__send_message",
+            arguments={"to": "a@b.c", "_plain": "Emailing Sam the Thursday confirmation"},
+        ),
+        trace=trace,
+    )
+    assert kit.executed == []  # parked, not run
+    assert kit.approvals.created[0].params == {"to": "a@b.c"}  # no `_plain` in the record
+    assert trace[0]["plain"] == "Emailing Sam the Thursday confirmation"
+
+
 async def test_risky_calls_are_parked_and_presented_not_executed() -> None:
     kit = LoopKit(None)
     kit.add_tool("mail__send_message")

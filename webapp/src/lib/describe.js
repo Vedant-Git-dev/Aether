@@ -275,11 +275,15 @@ export function describeEvent(e) {
     const who = handle ? personName(platform, handle) : "someone";
     return { title: who === "you" ? `You wrote on ${app}` : `Chat with ${who} on ${app}`, detail: p.text ? quote(p.text) : "" };
   }
-  // the agent's own approved acts — the payload carries the raw tool name
-  // and the raw result text, so this branch never touches paramRows
-  if (e.source === "agent" && (e.kind === "action_done" || e.kind === "action_failed")) {
+  // the agent's own acts — the payload carries the raw tool name and the
+  // raw result text, so this branch never touches paramRows. `plain` is
+  // written by the backend on every new row and backfilled at read time
+  // for old ones; it is still model-adjacent text, so plainText scrubs it
+  if (e.source === "agent" && p.tool) {
+    if (p.plain) return { title: plainText(p.plain), detail: p.detail ? summarizeResult(String(p.detail)) : "" };
     const what = describeTool(p.tool);
-    const title = e.kind === "action_failed" ? `Failed — ${what[0].toLowerCase()}${what.slice(1)}` : what;
+    const prefix = e.kind === "action_failed" ? "Failed — " : e.kind === "action_denied" ? "Not run — you denied " : "";
+    const title = `${prefix}${what[0].toLowerCase()}${what.slice(1)}`;
     return { title, detail: p.detail ? summarizeResult(String(p.detail)) : "" };
   }
   if (e.kind === "screen_capture") {

@@ -34,6 +34,10 @@ class ToolCall:
     id: str
     name: str
     arguments: dict[str, Any] = field(default_factory=dict)
+    # The model's one-sentence account of the call (see PLAIN_PARAM below),
+    # lifted out of the arguments by the agent loop before the tool runs.
+    # Never part of the wire shape the providers parse into.
+    plain: str | None = None
 
 
 @dataclass
@@ -112,6 +116,30 @@ class ToolSpec:
     # Where the tool came from: "native" or an MCP server name. Informational
     # only — authz classifies on the tool name.
     source: str = "native"
+
+
+# Every tool's schema carries an optional `_plain`: the model's own
+# one-sentence account of the call, for the user's activity log. The agent
+# loop strips it before the tool ever runs (AgentLoop._execute) and records
+# it on the trace; the panel renders it scrubbed, never trusting it.
+PLAIN_PARAM = "_plain"
+
+_PLAIN_PROPERTY: dict[str, Any] = {
+    "type": "string",
+    "description": (
+        "One short plain-language sentence for the user's activity log: what "
+        "you are doing and why — plain words, people's names where you know "
+        "them, never a raw tool name, JSON, secrets, or an argument dump."
+    ),
+}
+
+
+def with_plain_param(schema: dict[str, Any]) -> dict[str, Any]:
+    """A copy of a tool's input schema with the optional `_plain` property
+    added — see PLAIN_PARAM."""
+    props = dict(schema.get("properties") or {})
+    props[PLAIN_PARAM] = _PLAIN_PROPERTY
+    return {**schema, "properties": props}
 
 
 @dataclass

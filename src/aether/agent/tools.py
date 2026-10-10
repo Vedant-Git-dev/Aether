@@ -19,7 +19,7 @@ from typing import Any, NamedTuple
 
 from ..authz.audit import verification_text
 from ..connectors.registry import ToolRegistry
-from ..llm.types import ToolSpec
+from ..llm.types import ToolSpec, with_plain_param
 from ..workspace import SecretRejected, WorkspaceWriteError
 
 log = logging.getLogger("aether.agent.tools")
@@ -33,11 +33,13 @@ def _spec(name: str, description: str, properties: dict[str, Any], required: lis
     return ToolSpec(
         name=name,
         description=description,
-        input_schema={
-            "type": "object",
-            "properties": properties,
-            "required": required,
-        },
+        input_schema=with_plain_param(
+            {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            }
+        ),
     )
 
 
@@ -151,6 +153,7 @@ _SALIENT_PARAMS: tuple[tuple[str, str], ...] = (
     ("channel", "channel"),
     ("channel_id", "channel"),
     ("chat_id", "chat"),
+    ("chat_ref", "to"),
     ("username", "username"),
     ("title", "title"),
     ("subject", "subject"),
@@ -169,12 +172,20 @@ def _action_words(name: str) -> ActionWords:
     if sep:
         lowered = tool.lower()
         # a composio tool carries its toolkit as the name's prefix —
-        # composio__GMAIL_SEND_EMAIL reads as gmail, never as "composio"
-        app = lowered.split("_", 1)[0] if server == "composio" else server
+        # composio__GMAIL_SEND_EMAIL reads as gmail, never as "composio";
+        # the verb checks below run on the action that follows the toolkit
+        if server == "composio":
+            app, _, action = lowered.partition("_")
+        else:
+            app, action = server, lowered
+        # an action idiom the verb tables can't phrase
+        if action == "who_am_i":
+            account = f"the connected {app} account"
+            return ActionWords(f"Check {account}", f"checking {account}", f"checked {account}")
         # a read-like tool must never read as a send — "I went ahead with
         # sending an email" about listing mail would be a lie
         read_like = ("list", "search", "get", "read", "find", "check", "query", "fetch")
-        if any(lowered.startswith(verb) for verb in read_like):
+        if any(action.startswith(verb) for verb in read_like):
             return ActionWords(f"Check {app}", f"checking {app}", f"checked {app}")
         return _ACTION_WORDS.get(
             app, ActionWords(f"Run the {app} action", f"an action in {app}", f"made the {app} change")
@@ -235,6 +246,54 @@ def describe_denied(name: str, params: Any = None) -> str:
     doing = _action_words(name).doing
     ctx = _salient_context(params)
     return f"Not run — you denied {doing} ({ctx})." if ctx else f"Not run — you denied {doing}."
+
+
+def describe_call(name: str, params: Any = None) -> str:
+    """One call as a plain sentence — "Checking mail (from sam@example.com)".
+    Recorded on every traced call as `plain`, and computed at read time for
+    rows that predate the field. Never the raw tool name, never a dump."""
+    doing = _action_words(name).doing
+    ctx = _salient_context(params)
+    text = f"{doing} ({ctx})" if ctx else doing
+    return text[0].upper() + text[1:]
+
+
+def plain_outcome(name: str, params: Any, kind: str) -> str:
+    """The `plain` line for a stored agent-outcome event, by kind — the
+    doing-sentence for a run, framed for a failure or a denial."""
+    if kind == "action_failed":
+        doing = describe_call(name, params)
+        return f"Failed — {doing[0].lower()}{doing[1:]}"
+    if kind == "action_denied":
+        text = describe_denied(name, params)
+        return text[:-1] if text.endswith(".") else text
+    return describe_call(name, params)
+
+
+def with_plain_calls(payload: Any) -> Any:
+    """A trace payload with `plain` on every recorded call that lacks it —
+    rows written before the field existed get the backend's sentence at read
+    time, so old traces read exactly like new ones. Returns a copy; the
+    store is never rewritten."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("calls"), list):
+        return payload
+    return {
+        **payload,
+        "calls": [
+            {**c, "plain": describe_call(c.get("name"), c.get("params"))}
+            if isinstance(c, dict) and c.get("name") and not c.get("plain")
+            else c
+            for c in payload["calls"]
+        ],
+    }
+
+
+def with_plain_event(payload: Any, *, kind: str = "") -> Any:
+    """An agent-outcome event payload with `plain` filled in if missing —
+    the same read-time backfill as with_plain_calls, for the activity feed."""
+    if not isinstance(payload, dict) or payload.get("plain") or not payload.get("tool"):
+        return payload
+    return {**payload, "plain": plain_outcome(payload["tool"], payload.get("params"), kind)}
 
 
 def format_trace(t: Any) -> str:

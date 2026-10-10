@@ -187,6 +187,8 @@ class FakeEventStore:
                 payload={
                     "tool": "composio__GMAIL_WHO_AM_I",
                     "params": {},
+                    # the model's own sentence, recorded by _remember_outcome
+                    "plain": "Checking the connected Email account",
                     "detail": (
                         '{"successful":true,"data":{"data":{"email":"sam@example.com",'
                         '"name":"Sam"},"display_name":"sam@example.com"},'
@@ -195,6 +197,23 @@ class FakeEventStore:
                     "approval_id": 1,
                 },
                 salience_score=6.0,
+                memorable=True,
+                meta={},
+            ),
+            Event(
+                id=4,
+                source="agent",
+                kind="action_done",
+                occurred_at=now - timedelta(seconds=45),
+                # no `plain` — a legacy agent row; the real events route
+                # backfills it from the backend vocabulary
+                payload={
+                    "tool": "telegram__send_message",
+                    "params": {"chat_ref": "@sam"},
+                    "detail": "sent",
+                    "approval_id": 2,
+                },
+                salience_score=5.0,
                 memorable=True,
                 meta={},
             ),
@@ -433,13 +452,20 @@ class FakeTraces:
                     "calls": [
                         {
                             "name": "mail__send_message",
+                            # the model's own sentence, attached as `_plain`
+                            # and recorded by _note_call — the new-row path
+                            "plain": "Emailing Sam the Thursday confirmation",
+                            "params": {"to": "sam@example.com", "subject": "Re: Thursday"},
                             "decision": "require_approval",
                             "matched_rule": "builtin:risky",
                             "reason": "reaches an external system or is hard to undo",
                             "approval_id": 1,
                         },
                         {
+                            # no `plain` — a legacy row; the real route
+                            # backfills it from the backend vocabulary
                             "name": "telegram__send_message",
+                            "params": {"chat_ref": "@sam", "text": "confirmed for 4pm"},
                             "decision": "require_approval",
                             "matched_rule": "user:telegram__send_message",
                             "reason": "one-tap sends",
