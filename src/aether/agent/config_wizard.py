@@ -142,9 +142,10 @@ _SECTIONS: tuple[_Section, ...] = (
                 "llm.provider", "provider", "who makes me think",
                 "who should make me think? (currently {cur} — heads-up: "
                 "llm changes restart me, back in a few seconds)\n"
-                "1 — anthropic\n2 — openai\n3 — gemini\n4 — ollama",
+                "1 — anthropic\n2 — openai\n3 — gemini\n4 — ollama\n5 — nvidia_nim",
                 (("anthropic", "anthropic"), ("openai", "openai"),
-                 ("gemini", "gemini"), ("ollama", "ollama")),
+                 ("gemini", "gemini"), ("ollama", "ollama"),
+                 ("nvidia_nim", "nvidia_nim")),
             ),
             _Setting(
                 "llm.model", "model", "the model I think with",
