@@ -131,12 +131,14 @@ class TelegramConnector(MessagingConnector):
             log.warning("odd telegram callback data: %r", data)
             return
         decision = APPROVED if action == "approve" else DENIED
-        result = await self._decide(int(id_part), decision)
-        note = "handled." if result is not None else "already decided or expired."
+        await self._decide(int(id_part), decision)
         with contextlib.suppress(
             Exception
         ):  # message too old to edit — non-fatal, the store has the truth
-            await query.edit_message_text(f"Approval {decision}: {note}", reply_markup=None)
+            # the tap only retires the buttons — the question text stays,
+            # and the outcome message from _carry_out is the acknowledgment
+            # (a stale tap's outcome already landed when it was decided)
+            await query.edit_message_reply_markup(reply_markup=None)
 
     async def _on_error(self, update: object, context: Any) -> None:
         """One clean line — without a registered handler PTB dumps the whole

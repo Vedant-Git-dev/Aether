@@ -617,6 +617,69 @@ async def test_trace_detail_is_404_for_an_unknown_trace() -> None:
     assert response.status_code == 404
 
 
+async def test_trace_detail_backfills_plain_for_legacy_calls() -> None:
+    traces = FakeTraces()
+    trace = traces.add(
+        kind="turn",
+        label="telegram · vedant",
+        payload={
+            "calls": [
+                {"name": "mail__list_messages", "params": {}, "decision": "allow"},
+                {"name": "mail__send_message", "params": {"to": "a@b.c"}, "plain": "Emailing Sam"},
+            ]
+        },
+    )
+    async with _client(_app(None, traces=traces)) as client:
+        response = await client.get(f"/api/traces/{trace.id}", params={"token": "secret"})
+    calls = response.json()["payload"]["calls"]
+    assert calls[0]["plain"] == "Checking mail"  # backfilled from the backend vocabulary
+    assert calls[1]["plain"] == "Emailing Sam"  # the recorded sentence wins
+    assert "plain" not in traces.traces[0].payload["calls"][0]  # the store is never rewritten
+
+
+async def test_events_feed_backfills_plain_for_legacy_agent_rows() -> None:
+    store = FakeEventStore(
+        {
+            1: Event(
+                id=1,
+                source="agent",
+                kind="action_done",
+                occurred_at=datetime(2026, 9, 25, 10, 1, tzinfo=UTC),
+                payload={
+                    "tool": "composio__GMAIL_WHO_AM_I",
+                    "params": {},
+                    "detail": "ok",
+                    "approval_id": 1,
+                },
+                salience_score=5.0,
+                memorable=False,
+                meta={},
+            ),
+            2: Event(
+                id=2,
+                source="agent",
+                kind="action_done",
+                occurred_at=datetime(2026, 9, 25, 10, 2, tzinfo=UTC),
+                payload={
+                    "tool": "mail__send_message",
+                    "params": {"to": "a@b.c"},
+                    "plain": "Emailing Sam",
+                    "detail": "sent",
+                    "approval_id": 2,
+                },
+                salience_score=5.0,
+                memorable=False,
+                meta={},
+            ),
+        }
+    )
+    async with _client(_app(None, events=store)) as client:
+        response = await client.get("/api/events", params={"token": "secret"})
+    by_id = {e["id"]: e for e in response.json()["events"]}
+    assert by_id[1]["payload"]["plain"] == "Checking the connected gmail account"
+    assert by_id[2]["payload"]["plain"] == "Emailing Sam"  # the recorded sentence wins
+
+
 # ---------------------------------------------------------------------------
 # /api/memory — resolved cross-platform identities + their latest note
 # ---------------------------------------------------------------------------

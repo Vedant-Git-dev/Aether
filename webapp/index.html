@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f7f7f8">
+<meta name="color-scheme" content="light dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Aether">
+<meta name="format-detection" content="telephone=no">
+<script>
+/* apply the saved (or system) theme before first paint so nothing flashes.
+   Stays a classic inline script on purpose: module scripts are deferred and
+   would run after paint — the build passes this through verbatim. */
+(function () {
+  try {
+    var t = localStorage.getItem("aether_theme");
+    if (t !== "light" && t !== "dark") t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    document.documentElement.dataset.theme = t;
+  } catch (e) { document.documentElement.dataset.theme = "light"; }
+})();
+</script>
+<title>Aether</title>
+<link rel="icon" href="/aether-mark.jpg">
+<link rel="apple-touch-icon" href="/aether-mark.jpg">
+</head>
+<body>
+<div id="root"></div>
+<script type="module" src="/src/main.jsx"></script>
+</body>
+</html>

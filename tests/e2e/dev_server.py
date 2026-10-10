@@ -3,7 +3,7 @@
 This is what the E2E tests drive with a real browser, and what a developer
 can run by hand to click through the frontend without setting up a database:
 
-    python -m tests.e2e.dev_server
+    python tests/e2e/dev_server.py
 
 Every fake here implements exactly the surface the real store classes do
 (same methods, same return shapes) — routes.py and the frontend can't tell
@@ -16,8 +16,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Response, WebSocket
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from aether.agent.traces import Trace
@@ -127,7 +127,7 @@ class FakeAudit:
                 "tool_name": "mail__list_messages",
                 "decision": "allow",
                 "rules_matched": "builtin:read-only",
-                "outcome": "read-only tool",
+                "outcome": "read-only tool, no side effects",
                 "created_at": now - timedelta(hours=2),
                 "entry_hash": "7e4c19a04f8e2d1b91a0c3f5d8e7b2a6c4d9f1e8b3a7c2d5e9f0a1b4c8d6e3f7",
             },
@@ -177,11 +177,58 @@ class FakeEventStore:
     def __init__(self, now: datetime) -> None:
         self.rows = [
             Event(
+                id=3,
+                source="agent",
+                kind="action_done",
+                occurred_at=now - timedelta(seconds=30),
+                # the real agent-outcome shape (loop.py): tool is the raw
+                # composio name and detail is str(result) — the raw JSON
+                # envelope the tool returned, log_id and all
+                payload={
+                    "tool": "composio__GMAIL_WHO_AM_I",
+                    "params": {},
+                    # the model's own sentence, recorded by _remember_outcome
+                    "plain": "Checking the connected Email account",
+                    "detail": (
+                        '{"successful":true,"data":{"data":{"email":"sam@example.com",'
+                        '"name":"Sam"},"display_name":"sam@example.com"},'
+                        '"error":null,"log_id":"log_abc123"}'
+                    ),
+                    "approval_id": 1,
+                },
+                salience_score=6.0,
+                memorable=True,
+                meta={},
+            ),
+            Event(
+                id=4,
+                source="agent",
+                kind="action_done",
+                occurred_at=now - timedelta(seconds=45),
+                # no `plain` — a legacy agent row; the real events route
+                # backfills it from the backend vocabulary
+                payload={
+                    "tool": "telegram__send_message",
+                    "params": {"chat_ref": "@sam"},
+                    "detail": "sent",
+                    "approval_id": 2,
+                },
+                salience_score=5.0,
+                memorable=True,
+                meta={},
+            ),
+            Event(
                 id=2,
                 source="telegram",
                 kind="chat_message",
                 occurred_at=now - timedelta(minutes=1),
-                payload={"text": "confirmed for 4pm"},
+                # the real stored shape: the handle rides under _sender
+                # (events.py SENDER_KEY), never as a top-level "handle"
+                payload={
+                    "text": "confirmed for 4pm",
+                    "chat_ref": "@sam",
+                    "_sender": {"platform": "telegram", "handle": "@sam"},
+                },
                 salience_score=8.0,
                 memorable=True,
                 meta={},
@@ -263,7 +310,13 @@ class FakeEntities:
                     id=1,
                     identity_id=1,
                     created_at=now - timedelta(hours=2),
-                    payload={"kind": "relationship", "text": "coworker on the infra team"},
+                    # the real note_entity tool payload: {kind, note, handle, platform}
+                    payload={
+                        "kind": "relationship",
+                        "note": "coworker on the infra team",
+                        "handle": "@sam",
+                        "platform": "telegram",
+                    },
                 )
             ],
         }
@@ -297,11 +350,17 @@ class FakeTraces:
     renders all four shapes from these."""
 
     def __init__(self, now: datetime) -> None:
+        # the real AgentLoop._event_line format — the panel parses the payload
+        # back out of this rather than ever showing the raw line
+        mail_line = (
+            f"{(now - timedelta(minutes=10)):%Y-%m-%d %H:%M} mail/poll:unread (salience 7): "
+            '{"from": "sam@example.com", "subject": "Re: Thursday"}'
+        )
         self.rows = [
             Trace(
                 id=4,
                 kind="carry_out",
-                label="mail__send_message",
+                label="approval #1 — mail__send_message",  # the real label carries the raw tool name
                 payload={
                     "approval_id": 1,
                     "tool": "mail__send_message",
@@ -317,16 +376,38 @@ class FakeTraces:
                 kind="scheduled",
                 label="follow up with sam re: thursday",
                 payload={
-                    "action": {"label": "follow up with sam re: thursday", "run_at": (now + timedelta(hours=3)).isoformat()},
+                    # real payload: run_at formatted "%Y-%m-%d %H:%M:%S%z", not ISO
+                    "action": {
+                        "id": 1,
+                        "label": "follow up with sam re: thursday",
+                        "run_at": f"{now + timedelta(hours=3):%Y-%m-%d %H:%M:%S%z}",
+                    },
                     "calls": [
                         {
                             "name": "mail__list_messages",
                             "decision": "allow",
                             "matched_rule": "builtin:read-only",
-                            "reason": "read-only tool",
+                            "reason": "read-only tool, no side effects",
                             "result": "3 unread messages",
                             "is_error": False,
-                        }
+                        },
+                        {
+                            # composio actions arrive UPPER_SNAKE with the
+                            # toolkit as the first word — the panel must read
+                            # this as gmail, never as "composio"
+                            "name": "composio__GMAIL_SEND_EMAIL",
+                            "decision": "require_approval",
+                            "matched_rule": "builtin:risky",
+                            "reason": "reaches an external system or is hard to undo",
+                            # the real parked-call result is an instruction to
+                            # the model — the panel must not quote it
+                            "result": (
+                                "held for approval (#1) — the user has been asked on "
+                                "their chat surfaces and the web panel"
+                            ),
+                            "is_error": False,
+                            "approval_id": 1,
+                        },
                     ],
                     "result": "no reply yet — nudge queued",
                     "is_error": False,
@@ -338,14 +419,15 @@ class FakeTraces:
                 kind="routine",
                 label="morning mail triage",
                 payload={
-                    "routine": {"label": "morning mail triage", "trigger": "mail poll:unread"},
-                    "event": {"source": "mail", "kind": "poll:unread", "line": "Re: Thursday — sam@example.com"},
+                    # the real trigger shape: a condition dict, not a string
+                    "routine": {"id": 1, "label": "morning mail triage", "trigger": {"source": "mail", "kind": "poll:unread"}},
+                    "event": {"id": 1, "source": "mail", "kind": "poll:unread", "line": mail_line},
                     "calls": [
                         {
                             "name": "note_entity",
                             "decision": "allow",
                             "matched_rule": "builtin:internal",
-                            "reason": "stays inside aether",
+                            "reason": "internal tool, touches only Aether's own state",
                             "result": "noted",
                             "is_error": False,
                         }
@@ -356,33 +438,49 @@ class FakeTraces:
             Trace(
                 id=1,
                 kind="turn",
-                label="telegram · @sam",
+                # the real _trace_label: the text of the message that drove the turn
+                label="can you confirm thursday at 4?",
                 payload={
                     "trigger": {
                         "messages": [
                             {"surface": "telegram", "handle": "@sam", "text": "can you confirm thursday at 4?"}
                         ],
                         "observations": [
-                            {"source": "mail", "kind": "poll:unread", "line": "Re: Thursday — sam@example.com"}
+                            {"id": 1, "source": "mail", "kind": "poll:unread", "line": mail_line}
                         ],
                     },
                     "calls": [
                         {
                             "name": "mail__send_message",
+                            # the model's own sentence, attached as `_plain`
+                            # and recorded by _note_call — the new-row path
+                            "plain": "Emailing Sam the Thursday confirmation",
+                            "params": {"to": "sam@example.com", "subject": "Re: Thursday"},
                             "decision": "require_approval",
                             "matched_rule": "builtin:risky",
                             "reason": "reaches an external system or is hard to undo",
                             "approval_id": 1,
                         },
                         {
+                            # no `plain` — a legacy row; the real route
+                            # backfills it from the backend vocabulary
                             "name": "telegram__send_message",
+                            "params": {"chat_ref": "@sam", "text": "confirmed for 4pm"},
                             "decision": "require_approval",
                             "matched_rule": "user:telegram__send_message",
                             "reason": "one-tap sends",
                             "approval_id": 2,
                         },
                     ],
-                    "reasoning": ["Sam asked for a confirmation; the mail thread already has my draft reply."],
+                    # a line repeated across loop steps — the panel collapses
+                    # consecutive duplicates rather than showing it twice
+                    "reasoning": [
+                        "Sam asked for a confirmation; the mail thread already has my draft reply.",
+                        "Sam asked for a confirmation; the mail thread already has my draft reply.",
+                        # models narrate raw tool names and paste raw JSON into
+                        # their reasoning — the panel transcribes both
+                        'I will run composio__GMAIL_SEND_EMAIL once approved — last check returned {"successful": true, "data": {"id": "msg-9"}}.',
+                    ],
                     "reply": "I've drafted the reply to Sam — approve it and it goes out.",
                 },
                 created_at=now - timedelta(minutes=6),
@@ -484,7 +582,11 @@ def build_app() -> FastAPI:
     app = FastAPI(title="Aether (e2e dev fixture)")
     app.include_router(api_router)
     app.include_router(chat_router)
-    app.mount("/assets", StaticFiles(directory=WEB_DIR), name="web-assets")
+    # same unbuilt-panel guard as the real app: the panel is a Vite build
+    # artifact, and a fresh checkout doesn't have it yet
+    panel_built = (WEB_DIR / "index.html").is_file()
+    if panel_built:
+        app.mount("/assets", StaticFiles(directory=WEB_DIR), name="web-assets")
 
     app.state.settings = Settings(_env_file=None, api_token=API_TOKEN)
     app.state.config = AppConfig(
@@ -523,7 +625,12 @@ def build_app() -> FastAPI:
     app.state.composio = FakeHubBridge()
 
     @app.get("/")
-    async def index() -> FileResponse:
+    async def index() -> Response:
+        if not panel_built:
+            return PlainTextResponse(
+                "panel not built — run: cd webapp && npm install && npm run build",
+                status_code=503,
+            )
         return FileResponse(WEB_DIR / "index.html")
 
     return app

@@ -1,0 +1,22 @@
+{
+  "name": "aether-panel",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:test": "if [ -n \"$AETHER_DEV_API\" ]; then vite; else echo \"skipped: set AETHER_DEV_API to the test backend (e.g. AETHER_DEV_API=http://127.0.0.1:8731 with python tests/e2e/dev_server.py running)\"; fi",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "^6.1.2",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.3.4"
+  }
+}

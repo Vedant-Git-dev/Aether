@@ -218,6 +218,55 @@ async def test_allow_classified_calls_execute_and_are_audited() -> None:
     assert kit.audit.entries[-1]["rules_matched"] == "builtin:read-only"
 
 
+async def test_a_calls_plain_line_is_recorded_and_never_reaches_the_tool() -> None:
+    kit = LoopKit(None)
+    kit.add_tool("mail__list_messages", result="2 unread")
+    trace: list[dict] = []
+
+    result = await kit.loop._execute(
+        ToolCall(
+            id="t1",
+            name="mail__list_messages",
+            arguments={"limit": 2, "_plain": "Checking mail for Sam's reply"},
+        ),
+        trace=trace,
+    )
+    assert result.is_error is False
+    # `_plain` is stripped before the tool, the policy, and the audit see
+    # the arguments — it is display text, never part of the call
+    assert kit.executed == [("mail__list_messages", {"limit": 2})]
+    assert kit.audit.entries[-1]["params"] == {"limit": 2}
+    assert trace[0]["plain"] == "Checking mail for Sam's reply"
+    assert trace[0]["params"] == {"limit": 2}
+
+
+async def test_a_call_without_plain_gets_the_backend_sentence() -> None:
+    kit = LoopKit(None)
+    kit.add_tool("mail__list_messages", result="2 unread")
+    trace: list[dict] = []
+
+    await kit.loop._execute(ToolCall(id="t1", name="mail__list_messages", arguments={}), trace=trace)
+    assert trace[0]["plain"] == "Checking mail"
+
+
+async def test_a_parked_call_keeps_its_plain_line_and_clean_params() -> None:
+    kit = LoopKit(None)
+    kit.add_tool("mail__send_message")
+    trace: list[dict] = []
+
+    await kit.loop._execute(
+        ToolCall(
+            id="t1",
+            name="mail__send_message",
+            arguments={"to": "a@b.c", "_plain": "Emailing Sam the Thursday confirmation"},
+        ),
+        trace=trace,
+    )
+    assert kit.executed == []  # parked, not run
+    assert kit.approvals.created[0].params == {"to": "a@b.c"}  # no `_plain` in the record
+    assert trace[0]["plain"] == "Emailing Sam the Thursday confirmation"
+
+
 async def test_risky_calls_are_parked_and_presented_not_executed() -> None:
     kit = LoopKit(None)
     kit.add_tool("mail__send_message")
@@ -248,7 +297,9 @@ async def test_an_approved_decision_runs_the_held_call() -> None:
     await kit.loop.execute_decision(approval.id, APPROVED)
     assert kit.executed == [("mail__send_message", {"to": "a@b.c", "body": "hi"})]
     assert kit.approvals.executed == [approval.id]
-    assert any("Done — sent the email" in s for s in kit.connector.sent)
+    assert any("Sent the email" in s for s in kit.connector.sent)
+    # the result, plainly — no "Done — tool executed" ceremony
+    assert not any("Done —" in s for s in kit.connector.sent)
 
 
 async def test_a_denied_decision_never_runs() -> None:
@@ -263,7 +314,8 @@ async def test_a_denied_decision_never_runs() -> None:
 
     await kit.loop.execute_decision(approval.id, DENIED)
     assert kit.executed == []
-    assert any("denied" in s for s in kit.connector.sent)
+    # a plain okay, not a report — "Not run — you denied …" is the log line
+    assert any("Okay — not sending an email" in s for s in kit.connector.sent)
 
 
 async def test_a_carried_out_action_closes_the_loop_in_memory() -> None:
@@ -355,6 +407,38 @@ async def test_a_ready_hub_never_resets() -> None:
     assert kit.loop._hub_unready_since is None  # the timer clears
 
 
+async def test_the_tick_expires_overdue_approvals() -> None:
+    # a pending row past its TTL must never read as waiting — the tick
+    # flips it to expired (and the store audits it), so no surface keeps
+    # offering a dead decision
+    kit = LoopKit(None)
+    approval = await kit.approvals.create(
+        tool_name="mail__send_message", params={"to": "a@b.c"}
+    )
+    assert [approval] == await kit.approvals.list_pending()  # staged, waiting
+    approval.expires_at = datetime.now(UTC) - timedelta(hours=1)
+
+    await kit.loop._tick()
+    assert approval.status == "expired"
+    assert await kit.approvals.list_pending() == []
+
+
+async def test_list_pending_never_shows_an_expired_row() -> None:
+    # even before the tick's expire_overdue runs, a pending-but-expired
+    # row is hidden from every reader — the store's own filter
+    kit = LoopKit(None)
+    fresh = await kit.approvals.create(
+        tool_name="mail__send_message", params={"to": "a@b.c"}
+    )
+    stale = await kit.approvals.create(
+        tool_name="mail__send_message", params={"to": "d@e.f"}
+    )
+    stale.expires_at = datetime.now(UTC) - timedelta(minutes=5)
+
+    pending = await kit.approvals.list_pending()
+    assert pending == [fresh]
+
+
 async def test_hub_resets_respect_the_cooldown() -> None:
     # a Composio-side outage won't be fixed by minting sessions — after the
     # first cut the watchdog leaves it alone for the cooldown
@@ -386,7 +470,7 @@ async def test_the_web_panel_decide_path_carries_out_a_fresh_approval() -> None:
     assert await kit.loop.decide(approval.id, "approve") is approval
     assert kit.executed == [("mail__send_message", {"to": "a@b.c", "body": "hi"})]
     assert kit.approvals.executed == [approval.id]
-    assert any("Done — sent the email" in s for s in kit.connector.sent)
+    assert any("Sent the email" in s for s in kit.connector.sent)
 
 
 async def test_a_stale_web_decide_touches_nothing() -> None:
@@ -557,6 +641,49 @@ async def test_inbound_message_becomes_memory_and_reaches_the_model() -> None:
     assert any("what do you remember?" in m.text for m in messages)
     assert any("[message from @vedant via telegram]" in m.text for m in messages)
     assert kit.connector.sent == ["hello back"]
+
+
+async def test_a_dying_solicited_turn_says_so_in_plain_words() -> None:
+    # the model failing after the user spoke must never leave silence —
+    # plain words go out, then the failure still propagates to the tick
+    provider = FakeProvider([Turn(text="unused")])
+    kit = LoopKit(provider)
+
+    async def dead(system: str, messages: list, tools: list) -> Turn:
+        raise RuntimeError("provider is down")
+
+    provider.complete = dead  # type: ignore[method-assign]
+    kit.loop.submit_message(_msg("what's on my calendar?"))
+    try:
+        await kit.loop._tick()
+        raise AssertionError("the turn failure must propagate")
+    except RuntimeError:
+        pass
+
+    assert kit.connector.sent == [
+        "Something went wrong on my side — I couldn't finish "
+        "that just now. Nothing else is affected."
+    ]
+
+
+async def test_a_dying_unprompted_turn_stays_quiet() -> None:
+    # a background tick that fails is a log line, never an interruption —
+    # nobody asked, so nobody is told
+    provider = FakeProvider([Turn(text="unused")])
+    kit = LoopKit(provider)
+
+    async def dead(system: str, messages: list, tools: list) -> Turn:
+        raise RuntimeError("provider is down")
+
+    provider.complete = dead  # type: ignore[method-assign]
+    kit.events.events[1] = _event(1)
+    try:
+        await kit.loop._tick()
+        raise AssertionError("the turn failure must propagate")
+    except RuntimeError:
+        pass
+
+    assert kit.connector.sent == []
 
 
 async def test_handle_inbound_is_awaitable_and_lands_the_message() -> None:
@@ -1869,7 +1996,27 @@ async def test_the_tick_announces_a_late_ready_server_once() -> None:
     assert len(kit.connector.sent) == 1  # once per boot, never again
 
 
-async def test_the_tick_announces_hub_growth_once() -> None:
+async def test_the_composio_hub_joins_and_grows_silently() -> None:
+    """The directive: composio never announces its ups in chat — it speaks
+    only when it's down, and the watchdog owns that side. Joining and
+    growing are housekeeping."""
+    kit = LoopKit(None)
+    host = FakeMcpHost(SimpleNamespace(name="composio", ready=True))
+    kit.tools.attach_mcp(host)
+    kit.loop._host = host
+
+    await kit.loop._tick()
+    assert kit.connector.sent == []  # joined the namespace, said nothing
+    assert kit.tools.has_server("composio")
+
+    # the user approved an app on the hub — growth is quiet too; the
+    # connect flow is what tells them, not the tick
+    hub = host.connections[0]
+    hub.tools = ["act", "gmail_send"]
+    hub.tool_version = 2
+    await kit.loop._tick()
+    assert kit.connector.sent == []
+    assert kit.tools.get("composio__gmail_send") is not None  # callable regardless
     """The hub promise: an app approved after connect shows up as callable
     actions — the tick notices the changed tool list, syncs, and says so."""
     kit = LoopKit(None)

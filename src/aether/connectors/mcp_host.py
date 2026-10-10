@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from ..config import MCPServerConfig, PollTool
-from ..llm.types import ToolSpec
+from ..llm.types import ToolSpec, with_plain_param
 from ..secret_env import EnvResolver
 from .base import ConnectorUnavailableError, UnknownToolError
 
@@ -252,7 +252,7 @@ class MCPServerConnection:
                 ToolSpec(
                     name=f"{self.name}__{tool.name}",
                     description=description or f"{self.name} tool {tool.name}",
-                    input_schema=schema,
+                    input_schema=with_plain_param(schema),
                     source=self.name,
                 )
             )

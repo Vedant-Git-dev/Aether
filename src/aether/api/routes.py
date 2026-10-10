@@ -13,6 +13,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, Response, Upl
 from pydantic import BaseModel
 
 from ..workspace import SecretRejected, WorkspaceEntry, WorkspaceWriteError
+from ..agent.tools import with_plain_calls, with_plain_event
 from ..apps_catalog import CATALOG, recipe_for
 from ..composio_bridge import ComposioNotConfigured
 
@@ -148,7 +149,13 @@ async def events_feed(request: Request, limit: int = 50, token: str | None = Non
                 "at": e.occurred_at.isoformat(),
                 "salience": e.salience_score,
                 "memorable": e.memorable,
-                "payload": e.payload,
+                # agent-outcome rows written before `plain` existed get the
+                # backend's sentence at read time — old rows read like new
+                "payload": (
+                    with_plain_event(e.payload, kind=e.kind)
+                    if e.source == "agent"
+                    else e.payload
+                ),
             }
             for e in events  # recent() is newest first — the feed's order
         ]
@@ -472,7 +479,9 @@ async def trace_detail(
         "kind": trace.kind,
         "label": trace.label,
         "at": trace.created_at.isoformat(),
-        "payload": trace.payload,
+        # calls recorded before `plain` existed get the backend's sentence
+        # at read time — old traces read exactly like new ones
+        "payload": with_plain_calls(trace.payload),
     }
 
 

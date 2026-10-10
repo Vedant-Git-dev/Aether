@@ -52,6 +52,26 @@ class RegisteredTool:
     handler: NativeHandler | None = None
 
 
+def _gmail_body_breaks(name: str, params: dict[str, Any]) -> dict[str, Any]:
+    """The deterministic fix for email line breaks at the MCP boundary.
+
+    Composio's Gmail actions carry an is_html flag — as HTML, a body written
+    with plain \\n newlines renders as one collapsed line, and a doubly
+    escaped \\n shows up as literal text. Whatever the model wrote, the
+    line breaks must survive: unescape, then \\n becomes <br> with is_html
+    set. Idempotent, so the approval path's re-execution is a no-op."""
+    if not name.startswith("composio__GMAIL_"):
+        return params
+    body = params.get("body")
+    if not isinstance(body, str) or ("\\n" not in body and "\n" not in body):
+        return params
+    return {
+        **params,
+        "body": body.replace("\\n", "\n").replace("\n", "<br>"),
+        "is_html": True,
+    }
+
+
 class ToolRegistry:
     """Everything the model can call, under one flat set of names."""
 
@@ -204,7 +224,7 @@ class ToolRegistry:
             return _stringify(await tool.handler(params or {}))
         if self._mcp_host is None:
             raise UnknownToolError(f"mcp tool {name} has no host to route through")
-        return await self._mcp_host.call(name, params or {})
+        return await self._mcp_host.call(name, _gmail_body_breaks(name, params or {}))
 
 
 def _stringify(result: Any) -> str:

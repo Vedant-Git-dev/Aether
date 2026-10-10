@@ -235,7 +235,7 @@ class Approvals:
         rows = await self._pool.fetch(
             "SELECT id, tool_name, status, created_at, expires_at, decided_at,"
             " decided_by, rules_matched, note, params_enc"
-            " FROM pending_approvals WHERE status = 'pending'"
+            " FROM pending_approvals WHERE status = 'pending' AND expires_at > now()"
             " ORDER BY created_at"
         )
         approvals: list[Approval] = []

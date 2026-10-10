@@ -15,3 +15,7 @@ build/
 # Not part of the repository
 *.docx
 /Design Themed UI Layout/
+
+# web panel — Vite build output (source lives in webapp/)
+/src/aether/web/
+/webapp/node_modules/

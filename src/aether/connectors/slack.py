@@ -172,15 +172,23 @@ class SlackConnector(MessagingConnector):
         except (KeyError, IndexError, TypeError, ValueError):
             log.warning("odd slack action payload: %r", body)
             return
-        result = await self._decide(approval_id, decision)
-        note = "handled." if result is not None else "already decided or expired."
+        await self._decide(approval_id, decision)
         with contextlib.suppress(
             Exception
         ):  # message may be old or locked — the store has the truth
+            # the tap only retires the buttons — the question text stays,
+            # and the outcome message from _carry_out is the acknowledgment
+            # (a stale tap's outcome already landed when it was decided)
+            message = body.get("message", {})
             await client.chat_update(
                 channel=body["channel"]["id"],
-                ts=body["message"]["ts"],
-                text=f"Approval {decision}: {note}",
+                ts=message["ts"],
+                text=message.get("text", ""),
+                blocks=[
+                    block
+                    for block in message.get("blocks", [])
+                    if block.get("type") != "actions"
+                ],
             )
 
     # -- outbound ------------------------------------------------------------------

@@ -187,7 +187,22 @@ class FakeApprovals:
         self.failed.append(approval_id)
 
     async def list_pending(self) -> list[Approval]:
-        return [a for a in self.created if a.status == PENDING]
+        # mirrors the store: pending rows past their TTL never read as
+        # waiting, even before expire_overdue has flipped them
+        now = datetime.now(UTC)
+        return [
+            a
+            for a in self.created
+            if a.status == PENDING and a.expires_at > now
+        ]
+
+    async def expire_overdue(self) -> int:
+        flipped = 0
+        for a in self.created:
+            if a.status == PENDING and a.expires_at <= datetime.now(UTC):
+                a.status = "expired"
+                flipped += 1
+        return flipped
 
 
 class FakeAudit:

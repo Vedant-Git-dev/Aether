@@ -279,7 +279,7 @@ async def test_telegram_present_approval_sends_buttons() -> None:
     assert [b.callback_data for b in buttons] == ["aether:approve:7", "aether:deny:7"]
 
 
-async def test_telegram_button_press_decides_and_edits() -> None:
+async def test_telegram_button_press_decides_and_retires_the_buttons() -> None:
     approvals = FakeApprovals()
     decisions: list[tuple[int, str]] = []
 
@@ -290,29 +290,34 @@ async def test_telegram_button_press_decides_and_edits() -> None:
     button_handler = app.handlers[1].callback
 
     answered: list[bool] = []
-    edited: list[str] = []
+    cleared: list[bool] = []
 
     async def answer() -> None:
         answered.append(True)
 
-    async def edit_message_text(text: str, reply_markup=None) -> None:
-        edited.append(text)
+    async def edit_message_reply_markup(reply_markup=None) -> None:
+        cleared.append(reply_markup is None)
 
     update = SimpleNamespace(
         callback_query=SimpleNamespace(
-            data="aether:approve:9", answer=answer, edit_message_text=edit_message_text
+            data="aether:approve:9", answer=answer,
+            edit_message_reply_markup=edit_message_reply_markup,
         )
     )
     await button_handler(update, None)
     assert approvals.calls == [(9, APPROVED)]
     assert decisions == [(9, APPROVED)]
     assert answered == [True]
-    assert edited and "approved" in edited[0]
+    # the tap retires the buttons — the outcome message is the
+    # acknowledgment, never an "Approval approved: handled." edit
+    assert cleared == [True]
 
-    # a double press: decide returns None, executor not re-fired, still edited
+    # a double press: decide returns None, executor not re-fired, buttons
+    # still cleared (the first decision's outcome already landed)
     approvals.result = None
     await button_handler(update, None)
     assert decisions == [(9, APPROVED)]
+    assert cleared == [True, True]
 
 
 async def test_telegram_send_retries_through_network_blips() -> None:
@@ -472,17 +477,19 @@ async def test_discord_approval_view_buttons_decide() -> None:
     assert isinstance(view, ApprovalView)
     assert len(view.children) == 2
 
-    edits: list[str] = []
+    edits: list[dict] = []
 
     async def edit_message(content=None, view=None) -> None:
-        edits.append(content)
+        edits.append({"content": content, "view": view})
 
     interaction = SimpleNamespace(response=SimpleNamespace(edit_message=edit_message))
     await view._finish(interaction, DENIED)
     assert approvals.calls == [(3, DENIED)]
     assert decisions == [(3, DENIED)]
     assert all(child.disabled for child in view.children)
-    assert edits and "denied" in edits[0]
+    # the question text stays (no content override) — the tap only retires
+    # the buttons; the outcome message is the acknowledgment
+    assert edits == [{"content": None, "view": view}]
 
 
 async def test_discord_disabled_never_builds_a_bot() -> None:
@@ -509,8 +516,8 @@ class FakeSlackClient:
         # the way slack answers a send — the ts that links a why? back
         return {"ts": f"1758000000.{len(self.posted):06d}"}
 
-    async def chat_update(self, channel: str, ts: str, text: str) -> None:
-        self.updated.append({"channel": channel, "ts": ts, "text": text})
+    async def chat_update(self, channel: str, ts: str, text: str, blocks=None) -> None:
+        self.updated.append({"channel": channel, "ts": ts, "text": text, "blocks": blocks})
 
 
 class FakeSlackApp:
@@ -651,13 +658,24 @@ async def test_slack_button_flow_decides_and_updates_the_message() -> None:
     body = {
         "actions": [{"value": "12"}],
         "channel": {"id": "D1"},
-        "message": {"ts": "123.456"},
+        "message": {
+            "ts": "123.456",
+            "text": "dm the team?",
+            "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn", "text": "dm the team?"}},
+                {"type": "actions", "block_id": "aether:12"},
+            ],
+        },
     }
     await app.listeners[DENY_ACTION](ack, body, app.client)
     assert approvals.calls == [(12, DENIED)]
     assert decisions == [(12, DENIED)]
     assert acked == [True]
-    assert app.client.updated[-1]["text"].startswith("Approval denied")
+    # the tap retires the buttons and keeps the question — the outcome
+    # message is the acknowledgment, never an "Approval denied: handled." edit
+    updated = app.client.updated[-1]
+    assert updated["text"] == "dm the team?"
+    assert [b["type"] for b in updated["blocks"]] == ["section"]
 
     # garbage payloads are logged and dropped, never raised
     await app.listeners[APPROVE_ACTION](ack, {"actions": [{"value": "oops"}]}, app.client)

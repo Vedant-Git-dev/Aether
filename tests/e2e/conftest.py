@@ -9,12 +9,15 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
+from pathlib import Path
 
 import httpx
 import pytest
 import uvicorn
 
 from .dev_server import API_TOKEN, build_app
+
+WEB_DIR = Path(__file__).resolve().parents[2] / "src" / "aether" / "web"
 
 
 def _free_port() -> int:
@@ -39,6 +42,10 @@ class _ServerThread(threading.Thread):
 @pytest.fixture
 def live_server() -> Iterator[str]:
     """Yields the base URL of a freshly booted dev-fixture server."""
+    if not (WEB_DIR / "index.html").is_file():
+        pytest.skip(
+            "panel not built — run: cd webapp && npm install && npm run build",
+        )
     port = _free_port()
     base_url = f"http://127.0.0.1:{port}"
     thread = _ServerThread(port)
