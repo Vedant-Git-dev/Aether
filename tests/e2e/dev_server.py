@@ -177,11 +177,39 @@ class FakeEventStore:
     def __init__(self, now: datetime) -> None:
         self.rows = [
             Event(
+                id=3,
+                source="agent",
+                kind="action_done",
+                occurred_at=now - timedelta(seconds=30),
+                # the real agent-outcome shape (loop.py): tool is the raw
+                # composio name and detail is str(result) — the raw JSON
+                # envelope the tool returned, log_id and all
+                payload={
+                    "tool": "composio__GMAIL_WHO_AM_I",
+                    "params": {},
+                    "detail": (
+                        '{"successful":true,"data":{"data":{"email":"sam@example.com",'
+                        '"name":"Sam"},"display_name":"sam@example.com"},'
+                        '"error":null,"log_id":"log_abc123"}'
+                    ),
+                    "approval_id": 1,
+                },
+                salience_score=6.0,
+                memorable=True,
+                meta={},
+            ),
+            Event(
                 id=2,
                 source="telegram",
                 kind="chat_message",
                 occurred_at=now - timedelta(minutes=1),
-                payload={"text": "confirmed for 4pm"},
+                # the real stored shape: the handle rides under _sender
+                # (events.py SENDER_KEY), never as a top-level "handle"
+                payload={
+                    "text": "confirmed for 4pm",
+                    "chat_ref": "@sam",
+                    "_sender": {"platform": "telegram", "handle": "@sam"},
+                },
                 salience_score=8.0,
                 memorable=True,
                 meta={},
@@ -343,7 +371,24 @@ class FakeTraces:
                             "reason": "read-only tool, no side effects",
                             "result": "3 unread messages",
                             "is_error": False,
-                        }
+                        },
+                        {
+                            # composio actions arrive UPPER_SNAKE with the
+                            # toolkit as the first word — the panel must read
+                            # this as gmail, never as "composio"
+                            "name": "composio__GMAIL_SEND_EMAIL",
+                            "decision": "require_approval",
+                            "matched_rule": "builtin:risky",
+                            "reason": "reaches an external system or is hard to undo",
+                            # the real parked-call result is an instruction to
+                            # the model — the panel must not quote it
+                            "result": (
+                                "held for approval (#1) — the user has been asked on "
+                                "their chat surfaces and the web panel"
+                            ),
+                            "is_error": False,
+                            "approval_id": 1,
+                        },
                     ],
                     "result": "no reply yet — nudge queued",
                     "is_error": False,
@@ -401,7 +446,15 @@ class FakeTraces:
                             "approval_id": 2,
                         },
                     ],
-                    "reasoning": ["Sam asked for a confirmation; the mail thread already has my draft reply."],
+                    # a line repeated across loop steps — the panel collapses
+                    # consecutive duplicates rather than showing it twice
+                    "reasoning": [
+                        "Sam asked for a confirmation; the mail thread already has my draft reply.",
+                        "Sam asked for a confirmation; the mail thread already has my draft reply.",
+                        # models narrate raw tool names and paste raw JSON into
+                        # their reasoning — the panel transcribes both
+                        'I will run composio__GMAIL_SEND_EMAIL once approved — last check returned {"successful": true, "data": {"id": "msg-9"}}.',
+                    ],
                     "reply": "I've drafted the reply to Sam — approve it and it goes out.",
                 },
                 created_at=now - timedelta(minutes=6),

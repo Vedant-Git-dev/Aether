@@ -1,7 +1,7 @@
 // The expanded trace: what triggered it, every gated call with its ruling,
 // the reasoning, the reply, and the result. All plain text, colored only by
 // the decision classes.
-import { appLabel, personName, describeTool, describeRule, describeObservation, describeTrigger, humanize, summarizeResult, quote, paramRows, AUDIT_DECISIONS } from "../lib/describe.js";
+import { appLabel, personName, describeTool, describeRule, describeObservation, describeTrigger, humanize, plainText, summarizeResult, quote, paramRows, AUDIT_DECISIONS } from "../lib/describe.js";
 import { fmtTime } from "../lib/format.js";
 import { statusColor } from "../lib/status.js";
 
@@ -17,9 +17,11 @@ function CallRow({ c }) {
       {c.matched_rule && describeRule(c.matched_rule) ? (
         <div className="mt-1 text-xs text-ink-3">{describeRule(c.matched_rule)}</div>
       ) : null}
-      {c.result ? (
+      {/* a parked call's result is an instruction to the model ("held for
+          approval (#N) — …"), never human text — the Parked line says it */}
+      {c.result && !c.approval_id ? (
         <div className={`mt-1 text-xs ${c.is_error ? "text-danger" : "text-ink-3"}`}>
-          {c.is_error ? `failed: ${quote(c.result, 160)}` : summarizeResult(c.result) || quote(c.result, 160)}
+          {c.is_error ? `failed: ${quote(plainText(c.result), 160)}` : summarizeResult(c.result)}
         </div>
       ) : null}
       {c.approval_id ? (
@@ -97,8 +99,9 @@ export default function TraceDetail({ t }) {
       {Array.isArray(p.reasoning) && p.reasoning.length > 0 && (
         <>
           <div className="mt-4 text-xs font-medium tracking-wide text-ink-3 uppercase">What it thought</div>
-          {p.reasoning.map((r, i) => (
-            <div key={i} className="mt-1 text-xs text-ink-2">{r}</div>
+          {/* the loop can repeat a line across steps — collapse consecutive dupes */}
+          {p.reasoning.filter((r, i) => i === 0 || r !== p.reasoning[i - 1]).map((r, i) => (
+            <div key={i} className="mt-1 text-xs text-ink-2">{plainText(r)}</div>
           ))}
         </>
       )}
@@ -106,18 +109,18 @@ export default function TraceDetail({ t }) {
       {p.reply && (
         <>
           <div className="mt-4 text-xs font-medium tracking-wide text-ink-3 uppercase">What it answered</div>
-          <div className="mt-1 text-sm text-ink-2">{p.reply}</div>
+          <div className="mt-1 text-sm text-ink-2">{plainText(p.reply)}</div>
         </>
       )}
 
       {p.result !== undefined && t.kind !== "turn" && (
         <div className={`mt-3 text-xs ${p.is_error ? "text-danger" : "text-ink-3"}`}>
-          {p.is_error ? "failed: " : "result: "}{quote(String(p.result), 200)}
+          {p.is_error ? `failed: ${quote(plainText(String(p.result)), 200)}` : summarizeResult(String(p.result))}
         </div>
       )}
 
       {p.error && (
-        <div className="mt-2 text-xs text-danger">error: {p.error}</div>
+        <div className="mt-2 text-xs text-danger">error: {plainText(p.error)}</div>
       )}
     </div>
   );

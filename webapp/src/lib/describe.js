@@ -154,7 +154,13 @@ const NATIVE_TOOLS = {
   delete_routine: "Deleting a routine",
 };
 
-const EXTRA_SOURCES = { screen: "Screen", web: "Web", user: "You" };
+const EXTRA_SOURCES = { screen: "Screen", web: "Web", user: "You", agent: "Aether" };
+
+// action idioms the verb/noun tables can't phrase — keyed by the
+// post-composio-shift action, lowercase ("who_am_i" from GMAIL_WHO_AM_I)
+const ACTION_IDIOMS = {
+  who_am_i: (appName) => `Checking the connected ${appName ? `${appName} ` : ""}account`,
+};
 
 export function appLabel(source) {
   if (!source) return "";
@@ -197,25 +203,84 @@ export function quote(text, max = 200) {
   return `“${clean.length > max ? `${clean.slice(0, max)}…` : clean}”`;
 }
 
+// Collapse every balanced {...} span to an ellipsis — a JSON blob pasted
+// into model text never renders. An unterminated "{" stays literal.
+function collapseJson(text) {
+  const s = String(text);
+  let out = "";
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] === "{") {
+      let depth = 0;
+      let j = i;
+      for (; j < s.length; j++) {
+        if (s[j] === "{") depth++;
+        else if (s[j] === "}") { depth--; if (depth === 0) break; }
+      }
+      if (depth === 0) { out += "…"; i = j + 1; continue; }
+    }
+    out += s[i];
+    i++;
+  }
+  return out;
+}
+
+// Model-authored text (reasoning, replies, errors) can still mention a raw
+// tool name or paste a JSON result — transcribe both before it renders.
+export function plainText(text) {
+  return collapseJson(text).replace(/\b[a-z][a-z0-9]*__[A-Za-z0-9_]+\b/g, (m) => {
+    const plain = describeTool(m);
+    return plain[0].toLowerCase() + plain.slice(1);
+  });
+}
+
 export function summarizeResult(result) {
   if (!result) return "";
   let parsed = null;
   try { parsed = JSON.parse(result); } catch { /* plain text */ }
   if (Array.isArray(parsed)) return parsed.length ? `Found ${parsed.length} new item${parsed.length === 1 ? "" : "s"}` : "Nothing new";
   if (parsed && typeof parsed === "object") {
-    const who = parsed.from || parsed.sender || parsed.organizer;
-    const what = parsed.subject || parsed.title || parsed.summary || parsed.text;
-    return [who ? `from ${personName("", who)}` : "", what ? quote(what, 140) : ""].filter(Boolean).join(" — ");
+    // composio-style envelopes: unwrap {successful, data, error, log_id},
+    // keeping any display_name seen along the way — and never fall through
+    // to quoting the raw JSON
+    let core = parsed;
+    let display = "";
+    for (let i = 0; i < 3 && core && typeof core === "object" && !Array.isArray(core); i++) {
+      if (typeof core.display_name === "string" && core.display_name) display = core.display_name;
+      const keys = Object.keys(core);
+      if (!(core.data && typeof core.data === "object")) break;
+      if (!keys.every((k) => ["successful", "data", "error", "log_id", "display_name"].includes(k))) break;
+      core = core.data;
+    }
+    if (core && typeof core === "object" && !Array.isArray(core)) {
+      const who = core.from || core.sender || core.organizer;
+      const what = core.subject || core.title || core.summary || core.text;
+      const bits = [who ? `from ${personName("", who)}` : "", what ? quote(what, 140) : ""].filter(Boolean);
+      if (bits.length) return bits.join(" — ");
+      const identity = display || core.email || core.name || "";
+      if (identity) return identity;
+    }
+    return "The call returned data";
   }
-  return quote(result, 140);
+  return quote(plainText(result), 140);
 }
 
 export function describeEvent(e) {
   const p = e.payload || {};
   const app = appLabel(e.source);
   if (e.kind === "chat_message") {
-    const who = p.handle ? personName(e.source, p.handle) : "someone";
+    // the handle lives under _sender (events.py SENDER_KEY), not at the top
+    const handle = p.handle || (p._sender && p._sender.handle) || "";
+    const platform = (p._sender && p._sender.platform) || e.source;
+    const who = handle ? personName(platform, handle) : "someone";
     return { title: who === "you" ? `You wrote on ${app}` : `Chat with ${who} on ${app}`, detail: p.text ? quote(p.text) : "" };
+  }
+  // the agent's own approved acts — the payload carries the raw tool name
+  // and the raw result text, so this branch never touches paramRows
+  if (e.source === "agent" && (e.kind === "action_done" || e.kind === "action_failed")) {
+    const what = describeTool(p.tool);
+    const title = e.kind === "action_failed" ? `Failed — ${what[0].toLowerCase()}${what.slice(1)}` : what;
+    return { title, detail: p.detail ? summarizeResult(String(p.detail)) : "" };
   }
   if (e.kind === "screen_capture") {
     const people = Array.isArray(p.people) && p.people.length ? ` · people: ${p.people.join(", ")}` : "";
@@ -271,10 +336,20 @@ function cleanPattern(pattern) {
 function describeName(name) {
   const wildcard = /[.*+?\[\]]/;
   let [app, action] = name.includes("__") ? name.split("__") : ["", name];
+  // composio actions are UPPER_SNAKE with the toolkit as the first word —
+  // composio__GMAIL_SEND_EMAIL reads as gmail, never as "composio" (mirrors
+  // _action_words in src/aether/agent/tools.py)
+  if (app === "composio" && action) {
+    const [toolkit, ...rest] = action.toLowerCase().split("_");
+    app = toolkit;
+    action = rest.join("_");
+  }
   const appName = app && !wildcard.test(app) ? (APP_NAMES[app.toLowerCase()] || app[0].toUpperCase() + app.slice(1)) : "";
   if (!action || wildcard.test(action) && !/[a-z]{3,}/i.test(action.replace(/[.*+?\[\]]/g, ""))) {
     return appName ? `Anything in ${appName}` : "Any action";
   }
+  const idiom = ACTION_IDIOMS[action.toLowerCase()];
+  if (idiom) return idiom(appName);
   const words = action.replace(/[.*+?\[\]]/g, " ").toLowerCase().split(/[_\s]+/).filter(Boolean);
   const verbHit = words.map((w) => VERBS.find(([re]) => re.test(w))).find(Boolean);
   const noun = words.map((w) => NOUNS[w]).find(Boolean) || (appName && DEFAULT_NOUN[appName]) || "";
