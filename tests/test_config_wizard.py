@@ -150,7 +150,7 @@ async def test_provider_is_a_numbered_choice() -> None:
     assert question == (
         "who should make me think? (currently anthropic — heads-up: "
         "llm changes restart me, back in a few seconds)\n"
-        "1 — anthropic\n2 — openai\n3 — gemini\n4 — ollama"
+        "1 — anthropic\n2 — openai\n3 — gemini\n4 — ollama\n5 — nvidia_nim"
     )
     await _say(wizard, "3")
     assert applier.calls == [("set", "llm.provider", "gemini")]
