@@ -57,7 +57,9 @@ The repo ships a Blueprint (`render.yaml`), so the shortest path is:
 1. Render dashboard → **New → Blueprint**, pick your repo.
 2. Render reads `render.yaml`, asks for the env vars above, and deploys.
    (Manual route works identically: New → Web Service, Python runtime,
-   build `pip install .`, start `aether`, free plan.)
+   build `cd webapp && npm ci && npm run build && cd .. && pip install .`
+   — Node is preinstalled on Render's Python runtime — start `aether`,
+   free plan.)
 3. Watch the deploy logs. First boot should end with
    `aether running — surfaces: web…` and a `database ready` line.
 4. Visit `https://<your-app>.onrender.com/healthz` — `{"ok": true}`.

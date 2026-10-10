@@ -32,9 +32,18 @@ extend those rather than mocking SDKs ad hoc.
 
 The `e2e` suite (`tests/e2e/`) drives the real frontend with a real browser
 against `tests/e2e/dev_server.py` — the real FastAPI app wired to in-memory
-fakes instead of Postgres. Extend that fixture and `tests/e2e/test_smoke.py`
-when you change frontend behavior; don't verify frontend changes by manual
-screenshotting alone.
+fakes instead of Postgres. The panel source lives in `webapp/` (React +
+Tailwind, built by Vite into `src/aether/web/`); build it first with
+`cd webapp && npm install && npm run build`, or the e2e tests skip. Extend
+that fixture and `tests/e2e/test_smoke.py` when you change frontend behavior;
+don't verify frontend changes by manual screenshotting alone.
+
+For hands-on frontend work, `npm run dev` serves the panel with `/api`
+proxied to a locally running `aether` (port 8000). To click through against
+the fixture instead, start `python tests/e2e/dev_server.py` (token
+`secret`) and run `AETHER_DEV_API=http://127.0.0.1:8731 npm run dev:test` —
+it skips unless `AETHER_DEV_API` is set, so a test run never silently
+targets the real backend.
 
 ## Code conventions
 

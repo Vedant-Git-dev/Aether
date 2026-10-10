@@ -3,7 +3,7 @@
 This is what the E2E tests drive with a real browser, and what a developer
 can run by hand to click through the frontend without setting up a database:
 
-    python -m tests.e2e.dev_server
+    python tests/e2e/dev_server.py
 
 Every fake here implements exactly the surface the real store classes do
 (same methods, same return shapes) — routes.py and the frontend can't tell
@@ -16,8 +16,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Response, WebSocket
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from aether.agent.traces import Trace
@@ -127,7 +127,7 @@ class FakeAudit:
                 "tool_name": "mail__list_messages",
                 "decision": "allow",
                 "rules_matched": "builtin:read-only",
-                "outcome": "read-only tool",
+                "outcome": "read-only tool, no side effects",
                 "created_at": now - timedelta(hours=2),
                 "entry_hash": "7e4c19a04f8e2d1b91a0c3f5d8e7b2a6c4d9f1e8b3a7c2d5e9f0a1b4c8d6e3f7",
             },
@@ -263,7 +263,13 @@ class FakeEntities:
                     id=1,
                     identity_id=1,
                     created_at=now - timedelta(hours=2),
-                    payload={"kind": "relationship", "text": "coworker on the infra team"},
+                    # the real note_entity tool payload: {kind, note, handle, platform}
+                    payload={
+                        "kind": "relationship",
+                        "note": "coworker on the infra team",
+                        "handle": "@sam",
+                        "platform": "telegram",
+                    },
                 )
             ],
         }
@@ -297,11 +303,17 @@ class FakeTraces:
     renders all four shapes from these."""
 
     def __init__(self, now: datetime) -> None:
+        # the real AgentLoop._event_line format — the panel parses the payload
+        # back out of this rather than ever showing the raw line
+        mail_line = (
+            f"{(now - timedelta(minutes=10)):%Y-%m-%d %H:%M} mail/poll:unread (salience 7): "
+            '{"from": "sam@example.com", "subject": "Re: Thursday"}'
+        )
         self.rows = [
             Trace(
                 id=4,
                 kind="carry_out",
-                label="mail__send_message",
+                label="approval #1 — mail__send_message",  # the real label carries the raw tool name
                 payload={
                     "approval_id": 1,
                     "tool": "mail__send_message",
@@ -317,13 +329,18 @@ class FakeTraces:
                 kind="scheduled",
                 label="follow up with sam re: thursday",
                 payload={
-                    "action": {"label": "follow up with sam re: thursday", "run_at": (now + timedelta(hours=3)).isoformat()},
+                    # real payload: run_at formatted "%Y-%m-%d %H:%M:%S%z", not ISO
+                    "action": {
+                        "id": 1,
+                        "label": "follow up with sam re: thursday",
+                        "run_at": f"{now + timedelta(hours=3):%Y-%m-%d %H:%M:%S%z}",
+                    },
                     "calls": [
                         {
                             "name": "mail__list_messages",
                             "decision": "allow",
                             "matched_rule": "builtin:read-only",
-                            "reason": "read-only tool",
+                            "reason": "read-only tool, no side effects",
                             "result": "3 unread messages",
                             "is_error": False,
                         }
@@ -338,14 +355,15 @@ class FakeTraces:
                 kind="routine",
                 label="morning mail triage",
                 payload={
-                    "routine": {"label": "morning mail triage", "trigger": "mail poll:unread"},
-                    "event": {"source": "mail", "kind": "poll:unread", "line": "Re: Thursday — sam@example.com"},
+                    # the real trigger shape: a condition dict, not a string
+                    "routine": {"id": 1, "label": "morning mail triage", "trigger": {"source": "mail", "kind": "poll:unread"}},
+                    "event": {"id": 1, "source": "mail", "kind": "poll:unread", "line": mail_line},
                     "calls": [
                         {
                             "name": "note_entity",
                             "decision": "allow",
                             "matched_rule": "builtin:internal",
-                            "reason": "stays inside aether",
+                            "reason": "internal tool, touches only Aether's own state",
                             "result": "noted",
                             "is_error": False,
                         }
@@ -356,14 +374,15 @@ class FakeTraces:
             Trace(
                 id=1,
                 kind="turn",
-                label="telegram · @sam",
+                # the real _trace_label: the text of the message that drove the turn
+                label="can you confirm thursday at 4?",
                 payload={
                     "trigger": {
                         "messages": [
                             {"surface": "telegram", "handle": "@sam", "text": "can you confirm thursday at 4?"}
                         ],
                         "observations": [
-                            {"source": "mail", "kind": "poll:unread", "line": "Re: Thursday — sam@example.com"}
+                            {"id": 1, "source": "mail", "kind": "poll:unread", "line": mail_line}
                         ],
                     },
                     "calls": [
@@ -484,7 +503,11 @@ def build_app() -> FastAPI:
     app = FastAPI(title="Aether (e2e dev fixture)")
     app.include_router(api_router)
     app.include_router(chat_router)
-    app.mount("/assets", StaticFiles(directory=WEB_DIR), name="web-assets")
+    # same unbuilt-panel guard as the real app: the panel is a Vite build
+    # artifact, and a fresh checkout doesn't have it yet
+    panel_built = (WEB_DIR / "index.html").is_file()
+    if panel_built:
+        app.mount("/assets", StaticFiles(directory=WEB_DIR), name="web-assets")
 
     app.state.settings = Settings(_env_file=None, api_token=API_TOKEN)
     app.state.config = AppConfig(
@@ -523,7 +546,12 @@ def build_app() -> FastAPI:
     app.state.composio = FakeHubBridge()
 
     @app.get("/")
-    async def index() -> FileResponse:
+    async def index() -> Response:
+        if not panel_built:
+            return PlainTextResponse(
+                "panel not built — run: cd webapp && npm install && npm run build",
+                status_code=503,
+            )
         return FileResponse(WEB_DIR / "index.html")
 
     return app

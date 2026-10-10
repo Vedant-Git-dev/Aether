@@ -1,0 +1,64 @@
+/* Aether panel — Tailwind v4, CSS-first config.
+   Semantic variables flip under [data-theme="dark"], mirroring the old
+   architecture: utilities (bg-card, text-ink-2, border-line) reference
+   these vars, so no per-element dark: prefixes anywhere.
+   Flat design: borders delineate, no shadows, no animations, no fills
+   behind status text — colour carries meaning in text only. */
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", Consolas, "Lucida Console", monospace;
+
+  --color-surface: #f7f7f8;
+  --color-card: #ffffff;
+  --color-subtle: #f1f1f3;
+  --color-line: #e4e4e7;
+  --color-line-strong: #d4d4d8;
+
+  --color-ink: #18181b;
+  --color-ink-2: #52525b;
+  --color-ink-3: #8b8b93;
+
+  --color-accent: #3b5bdb;
+  --color-on-accent: #ffffff;
+
+  --color-success: #157a3e;
+  --color-warning: #8a5a00;
+  --color-danger: #b3261e;
+}
+
+[data-theme="dark"] {
+  --color-surface: #17181a;
+  --color-card: #1f2124;
+  --color-subtle: #27292d;
+  --color-line: #2e3134;
+  --color-line-strong: #3f4348;
+
+  --color-ink: #e8e8ea;
+  --color-ink-2: #a6a8ad;
+  --color-ink-3: #74767c;
+
+  --color-accent: #7c9df0;
+  --color-on-accent: #17181a;
+
+  --color-success: #55c585;
+  --color-warning: #d9a441;
+  --color-danger: #e5736a;
+}
+
+:root { color-scheme: light; }
+[data-theme="dark"] { color-scheme: dark; }
+
+*:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+body {
+  margin: 0;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font: 14px/1.5 var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}

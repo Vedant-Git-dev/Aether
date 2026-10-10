@@ -6,8 +6,8 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Response
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import restart
@@ -287,7 +287,12 @@ def create_app(
     app = FastAPI(title="Aether", version="0.1.0", lifespan=lifespan)
     app.include_router(api_router)
     app.include_router(chat_router)
-    app.mount("/assets", StaticFiles(directory=WEB_DIR), name="web-assets")
+    # the panel is a Vite build artifact (source lives in webapp/) — serve it
+    # when present, and say so plainly when it isn't, so a fresh checkout
+    # boots without the mount crashing on a directory it doesn't have
+    panel_built = (WEB_DIR / "index.html").is_file()
+    if panel_built:
+        app.mount("/assets", StaticFiles(directory=WEB_DIR), name="web-assets")
 
     @app.get("/healthz")
     @app.get("/health")  # some pingers default here; same plain 200
@@ -296,7 +301,12 @@ def create_app(
         return {"ok": True}
 
     @app.get("/")
-    async def index() -> FileResponse:
+    async def index() -> Response:
+        if not panel_built:
+            return PlainTextResponse(
+                "panel not built — run: cd webapp && npm install && npm run build",
+                status_code=503,
+            )
         return FileResponse(WEB_DIR / "index.html")
 
     return app
