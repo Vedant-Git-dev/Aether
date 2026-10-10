@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from aether.agent.tools import (
     describe_call,
+    describe_dismissed,
+    describe_outcome,
     plain_outcome,
     with_plain_calls,
     with_plain_event,
@@ -46,6 +48,33 @@ class TestDescribeCall:
         text = describe_call("composio__HORIZON_SEND_PING")
         assert text == "An action in horizon"
         assert "HORIZON" not in text and "__" not in text
+
+
+class TestDescribeOutcome:
+    """The chat message after an approved call runs — the result stated
+    plainly, with no "Done — tool executed" ceremony."""
+
+    def test_success_is_the_plain_done_sentence(self) -> None:
+        assert (
+            describe_outcome("mail__send_message", {"to": "sam@example.com"})
+            == "Sent the email (to sam@example.com)."
+        )
+
+    def test_no_context_variant(self) -> None:
+        assert describe_outcome("mail__send_message") == "Sent the email."
+
+
+class TestDescribeDismissed:
+    """The chat acknowledgment when the user taps Deny — a plain okay."""
+
+    def test_denial_acknowledgment(self) -> None:
+        assert (
+            describe_dismissed("mail__send_message", {"to": "sam@example.com"})
+            == "Okay — not sending an email (to sam@example.com)."
+        )
+
+    def test_no_context_variant(self) -> None:
+        assert describe_dismissed("mail__send_message") == "Okay — not sending an email."
 
 
 class TestPlainOutcome:

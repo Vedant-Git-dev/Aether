@@ -102,6 +102,67 @@ async def test_mcp_tool_without_host_is_an_error() -> None:
         await registry.execute("srv__x", {})
 
 
+def _gmail_registry() -> tuple[ToolRegistry, FakeHost]:
+    registry = ToolRegistry()
+    host = FakeHost(
+        [ToolSpec(name="composio__GMAIL_SEND_EMAIL", description="send", source="composio")]
+    )
+    registry.attach_mcp(host)
+    registry.sync_mcp_tools()
+    return registry, host
+
+
+async def test_gmail_bodies_get_html_line_breaks() -> None:
+    # a model-written body carries line breaks as \n — as HTML that renders
+    # as one collapsed line, so the boundary converts and flags it
+    registry, host = _gmail_registry()
+    await registry.execute(
+        "composio__GMAIL_SEND_EMAIL",
+        {"recipient_email": "a@b.c", "body": "hi\nthis is mail\n", "is_html": True},
+    )
+    assert host.calls[0][1]["body"] == "hi<br>this is mail<br>"
+    assert host.calls[0][1]["is_html"] is True
+
+
+async def test_a_doubly_escaped_newline_is_fixed_the_same_way() -> None:
+    # the other failure shape: a literal backslash-n lands in the body and
+    # shows up in the email as text — unescaped first, then converted
+    registry, host = _gmail_registry()
+    await registry.execute(
+        "composio__GMAIL_SEND_EMAIL", {"recipient_email": "a@b.c", "body": "hi\\nthis is mail"}
+    )
+    assert host.calls[0][1]["body"] == "hi<br>this is mail"
+    assert host.calls[0][1]["is_html"] is True
+
+
+async def test_the_transform_is_idempotent() -> None:
+    # the approval path re-executes stored params — the second pass must be a no-op
+    registry, host = _gmail_registry()
+    await registry.execute(
+        "composio__GMAIL_SEND_EMAIL", {"body": "hi<br>there", "is_html": True}
+    )
+    assert host.calls[0][1] == {"body": "hi<br>there", "is_html": True}
+
+
+async def test_bodies_without_newlines_pass_through_untouched() -> None:
+    registry, host = _gmail_registry()
+    await registry.execute(
+        "composio__GMAIL_SEND_EMAIL", {"body": "one line", "is_html": False}
+    )
+    assert host.calls[0][1] == {"body": "one line", "is_html": False}
+
+
+async def test_non_gmail_mcp_tools_are_untouched() -> None:
+    # <br> would be wrong in a plain-text or mrkdwn surface — the fix is
+    # gmail-shaped on purpose
+    registry = ToolRegistry()
+    host = FakeHost([ToolSpec(name="mail__send_message", description="send", source="mail")])
+    registry.attach_mcp(host)
+    registry.sync_mcp_tools()
+    await registry.execute("mail__send_message", {"body": "hi\nthere"})
+    assert host.calls[0][1] == {"body": "hi\nthere"}
+
+
 async def test_drop_server_removes_only_that_servers_tools() -> None:
     """The other half of sync_mcp_tools: an app unlinked or disabled from
     chat must not keep its actions callable — and nobody else's drop."""

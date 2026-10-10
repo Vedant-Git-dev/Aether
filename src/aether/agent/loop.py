@@ -65,7 +65,7 @@ from .settings import AgentSettings
 from .tools import (
     describe_ask,
     describe_call,
-    describe_denied,
+    describe_dismissed,
     describe_outcome,
     plain_outcome,
     plain_replay,
@@ -1032,7 +1032,11 @@ class AgentLoop:
         said out loud — once per boot, so a flapping server never
         announces twice. A ready server whose tool list changed since the
         last sync — a connection hub the user approved new apps on — is
-        re-synced and its new actions announced the same way."""
+        re-synced and its new actions announced the same way.
+
+        One exception: the composio hub never announces its ups. Its tools
+        arriving or growing is housekeeping, not news — it speaks only
+        when it's down, which the watchdog below already does."""
         if self._host is None:
             return
         versions: dict[str, int] = {}
@@ -1057,6 +1061,8 @@ class AgentLoop:
         self._tools.sync_mcp_tools()
         for name in sorted(late):
             self._synced_tool_versions[name] = versions[name]
+            if name == SERVER_NAME:
+                continue  # the hub joins silently — see the docstring
             if name in self._announced_ready:
                 continue
             self._announced_ready.add(name)
@@ -1069,6 +1075,8 @@ class AgentLoop:
             await self._surfaces.send_to_user(note)
         for name in sorted(changed):
             self._synced_tool_versions[name] = versions[name]
+            if name == SERVER_NAME:
+                continue  # hub growth is said by the connect flow, not here
             gained = self._tools.server_action_count(name) - before[name]
             if gained > 0:
                 word = "action" if gained == 1 else "actions"
@@ -1343,6 +1351,16 @@ class AgentLoop:
                 log.info("reply not sent — send_chat_message already reached the user this turn")
         except Exception as exc:
             trace["error"] = f"{type(exc).__name__}: {exc}"
+            if messages:
+                # a solicited turn dying mid-flight must not leave the user
+                # staring at silence — plain words, and send_to_user already
+                # swallows per-surface failures so this can't double-fault.
+                # Unprompted ticks stay quiet: a background hiccup is a log
+                # line, never an interruption.
+                await self._surfaces.send_to_user(
+                    "Something went wrong on my side — I couldn't finish "
+                    "that just now. Nothing else is affected."
+                )
             raise
         finally:
             # persist even when the turn died mid-flight: the calls that did
@@ -1582,7 +1600,9 @@ class AgentLoop:
             content=(
                 f"held for approval (#{approval.id}) — the user has been asked on "
                 "their chat surfaces and the web panel; it will run if they "
-                "approve. Do not propose this call again."
+                "approve. Do not propose this call again. The request is already "
+                "in front of the user with one-tap buttons — do not announce or "
+                "narrate the wait in your reply."
             ),
         )
         self._note_call(trace, call, result, ruling=ruling, approval_id=approval.id)
@@ -1609,7 +1629,7 @@ class AgentLoop:
     async def _carry_out(self, approval: Approval) -> None:
         if approval.status == DENIED:
             await self._surfaces.send_to_user(
-                describe_denied(approval.tool_name, approval.params)
+                describe_dismissed(approval.tool_name, approval.params)
             )
             await self._remember_outcome(approval, "action_denied", "denied by the user")
             return

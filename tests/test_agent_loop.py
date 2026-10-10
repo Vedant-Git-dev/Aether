@@ -297,7 +297,9 @@ async def test_an_approved_decision_runs_the_held_call() -> None:
     await kit.loop.execute_decision(approval.id, APPROVED)
     assert kit.executed == [("mail__send_message", {"to": "a@b.c", "body": "hi"})]
     assert kit.approvals.executed == [approval.id]
-    assert any("Done — sent the email" in s for s in kit.connector.sent)
+    assert any("Sent the email" in s for s in kit.connector.sent)
+    # the result, plainly — no "Done — tool executed" ceremony
+    assert not any("Done —" in s for s in kit.connector.sent)
 
 
 async def test_a_denied_decision_never_runs() -> None:
@@ -312,7 +314,8 @@ async def test_a_denied_decision_never_runs() -> None:
 
     await kit.loop.execute_decision(approval.id, DENIED)
     assert kit.executed == []
-    assert any("denied" in s for s in kit.connector.sent)
+    # a plain okay, not a report — "Not run — you denied …" is the log line
+    assert any("Okay — not sending an email" in s for s in kit.connector.sent)
 
 
 async def test_a_carried_out_action_closes_the_loop_in_memory() -> None:
@@ -467,7 +470,7 @@ async def test_the_web_panel_decide_path_carries_out_a_fresh_approval() -> None:
     assert await kit.loop.decide(approval.id, "approve") is approval
     assert kit.executed == [("mail__send_message", {"to": "a@b.c", "body": "hi"})]
     assert kit.approvals.executed == [approval.id]
-    assert any("Done — sent the email" in s for s in kit.connector.sent)
+    assert any("Sent the email" in s for s in kit.connector.sent)
 
 
 async def test_a_stale_web_decide_touches_nothing() -> None:
@@ -638,6 +641,49 @@ async def test_inbound_message_becomes_memory_and_reaches_the_model() -> None:
     assert any("what do you remember?" in m.text for m in messages)
     assert any("[message from @vedant via telegram]" in m.text for m in messages)
     assert kit.connector.sent == ["hello back"]
+
+
+async def test_a_dying_solicited_turn_says_so_in_plain_words() -> None:
+    # the model failing after the user spoke must never leave silence —
+    # plain words go out, then the failure still propagates to the tick
+    provider = FakeProvider([Turn(text="unused")])
+    kit = LoopKit(provider)
+
+    async def dead(system: str, messages: list, tools: list) -> Turn:
+        raise RuntimeError("provider is down")
+
+    provider.complete = dead  # type: ignore[method-assign]
+    kit.loop.submit_message(_msg("what's on my calendar?"))
+    try:
+        await kit.loop._tick()
+        raise AssertionError("the turn failure must propagate")
+    except RuntimeError:
+        pass
+
+    assert kit.connector.sent == [
+        "Something went wrong on my side — I couldn't finish "
+        "that just now. Nothing else is affected."
+    ]
+
+
+async def test_a_dying_unprompted_turn_stays_quiet() -> None:
+    # a background tick that fails is a log line, never an interruption —
+    # nobody asked, so nobody is told
+    provider = FakeProvider([Turn(text="unused")])
+    kit = LoopKit(provider)
+
+    async def dead(system: str, messages: list, tools: list) -> Turn:
+        raise RuntimeError("provider is down")
+
+    provider.complete = dead  # type: ignore[method-assign]
+    kit.events.events[1] = _event(1)
+    try:
+        await kit.loop._tick()
+        raise AssertionError("the turn failure must propagate")
+    except RuntimeError:
+        pass
+
+    assert kit.connector.sent == []
 
 
 async def test_handle_inbound_is_awaitable_and_lands_the_message() -> None:
@@ -1950,7 +1996,27 @@ async def test_the_tick_announces_a_late_ready_server_once() -> None:
     assert len(kit.connector.sent) == 1  # once per boot, never again
 
 
-async def test_the_tick_announces_hub_growth_once() -> None:
+async def test_the_composio_hub_joins_and_grows_silently() -> None:
+    """The directive: composio never announces its ups in chat — it speaks
+    only when it's down, and the watchdog owns that side. Joining and
+    growing are housekeeping."""
+    kit = LoopKit(None)
+    host = FakeMcpHost(SimpleNamespace(name="composio", ready=True))
+    kit.tools.attach_mcp(host)
+    kit.loop._host = host
+
+    await kit.loop._tick()
+    assert kit.connector.sent == []  # joined the namespace, said nothing
+    assert kit.tools.has_server("composio")
+
+    # the user approved an app on the hub — growth is quiet too; the
+    # connect flow is what tells them, not the tick
+    hub = host.connections[0]
+    hub.tools = ["act", "gmail_send"]
+    hub.tool_version = 2
+    await kit.loop._tick()
+    assert kit.connector.sent == []
+    assert kit.tools.get("composio__gmail_send") is not None  # callable regardless
     """The hub promise: an app approved after connect shows up as callable
     actions — the tick notices the changed tool list, syncs, and says so."""
     kit = LoopKit(None)

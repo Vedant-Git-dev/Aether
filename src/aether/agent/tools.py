@@ -233,19 +233,30 @@ def describe_ask(name: str, params: Any = None) -> str:
 
 
 def describe_outcome(name: str, params: Any = None) -> str:
-    """The after-run report — "Done — sent the email (to rahul@gmail.com)."
-    The exact result stays in the decision record."""
+    """The after-run chat message — "Sent the email (to rahul@gmail.com)."
+    The result stated plainly, with no status ceremony around it; the exact
+    tool output stays in the decision record."""
     done = _action_words(name).done
     ctx = _salient_context(params)
-    return f"Done — {done} ({ctx})." if ctx else f"Done — {done}."
+    text = f"{done} ({ctx})" if ctx else done
+    return text[0].upper() + text[1:] + "."
 
 
 def describe_denied(name: str, params: Any = None) -> str:
-    """The not-run report — "Not run — you denied sending an email (to
-    rahul@gmail.com)." """
+    """The not-run record line — "Not run — you denied sending an email (to
+    rahul@gmail.com)." For the activity log; the chat acknowledgment of a
+    denial is describe_dismissed."""
     doing = _action_words(name).doing
     ctx = _salient_context(params)
     return f"Not run — you denied {doing} ({ctx})." if ctx else f"Not run — you denied {doing}."
+
+
+def describe_dismissed(name: str, params: Any = None) -> str:
+    """The chat acknowledgment when the user taps Deny — "Okay — not
+    sending an email (to rahul@gmail.com)." A plain okay, not a report."""
+    doing = _action_words(name).doing
+    ctx = _salient_context(params)
+    return f"Okay — not {doing} ({ctx})." if ctx else f"Okay — not {doing}."
 
 
 def describe_call(name: str, params: Any = None) -> str:

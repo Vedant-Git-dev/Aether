@@ -41,11 +41,13 @@ class ApprovalView(discord.ui.View):
         await self._finish(interaction, DENIED)
 
     async def _finish(self, interaction: Any, decision: str) -> None:
-        result = await self._decide(self._approval_id, decision)
-        note = "handled." if result is not None else "already decided or expired."
+        await self._decide(self._approval_id, decision)
         for child in self.children:
             child.disabled = True
-        await interaction.response.edit_message(content=f"Approval {decision}: {note}", view=self)
+        # the tap only retires the buttons — the question text stays, and
+        # the outcome message from _carry_out is the acknowledgment (a stale
+        # tap's outcome already landed when it was decided)
+        await interaction.response.edit_message(view=self)
 
 
 def _is_dm(channel: Any) -> bool:
