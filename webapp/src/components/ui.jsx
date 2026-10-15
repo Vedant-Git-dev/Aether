@@ -37,6 +37,16 @@ export function Select({ className = "", children, ...rest }) {
   );
 }
 
+// a checkbox with its label inline — the on/off control for toggled settings
+export function Toggle({ className = "", label, ...rest }) {
+  return (
+    <label className={`inline-flex items-center gap-2 text-sm text-ink ${className}`}>
+      <input type="checkbox" className="size-4 accent-[--accent]" {...rest} />
+      {label && <span>{label}</span>}
+    </label>
+  );
+}
+
 const BTN_KINDS = {
   primary: "border-accent bg-accent text-on-accent hover:opacity-90",
   neutral: "border-line-strong bg-card text-ink hover:bg-subtle",

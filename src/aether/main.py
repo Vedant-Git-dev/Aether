@@ -106,6 +106,7 @@ def create_app(
         # in chat works without a boot.
         secret_store = SecretStore(pool, cipher)
         env_resolver = EnvResolver(secrets=secret_store)
+        app.state.secrets = secret_store
         app.state.resolver = env_resolver
         composio = ComposioBridge(env_resolver, secret_store)
         app.state.composio = composio

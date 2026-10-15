@@ -1247,3 +1247,260 @@ async def test_disconnect_removes_only_an_account_thats_ours() -> None:
     assert response.json() == {"disconnected": "gmail", "id": "acc-1"}
     assert bridge.disconnected == ["acc-1"]
     assert missing.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# /api/settings/fields + /api/settings/credentials — the editable surface
+# ---------------------------------------------------------------------------
+
+
+class _Resolver:
+    """Name-only secret resolver double — never a value."""
+
+    def __init__(self, known: set[str] | None = None) -> None:
+        self.known = known or {"TELEGRAM_BOT_TOKEN"}
+
+    async def known_names(self) -> set[str]:
+        return self.known
+
+
+class _SecretStore:
+    """SecretStore double: records what landed; the value never leaves."""
+
+    def __init__(self) -> None:
+        self.stored: dict[str, str] = {}
+
+    async def set(self, name: str, value: str) -> None:
+        self.stored[name] = value
+
+    async def names(self) -> set[str]:
+        return set(self.stored)
+
+
+async def test_settings_fields_are_token_guarded() -> None:
+    async with _client(_app(None, config_manager=FakeConfigManager())) as client:
+        for method, path in (
+            ("get", "/api/settings/fields"),
+            ("put", "/api/settings/fields/agent.tick_seconds"),
+            ("delete", "/api/settings/fields/agent.tick_seconds"),
+            ("put", "/api/settings/credentials/TELEGRAM_BOT_TOKEN"),
+        ):
+            response = await client.request(method, path, json={"value": "x"})
+            assert response.status_code == 401
+
+
+async def test_settings_fields_are_503_without_a_manager_wired() -> None:
+    async with _client(_app(None)) as client:
+        for method, path in (
+            ("get", "/api/settings/fields"),
+            ("put", "/api/settings/fields/agent.tick_seconds"),
+            ("delete", "/api/settings/fields/agent.tick_seconds"),
+            ("put", "/api/settings/credentials/TELEGRAM_BOT_TOKEN"),
+        ):
+            response = await client.request(
+                method, path, params={"token": "secret"}, json={"value": "x"}
+            )
+            assert response.status_code == 503
+
+
+async def test_settings_feed_carries_groups_kinds_and_apply_notes() -> None:
+    manager = FakeConfigManager(
+        effective_payload={
+            "sections": {},
+            "overrides": [
+                {"path": "salience.threshold", "value": 5},
+                {"path": "agent.personality", "value": "warmer"},
+            ],
+        }
+    )
+    app = _app(None, config=AppConfig(), config_manager=manager)
+    app.state.resolver = _Resolver()
+    async with _client(app) as client:
+        response = await client.get("/api/settings/fields", params={"token": "secret"})
+    data = response.json()
+    groups = {g["key"]: g for g in data["groups"]}
+    # the model group is the one that restarts, and says so up front
+    assert groups["llm"]["restart"] is True
+    assert groups["llm"]["note"]
+    assert all(not g["restart"] for k, g in groups.items() if k != "llm")
+    by_path = {f["path"]: f for g in data["groups"] for f in g["fields"]}
+    # kind and choices come from the model's own annotations
+    provider = by_path["llm.provider"]
+    assert provider["kind"] == "choice"
+    assert provider["choices"] == ["anthropic", "openai", "gemini", "ollama"]
+    assert by_path["llm.max_tokens"]["kind"] == "number"
+    assert by_path["llm.ollama_vision"]["kind"] == "toggle"
+    assert by_path["agent.quiet_hours"]["kind"] == "text"
+    assert by_path["agent.quiet_hours"]["none_ok"] is True
+    # the messaging toggles enumerate from the live config
+    assert by_path["messaging.telegram.enabled"]["kind"] == "toggle"
+    assert by_path["messaging.telegram.enabled"]["value"] is False
+    # the plain-words apply notes ride along, chat's own wording
+    assert by_path["agent.tick_seconds"]["note"] == "applies from the next tick"
+    # changed markers reflect the override rows
+    assert by_path["salience.threshold"]["changed"] is True
+    assert by_path["agent.tick_seconds"]["changed"] is False
+    # credentials are names and set flags only — a value never rides back
+    creds = {c["name"]: c for c in data["credentials"]}
+    assert set(creds) == {
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "TELEGRAM_BOT_TOKEN",
+        "DISCORD_BOT_TOKEN",
+        "SLACK_BOT_TOKEN",
+        "SLACK_APP_TOKEN",
+        "COMPOSIO_API_KEY",
+    }
+    assert creds["TELEGRAM_BOT_TOKEN"]["set"] is True
+    assert creds["DISCORD_BOT_TOKEN"]["set"] is False
+    assert all(set(c) == {"name", "label", "hint", "set"} for c in data["credentials"])
+
+
+async def test_setting_write_round_trips_and_audits() -> None:
+    manager = FakeConfigManager(set_reply="agent.tick_seconds set to 15")
+    audit = FakeAudit()
+    async with _client(_app(None, config_manager=manager, audit=audit)) as client:
+        response = await client.put(
+            "/api/settings/fields/agent.tick_seconds",
+            params={"token": "secret"},
+            json={"value": 15},
+        )
+    assert response.status_code == 200
+    body = response.json()
+    # the manager's plain reply rides back as the toast text
+    assert body["reply"] == "agent.tick_seconds set to 15"
+    # the fresh feed rides back with it — one round-trip
+    assert "groups" in body["feed"]
+    assert manager.set_calls == [
+        {"op": "set", "path": "agent.tick_seconds", "value": 15, "source": "panel"}
+    ]
+    assert audit.entries[0]["params"] == {"path": "agent.tick_seconds", "op": "set"}
+    assert audit.entries[0]["outcome"] == "changed from the panel"
+
+
+async def test_setting_refusal_is_the_managers_plain_words() -> None:
+    manager = FakeConfigManager(verdict=(False, "it needs to be a number"))
+    async with _client(_app(None, config_manager=manager)) as client:
+        response = await client.put(
+            "/api/settings/fields/agent.tick_seconds",
+            params={"token": "secret"},
+            json={"value": "soon"},
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "it needs to be a number"
+
+
+async def test_setting_paths_must_come_from_the_catalog() -> None:
+    manager = FakeConfigManager()
+    async with _client(_app(None, config_manager=manager)) as client:
+        stranger = await client.put(
+            "/api/settings/fields/contacts.mode",
+            params={"token": "secret"},
+            json={"value": "off"},
+        )
+        unknown = await client.put(
+            "/api/settings/fields/no.such.path",
+            params={"token": "secret"},
+            json={"value": 1},
+        )
+        reset = await client.delete(
+            "/api/settings/fields/salience.threshold", params={"token": "secret"}
+        )
+    # contacts has its own page; a stranger can't mint manager paths here
+    assert stranger.status_code == 404
+    assert unknown.status_code == 404
+    # the reset route asks for op="reset" and no value
+    assert reset.status_code == 200
+    assert manager.set_calls == [
+        {"op": "reset", "path": "salience.threshold", "value": None, "source": "panel"}
+    ]
+
+
+async def test_credential_paste_is_write_only_and_audits_the_name() -> None:
+    manager = FakeConfigManager()
+    audit = FakeAudit()
+    store = _SecretStore()
+    app = _app(None, config_manager=manager, audit=audit)
+    app.state.secrets = store
+    app.state.resolver = _Resolver()
+    async with _client(app) as client:
+        response = await client.put(
+            "/api/settings/credentials/DISCORD_BOT_TOKEN",
+            params={"token": "secret"},
+            json={"value": "discord-token-1"},
+        )
+    assert response.status_code == 200
+    assert store.stored == {"DISCORD_BOT_TOKEN": "discord-token-1"}
+    # the audit row carries the name only — the value is nowhere in it
+    assert audit.entries[0]["tool_name"] == "store_app_secret"
+    assert audit.entries[0]["params"] == {"name": "DISCORD_BOT_TOKEN"}
+    assert audit.entries[0]["outcome"] == "stored encrypted — value never recorded"
+    # the response is the fresh feed — the value never rides back out
+    text = response.text
+    assert "discord-token-1" not in text
+    assert {c["name"] for c in response.json()["credentials"]}
+
+
+async def test_credential_paste_reconnects_an_enabled_surface() -> None:
+    manager = FakeConfigManager()
+    store = _SecretStore()
+    config = AppConfig(messaging=MessagingConfig(telegram=PlatformToggle(enabled=True)))
+    app = _app(None, config=config, config_manager=manager)
+    app.state.secrets = store
+    app.state.resolver = _Resolver()
+    async with _client(app) as client:
+        response = await client.put(
+            "/api/settings/credentials/TELEGRAM_BOT_TOKEN",
+            params={"token": "secret"},
+            json={"value": "fresh-telegram-token"},
+        )
+    assert response.status_code == 200
+    # the same-value toggle write is what reconciles connectors with the
+    # fresh token — it fires only for a surface that is on
+    assert manager.set_calls == [
+        {
+            "op": "set",
+            "path": "messaging.telegram.enabled",
+            "value": True,
+            "source": "panel",
+        }
+    ]
+
+
+async def test_credential_paste_for_a_disabled_surface_waits_for_the_toggle() -> None:
+    manager = FakeConfigManager()
+    store = _SecretStore()
+    app = _app(None, config=AppConfig(), config_manager=manager)
+    app.state.secrets = store
+    app.state.resolver = _Resolver()
+    async with _client(app) as client:
+        response = await client.put(
+            "/api/settings/credentials/DISCORD_BOT_TOKEN",
+            params={"token": "secret"},
+            json={"value": "discord-token-1"},
+        )
+    assert response.status_code == 200
+    # nothing to reconcile — the surface's own toggle write will do it
+    assert manager.set_calls == []
+
+
+async def test_credential_paste_refuses_the_unknown_and_the_empty() -> None:
+    manager = FakeConfigManager()
+    store = _SecretStore()
+    app = _app(None, config_manager=manager)
+    app.state.secrets = store
+    async with _client(app) as client:
+        stranger = await client.put(
+            "/api/settings/credentials/EVIL_NAME",
+            params={"token": "secret"},
+            json={"value": "x"},
+        )
+        empty = await client.put(
+            "/api/settings/credentials/DISCORD_BOT_TOKEN",
+            params={"token": "secret"},
+            json={"value": "   "},
+        )
+    assert stranger.status_code == 404
+    assert empty.status_code == 400
+    assert store.stored == {}

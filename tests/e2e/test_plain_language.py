@@ -145,6 +145,46 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     assert '"warm and a little informal"' not in text
     assert "warm and a little informal" in text
 
+    # the editable surface renders from the backend's feed: the model
+    # group says it restarts, and every control carries its effective value
+    assert "Saving one of these restarts Aether itself" in text
+    assert page.locator('[data-testid="settings-field-llm.provider"]').input_value() == "anthropic"
+    assert page.locator('[data-testid="settings-field-agent.tick_seconds"]').input_value() == "30"
+
+    # a number edit round-trips through the config manager and earns the
+    # changed marker and its way back
+    page.fill('[data-testid="settings-field-agent.tick_seconds"]', "15")
+    page.click('[data-testid="settings-save-agent.tick_seconds"]')
+    page.wait_for_timeout(500)
+    assert page.locator('[data-testid="settings-field-agent.tick_seconds"]').input_value() == "15"
+    assert page.locator('[data-testid="settings-reset-agent.tick_seconds"]').count() == 1
+    page.click('[data-testid="settings-reset-agent.tick_seconds"]')
+    page.wait_for_timeout(500)
+    assert page.locator('[data-testid="settings-field-agent.tick_seconds"]').input_value() == "30"
+    assert page.locator('[data-testid="settings-reset-agent.tick_seconds"]').count() == 0
+
+    # a bad quiet window refuses in the backend's own plain words, inline
+    page.fill('[data-testid="settings-field-agent.quiet_hours"]', "banana")
+    page.click('[data-testid="settings-save-agent.quiet_hours"]')
+    page.wait_for_selector('[data-testid="settings-error-agent.quiet_hours"]')
+    error_text = page.locator('[data-testid="settings-error-agent.quiet_hours"]').inner_text()
+    assert "the quiet window reads like 23:00-08:00" in error_text
+
+    # a pasted credential flips its badge; the value never reaches the page
+    assert (
+        page.locator('[data-testid="settings-cred-set-DISCORD_BOT_TOKEN"]').inner_text()
+        == "not stored"
+    )
+    page.fill('[data-testid="settings-cred-DISCORD_BOT_TOKEN"]', "discord-token-9")
+    page.click('[data-testid="settings-cred-save-DISCORD_BOT_TOKEN"]')
+    page.wait_for_timeout(500)
+    assert (
+        page.locator('[data-testid="settings-cred-set-DISCORD_BOT_TOKEN"]').inner_text() == "stored"
+    )
+    # write-only: cleared from the field, absent from body text
+    assert page.locator('[data-testid="settings-cred-DISCORD_BOT_TOKEN"]').input_value() == ""
+    assert "discord-token-9" not in page.locator("body").inner_text()
+
     page.goto(f"{live_server}/#/contacts")
     page.wait_for_selector('[data-testid="contact-row"]')
     page.wait_for_timeout(500)

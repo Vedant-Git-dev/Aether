@@ -1,8 +1,11 @@
 // Local-configuration page. The token lives only in this browser; saving or
 // clearing it reloads the page so every poller restarts with the new state.
+// Everything else editable renders from the backend's settings feed —
+// groups, labels, hints, controls, choices and when-it-bites notes all come
+// from /api/settings/fields; this page hardcodes no setting of its own.
 import { useEffect, useState } from "react";
 import PageHead from "../components/PageHead.jsx";
-import { Card, Field, Button } from "../components/ui.jsx";
+import { Card, Field, Select, Toggle, Button } from "../components/ui.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import { useToast } from "../components/Toasts.jsx";
 import { api, token, hasToken } from "../lib/api.js";
@@ -13,17 +16,23 @@ export default function SettingsPage() {
   const [tokenValue, setTokenValue] = useState(() => token());
   const [personality, setPersonality] = useState("");
   const [personalityStatus, setPersonalityStatus] = useState({ text: "", bad: false });
-  const [config, setConfig] = useState(null);
-  const [configError, setConfigError] = useState("");
+  const [feed, setFeed] = useState(null);
+  const [feedError, setFeedError] = useState("");
+  const [overrides, setOverrides] = useState([]);
+  const [drafts, setDrafts] = useState({}); // path -> unsaved input text
+  const [errors, setErrors] = useState({}); // path -> the backend's plain refusal
 
   useEffect(() => {
     if (!hasToken()) return;
     api("/api/settings/personality")
       .then((d) => setPersonality(d.text))
       .catch((err) => setPersonalityStatus({ text: `Could not load: ${err.message}`, bad: true }));
+    api("/api/settings/fields")
+      .then(setFeed)
+      .catch((err) => setFeedError(err.message));
     api("/api/config")
-      .then(setConfig)
-      .catch((err) => setConfigError(err.message));
+      .then((d) => setOverrides(d.overrides || []))
+      .catch(() => setOverrides([])); // the ledger is a nicety, not a gate
   }, []);
 
   const saveToken = () => {
@@ -51,18 +60,96 @@ export default function SettingsPage() {
     }
   };
 
-  const s = (config && config.sections) || {};
-  const messagingOn = ["telegram", "discord", "slack"]
-    .filter((p) => s.messaging && s.messaging[p] && s.messaging[p].enabled);
-  const servers = (s.mcp_servers || []).filter((x) => x.enabled);
-  const summary = [
-    ["Messaging", messagingOn.length ? messagingOn.join(", ") : "all off"],
-    ["App servers (MCP)", servers.length ? servers.map((x) => x.name).join(", ") : "none"],
-    ["Contact allowlist", (s.contacts && s.contacts.mode) || "off"],
-    ["Approval window", s.authz ? `${s.authz.approval_ttl_hours} hours` : "—"],
-    ["Quiet hours", (s.agent && s.agent.quiet_hours) || "none"],
-    ["Provider", s.llm ? `${s.llm.provider} · ${s.llm.model}` : "—"],
-  ];
+  const labelFor = (path) => {
+    const field = feed && feed.groups.flatMap((g) => g.fields).find((f) => f.path === path);
+    return field ? field.label : path;
+  };
+
+  const draftOf = (f) => (f.path in drafts ? drafts[f.path] : f.value === null ? "" : String(f.value));
+
+  const dirty = (f) => draftOf(f) !== (f.value === null ? "" : String(f.value));
+
+  const clearDraft = (f) =>
+    setDrafts((dr) => {
+      const next = { ...dr };
+      delete next[f.path];
+      return next;
+    });
+
+  const saveField = async (f, value) => {
+    setErrors((e) => ({ ...e, [f.path]: "" }));
+    try {
+      const d = await api(`/api/settings/fields/${f.path}`, {
+        method: "PUT", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ value }),
+      });
+      setFeed(d.feed);
+      clearDraft(f);
+      if (d.reply) toast(d.reply);
+    } catch (err) {
+      setErrors((e) => ({ ...e, [f.path]: err.message }));
+    }
+  };
+
+  const resetField = async (f) => {
+    setErrors((e) => ({ ...e, [f.path]: "" }));
+    try {
+      const d = await api(`/api/settings/fields/${f.path}`, { method: "DELETE" });
+      setFeed(d.feed);
+      clearDraft(f);
+      if (d.reply) toast(d.reply);
+    } catch (err) {
+      setErrors((e) => ({ ...e, [f.path]: err.message }));
+    }
+  };
+
+  const flipToggle = (f, value) => saveField(f, value);
+
+  const valueToSend = (f) => {
+    const d = draftOf(f);
+    if (f.kind === "number") return d === "" ? (f.none_ok ? null : "") : Number(d);
+    return d === "" && f.none_ok ? null : d;
+  };
+
+  const saveCredential = async (cred, value) => {
+    try {
+      const d = await api(`/api/settings/credentials/${cred.name}`, {
+        method: "PUT", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ value }),
+      });
+      setFeed(d);
+      toast(`${cred.label} stored encrypted — it is never shown back.`);
+    } catch (err) {
+      toast(err.message, "err");
+    }
+  };
+
+  const control = (f) => {
+    if (f.kind === "toggle") {
+      return (
+        <Toggle
+          data-testid={`settings-field-${f.path}`}
+          checked={Boolean(f.value)}
+          disabled={!hasToken()}
+          onChange={(e) => flipToggle(f, e.target.checked)}
+        />
+      );
+    }
+    const shared = {
+      "data-testid": `settings-field-${f.path}`,
+      disabled: !hasToken(),
+      value: draftOf(f),
+      onChange: (e) => setDrafts((dr) => ({ ...dr, [f.path]: e.target.value })),
+    };
+    if (f.kind === "choice") {
+      return (
+        <Select className="w-44" {...shared}>
+          {f.choices.map((c) => <option key={c} value={c}>{c}</option>)}
+        </Select>
+      );
+    }
+    return <Field className="w-44" type={f.kind === "number" ? "number" : "text"} {...shared} />;
+  };
 
   return (
     <div className="max-w-3xl">
@@ -119,47 +206,129 @@ export default function SettingsPage() {
         </div>
       </Card>
 
-      <Card className="p-4">
-        <h2 className="mb-2 text-sm font-semibold text-ink">Configuration</h2>
-        <p className="mb-3 text-xs text-ink-2">
-          What Aether is running with — config.yaml merged with changes made in chat. Read-only
-          here; change it from chat with /config, under the same approval gate as everything else.
-          The one exception: the contact list, which the{" "}
-          <a href="#/contacts" className="text-accent underline">Contacts</a> page edits directly.
-        </p>
-        {hasToken() ? (
-          configError ? (
-            <EmptyState title="Configuration isn't available." sub={configError} />
-          ) : config ? (
-            <>
-              <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1.5 text-sm">
-                {summary.map(([k, v]) => (
-                  <div key={k} className="contents">
-                    <dt className="text-ink-3">{k}</dt>
-                    <dd className="text-ink-2">{String(v)}</dd>
+      {hasToken() ? (
+        feedError ? (
+          <EmptyState title="Configuration isn't available." sub={feedError} />
+        ) : feed ? (
+          <>
+            {feed.groups.filter((g) => g.fields.length > 0).map((g) => (
+              <Card key={g.key} className="mb-4 p-4">
+                <h2 className="mb-1 text-sm font-semibold text-ink">{g.title}</h2>
+                {g.note && <p className="mb-3 text-xs text-ink-2">{g.note}</p>}
+                {g.fields.map((f) => (
+                  <div key={f.path} className="border-t border-line py-3 first:border-t-0 first:pt-0">
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-sm text-ink">{f.label}</span>
+                      {f.changed && (
+                        <span className="text-xs text-accent">changed from config.yaml</span>
+                      )}
+                    </div>
+                    <div className="text-xs text-ink-2">{f.hint}</div>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      {control(f)}
+                      {f.kind !== "toggle" && (
+                        <Button
+                          kind="primary"
+                          data-testid={`settings-save-${f.path}`}
+                          disabled={!dirty(f) || (draftOf(f) === "" && !f.none_ok)}
+                          onClick={() => saveField(f, valueToSend(f))}
+                        >
+                          Save
+                        </Button>
+                      )}
+                      {f.changed && (
+                        <Button
+                          data-testid={`settings-reset-${f.path}`}
+                          onClick={() => resetField(f)}
+                        >
+                          Back to config.yaml
+                        </Button>
+                      )}
+                    </div>
+                    {f.note && <div className="mt-1 text-xs text-ink-3">{f.note}</div>}
+                    {errors[f.path] && (
+                      <div data-testid={`settings-error-${f.path}`} className="mt-1 text-xs text-danger">
+                        {errors[f.path]}
+                      </div>
+                    )}
                   </div>
                 ))}
-              </dl>
-              {config.overrides && config.overrides.length > 0 && (
-                <>
-                  <div className="mt-4 mb-1.5 text-xs font-medium tracking-wide text-ink-3 uppercase">
-                    Changed from chat
+              </Card>
+            ))}
+
+            <Card className="mb-4 p-4">
+              <h2 className="mb-1 text-sm font-semibold text-ink">Credentials</h2>
+              <p className="mb-3 text-xs text-ink-2">
+                Paste-only: a value goes straight into the encrypted store and is never shown
+                back, here or anywhere. What the page knows is only whether one is stored.
+              </p>
+              {feed.credentials.map((cred) => (
+                <div key={cred.name} className="border-t border-line py-3 first:border-t-0 first:pt-0">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-sm text-ink">{cred.label}</span>
+                    <span
+                      data-testid={`settings-cred-set-${cred.name}`}
+                      className={`text-xs ${cred.set ? "text-success" : "text-ink-3"}`}
+                    >
+                      {cred.set ? "stored" : "not stored"}
+                    </span>
                   </div>
-                  {config.overrides.map((o) => (
-                    <div key={o.path} className="font-mono text-xs text-ink-2">
-                      {o.path} = {friendlyValue(o.value)}
-                    </div>
-                  ))}
-                </>
-              )}
-            </>
-          ) : (
-            <div className="py-2 text-sm text-ink-3">Loading…</div>
-          )
+                  <div className="font-mono text-xs text-ink-3">{cred.name}</div>
+                  <div className="text-xs text-ink-2">{cred.hint}</div>
+                  <CredentialInput cred={cred} onSave={saveCredential} />
+                </div>
+              ))}
+            </Card>
+
+            {overrides.length > 0 && (
+              <Card className="p-4">
+                <h2 className="mb-2 text-sm font-semibold text-ink">Changed from config.yaml</h2>
+                {overrides.map((o) => (
+                  <div key={o.path} className="text-xs text-ink-2">
+                    {labelFor(o.path)} = {friendlyValue(o.value)}
+                  </div>
+                ))}
+              </Card>
+            )}
+          </>
         ) : (
-          <div className="py-2 text-sm text-ink-3">Set your API token above first.</div>
-        )}
-      </Card>
+          <div className="py-2 text-sm text-ink-3">Loading…</div>
+        )
+      ) : (
+        <div className="py-2 text-sm text-ink-3">Set your API token above first.</div>
+      )}
+    </div>
+  );
+}
+
+// one paste field: the value lives in this component only until Save
+// consumes it — it is never rendered back and never kept after
+function CredentialInput({ cred, onSave }) {
+  const [value, setValue] = useState("");
+  const submit = () => {
+    const v = value.trim();
+    if (!v) return;
+    onSave(cred, v);
+    setValue("");
+  };
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      <Field
+        data-testid={`settings-cred-${cred.name}`}
+        type="password"
+        placeholder="paste a value"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        className="w-64"
+      />
+      <Button
+        kind="primary"
+        data-testid={`settings-cred-save-${cred.name}`}
+        disabled={!value.trim()}
+        onClick={submit}
+      >
+        Store
+      </Button>
     </div>
   );
 }

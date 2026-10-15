@@ -209,6 +209,15 @@ other.
 | `.env` | Secrets | Database URL, encryption key, provider API keys, bot tokens |
 | `config.yaml` | Structure | LLM provider choice, MCP servers, messaging toggles, contact allowlist, authorization rules |
 
+The structure side is also editable from the panel's Settings page: every
+supported setting grouped, validated, and live-applied through the same
+path chat's `/config` uses — same persistence, same audit trail, same
+plain-words refusals. Model changes restart Aether itself (back in a few
+seconds); everything else applies on the spot. Credentials there are
+paste-only: a value goes straight into the encrypted store and is never
+shown back. `config.yaml` (or the defaults, when no file exists) stays
+the base every change can be reset to.
+
 ## Security model and what we do not claim
 
 Aether asks for a lot of access, so it says plainly where its guarantees

@@ -15,10 +15,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from re import compile as _re_compile
 
 from fastapi import FastAPI, Response, WebSocket
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from aether.agent.traces import Trace
 from aether.api import router as api_router
@@ -38,6 +40,7 @@ from aether.config import (
     Settings,
     TransportConfig,
 )
+from aether.config_store import _apply_note
 from aether.connectors.base import InboundMessage
 from aether.memory.entities import Entity, EntityNote
 from aether.memory.events import Event
@@ -45,6 +48,9 @@ from aether.scheduler.jobs import ScheduledAction
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "src" / "aether" / "web"
 API_TOKEN = "secret"
+
+# the quiet window's shape — the fixture's own plain-words refusal gate
+_QUIET_HOURS_RE = _re_compile(r"\d{2}:\d{2}-\d{2}:\d{2}")
 
 # the apps that carry their own contacts slice, matching the config model
 _APPS_WITH_OWN_LISTS = ("gmail", "telegram", "discord", "slack")
@@ -536,12 +542,23 @@ class FakeTraces:
 
 class FakeConfigManager:
     """The read surface the panel uses (effective() like the real one) plus
-    the small write surface the Contacts page needs — applied to the
-    fixture's live AppConfig in memory, so the page round-trips by hand
-    without Postgres."""
+    the write surface the Settings and Contacts pages need — validated like
+    the real manager and applied to the fixture's live AppConfig in memory,
+    so the page round-trips by hand without Postgres. Nothing persists:
+    restart resets the fixture."""
+
+    # the sections whose plain fields the Settings page edits
+    _SETTABLE = ("llm", "agent", "salience", "authz")
 
     def __init__(self, config: AppConfig) -> None:
         self._config = config
+        # the override rows effective() reports — seeded with the baseline
+        # the fixture pretends chat made, grown by every panel write
+        self._changed: dict[str, object] = {
+            "authz.approval_ttl_hours": 24,
+            "agent.personality": "warm and a little informal",
+        }
+        self._baseline: dict[str, object] = {}  # path -> value before its first override
 
     async def effective(self) -> dict:
         return {
@@ -557,15 +574,59 @@ class FakeConfigManager:
                 "agent": {"quiet_hours": ""},
                 "llm": {"provider": "anthropic", "model": "claude-sonnet-5"},
             },
-            "overrides": [
-                {"path": "authz.approval_ttl_hours", "value": 24},
-                {"path": "agent.personality", "value": "warm and a little informal"},
-            ],
+            "overrides": [{"path": p, "value": v} for p, v in self._changed.items()],
         }
+
+    def _live_target(self, path: str) -> tuple[BaseModel, str] | None:
+        """(holder, field) the path writes to, or None when the path isn't
+        one the fixture's vocabulary speaks."""
+        parts = path.split(".")
+        if len(parts) == 2 and parts[0] in self._SETTABLE:
+            return getattr(self._config, parts[0]), parts[1]
+        if (
+            len(parts) == 3
+            and parts[0] == "messaging"
+            and parts[1] in type(self._config.messaging).model_fields
+            and parts[2] == "enabled"
+        ):
+            return getattr(self._config.messaging, parts[1]), "enabled"
+        if len(parts) == 3 and parts[0] == "mcp_servers" and parts[2] == "enabled":
+            server = next((s for s in self._config.mcp_servers if s.name == parts[1]), None)
+            if server is not None:
+                return server, "enabled"
+        return None
 
     async def set_verdict(
         self, *, op: str, path: str, value: object = None, source: str = "panel"
     ) -> tuple[bool, str]:
+        # plain fields: validate against the model's own annotation so a
+        # refusal reads the way the real manager's would
+        target = self._live_target(path)
+        if target is not None:
+            holder, field = target
+            if op == "reset":
+                if path not in self._baseline:
+                    return False, "that one is already what config.yaml says"
+                setattr(holder, field, self._baseline[path])
+                del self._changed[path]
+                return True, f"{path} is back to what config.yaml says."
+            if field == "enabled" and not isinstance(value, bool):
+                return False, "it needs to be true or false"
+            annotation = type(holder).model_fields[field].annotation
+            if field == "quiet_hours" and not (
+                value is None or (isinstance(value, str) and _QUIET_HOURS_RE.fullmatch(value))
+            ):
+                return False, "the quiet window reads like 23:00-08:00, or none"
+            try:
+                checked = TypeAdapter(annotation).validate_python(value)
+            except ValidationError:
+                return False, "that isn't a value this setting takes"
+            if path not in self._baseline:
+                self._baseline[path] = getattr(holder, field)
+            setattr(holder, field, checked)
+            self._changed[path] = checked
+            return True, f"{path} set to {_plain(checked)}{_apply_note(path)}"
+
         # the contacts vocabulary the panel writes: the default's mode and
         # list, plus one app's own contacts.<app>.mode / contacts.<app>.allowlist
         parts = path.split(".")
@@ -576,7 +637,7 @@ class FakeConfigManager:
         elif len(parts) == 2 and parts[0] == "contacts":
             field = parts[1]
         else:
-            return False, "the dev fixture only speaks the contacts settings"
+            return False, "the dev fixture only speaks the settings the pages show"
         if field == "mode":
             if op == "reset":
                 # only an app's own switch resets — back to following the default
@@ -607,6 +668,34 @@ class FakeConfigManager:
         return True, "changed in the dev fixture — nothing persists across restarts"
 
 
+def _plain(value: object) -> str:
+    """A value the way the real manager says it — none/true/false."""
+    if value is None:
+        return "none"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return str(value)
+
+
+class FakeSecretStore:
+    """The encrypted store's write surface: values in, names out — a pasted
+    credential never travels anywhere the page could read it back."""
+
+    def __init__(self) -> None:
+        self.stored: dict[str, str] = {}
+
+    async def set(self, name: str, value: str) -> None:
+        self.stored[name] = value
+
+    async def get(self, name: str) -> str | None:
+        return self.stored.get(name)
+
+    async def names(self) -> set[str]:
+        return set(self.stored)
+
+
 class FakeTools:
     """The registry's read surface: which MCP servers answered and how many
     actions each exposes."""
@@ -619,10 +708,15 @@ class FakeTools:
 
 
 class FakeResolver:
-    """Secret-name surface only — the apps feed checks key presence by name."""
+    """Secret-name surface only — the apps and settings feeds check key
+    presence by name. Names pasted into the fake store count too, so a
+    credential paste flips its badge in one round-trip."""
+
+    def __init__(self, store: FakeSecretStore) -> None:
+        self._store = store
 
     async def known_names(self) -> set[str]:
-        return {"TELEGRAM_BOT_TOKEN"}
+        return {"TELEGRAM_BOT_TOKEN"} | await self._store.names()
 
 
 class FakeHubBridge:
@@ -722,7 +816,9 @@ def build_app() -> FastAPI:
     app.state.traces = FakeTraces(now)
     app.state.config_manager = FakeConfigManager(config)
     app.state.tools = FakeTools()
-    app.state.resolver = FakeResolver()
+    secret_store = FakeSecretStore()
+    app.state.secrets = secret_store
+    app.state.resolver = FakeResolver(secret_store)
     app.state.composio = FakeHubBridge()
 
     @app.get("/")
