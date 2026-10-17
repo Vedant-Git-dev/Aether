@@ -119,6 +119,14 @@ class Workbench(Protocol):
     async def run_job(self, spec: JobSpec) -> JobResult: ...
 
 
+class KeyResolver(Protocol):
+    """The resolver surface every adapter needs — a secret's name in,
+    its value out, fresh each call, so a key pasted after boot works
+    with no restart."""
+
+    async def resolve(self, name: str) -> str | None: ...
+
+
 def script_digest(spec: JobSpec) -> str:
     """The script's content digest — the only form the audit record ever
     carries. The full text stays encrypted in the task's own row."""

@@ -244,6 +244,18 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
         hint="Lets Aether search the web. Without it, web search says "
         "it isn't connected and nothing else changes.",
     ),
+    CredentialSpec(
+        name="MODAL_TOKEN_ID",
+        label="Cloud sandbox key",
+        hint="The public half of the key pair that lets background work "
+        "run on a throwaway cloud machine. Paste both halves here.",
+    ),
+    CredentialSpec(
+        name="MODAL_TOKEN_SECRET",
+        label="Cloud sandbox secret",
+        hint="The private half of the sandbox key pair — shown once when "
+        "it's created. Without both halves, nothing runs off this computer.",
+    ),
 )
 
 
