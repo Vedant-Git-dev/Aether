@@ -216,16 +216,33 @@ def create_app(
         # --- workspace: the human-editable Markdown identity/memory layer ---
         # an enhancement layer, not core plumbing: a workspace that can't be
         # set up (bad permissions, a full disk) degrades to "no workspace"
-        # rather than taking the whole boot down with it.
+        # rather than taking the whole boot down with it. Encrypted at rest
+        # by default — except under the throwaway dev key, which changes
+        # every boot and would eat the files on the next restart.
         workspace: Workspace | None = None
         if config.workspace.enabled:
-            candidate = Workspace(config.workspace.path)
+            encrypt = config.workspace.encrypted and bool(settings.encryption_key)
+            if config.workspace.encrypted and not encrypt:
+                log.warning(
+                    "workspace staying plain text — the ephemeral dev key would "
+                    "make encrypted files unreadable on the next boot"
+                )
+            candidate = Workspace(config.workspace.path, cipher=cipher if encrypt else None)
             try:
                 first_run = candidate.ensure_scaffold()
             except WorkspaceWriteError as exc:
                 log.warning("workspace unavailable (%s) — continuing without it", exc)
             else:
                 workspace = candidate
+                if encrypt:
+                    migrated = candidate.migrate_plaintext()
+                    if migrated:
+                        await audit.append(
+                            actor="system",
+                            tool_name="workspace",
+                            decision="allow",
+                            outcome=f"encrypted {migrated} plaintext workspace file(s) at rest",
+                        )
                 log.info("workspace ready at %s (first run: %s)", workspace.root, first_run)
         app.state.workspace = workspace
 

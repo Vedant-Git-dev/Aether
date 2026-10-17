@@ -17,6 +17,7 @@ def test_defaults_without_file(tmp_path, monkeypatch) -> None:
     assert cfg.authz.approval_ttl_hours == 24.0
     assert cfg.workspace.enabled is True
     assert cfg.workspace.path == "aether-workspace"
+    assert cfg.workspace.encrypted is True
 
 
 def test_example_yaml_parses_and_matches_defaults() -> None:
@@ -30,6 +31,7 @@ def test_example_yaml_parses_and_matches_defaults() -> None:
     assert cfg.mcp_servers == []
     assert cfg.workspace.enabled is True
     assert cfg.workspace.path == "aether-workspace"
+    assert cfg.workspace.encrypted is True
 
 
 def test_mcp_server_config_shape() -> None:

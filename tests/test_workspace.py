@@ -7,6 +7,7 @@ from datetime import date
 
 import pytest
 
+from aether.memory.crypto import Cipher
 from aether.workspace import SecretRejected, Workspace, WorkspaceWriteError
 
 
@@ -254,7 +255,8 @@ def test_remember_rejects_non_numeric_confidence(tmp_path) -> None:
     ws = _ws(tmp_path)
     ws.ensure_scaffold()
     with pytest.raises(ValueError):
-        ws.remember("x", "fact", confidence=["not", "a", "number"])
+        # the bad type is the point — remember() must refuse it at runtime
+        ws.remember("x", "fact", confidence=["not", "a", "number"])  # type: ignore[arg-type]
 
 
 def test_remember_daily_raises_workspace_write_error_when_memory_dir_is_blocked(tmp_path) -> None:
@@ -484,3 +486,103 @@ def test_ensure_scaffold_raises_a_workspace_write_error_when_root_is_unwritable(
     ws = Workspace(blocker / "ws")  # can't mkdir a child of a plain file
     with pytest.raises(WorkspaceWriteError):
         ws.ensure_scaffold()
+
+
+# ---------------------------------------------------------------------------
+# encrypted at rest — AES-256-GCM blobs on disk, decrypted only in memory
+# ---------------------------------------------------------------------------
+
+
+def _enc(tmp_path) -> Workspace:
+    return Workspace(tmp_path / "ws", cipher=Cipher(b"t" * 32))
+
+
+def test_stored_files_are_not_readable_text_on_disk(tmp_path) -> None:
+    ws = _enc(tmp_path)
+    ws.ensure_scaffold()
+    ws.remember("wants plain language, never emoji", "preference")
+    ws.remember("the ferry leaves at nine", "daily")
+    for path, needle in (
+        (ws.root / "USER.md", b"plain language"),
+        (ws.root / "memory" / f"{ws.today()}.md", b"ferry"),
+        (ws.root / "IDENTITY.md", b"# IDENTITY.md"),
+    ):
+        raw = path.read_bytes()
+        assert needle not in raw, needle  # nothing readable on disk
+        assert raw.startswith(b"aether-workspace\x01")  # the encrypted-blob marker
+    # but the store itself reads everything back
+    assert "plain language" in ws.read("user")
+    assert "ferry" in ws.read("daily")
+
+
+def test_every_workspace_path_round_trips_through_the_cipher(tmp_path) -> None:
+    ws = _enc(tmp_path)
+    ws.ensure_scaffold()
+    ws.finish_bootstrap()
+    pref = ws.remember("summaries first, detail on request", "preference")
+    daily = ws.remember("shipped the batch adapter", "daily", when=date(2026, 10, 17))
+    ws.remember("a durable decision", "fact", category="Decisions")
+
+    assert "summaries first" in ws.read("user")
+    assert "batch adapter" in ws.read("daily", date_str="2026-10-17")
+    assert "durable decision" in ws.read("memory")
+    assert any(e.id == pref for e in ws.entries("user"))
+
+    assert ws.promote("2026-10-17", daily)
+    assert "batch adapter" in ws.read("memory")
+    assert "summaries first" in ws.context_block()
+    assert any("summaries first" in hit.text for hit in ws.search("summaries"))
+
+    ws.write_raw("soul", "# SOUL.md\n\n- rewritten by hand through the panel\n")
+    assert "rewritten by hand" in ws.read("soul")
+
+
+def test_a_plaintext_workspace_is_migrated_exactly_once(tmp_path) -> None:
+    # a pre-upgrade workspace: plain files on disk, never touched by a cipher
+    root = tmp_path / "ws"
+    (root / "memory").mkdir(parents=True)
+    (root / "USER.md").write_text(
+        "# USER.md\n\n- an old preference from before encryption\n", encoding="utf-8"
+    )
+    (root / "memory" / "2026-01-01.md").write_text(
+        "# 2026-01-01\n\n- an old daily note\n", encoding="utf-8"
+    )
+    ws = Workspace(root, cipher=Cipher(b"t" * 32))
+    assert ws.ensure_scaffold() is False  # not a first run — an upgrade boot
+
+    converted = ws.migrate_plaintext()
+    assert converted == 2  # USER.md and the daily — the backfilled defaults
+    # were written encrypted by the scaffold itself
+    assert b"old preference" not in (root / "USER.md").read_bytes()
+    assert "an old preference from before encryption" in ws.read("user")
+    assert "an old daily note" in ws.read("daily", date_str="2026-01-01")
+    assert ws.migrate_plaintext() == 0  # already-encrypted files are left alone
+
+
+def test_migration_never_touches_a_workspace_without_a_cipher(tmp_path) -> None:
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "USER.md").write_text("# USER.md\n\n- stays as it is\n", encoding="utf-8")
+    ws = Workspace(root)
+    assert ws.migrate_plaintext() == 0
+    assert "stays as it is" in (root / "USER.md").read_text(encoding="utf-8")
+
+
+def test_a_file_whose_key_is_gone_degrades_to_empty_never_crashes(tmp_path) -> None:
+    # a workspace written under a key that has since rotated away
+    Workspace(tmp_path / "ws", cipher=Cipher(b"j" * 32)).ensure_scaffold()
+    ws = Workspace(tmp_path / "ws", cipher=Cipher(b"t" * 32))
+    assert ws.read("identity") == ""  # not text, not garbage — simply empty
+    assert "## Identity" not in ws.context_block()
+    assert ws.needs_bootstrap() is True  # existence checks don't decrypt
+
+
+def test_a_hand_written_plaintext_file_reads_until_the_store_rewrites_it(tmp_path) -> None:
+    ws = _enc(tmp_path)
+    ws.ensure_scaffold()
+    (ws.root / "USER.md").write_text("# USER.md\n\n- dropped in by hand\n", encoding="utf-8")
+    assert "dropped in by hand" in ws.read("user")
+    ws.remember("a stored preference", "preference")
+    raw = (ws.root / "USER.md").read_bytes()
+    assert b"dropped in by hand" not in raw  # the rewrite sealed the whole file
+    assert "dropped in by hand" in ws.read("user")  # and nothing was lost

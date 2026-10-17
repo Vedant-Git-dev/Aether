@@ -213,6 +213,10 @@ class WorkspaceConfig(BaseModel):
 
     enabled: bool = True
     path: str = "aether-workspace"
+    # AES-256-GCM at rest with the server's key. Turning this off later
+    # makes new files plain text again but never decrypts what was
+    # already written — those keep reading as empty until re-created.
+    encrypted: bool = True
 
 
 class AppConfig(BaseModel):

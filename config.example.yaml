@@ -94,4 +94,7 @@ authz:
 
 workspace:
   enabled: true                  # the human-editable identity/memory Markdown files
-  path: aether-workspace          # created on first boot; edit the files directly anytime
+  path: aether-workspace          # created on first boot
+  encrypted: true                 # files sit as AES-256-GCM blobs, edited through the
+                                 # panel; turning this off later never decrypts what
+                                 # was already written encrypted
