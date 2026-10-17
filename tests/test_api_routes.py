@@ -1354,6 +1354,9 @@ async def test_settings_feed_carries_groups_kinds_and_apply_notes() -> None:
         "TAVILY_API_KEY",
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
+        "VERCEL_TOKEN",
+        "VERCEL_TEAM_ID",
+        "VERCEL_PROJECT_ID",
     }
     assert creds["TELEGRAM_BOT_TOKEN"]["set"] is True
     assert creds["DISCORD_BOT_TOKEN"]["set"] is False

@@ -256,6 +256,25 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
         hint="The private half of the sandbox key pair — shown once when "
         "it's created. Without both halves, nothing runs off this computer.",
     ),
+    CredentialSpec(
+        name="VERCEL_TOKEN",
+        label="Backup sandbox key",
+        hint="An access token for the backup cloud sandbox. Paste it with "
+        "the team and project ids below to give background work a second "
+        "place to run.",
+    ),
+    CredentialSpec(
+        name="VERCEL_TEAM_ID",
+        label="Backup sandbox team",
+        hint="The id of the team the backup sandbox project belongs to — "
+        "copied from its settings page. All three backup values are needed "
+        "before anything runs there.",
+    ),
+    CredentialSpec(
+        name="VERCEL_PROJECT_ID",
+        label="Backup sandbox project",
+        hint="The id of the project the backup sandbox runs under — copied from its settings page.",
+    ),
 )
 
 
