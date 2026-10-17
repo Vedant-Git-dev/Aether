@@ -29,6 +29,7 @@ from .connectors.mail_allowlist import MailAllowlist
 from .connectors.mcp_host import MCPHost
 from .connectors.registry import ToolRegistry
 from .connectors.screenvision import ScreenVision
+from .counters import DailyCounters
 from .llm.base import ProviderError
 from .llm.embeddings import GeminiEmbedder
 from .llm.registry import ProviderRegistry
@@ -44,6 +45,7 @@ from .routines import Routines
 from .scheduler import Scheduler, SchedulerWorker
 from .secret_env import EnvResolver
 from .secret_store import SecretStore
+from .web import WebTools
 from .workspace import Workspace, WorkspaceWriteError
 
 log = logging.getLogger("aether.main")
@@ -134,6 +136,15 @@ def create_app(
         app.state.cipher = cipher
         app.state.settings = settings
         app.state.config = config
+
+        # --- daily counters + the web tools ---------------------------------
+        # counts only (search cap today, the proactive budgets later) and
+        # the hardened fetch/search pair — both live on the resolver, so
+        # a key pasted after boot connects without a restart.
+        counters = DailyCounters(pool)
+        app.state.counters = counters
+        web_tools = WebTools(resolver=env_resolver, counters=counters, config=config)
+        app.state.web = web_tools
 
         # --- vector memory: free embeddings make recall semantic ----------
         # best effort, same as the providers — without a key the layer is a
@@ -270,6 +281,7 @@ def create_app(
             config_manager=config_manager,
             workspace=workspace,
             vectors=vectors,
+            web=web_tools,
         )
         log.info("native tools registered: %d", native)
 

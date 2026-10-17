@@ -54,6 +54,22 @@ def test_internal_tools_are_allowed() -> None:
         assert ruling.matched_rule == "builtin:internal"
 
 
+def test_web_research_tools_are_read_only_allowed() -> None:
+    """The hardened fetch and the key-gated search: external by
+    destination (never internal), read-only by construction (allowed).
+    Explicit, because the read-only verb anchor would miss the web_
+    prefix — and the neighbors stay fail-safe."""
+    policy = Policy([])
+    for name in ("web_fetch", "web_search"):
+        ruling = policy.classify(name)
+        assert ruling.decision is Decision.ALLOW, name
+        assert ruling.matched_rule == "builtin:web-research", name
+    # a look-alike never rides the rule — only fetch and search do
+    for name in ("web_post", "web_fetch_all", "web_search_and_send", "webfetch"):
+        ruling = policy.classify(name)
+        assert ruling.decision is Decision.REQUIRE_APPROVAL, name
+
+
 def test_internal_prefix_does_not_swallow_mcp_namespaced_tools() -> None:
     """An MCP server literally named 'workspace' or 'memory' must not have
     its tools auto-allowed via the internal-tool carve-out — the flat name

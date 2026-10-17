@@ -154,6 +154,8 @@ const NATIVE_TOOLS = {
   list_routines: "Listing routines",
   set_routine_enabled: "Enabling or disabling a routine",
   delete_routine: "Deleting a routine",
+  web_fetch: "Reading a web page",
+  web_search: "Searching the web",
 };
 
 const EXTRA_SOURCES = { screen: "Screen", web: "Web", user: "You", agent: "Aether" };
@@ -428,6 +430,7 @@ export const BUILTIN_PLAIN = {
   "builtin:internal": ["Aether's own records", "Remembering people and details, setting reminders, and requesting a screenshot only touch Aether's own memory."],
   "builtin:risky": ["Anything that reaches the outside world", "Sending, replying, posting, deleting, cancelling, paying, booking, inviting or creating something always waits for your approval."],
   "builtin:read-only": ["Read-only actions", "Reading, searching and listing your mail, chats and calendar — nothing is changed."],
+  "builtin:web-research": ["Web research", "Reading a web page or running a web search — nothing is changed, and what comes back is only information."],
   "builtin:walk-connect": ["Connecting an app from the /apps walk", "You completed the connect walk for this app in chat — the walk itself serves as your approval."],
   "builtin:oauth-consent": ["Connecting an app by signing in", "The sign-in you completed on the provider's own screen serves as your approval."],
   "default:fail-safe": ["Unrecognized actions", "An action Aether does not recognize is held for your approval before it runs."],

@@ -82,6 +82,10 @@ class AgentConfig(BaseModel):
     tick_seconds: float = 30.0
     max_tool_iterations: int = 12
     daily_surface_cap: int = 20
+    # the web search tool's own brake — shared by chat and the background
+    # worker, counted per day, so the free search allowance can't be
+    # burned in one afternoon
+    max_searches_per_day: int = 25
     # the interruption budget: unprompted commentary waits out this window
     # (local time, wraps midnight) unless an observation scores at/above the
     # urgent threshold. Replies to the user never wait.

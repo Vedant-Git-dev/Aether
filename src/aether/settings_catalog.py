@@ -130,6 +130,12 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
                 label="Urgency to break quiet hours",
                 hint="How urgent (0-10) something must be to interrupt the quiet window.",
             ),
+            FieldSpec(
+                path="agent.max_searches_per_day",
+                label="Daily web search cap",
+                hint="The most web searches Aether runs in one day, chat and background together.",
+                note="applies to the next search",
+            ),
         ),
     ),
     GroupSpec(
@@ -231,6 +237,12 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
         label="App hub key",
         hint="One key for the app hub — email, code repos, notes and more. "
         "The Apps page connects each one.",
+    ),
+    CredentialSpec(
+        name="TAVILY_API_KEY",
+        label="Web search key",
+        hint="Lets Aether search the web. Without it, web search says "
+        "it isn't connected and nothing else changes.",
     ),
 )
 

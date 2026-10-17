@@ -34,6 +34,7 @@ agent:
   tick_seconds: 30               # agent loop cadence
   max_tool_iterations: 12         # tool-call turns per activation before forcing a summary
   daily_surface_cap: 20           # max high-salience items surfaced per day
+  max_searches_per_day: 25       # web searches per day (chat + background share it); needs TAVILY_API_KEY
 
 salience:
   threshold: 6.0                 # 0-10; events below are stored but never surface

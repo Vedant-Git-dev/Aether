@@ -12,11 +12,13 @@ before it executes. First match wins:
    approval; every other config path (the security sections, an unknown or
    missing one, contacts/authz under any origin) -> REQUIRE_APPROVAL
 3. internal Aether tools (memory, scheduling, capture requests) -> ALLOW
-4. risky verbs (send, delete, pay, ...) -> REQUIRE_APPROVAL
-5. read-only verbs (list, search, get, ...) -> ALLOW
-6. anything else -> REQUIRE_APPROVAL
+4. Aether's web research (the hardened fetch, the key-gated search) ->
+   ALLOW — read-only by construction, external by destination
+5. risky verbs (send, delete, pay, ...) -> REQUIRE_APPROVAL
+6. read-only verbs (list, search, get, ...) -> ALLOW
+7. anything else -> REQUIRE_APPROVAL
 
-The verb ladders (4 and 5) run against the lowercased tool name: Composio
+The verb ladders (5 and 6) run against the lowercased tool name: Composio
 names its tools UPPER_SNAKE (composio__GMAIL_SEND_EMAIL), and a verb is a
 verb in either case — without it every hub tool would park at fail-safe.
 A composio tool's name is TOOLKIT_ACTION (gmail is metadata, send_email is
@@ -46,7 +48,7 @@ class Decision(StrEnum):
 @dataclass(frozen=True)
 class Ruling:
     decision: Decision
-    matched_rule: str  # "user:<pattern>" | "builtin:walk-connect" | "builtin:config-tune" | "builtin:config-security" | "builtin:internal" | "builtin:risky" | "builtin:read-only" | "default:fail-safe"
+    matched_rule: str  # "user:<pattern>" | "builtin:walk-connect" | "builtin:config-tune" | "builtin:config-security" | "builtin:internal" | "builtin:web-research" | "builtin:risky" | "builtin:read-only" | "default:fail-safe"
     reason: str
 
 
@@ -80,6 +82,13 @@ _RISKY = re.compile(
 # so "getter_sync" reads as a get, but "and_get" inside a compound name
 # never grants read-only status on its own.
 _READONLY = re.compile(r"(^|__)(list|search|get|read|fetch|find|query)([a-z_]|$)")
+
+# Aether's own web research — the hardened fetch and the key-gated search.
+# They reach the public web, so they are not internal, but they only read:
+# the fetcher's address rules and byte caps make it observation, not
+# action. Explicit rather than riding the verb ladder, because the names
+# start with "web_" and the read-only verb anchor would miss them.
+_WEB_RESEARCH = re.compile(r"^web_(fetch|search)$")
 
 
 # The config vocabulary's two faces, by path root. Personal tuning applies
@@ -150,6 +159,12 @@ class Policy:
         if _INTERNAL.match(tool_name):
             return Ruling(
                 Decision.ALLOW, "builtin:internal", "internal tool, touches only Aether's own state"
+            )
+        if _WEB_RESEARCH.match(tool_name):
+            return Ruling(
+                Decision.ALLOW,
+                "builtin:web-research",
+                "web research — reads a page or search results, nothing is changed",
             )
         lowered = tool_name.lower()  # Composio's UPPER_SNAKE names classify by the same verbs
         if lowered.startswith("composio__"):

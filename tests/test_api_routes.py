@@ -1351,6 +1351,7 @@ async def test_settings_feed_carries_groups_kinds_and_apply_notes() -> None:
         "SLACK_BOT_TOKEN",
         "SLACK_APP_TOKEN",
         "COMPOSIO_API_KEY",
+        "TAVILY_API_KEY",
     }
     assert creds["TELEGRAM_BOT_TOKEN"]["set"] is True
     assert creds["DISCORD_BOT_TOKEN"]["set"] is False
