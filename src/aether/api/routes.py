@@ -1,7 +1,10 @@
 """REST endpoints. `settings` and component instances are read from
 `request.app.state`, which the lifespan in main.py populates before the
 server accepts traffic. Everything except /healthz is token-guarded —
-the panel sends its token with every call.
+the panel sends its token with every call. The one other exception is
+the workbench transfer pair: a runner holds a single-use, short-lived
+URL whose unguessable token is the entire authentication, so those
+routes (and only those) are open by design.
 """
 
 from __future__ import annotations
@@ -975,3 +978,60 @@ async def workspace_search_feed(
         raise HTTPException(status_code=503, detail="workspace is not enabled")
     hits = workspace.search(query, limit=min(limit, 50))
     return {"hits": [{"file": h.file, "id": h.id, "text": h.text, "score": h.score} for h in hits]}
+
+
+# -- one-time workbench transfers -------------------------------------------------
+# The token in the path IS the authentication: random 32 bytes, single-use,
+# dead within minutes. No API token is ever sent, and the routes answer to
+# nothing else.
+
+_RESULT_TEXT_LIMIT = 1024 * 1024  # a generous log — anything past is clipped
+
+
+def _clip_result_text(text: str) -> str:
+    return text if len(text) <= _RESULT_TEXT_LIMIT else text[:_RESULT_TEXT_LIMIT] + "…"
+
+
+class WorkbenchResultBody(BaseModel):
+    exit_code: int
+    stdout: str = ""
+    stderr: str = ""
+
+
+@router.get("/api/workbench/{kind}/{token}")
+async def workbench_transfer_get(kind: str, token: str, request: Request) -> dict:
+    """A batch runner pulls its job's files here — once. Unknown, spent, or
+    expired URLs are simply not found."""
+    if kind != "bundle":
+        raise HTTPException(status_code=404, detail="no such transfer")
+    transfers = getattr(request.app.state, "transfers", None)
+    if transfers is None:
+        raise HTTPException(status_code=503, detail="workbench transfers not wired")
+    payload = await transfers.take_bundle(token)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="no such transfer")
+    return payload
+
+
+@router.post("/api/workbench/{kind}/{token}")
+async def workbench_transfer_post(
+    kind: str, token: str, body: WorkbenchResultBody, request: Request
+) -> dict:
+    """A batch runner pushes its job's outcome here — once. The streams are
+    clipped server-side before they are stored."""
+    if kind != "result":
+        raise HTTPException(status_code=404, detail="no such transfer")
+    transfers = getattr(request.app.state, "transfers", None)
+    if transfers is None:
+        raise HTTPException(status_code=503, detail="workbench transfers not wired")
+    stored = await transfers.post_result(
+        token,
+        {
+            "exit_code": body.exit_code,
+            "stdout": _clip_result_text(body.stdout),
+            "stderr": _clip_result_text(body.stderr),
+        },
+    )
+    if not stored:
+        raise HTTPException(status_code=404, detail="no such transfer")
+    return {"stored": True}

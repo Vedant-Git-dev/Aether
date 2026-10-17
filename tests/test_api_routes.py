@@ -109,12 +109,13 @@ def _app(
     entities=None,
     scheduler=None,
     workspace=None,
+    transfers=None,
     settings: Settings | None = None,
     traces: FakeTraces | None = None,
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(router)
-    app.state.settings = settings or Settings(_env_file=None, api_token="secret")
+    app.state.settings = settings or Settings.without_env_file(api_token="secret")
     app.state.config = config or AppConfig()
     if entities is not None:
         app.state.entities = entities
@@ -140,6 +141,8 @@ def _app(
         app.state.config_manager = config_manager
     if workspace is not None:
         app.state.workspace = workspace
+    if transfers is not None:
+        app.state.transfers = transfers
     if traces is not None:
         app.state.traces = traces
     return app
@@ -1357,6 +1360,7 @@ async def test_settings_feed_carries_groups_kinds_and_apply_notes() -> None:
         "VERCEL_TOKEN",
         "VERCEL_TEAM_ID",
         "VERCEL_PROJECT_ID",
+        "GITHUB_ACTIONS_TOKEN",
     }
     assert creds["TELEGRAM_BOT_TOKEN"]["set"] is True
     assert creds["DISCORD_BOT_TOKEN"]["set"] is False
@@ -1510,3 +1514,85 @@ async def test_credential_paste_refuses_the_unknown_and_the_empty() -> None:
     assert stranger.status_code == 404
     assert empty.status_code == 400
     assert store.stored == {}
+
+
+# -- one-time workbench transfers ------------------------------------------------
+
+
+class FakeTransfers:
+    def __init__(self, bundle: dict | None = None, accepts_results: bool = True) -> None:
+        self.bundle = bundle
+        self.accepts_results = accepts_results
+        self.bundles_taken: list[str] = []
+        self.results_posted: list[tuple[str, dict]] = []
+
+    async def take_bundle(self, token: str) -> dict | None:
+        self.bundles_taken.append(token)
+        return self.bundle
+
+    async def post_result(self, token: str, result: dict) -> bool:
+        self.results_posted.append((token, result))
+        return self.accepts_results
+
+
+async def test_a_runner_pulls_its_bundle_without_the_api_token() -> None:
+    # the one-time URL is the entire authentication — no token header
+    transfers = FakeTransfers(bundle={"script_name": "job.py", "files": {"job.py": "print(1)"}})
+    async with _client(_app(None, transfers=transfers)) as client:
+        response = await client.get("/api/workbench/bundle/a-one-time-token")
+    assert response.status_code == 200
+    assert response.json() == {"script_name": "job.py", "files": {"job.py": "print(1)"}}
+    assert transfers.bundles_taken == ["a-one-time-token"]
+
+
+async def test_a_spent_or_unknown_bundle_url_is_simply_not_found() -> None:
+    transfers = FakeTransfers(bundle=None)
+    async with _client(_app(None, transfers=transfers)) as client:
+        response = await client.get("/api/workbench/bundle/already-used")
+    assert response.status_code == 404
+
+
+async def test_a_runner_posts_its_result_once() -> None:
+    transfers = FakeTransfers()
+    async with _client(_app(None, transfers=transfers)) as client:
+        response = await client.post(
+            "/api/workbench/result/another-one-time-token",
+            json={"exit_code": 0, "stdout": "done", "stderr": ""},
+        )
+    assert response.status_code == 200
+    assert response.json() == {"stored": True}
+    assert transfers.results_posted == [
+        ("another-one-time-token", {"exit_code": 0, "stdout": "done", "stderr": ""})
+    ]
+
+
+async def test_a_refused_result_post_is_not_found_not_an_error() -> None:
+    transfers = FakeTransfers(accepts_results=False)
+    async with _client(_app(None, transfers=transfers)) as client:
+        response = await client.post(
+            "/api/workbench/result/spent",
+            json={"exit_code": 1, "stdout": "", "stderr": "boom"},
+        )
+    assert response.status_code == 404
+
+
+async def test_the_transfer_kinds_only_answer_their_own_verbs() -> None:
+    # GET answers only bundles, POST only results — anything else is not found
+    transfers = FakeTransfers(bundle={"script_name": "job.py", "files": {}})
+    async with _client(_app(None, transfers=transfers)) as client:
+        get_result = await client.get("/api/workbench/result/some-token")
+        post_bundle = await client.post(
+            "/api/workbench/bundle/some-token", json={"exit_code": 0, "stdout": "", "stderr": ""}
+        )
+    assert get_result.status_code == 404
+    assert post_bundle.status_code == 404
+
+
+async def test_transfers_not_wired_answers_503() -> None:
+    async with _client(_app(None)) as client:
+        get = await client.get("/api/workbench/bundle/some-token")
+        post = await client.post(
+            "/api/workbench/result/some-token", json={"exit_code": 0, "stdout": "", "stderr": ""}
+        )
+    assert get.status_code == 503
+    assert post.status_code == 503

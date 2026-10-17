@@ -275,6 +275,13 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
         label="Backup sandbox project",
         hint="The id of the project the backup sandbox runs under — copied from its settings page.",
     ),
+    CredentialSpec(
+        name="GITHUB_ACTIONS_TOKEN",
+        label="Batch queue key",
+        hint="A fine-grained key that can start jobs in your own code "
+        "repository. Only patient, non-sensitive work ever goes there, "
+        "and only when the batch queue is switched on in the settings.",
+    ),
 )
 
 
