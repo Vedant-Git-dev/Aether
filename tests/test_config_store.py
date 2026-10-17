@@ -26,8 +26,8 @@ from aether.secret_env import EnvResolver
 
 
 def _settings() -> Settings:
-    # _env_file=None: these tests never read .env — secrets stay out of it
-    return Settings(_env_file=None)
+    # .env is never read here — secrets stay out of these tests
+    return Settings.without_env_file()
 
 
 def _manager(

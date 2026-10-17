@@ -713,9 +713,8 @@ class ConfigManager:
             value = await self._resolver.resolve(field.upper())
             if value:
                 values[field] = value
-        # _env_file=None is load-bearing (read the resolver, not .env) but
-        # isn't in BaseSettings' typed signature — pydantic-settings takes it
-        return Settings(_env_file=None, **values)  # type: ignore[call-arg]
+        # the resolver is the source here — .env is deliberately not read
+        return Settings.without_env_file(**values)
 
     async def _apply_mcp(self) -> str:
         """Make the host match the list: stop what left or changed, start

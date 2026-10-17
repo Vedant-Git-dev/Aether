@@ -67,7 +67,7 @@ async def test_fresh_decisions_fire_on_decision_stale_do_not() -> None:
 
 
 def _settings(**kwargs) -> Settings:
-    return Settings(_env_file=None, **kwargs)
+    return Settings.without_env_file(**kwargs)
 
 
 def _config(telegram=False, discord_=False, slack=False) -> AppConfig:

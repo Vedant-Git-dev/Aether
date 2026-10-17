@@ -57,6 +57,21 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    @classmethod
+    def without_env_file(cls, **values: Any) -> Settings:
+        """Settings with the optional .env file deliberately not read — the
+        construction path tests and the config resolver take, so a real
+        .env sitting next to them can't leak into the values. (`_env_file`
+        is a real pydantic-settings argument, but the type checkers can't
+        see it — the one ignore lives here, once, not at every call site.)"""
+        return cls(_env_file=None, **values)  # type: ignore[call-arg]
+
+    @classmethod
+    def from_env_file(cls, env_file: str | Path, **values: Any) -> Settings:
+        """Settings with one specific .env file — the deliberate other
+        direction, for the tests that exercise the env-file path itself."""
+        return cls(_env_file=env_file, **values)  # type: ignore[call-arg]
+
 
 # --------------------------------------------------------------------------
 # config.yaml structure models

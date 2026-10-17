@@ -99,7 +99,7 @@ def test_settings_reads_the_documented_env_names(monkeypatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "ak")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tg")
 
-    s = Settings(_env_file=None)
+    s = Settings.without_env_file()
     assert s.encryption_key == "key"
     assert s.api_token == "tok"
     assert s.dev_ephemeral_key is True
@@ -119,7 +119,7 @@ def test_settings_env_file_loads_the_same_names(tmp_path, monkeypatch) -> None:
     )
     for name in ("AETHER_ENCRYPTION_KEY", "AETHER_TOKEN", "DATABASE_URL"):
         monkeypatch.delenv(name, raising=False)
-    s = Settings(_env_file=env)
+    s = Settings.from_env_file(env)
     assert s.encryption_key == "filekey"
     assert s.api_token == "filetok"
     assert s.database_url == "postgresql://y"

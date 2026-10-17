@@ -82,7 +82,7 @@ async def test_bootstrap_merges_rows_onto_a_fresh_config(db) -> None:
     await store.upsert("mcp_servers.mail.enabled", False)
 
     live = AppConfig()
-    manager = ConfigManager(store, Settings(_env_file=None), live)
+    manager = ConfigManager(store, Settings.without_env_file(), live)
     assert await manager.bootstrap() == 3
     assert live.agent.tick_seconds == 10.0
     assert [s.name for s in live.mcp_servers] == ["mail", "calendar"]
@@ -95,7 +95,7 @@ async def test_a_chat_set_survives_a_fresh_process(db) -> None:
 
     # session 1: config.yaml's values, then chat changes two of them
     live = AppConfig()
-    manager = ConfigManager(ConfigOverrides(db, cipher), Settings(_env_file=None), live)
+    manager = ConfigManager(ConfigOverrides(db, cipher), Settings.without_env_file(), live)
     assert (await manager.set(op="set", path="agent.tick_seconds", value=10)).startswith(
         "agent.tick_seconds set to 10"
     )
@@ -104,7 +104,7 @@ async def test_a_chat_set_survives_a_fresh_process(db) -> None:
     # session 2: a fresh process on ephemeral disk — pydantic defaults, the
     # same rows, and the boot merge rebuilds what chat made
     fresh = AppConfig()
-    manager2 = ConfigManager(ConfigOverrides(db, cipher), Settings(_env_file=None), fresh)
+    manager2 = ConfigManager(ConfigOverrides(db, cipher), Settings.without_env_file(), fresh)
     assert await manager2.bootstrap() == 2
     assert fresh.agent.tick_seconds == 10.0
     assert fresh.contacts.allowlist == [ContactRule(platform="telegram", handle="@friend")]

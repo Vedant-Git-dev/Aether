@@ -769,9 +769,8 @@ def build_app() -> FastAPI:
     if panel_built:
         app.mount("/assets", StaticFiles(directory=WEB_DIR), name="web-assets")
 
-    # _env_file is load-bearing: without it pydantic-settings would read a
-    # real .env sitting next to this fixture. Pyright's stubs miss the param.
-    app.state.settings = Settings(_env_file=None, api_token=API_TOKEN)  # type: ignore[call-arg]
+    # .env is deliberately not read: a real one may sit next to this fixture
+    app.state.settings = Settings.without_env_file(api_token=API_TOKEN)
     config = AppConfig(
         authz=AuthzConfig(
             rules=[

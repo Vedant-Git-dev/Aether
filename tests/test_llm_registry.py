@@ -12,8 +12,8 @@ from aether.llm.registry import ProviderRegistry
 
 
 def _settings(**kwargs) -> Settings:
-    # _env_file=None keeps a developer's real .env out of the test.
-    return Settings(_env_file=None, **kwargs)
+    # a developer's real .env stays out of the test.
+    return Settings.without_env_file(**kwargs)
 
 
 def test_registry_builds_each_configured_provider() -> None:
