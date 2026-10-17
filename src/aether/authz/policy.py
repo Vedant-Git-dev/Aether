@@ -5,7 +5,9 @@ before it executes. First match wins:
 
 1. user rules from config.yaml — explicit trust or distrust, a regex on the
    tool name, optionally combined with a regex on the call parameters
-2. set_config — personal tuning (agent.*, salience.*, llm.*) -> ALLOW;
+2. set_config — personal tuning (agent.*, salience.*, llm.*, and the
+   background-work sections proactive.*/workbench.* — the user's own
+   budgets and switches, with the worst case a capped retry) -> ALLOW;
    a connect the user just drove in chat (origin "walk" from the /apps
    pick-and-paste — a loop-internal argument the model can never produce)
    on mcp_servers or messaging -> ALLOW, because the user's pick was the
@@ -98,7 +100,7 @@ _WEB_RESEARCH = re.compile(r"^web_(fetch|search)$")
 # apply silently. The airtight direction matters because an approved call
 # is carried out without re-classifying — park-time is the only gate a
 # security write passes, and the worst case is an extra approval tap.
-_CONFIG_TUNING_ROOTS = {"agent", "salience", "llm"}
+_CONFIG_TUNING_ROOTS = {"agent", "salience", "llm", "proactive", "workbench"}
 _CONFIG_SECURITY_ROOTS = {"contacts", "authz", "messaging", "mcp_servers"}
 
 

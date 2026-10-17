@@ -13,6 +13,8 @@ from aether.memory.context import AgentContext
 from aether.memory.entities import Entity, PersonRef
 from aether.memory.events import Event, IngestResult
 from aether.memory.vectors import MemoryHit
+from aether.proactive.store import DONE, FAILED, RUNNING, ProactiveTask
+from aether.proactive.store import PENDING as TASK_PENDING
 from aether.routines import Routine
 from aether.scheduler.jobs import PENDING as JOB_PENDING
 from aether.scheduler.jobs import ScheduledAction
@@ -909,3 +911,103 @@ class FakeComposioSession:
             (),
             {"id": f"req-{toolkit}", "redirect_url": f"https://hub.example.test/{toolkit}"},
         )()
+
+
+class FakeProactiveStore:
+    """ProactiveStore double for worker tests: in-memory rows, the same
+    dedup the unique index enforces, recorded transitions. No audit — the
+    worker's unit tests care about the cycle's decisions, not the chain
+    (the real store's audit rows are covered on the database)."""
+
+    def __init__(self) -> None:
+        self.tasks: list[ProactiveTask] = []
+        self.claims: list[dict] = []
+        self.transitions: list[tuple[int, str]] = []
+        self.charged_feedback: list[tuple[int, str]] = []
+        self._next_id = 1
+        self._now = datetime.now(UTC)
+        self.weights: dict[str, float] = {}
+
+    def _find(self, task_id: int) -> ProactiveTask:
+        return next(t for t in self.tasks if t.id == task_id)
+
+    async def claim(
+        self,
+        *,
+        skill: str,
+        key: str,
+        label: str,
+        opportunity: dict,
+        day: str,
+        actor: str = "worker",
+    ) -> ProactiveTask | None:
+        self.claims.append({"skill": skill, "key": key, "label": label, "day": day, "actor": actor})
+        if any(t.skill == skill and t.opportunity_key == key for t in self.tasks):
+            return None  # the dedup, the same refusal the unique index gives
+        task = ProactiveTask(
+            id=self._next_id,
+            skill=skill,
+            label=label,
+            status=TASK_PENDING,
+            opportunity_key=key,
+            opportunity=dict(opportunity),
+            plan=None,
+            result=None,
+            feedback=None,
+            feedback_note=None,
+            provider=None,
+            day=day,
+            created_at=self._now,
+            updated_at=self._now,
+        )
+        self._next_id += 1
+        self.tasks.append(task)
+        return task
+
+    async def pending(self) -> list[ProactiveTask]:
+        return [t for t in self.tasks if t.status == TASK_PENDING]
+
+    async def requeue_running(self) -> int:
+        requeued = [t for t in self.tasks if t.status == RUNNING]
+        for t in requeued:
+            t.status = TASK_PENDING
+        return len(requeued)
+
+    async def mark_running(self, task_id: int) -> None:
+        self._find(task_id).status = RUNNING
+        self.transitions.append((task_id, RUNNING))
+
+    async def set_plan(self, task_id: int, plan: dict) -> None:
+        self._find(task_id).plan = dict(plan)
+
+    async def finish(
+        self, task_id: int, result: str, provider: str = "", actor: str = "worker"
+    ) -> None:
+        task = self._find(task_id)
+        task.status = DONE
+        task.result = result
+        task.provider = provider or None
+        self.transitions.append((task_id, DONE))
+
+    async def fail(self, task_id: int, error: str, actor: str = "worker") -> None:
+        task = self._find(task_id)
+        task.status = FAILED
+        task.result = error
+        self.transitions.append((task_id, FAILED))
+
+    async def record_feedback(
+        self, task_id: int, feedback: str, note: str = "", actor: str = "owner"
+    ) -> None:
+        task = self._find(task_id)
+        task.feedback = feedback
+        task.feedback_note = note or None
+        self.charged_feedback.append((task_id, feedback))
+
+    async def feedback_weights(self, days: int = 30) -> dict[str, float]:
+        return dict(self.weights)
+
+    async def get(self, task_id: int) -> ProactiveTask | None:
+        return next((t for t in self.tasks if t.id == task_id), None)
+
+    async def list(self, limit: int = 50) -> list[ProactiveTask]:
+        return list(reversed(self.tasks))[:limit]

@@ -219,6 +219,16 @@ def test_set_config_tuning_paths_are_allowed() -> None:
         "agent.quiet_hours",
         "salience.threshold",
         "salience.rate_cap_per_hour",
+        "proactive.enabled",
+        "proactive.interval_minutes",
+        "proactive.max_tasks_per_day",
+        "proactive.max_tokens_per_day",
+        "proactive.max_sandbox_minutes_per_day",
+        "proactive.notify_daily_cap",
+        "proactive.skills",
+        "workbench.provider",
+        "workbench.monthly_minutes_cap",
+        "workbench.job_timeout_minutes",
     ):
         ruling = policy.classify("set_config", {"op": "set", "path": path, "value": 1})
         assert ruling.decision is Decision.ALLOW, path

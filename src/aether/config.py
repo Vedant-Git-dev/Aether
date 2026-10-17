@@ -219,6 +219,38 @@ class WorkspaceConfig(BaseModel):
     encrypted: bool = True
 
 
+class ProactiveConfig(BaseModel):
+    """The background worker — off by default, every cap a hard stop.
+    The worker reads this section live on every cycle, so a change made
+    in chat or the panel applies from the next cycle without a restart."""
+
+    enabled: bool = False
+    # how often the worker looks around; a cycle that finds nothing
+    # costs nothing but the look
+    interval_minutes: float = 30.0
+    # the daily brakes: tasks claimed, LLM tokens, sandbox time
+    max_tasks_per_day: int = 3
+    max_tokens_per_day: int = 100_000
+    max_sandbox_minutes_per_day: int = 20
+    # the notification brake for results (quiet hours ride their own budget)
+    notify_daily_cap: int = 5
+    # which skills the worker may run; names not in the registry are ignored
+    skills: list[str] = Field(default_factory=lambda: ["followups", "research", "media"])
+
+
+class WorkbenchConfig(BaseModel):
+    """Where background jobs run when they must not run on this machine.
+    The provider is the configured default; the routing ladder falls
+    through to the next available one on a dispatch failure."""
+
+    provider: Literal["modal", "vercel", "github_actions", "none"] = "modal"
+    # the batch queue bills wall-clock minutes — this month's ceiling
+    monthly_minutes_cap: int = 1500
+    # one job's own timeout; a job that exceeds it reads as a real
+    # timed-out result, never a fallback
+    job_timeout_minutes: int = 10
+
+
 class AppConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
@@ -228,6 +260,8 @@ class AppConfig(BaseModel):
     contacts: ContactsConfig = Field(default_factory=ContactsConfig)
     authz: AuthzConfig = Field(default_factory=AuthzConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
+    proactive: ProactiveConfig = Field(default_factory=ProactiveConfig)
+    workbench: WorkbenchConfig = Field(default_factory=WorkbenchConfig)
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:

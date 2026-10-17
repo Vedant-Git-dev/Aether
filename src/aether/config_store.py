@@ -73,10 +73,24 @@ def _apply_note(path: str) -> str:
         return _APPLY_NOTES[path]
     if path.startswith("contacts."):
         return " — applies to the next message I see"
+    if path.startswith("proactive."):
+        return " — applies from the next cycle"
+    if path.startswith("workbench."):
+        return " — applies to the next job"
     return ""
 
 
-_SECTION_NAMES = ("llm", "agent", "salience", "messaging", "contacts", "authz", "mcp_servers")
+_SECTION_NAMES = (
+    "llm",
+    "agent",
+    "salience",
+    "messaging",
+    "contacts",
+    "authz",
+    "proactive",
+    "workbench",
+    "mcp_servers",
+)
 
 
 class ConfigError(ValueError):
@@ -909,6 +923,8 @@ class ConfigManager:
             ("salience", type(self._live.salience)),
             ("contacts", type(self._live.contacts)),
             ("authz", type(self._live.authz)),
+            ("proactive", type(self._live.proactive)),
+            ("workbench", type(self._live.workbench)),
         ):
             for field in model.model_fields:
                 if section_name == "contacts" and isinstance(
@@ -1029,6 +1045,20 @@ class ConfigManager:
             a = live.authz
             plural = "rule" if len(a.rules) == 1 else "rules"
             return f"authz: {len(a.rules)} user {plural} · approvals wait {_plain_value(a.approval_ttl_hours)}h"
+        if name == "proactive":
+            p = live.proactive
+            state = "on" if p.enabled else "off"
+            return (
+                f"proactive: background work {state} · every {_plain_value(p.interval_minutes)}min"
+                f" · at most {p.max_tasks_per_day} tasks a day · skills: "
+                f"{', '.join(p.skills) or 'none'}"
+            )
+        if name == "workbench":
+            w = live.workbench
+            return (
+                f"workbench: {w.provider} first · {w.monthly_minutes_cap} batch minutes a month"
+                f" · {w.job_timeout_minutes}min a job"
+            )
         servers = live.mcp_servers
         if not servers:
             return "mcp_servers: none configured"

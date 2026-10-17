@@ -181,6 +181,68 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
             ),
         ),
     ),
+    GroupSpec(
+        key="proactive",
+        title="Background work",
+        note="Off by default. Every cap here is a hard stop for the day.",
+        fields=(
+            FieldSpec(
+                path="proactive.enabled",
+                label="Background worker",
+                hint="Whether Aether looks for useful things to do on its own, within these caps.",
+            ),
+            FieldSpec(
+                path="proactive.interval_minutes",
+                label="Check interval",
+                hint="How often, in minutes, the background worker looks around.",
+            ),
+            FieldSpec(
+                path="proactive.max_tasks_per_day",
+                label="Daily task cap",
+                hint="The most background tasks one day may run.",
+            ),
+            FieldSpec(
+                path="proactive.max_tokens_per_day",
+                label="Daily thinking budget",
+                hint="The most background thinking one day may spend.",
+            ),
+            FieldSpec(
+                path="proactive.max_sandbox_minutes_per_day",
+                label="Daily sandbox time",
+                hint="The most minutes background jobs may run on a throwaway "
+                "cloud machine in one day.",
+            ),
+            FieldSpec(
+                path="proactive.notify_daily_cap",
+                label="Daily result cap",
+                hint="The most result notifications one day carries — quiet hours "
+                "ride their own budget.",
+            ),
+        ),
+    ),
+    GroupSpec(
+        key="workbench",
+        title="Cloud workbench",
+        fields=(
+            FieldSpec(
+                path="workbench.provider",
+                label="Default sandbox",
+                hint="Where a background job runs first when it must not run on "
+                "this computer. The others stand by as fallbacks.",
+            ),
+            FieldSpec(
+                path="workbench.monthly_minutes_cap",
+                label="Monthly batch minutes",
+                hint="The monthly ceiling on the batch queue's wall-clock minutes.",
+            ),
+            FieldSpec(
+                path="workbench.job_timeout_minutes",
+                label="Job timeout",
+                hint="One job's own time limit — exceeding it counts as a real "
+                "timed-out result, never a fallback.",
+            ),
+        ),
+    ),
 )
 
 

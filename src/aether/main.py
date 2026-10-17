@@ -41,6 +41,7 @@ from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
 from .memory.salience import LLMJudge, Salience
 from .memory.vectors import VectorMemory
+from .proactive import Budget, ProactiveStore, ProactiveWorker
 from .routines import Routines
 from .scheduler import Scheduler, SchedulerWorker
 from .secret_env import EnvResolver
@@ -208,6 +209,11 @@ def create_app(
         scheduler = Scheduler(pool, cipher, audit)
         app.state.entities = entities
         app.state.scheduler = scheduler
+        # the proactive worker's task rows — the same audit chain as
+        # everything else; skills and the workbench plug in from their
+        # own modules
+        proactive_store = ProactiveStore(pool, cipher, audit)
+        app.state.proactive_store = proactive_store
         routines = Routines(pool, cipher, audit)
         app.state.routines = routines
         traces = Traces(pool, cipher)
@@ -326,8 +332,33 @@ def create_app(
         )
 
         worker = SchedulerWorker(scheduler, agent.execute_scheduled)
+
+        # the background worker — off by default and self-gating on
+        # proactive.enabled every cycle, so it always spins and /resume
+        # never needs a restart. Its own pause (the anomaly monitor, a
+        # /pause) persists through the config store, and its notifications
+        # ride the loop's interruption budget. Skills and the workbench
+        # plug in from their own modules.
+        async def _pause_proactive() -> None:
+            await config_manager.set(
+                op="set", path="proactive.enabled", value=False, source="worker"
+            )
+
+        async def _notify_proactive(text: str) -> None:
+            await agent.note_to_user(text)
+
+        proactive_worker = ProactiveWorker(
+            store=proactive_store,
+            budget=Budget(counters, config.proactive),
+            config=config,
+            events=events,
+            workspace=workspace,
+            notify=_notify_proactive,
+            pause=_pause_proactive,
+        )
         agent.start()
         worker.start()
+        proactive_worker.start()
         log.info(
             "aether running — surfaces: web%s, agent loop + scheduler live",
             "".join(f", {c.name}" for c in connectors),
@@ -335,6 +366,7 @@ def create_app(
 
         yield
 
+        await proactive_worker.stop()
         await worker.stop()
         await agent.stop()
         for connector in connectors:

@@ -1,0 +1,297 @@
+"""The proactive worker — the background loop that looks for work while
+the user is away, in the SchedulerWorker shape (start/stop asyncio task,
+boot re-arm, one audited transition per step) so the guarantees are the
+same ones the scheduler already keeps: everything survives a restart via
+rows, and nothing runs twice.
+
+One cycle, in order:
+
+1. kill-switch — ``proactive.enabled`` is read live; off means nothing
+   happens (the loop still spins, so /resume needs no restart);
+2. crash recovery — pending rows (re-armed from ``running`` at boot)
+   run before anything new is detected, because their keys are already
+   taken and detection can never re-claim them;
+3. budget — ``room`` is zero when any daily cap is spent: skip, never
+   crash, never spend;
+4. detect — every enabled skill is asked what it found;
+5. score and select — deterministic: the skill's own estimate times the
+   feedback weight derived from the last 30 days, highest first, at most
+   the budget's room;
+6. per task: claim (the unique index refuses a duplicate opportunity),
+   plan, run, store the result, charge the budget.
+
+The anomaly monitor watches how runs come back: three refused runs from
+one skill, or three discards in a row, flips ``proactive.enabled`` off
+through the config store — a pause that survives restarts — and sends one
+plain notification. The model is nowhere in any of this: skills decide
+what's worth doing, deterministic code decides what runs.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+from ..config import AppConfig
+from ..counters import today
+from .budget import Budget
+from .store import Opportunity, ProactiveStore, ProactiveTask
+
+log = logging.getLogger("aether.proactive")
+
+# how many bad outcomes in a row before the worker pauses itself
+_AUTO_PAUSE_STREAK = 3
+
+_PAUSE_NOTE = (
+    "I paused the background worker — too many tasks came back wrong. "
+    "Say /resume to start it again."
+)
+
+Notifier = Callable[[str], Awaitable[None]]
+Pauser = Callable[[], Awaitable[None]]
+
+
+@dataclass
+class RunOutcome:
+    """What one run came back with. ``refused`` marks a run the policy
+    gate stopped — a parked or denied action — which the anomaly monitor
+    counts separately from a failure, because it means the skill keeps
+    proposing things it may not do."""
+
+    summary: str
+    provider: str = ""
+    tokens: int = 0
+    sandbox_seconds: int = 0
+    refused: bool = False
+
+
+class SkillSource(Protocol):
+    """The slice of a skill the worker orchestrates — the full contract
+    (sensitivity, declared actions, revalidation, plain-words summary)
+    lives with the skills themselves; this is the worker's read of it."""
+
+    name: str
+
+    async def detect(self, profile: Any, events: Any) -> list[Any]: ...
+
+    async def plan(self, opportunity: Any, profile: Any) -> dict[str, Any]: ...
+
+    async def run(self, task: ProactiveTask, workbench: Any, executor: Any) -> RunOutcome: ...
+
+
+class ProactiveWorker:
+    """Background loop: re-arm on boot, then one cycle per interval."""
+
+    def __init__(
+        self,
+        *,
+        store: ProactiveStore,
+        budget: Budget,
+        config: AppConfig,
+        skills: Sequence[SkillSource] = (),
+        events: Any = None,
+        workspace: Any = None,
+        workbench: Any = None,
+        executor: Any = None,
+        notify: Notifier | None = None,
+        pause: Pauser | None = None,
+    ) -> None:
+        self._store = store
+        self._budget = budget
+        self._config = config  # THE live object — enabled and limits read per cycle
+        self._skills = list(skills)
+        self._events = events
+        self._workspace = workspace
+        self._workbench = workbench
+        self._executor = executor
+        self._notify = notify
+        self._pause = pause
+        self._stop = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+        # the anomaly monitor's streaks — ephemeral by design: the pause
+        # itself is durable (it lives in config), the counting is not
+        self._refuse_streaks: dict[str, int] = {}
+        self._discard_streak = 0
+        self._paused_note_sent = False
+
+    def start(self) -> None:
+        if self._task is None:
+            self._task = asyncio.create_task(self.run_forever(), name="proactive-worker")
+
+    async def stop(self) -> None:
+        self._stop.set()
+        task, self._task = self._task, None
+        if task is not None:
+            with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5)
+
+    async def run_forever(self) -> None:
+        # re-arm: rows a crashed boot left running go back to pending so
+        # this boot's first cycle retries them — restart survival is the
+        # whole point of persisting the lifecycle in rows
+        requeued = await self._store.requeue_running()
+        if requeued:
+            log.info("re-arming %d proactive task(s) left running by a previous boot", requeued)
+        while not self._stop.is_set():
+            try:
+                ran = await self.cycle()
+                if ran:
+                    log.info("proactive cycle ran %d task(s)", ran)
+            except Exception:
+                log.exception("proactive cycle failed — retrying next interval")
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    self._stop.wait(), timeout=self._config.proactive.interval_minutes * 60
+                )
+        log.info("proactive worker stopped")
+
+    # -- one cycle ---------------------------------------------------------------
+
+    async def cycle(self) -> int:
+        """One detect → score → select → run pass. Returns how many tasks
+        ran. Every gate is read live, so a chat-made change applies from
+        the next cycle without a restart."""
+        if not self._config.proactive.enabled:
+            return 0
+        day = today()
+        ran = 0
+
+        # crash recovery first: pending rows run before new detection —
+        # their keys are taken, so nothing else can ever pick them up
+        for task in await self._store.pending():
+            if await self._budget.room(day) <= 0:
+                log.info("proactive cycle skipped: %s", await self._budget.exhausted(day))
+                return ran
+            await self._execute_task(task, day)
+            ran += 1
+
+        found = await self._detect()
+        if not found:
+            return ran
+
+        # deterministic scoring: the skill's own estimate, biased by what
+        # the user's feedback said about that skill over the last month
+        weights = await self._store.feedback_weights()
+        found.sort(
+            key=lambda opp: (opp.score * weights.get(opp.skill, 1.0), opp.key),
+            reverse=True,
+        )
+        for opp in found:
+            if await self._budget.room(day) - ran <= 0:
+                break
+            task = await self._store.claim(
+                skill=opp.skill,
+                key=opp.key,
+                label=opp.label,
+                opportunity=opp.detail,
+                day=day,
+            )
+            if task is None:
+                continue  # the key was taken — this opportunity is already a task
+            await self._execute_task(task, day)
+            ran += 1
+        return ran
+
+    async def _detect(self) -> list[Any]:
+        """Ask every enabled skill what it found. A skill that crashes or
+        names itself out of the configured list is skipped — one broken
+        skill can never stop the others."""
+        enabled = self._config.proactive.skills
+        found: list[Any] = []
+        for skill in self._skills:
+            if skill.name not in enabled:
+                continue
+            try:
+                found.extend(await skill.detect(self._workspace, self._events))
+            except Exception:
+                log.exception("proactive skill %s detect failed", skill.name)
+        return found
+
+    async def _execute_task(self, task: ProactiveTask, day: str) -> None:
+        """Claim's other half: plan, run, and settle the row. The row says
+        the truth at every step — running while the skill works, done or
+        failed after, whatever happened in between."""
+        skill = next((s for s in self._skills if s.name == task.skill), None)
+        if skill is None or skill.name not in self._config.proactive.skills:
+            # the skill left the enabled list between claim and run (a
+            # /config change mid-cycle) — honest failure, not a silent skip
+            await self._store.fail(task.id, "its skill is no longer active")
+            return
+        await self._store.mark_running(task.id)
+        opportunity = Opportunity(
+            key=task.opportunity_key,
+            skill=task.skill,
+            label=task.label,
+            detail=task.opportunity,
+        )
+        try:
+            plan = await skill.plan(opportunity, self._workspace)
+            await self._store.set_plan(task.id, plan)
+            outcome = await skill.run(task, self._workbench, self._executor)
+        except Exception as exc:
+            log.exception("proactive task %d (%s) failed", task.id, task.label)
+            await self._store.fail(task.id, str(exc)[:200])
+            return
+        if outcome.refused:
+            await self._store.fail(task.id, outcome.summary)
+            await self._observe(task.skill, "refused")
+            return
+        await self._store.finish(task.id, outcome.summary, outcome.provider)
+        await self._budget.charge(
+            day,
+            tasks=1,
+            tokens=outcome.tokens,
+            sandbox_seconds=outcome.sandbox_seconds,
+        )
+        await self._observe(task.skill, "ok")
+
+    # -- the anomaly monitor -------------------------------------------------------
+
+    async def _observe(self, skill: str, outcome: str) -> None:
+        """One run outcome into the monitor. 'ok' resets both streaks;
+        'refused' builds the per-skill streak; 'discarded' the global one.
+        The third in a row trips the auto-pause, once."""
+        if outcome == "ok":
+            self._refuse_streaks.pop(skill, None)
+            self._discard_streak = 0
+            return
+        if outcome == "refused":
+            streak = self._refuse_streaks.get(skill, 0) + 1
+            self._refuse_streaks[skill] = streak
+            why = f"{skill} keeps proposing actions it isn't allowed to take"
+        elif outcome == "discarded":
+            self._discard_streak += 1
+            streak = self._discard_streak
+            why = "too many of its results came back unwanted"
+        else:  # pragma: no cover — the vocabulary is the worker's own
+            return
+        if streak >= _AUTO_PAUSE_STREAK:
+            await self._trip_pause(why)
+
+    async def _trip_pause(self, why: str) -> None:
+        """Flip the durable switch off and say so once. The flag lives in
+        the config store, so a restart never silently clears the pause."""
+        if self._paused_note_sent:
+            return
+        self._paused_note_sent = True
+        if self._pause is not None:
+            with contextlib.suppress(Exception):
+                await self._pause()
+        if self._notify is not None:
+            with contextlib.suppress(Exception):
+                await self._notify(_PAUSE_NOTE)
+        log.warning("proactive worker auto-paused: %s", why)
+
+    async def note_feedback(self, skill: str, feedback: str) -> None:
+        """A task verdict from outside the cycle — the one-tap buttons on
+        a result notification. An approval breaks a streak the same way a
+        good run does; a discard builds the global one; revised is a
+        correction, not a rejection, and counts toward neither."""
+        if feedback == "approved":
+            await self._observe(skill, "ok")
+        elif feedback == "discarded":
+            await self._observe(skill, "discarded")

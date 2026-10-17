@@ -540,6 +540,13 @@ class AgentLoop:
             return None
         return await self._surfaces.send_to_user(text)
 
+    async def note_to_user(self, text: str, *, urgent: float = 0.0) -> dict[str, str] | None:
+        """The unprompted-note seam for the rest of the app — the
+        background worker's plain notifications ride the same
+        interruption budget (quiet hours, holding, batching) as the
+        loop's own words, so they can never nag around the user's night."""
+        return await self._notify(text, urgent=urgent)
+
     # -- the loop ---------------------------------------------------------------
 
     async def run(self) -> None:
@@ -765,6 +772,11 @@ class AgentLoop:
             self._apps_walk = None
             await self._surfaces.send_to_user(self._profile_command(text))
             return True
+        if first in ("/pause", "/resume"):
+            self._wizard = None
+            self._apps_walk = None
+            await self._surfaces.send_to_user(await self._pause_resume_command(first))
+            return True
         if text.lower() != "/verify":
             return False
         try:
@@ -890,6 +902,25 @@ class AgentLoop:
             shown = "\n".join(f"- {e.text}" for e in confirmed)
             return f"Your profile so far:\n{shown}\nNothing new is waiting."
         return "I don't have anything about you yet — /profile <one line> tells me who you are."
+
+    # -- /pause /resume: the background worker's switch ---------------------------
+
+    async def _pause_resume_command(self, word: str) -> str:
+        """/pause and /resume — the background worker's switch in plain
+        words. The user's own word is the approval, so the write rides the
+        same executor path as a /config line — classified, audited,
+        persisted — and the worker reads the switch live on its next
+        cycle. No model, no ingest, no tokens."""
+        want = word == "/resume"
+        if self._config_manager is None:
+            return "config management isn't wired on this instance, so there's no background worker to switch."
+        if self._config.proactive.enabled == want:
+            return (
+                "the background worker is already running — say /pause to stop it."
+                if want
+                else "the background worker is already off — say /resume when you want it back."
+            )
+        return await self._apply_config("set", "proactive.enabled", want)
 
     # -- /apps: the status render and the connect plumbing ---------------------------
 

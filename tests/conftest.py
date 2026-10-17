@@ -23,7 +23,7 @@ _TABLES = (
     "audit_log, pending_approvals, events, identities, identity_handles, "
     "entity_notes, chat_messages, scheduled_actions, routines, decision_traces, "
     "config_overrides, oauth_tokens, app_secrets, memory_chunks, daily_counters, "
-    "workbench_transfers, workbench_minutes"
+    "workbench_transfers, workbench_minutes, proactive_tasks"
 )
 
 
