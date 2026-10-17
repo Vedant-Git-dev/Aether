@@ -55,7 +55,7 @@ class NativeKit:
             entities=self.entities,
             approvals=self.approvals,
             scheduler=self.scheduler,
-            surfaces=SurfaceFanout([self.connector]),
+            surfaces=SurfaceFanout([self.connector]),  # type: ignore[arg-type] — the fake speaks the same shape
             capture_box=self.box,
             routines=routines,  # None keeps the routine tools unregistered
             traces=traces,  # same for the decision-replay tool
@@ -87,6 +87,7 @@ async def test_seven_native_tools_register() -> None:
                 "send_chat_message",
             )
         )
+        if t is not None
     }
     assert names == {
         "memory_search",
@@ -656,7 +657,7 @@ async def test_workspace_remember_and_search_round_trip(tmp_path) -> None:
     assert "prefers concise notifications" in found
 
     assert await kit.run("workspace_remember", {"text": "x"}) == (
-        "workspace_remember needs text and a kind: preference, fact, or daily."
+        "workspace_remember needs text and a kind: preference, fact, daily, or profile."
     )
 
 

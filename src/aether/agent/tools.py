@@ -656,8 +656,8 @@ def register_native_tools(
     async def workspace_remember(params: dict[str, Any]) -> str:
         text = str(params.get("text", "")).strip()
         kind = str(params.get("kind", "")).strip().lower()
-        if not text or kind not in ("preference", "fact", "daily"):
-            return "workspace_remember needs text and a kind: preference, fact, or daily."
+        if not text or kind not in ("preference", "fact", "daily", "profile"):
+            return "workspace_remember needs text and a kind: preference, fact, daily, or profile."
         source = str(params.get("source") or "agent").strip().lower()
         try:
             entry_id = workspace.remember(
@@ -1227,13 +1227,20 @@ def register_native_tools(
                         "user consistently wants — pass supersedes with any "
                         "entry ids it replaces), kind=fact (MEMORY.md, a "
                         "durable fact or decision; category groups related "
-                        "facts, default 'Notes'), or kind=daily (today's "
-                        "working notes, for context worth keeping only for "
-                        "this session). Refuses anything that looks like a "
-                        "secret, password, or API key.",
+                        "facts, default 'Notes'), kind=profile (USER.md's "
+                        "Profile section, a durable fact about who the user "
+                        "is — anything you inferred yourself is pending "
+                        "until they confirm it; pass supersedes with the ids "
+                        "of entries a correction replaces), or kind=daily "
+                        "(today's working notes, for context worth keeping "
+                        "only for this session). Refuses anything that looks "
+                        "like a secret, password, or API key.",
                         {
                             "text": {"type": "string", "description": "what to remember"},
-                            "kind": {"type": "string", "description": "preference | fact | daily"},
+                            "kind": {
+                                "type": "string",
+                                "description": "preference | fact | daily | profile",
+                            },
                             "source": {
                                 "type": "string",
                                 "description": "user (they stated this directly) or agent "
@@ -1250,7 +1257,7 @@ def register_native_tools(
                             "supersedes": {
                                 "type": "array",
                                 "items": {"type": "string"},
-                                "description": "preference only: entry ids this one replaces",
+                                "description": "preference/profile only: entry ids this one replaces",
                             },
                         },
                         ["text", "kind"],

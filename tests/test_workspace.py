@@ -586,3 +586,83 @@ def test_a_hand_written_plaintext_file_reads_until_the_store_rewrites_it(tmp_pat
     raw = (ws.root / "USER.md").read_bytes()
     assert b"dropped in by hand" not in raw  # the rewrite sealed the whole file
     assert "dropped in by hand" in ws.read("user")  # and nothing was lost
+
+
+# ---------------------------------------------------------------------------
+# the profile — durable facts about the user, pending until confirmed
+# ---------------------------------------------------------------------------
+
+
+def test_a_profile_line_the_user_stated_lands_confirmed(tmp_path) -> None:
+    ws = _ws(tmp_path)
+    ws.ensure_scaffold()
+    ws.remember("lives in Lisbon", "profile", source="user")
+    entries = ws.entries("user")
+    profile = [e for e in entries if e.text == "lives in Lisbon"]
+    assert len(profile) == 1
+    assert profile[0].status == "confirmed"
+    assert profile[0].source == "user"
+    assert "## Profile" in ws.read("user")  # its own section, beside preferences
+    assert [e.text for e in ws.profile()] == ["lives in Lisbon"]
+
+
+def test_a_profile_entry_the_agent_inferred_lands_pending(tmp_path) -> None:
+    ws = _ws(tmp_path)
+    ws.ensure_scaffold()
+    ws.remember("works with marine electronics", "profile", source="agent")
+    assert [e.text for e in ws.pending_profile()] == ["works with marine electronics"]
+    assert ws.profile() == []  # nothing confirmed until the user says yes
+
+
+def test_confirm_profile_flips_pending_to_confirmed_exactly_once(tmp_path) -> None:
+    ws = _ws(tmp_path)
+    ws.ensure_scaffold()
+    first = ws.remember("a morning person", "profile", source="agent")
+    second = ws.remember("prefers voice notes", "profile", source="agent")
+    confirmed = [e.id for e in ws.pending_profile()]
+    assert ws.confirm_profile([first, second, "unknown-id"]) == 2
+    assert [e.text for e in ws.profile()] == ["a morning person", "prefers voice notes"]
+    assert ws.pending_profile() == []
+    assert ws.confirm_profile(confirmed) == 0  # a second yes changes nothing
+
+
+def test_a_correction_supersedes_the_pending_entry_it_replaces(tmp_path) -> None:
+    ws = _ws(tmp_path)
+    ws.ensure_scaffold()
+    wrong = ws.remember("lives in Madrid", "profile", source="agent")
+    ws.remember("lives in Porto", "profile", source="user", supersedes=[wrong])
+    assert ws.pending_profile() == []  # the guess it replaced is gone from the wait
+    assert [e.text for e in ws.profile()] == ["lives in Porto"]
+    statuses = {e.text: e.status for e in ws.entries("user")}
+    assert statuses["lives in Madrid"] == "superseded"  # but never deleted
+
+
+def test_pending_entries_never_reach_the_prompt_as_facts(tmp_path) -> None:
+    ws = _ws(tmp_path)
+    ws.ensure_scaffold()
+    ws.remember("an early riser", "profile", source="agent")
+    ws.remember("hates bullet points", "preference")
+    block = ws.context_block()
+    assert "an early riser" not in block  # a guess is not the user's fact yet
+    assert "hates bullet points" in block  # preferences are unaffected
+    ws.confirm_profile([e.id for e in ws.pending_profile()])
+    assert "an early riser" in ws.context_block()  # confirmed, it counts
+
+
+def test_the_profile_section_stays_apart_from_preferences(tmp_path) -> None:
+    ws = _ws(tmp_path)
+    ws.ensure_scaffold()
+    ws.remember("prefers short replies", "preference")
+    ws.remember("a night owl", "profile", source="user")
+    assert [e.text for e in ws.profile()] == ["a night owl"]
+    # and the plain entries() view still shows both — the file is one file
+    texts = {e.text for e in ws.entries("user")}
+    assert texts == {"prefers short replies", "a night owl"}
+
+
+def test_profile_rejects_secrets_like_every_other_kind(tmp_path) -> None:
+    ws = _ws(tmp_path)
+    ws.ensure_scaffold()
+    with pytest.raises(SecretRejected):
+        ws.remember("my key sk-abcdefghijklmnopqrstuvwxyz012345", "profile", source="user")
+    assert ws.profile() == [] and ws.pending_profile() == []

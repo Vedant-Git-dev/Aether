@@ -61,6 +61,7 @@ from ..routines import Routines, trigger_matches
 from ..scheduler.jobs import ScheduledAction, Scheduler
 from ..secret_env import EnvResolver
 from ..secret_store import SecretStore
+from ..workspace import SecretRejected, WorkspaceWriteError
 from .apps_wizard import AppsWizard
 from .config_wizard import ConfigWizard
 from .config_wizard import coerce_config_value as _coerce_config_value
@@ -400,6 +401,9 @@ class AgentLoop:
         self._wizard: ConfigWizard | None = None
         # the guided /apps walk in progress, if any — same rules, memory only
         self._apps_walk: AppsWizard | None = None
+        # the pending profile entries a batched confirmation listed — the
+        # ids armed for the next "yes"; memory only, gone on the next message
+        self._profile_confirm: list[str] | None = None
         # mcp servers whose "I'll tell you the moment it's up" was already
         # said this boot — a flapping server never announces twice
         self._announced_ready: set[str] = set()
@@ -737,6 +741,30 @@ class AgentLoop:
                     self._apps_walk = None  # done, or goodbye — nothing is waiting
                 await self._surfaces.send_to_user(reply)
                 return True
+        if self._profile_confirm is not None:
+            # one shot: the batched confirmation listed these entries, and
+            # whatever comes next either confirms them or is a correction
+            armed, self._profile_confirm = self._profile_confirm, None
+            if not text.startswith("/"):
+                if text.strip().lower() in ("yes", "y", "ok", "okay", "confirm", "all good"):
+                    confirmed = self._workspace.confirm_profile(armed)
+                    reply = (
+                        f"kept {confirmed} of them — thank you."
+                        if confirmed
+                        else "nothing was still waiting — already settled."
+                    )
+                    await self._surfaces.send_to_user(reply)
+                    return True
+                # a correction — normal chat: the model hears it and can
+                # supersede the wrong entries through the workspace tools
+                return False
+            # a command while the confirmation waited: the wait is over and
+            # the command runs below — the entries stay pending for later
+        if first == "/profile":
+            self._wizard = None
+            self._apps_walk = None
+            await self._surfaces.send_to_user(self._profile_command(text))
+            return True
         if text.lower() != "/verify":
             return False
         try:
@@ -823,6 +851,45 @@ class AgentLoop:
                 f"approval (#{held}). Tap approve and it's done."
             )
         return result.content
+
+    # -- /profile: who the user is, seeded and confirmed deterministically ----
+
+    def _profile_command(self, text: str) -> str:
+        """/profile — the deterministic front door to the user's profile.
+        `/profile <one line>` seeds a confirmed entry straight from their
+        own words; bare /profile shows what's confirmed and gathers
+        everything the agent inferred into one batched confirmation. No
+        model, no ingest, no tokens — the same vocabulary as /verify."""
+        if self._workspace is None:
+            return "the workspace isn't on this instance, so there's no profile to keep."
+        parts = text.split(maxsplit=1)
+        line = parts[1].strip() if len(parts) > 1 else ""
+        if line:
+            try:
+                self._workspace.remember(line, "profile", source="user")
+            except SecretRejected:
+                return "that looks like a secret or key — I won't store that."
+            except ValueError:
+                return "that didn't look like a line I could keep."
+            except WorkspaceWriteError as exc:
+                return f"not saved — {exc}"
+            return (
+                "Noted — part of your profile now. Say /profile anytime to see or fix what I have."
+            )
+        confirmed = self._workspace.profile()
+        pending = self._workspace.pending_profile()
+        if pending:
+            self._profile_confirm = [e.id for e in pending]
+            listed = "\n".join(f"{i}. {e.text}" for i, e in enumerate(pending, start=1))
+            return (
+                "Here is what I have gathered about you:\n"
+                f"{listed}\n"
+                "Reply yes to keep all of it, or tell me what to fix."
+            )
+        if confirmed:
+            shown = "\n".join(f"- {e.text}" for e in confirmed)
+            return f"Your profile so far:\n{shown}\nNothing new is waiting."
+        return "I don't have anything about you yet — /profile <one line> tells me who you are."
 
     # -- /apps: the status render and the connect plumbing ---------------------------
 

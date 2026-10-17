@@ -6,7 +6,9 @@ event memory, which stays the source of truth for observed history.
     IDENTITY.md  — name, vibe, presentation: who Aether is
     SOUL.md      — personality, tone, behavioral boundaries (never permissions)
     AGENTS.md    — how Aether should use this workspace
-    USER.md      — stable user preferences (active until superseded)
+    USER.md      — stable user preferences (active until superseded) and the
+                   profile of who the user is (confirmed once, corrected by
+                   superseding)
     MEMORY.md    — curated durable facts and decisions
     BOOTSTRAP.md — present only until first-run setup is done
     memory/YYYY-MM-DD.md — daily working notes, promoted into MEMORY.md
@@ -49,7 +51,7 @@ _ENTRY_RE = re.compile(r"^- (?P<text>.*) <!-- (?P<meta>[^<>]*?) -->\s*$")
 _META_RE = re.compile(r"(\w+):(\S+)")
 _KNOWN_META = {"id", "source", "at", "status", "confidence"}
 
-VALID_KINDS = ("preference", "fact", "daily")
+VALID_KINDS = ("preference", "fact", "daily", "profile")
 
 # key=value assignments and well-known token shapes — "Secrets/API keys must
 # never be written into memory files" is enforced here, not just documented.
@@ -144,7 +146,9 @@ it says or who it is.
 - Use workspace_remember(kind="preference") for something the user
   consistently wants, and kind="fact" for a durable decision or fact
   likely to matter across sessions. Use kind="daily" for context worth
-  keeping only for today.
+  keeping only for today. Use kind="profile" for a durable fact about
+  who the user is — anything you inferred yourself lands as pending and
+  waits for their yes; only what they stated directly is confirmed.
 - A new preference that contradicts an old one should supersede it
   (workspace_remember's `supersedes`), not sit alongside it.
 - Most things belong in ordinary event memory, not here — write to this
@@ -286,13 +290,20 @@ def _parse_entry(line: str) -> WorkspaceEntry | None:
     )
 
 
-def _set_entry_status(content: str, entry_ids: set[str], status: str) -> str:
-    """Rewrite matching active entries in place with a new status — never
-    deletes a line, so the log of what was ever written stays intact."""
+def _set_entry_status(
+    content: str,
+    entry_ids: set[str],
+    status: str,
+    from_statuses: frozenset[str] = frozenset({"active"}),
+) -> str:
+    """Rewrite matching entries in place with a new status — never deletes
+    a line, so the log of what was ever written stays intact. Only entries
+    currently in one of `from_statuses` flip, so an already-superseded line
+    is never touched again."""
     out = []
     for line in content.splitlines():
         entry = _parse_entry(line)
-        if entry is not None and entry.id in entry_ids and entry.status == "active":
+        if entry is not None and entry.id in entry_ids and entry.status in from_statuses:
             out.append(
                 _format_entry(
                     entry.text,
@@ -307,6 +318,43 @@ def _set_entry_status(content: str, entry_ids: set[str], status: str) -> str:
         else:
             out.append(line)
     return "\n".join(out) + "\n"
+
+
+def _section_entries(content: str, heading: str) -> list[WorkspaceEntry]:
+    """Parsed bullet entries under one `## {heading}` section only —
+    USER.md holds both preferences and the profile, and one section's
+    readers must never see the other's lines."""
+    out: list[WorkspaceEntry] = []
+    inside = False
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if line.startswith("## "):
+            inside = line == f"## {heading}"
+            continue
+        if not inside or not line.startswith("- "):
+            continue
+        entry = _parse_entry(line)
+        out.append(
+            entry
+            if entry is not None
+            else WorkspaceEntry(
+                id="", text=line[2:].strip(), source="human", at="", status="active"
+            )
+        )
+    return out
+
+
+def _drop_pending(content: str) -> str:
+    """Entries the user hasn't confirmed yet never reach the prompt as if
+    they were facts — a pending line stays in the file (the tools can see
+    and supersede it) but contributes nothing to context_block."""
+    out = []
+    for line in content.splitlines():
+        entry = _parse_entry(line)
+        if entry is not None and entry.status == "pending":
+            continue
+        out.append(line)
+    return "\n".join(out)
 
 
 def _append_under_heading(content: str, heading: str, line: str) -> str:
@@ -456,7 +504,9 @@ class Workspace:
         sections: list[str] = []
         used = 0
         for filename, heading in _CONTEXT_FILES:
-            body = _strip_provenance(self._read(self.root / filename, filename)).strip()
+            body = _strip_provenance(
+                _drop_pending(self._read(self.root / filename, filename))
+            ).strip()
             if not body:
                 continue
             block = f"## {heading} ({filename})\n{body}"
@@ -484,9 +534,12 @@ class Workspace:
         supersedes: list[str] | None = None,
         when: date | None = None,
     ) -> str:
-        """Write one durable (preference/fact) or temporary (daily) entry.
-        Returns the new entry's id. Raises SecretRejected if the text looks
-        like an API key, password, or token, ValueError for bad input, and
+        """Write one durable (preference/fact/profile) or temporary (daily)
+        entry. Returns the new entry's id. A profile entry is confirmed
+        when the user stated it themselves and pending when the agent
+        inferred it — pending until confirm_profile (or a /profile yes)
+        flips it. Raises SecretRejected if the text looks like an API key,
+        password, or token, ValueError for bad input, and
         WorkspaceWriteError if the file couldn't be saved — never silently
         drops a write."""
         text = text.strip()
@@ -500,11 +553,29 @@ class Workspace:
             raise SecretRejected("that looks like a secret or API key — refusing to store it")
 
         entry_id = _new_id()
+        status = ("confirmed" if source == "user" else "pending") if kind == "profile" else "active"
         line = _format_entry(
-            text, entry_id=entry_id, source=source, at=_now_iso(), confidence=confidence
+            text,
+            entry_id=entry_id,
+            source=source,
+            at=_now_iso(),
+            status=status,
+            confidence=confidence,
         )
 
-        if kind == "preference":
+        if kind == "profile":
+            path = self.root / "USER.md"
+            content = self._read(path, "USER.md") or _USER_DEFAULT
+            if supersedes:
+                content = _set_entry_status(
+                    content,
+                    set(supersedes),
+                    "superseded",
+                    from_statuses=frozenset({"active", "pending"}),
+                )
+            content = _append_under_heading(content, "Profile", line)
+            self._write(path, "USER.md", content)
+        elif kind == "preference":
             path = self.root / "USER.md"
             content = self._read(path, "USER.md") or _USER_DEFAULT
             if supersedes:
@@ -528,6 +599,42 @@ class Workspace:
             content = content.rstrip("\n") + "\n" + line + "\n"
             self._write(path, name, content)
         return entry_id
+
+    # -- profile: durable facts about the user, pending until confirmed ----
+
+    def profile(self) -> list[WorkspaceEntry]:
+        """The confirmed profile — who the user is, as they have signed off
+        on it. Pending guesses and superseded corrections are excluded."""
+        content = self._read(self.root / "USER.md", "USER.md")
+        return [e for e in _section_entries(content, "Profile") if e.status == "confirmed"]
+
+    def pending_profile(self) -> list[WorkspaceEntry]:
+        """Profile entries the agent inferred that are still waiting for
+        one yes — the batch the confirmation message lists."""
+        content = self._read(self.root / "USER.md", "USER.md")
+        return [e for e in _section_entries(content, "Profile") if e.status == "pending"]
+
+    def confirm_profile(self, entry_ids: list[str]) -> int:
+        """Flip pending profile entries to confirmed. Entries that were
+        already confirmed, superseded, or unknown are left alone; returns
+        how many actually flipped."""
+        ids = {i for i in entry_ids if i}
+        if not ids:
+            return 0
+        path = self.root / "USER.md"
+        content = self._read(path, "USER.md")
+        if not content:
+            return 0
+        targets = {e.id for e in _section_entries(content, "Profile") if e.status == "pending"}
+        targets &= ids
+        if not targets:
+            return 0
+        self._write(
+            path,
+            "USER.md",
+            _set_entry_status(content, targets, "confirmed", from_statuses=frozenset({"pending"})),
+        )
+        return len(targets)
 
     def promote(self, date_str: str, entry_id: str, *, category: str | None = None) -> bool:
         """Copy one active daily entry into MEMORY.md, carrying its
