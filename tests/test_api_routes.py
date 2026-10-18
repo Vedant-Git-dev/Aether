@@ -1501,6 +1501,7 @@ async def test_settings_feed_carries_groups_kinds_and_apply_notes() -> None:
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "GEMINI_API_KEY",
+        "GROQ_API_KEY",
         "TELEGRAM_BOT_TOKEN",
         "DISCORD_BOT_TOKEN",
         "SLACK_BOT_TOKEN",

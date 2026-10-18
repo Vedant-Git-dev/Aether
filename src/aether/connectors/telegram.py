@@ -151,6 +151,18 @@ class TelegramConnector(MessagingConnector):
             data = await self._download(document, name)
             if data is not None:
                 out.append(Attachment(classify_attachment(name, media), name, media, data))
+        # voice notes and video notes have their own fields — without these
+        # they arrived as empty messages and were silently dropped
+        voice = getattr(message, "voice", None)
+        if voice is not None:
+            data = await self._download(voice, "voice.ogg")
+            if data is not None:
+                out.append(Attachment("audio", "voice.ogg", "audio/ogg", data))
+        video_note = getattr(message, "video_note", None)
+        if video_note is not None:
+            data = await self._download(video_note, "video_note.mp4")
+            if data is not None:
+                out.append(Attachment("video", "video_note.mp4", "video/mp4", data))
         return out
 
     async def _download(self, telegram_file: Any, filename: str) -> bytes | None:

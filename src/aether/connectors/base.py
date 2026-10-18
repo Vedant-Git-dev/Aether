@@ -23,21 +23,35 @@ class Attachment:
     the platform credentials downloads the bytes before emitting; the loop's
     attachment processor turns them into memory."""
 
-    kind: str  # "image" | "doc"
+    kind: str  # "image" | "audio" | "video" | "doc"
     filename: str
     media_type: str  # best-effort MIME type, "" when the platform doesn't say
     data: bytes
 
 
 _IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic"})
+_AUDIO_EXTENSIONS = frozenset({".mp3", ".ogg", ".oga", ".opus", ".m4a", ".wav", ".flac", ".aac"})
+_VIDEO_EXTENSIONS = frozenset({".mp4", ".m4v", ".webm", ".mov", ".mkv", ".avi"})
 
 
 def classify_attachment(filename: str, media_type: str = "") -> str:
-    """ "image" when the platform or the filename says so, "doc" otherwise."""
-    if (media_type or "").startswith("image/"):
+    """ "image", "audio", or "video" when the platform or the filename says
+    so, "doc" otherwise."""
+    mime = media_type or ""
+    if mime.startswith("image/"):
         return "image"
+    if mime.startswith("audio/"):
+        return "audio"
+    if mime.startswith("video/"):
+        return "video"
     name = (filename or "").lower()
-    return "image" if any(name.endswith(ext) for ext in _IMAGE_EXTENSIONS) else "doc"
+    if any(name.endswith(ext) for ext in _IMAGE_EXTENSIONS):
+        return "image"
+    if any(name.endswith(ext) for ext in _AUDIO_EXTENSIONS):
+        return "audio"
+    if any(name.endswith(ext) for ext in _VIDEO_EXTENSIONS):
+        return "video"
+    return "doc"
 
 
 @dataclass(frozen=True)

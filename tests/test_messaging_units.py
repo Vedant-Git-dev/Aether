@@ -1066,6 +1066,8 @@ def _tg_file_update(
     caption: str,
     photo: bool = False,
     document: SimpleNamespace | None = None,
+    voice: bool = False,
+    video_note: bool = False,
     name: str = "file",
     mime: str = "",
     size: int = 9,
@@ -1077,7 +1079,7 @@ def _tg_file_update(
         return SimpleNamespace(download_as_bytearray=download)
 
     item = SimpleNamespace(file_name=name, mime_type=mime, file_size=size, get_file=get_file)
-    if document is None and not photo:
+    if document is None and not photo and not voice and not video_note:
         document = item
     return SimpleNamespace(
         effective_message=SimpleNamespace(
@@ -1086,6 +1088,8 @@ def _tg_file_update(
             chat_id=42,
             photo=[item] if photo else [],
             document=document,
+            voice=item if voice else None,
+            video_note=item if video_note else None,
             reply_to_message=None,
         ),
         effective_user=SimpleNamespace(username="vedant", id=1),
@@ -1132,6 +1136,30 @@ async def test_telegram_a_document_flows_classified_by_name() -> None:
     assert received[0].text == "the invoice"
     assert received[0].attachments == (
         Attachment("doc", "invoice.pdf", "application/pdf", b"%PDF"),
+    )
+
+
+async def test_telegram_a_voice_note_flows_as_audio() -> None:
+    received: list[InboundMessage] = []
+
+    async def inbound(message: InboundMessage) -> None:
+        received.append(message)
+
+    connector, app = await _started_telegram(inbound=inbound)
+    await app.handlers[0].callback(_tg_file_update(b"ogg-bytes", caption="", voice=True), None)
+    assert received[0].attachments == (Attachment("audio", "voice.ogg", "audio/ogg", b"ogg-bytes"),)
+
+
+async def test_telegram_a_video_note_flows_as_video() -> None:
+    received: list[InboundMessage] = []
+
+    async def inbound(message: InboundMessage) -> None:
+        received.append(message)
+
+    connector, app = await _started_telegram(inbound=inbound)
+    await app.handlers[0].callback(_tg_file_update(b"mp4-bytes", caption="", video_note=True), None)
+    assert received[0].attachments == (
+        Attachment("video", "video_note.mp4", "video/mp4", b"mp4-bytes"),
     )
 
 

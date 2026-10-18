@@ -62,6 +62,27 @@ def _image() -> Attachment:
     return Attachment("image", "cat.png", "image/png", b"\x89PNG\r\n\x1a\n" + b"fake")
 
 
+def _voice_note() -> Attachment:
+    # a real Ogg magic for the same reason
+    return Attachment("audio", "voice.ogg", "audio/ogg", b"OggS" + b"fake")
+
+
+def _video_clip() -> Attachment:
+    return Attachment("video", "clip.mp4", "video/mp4", b"\x00\x00\x00\x18ftypisom" + b"fake")
+
+
+class FakeTranscriber:
+    """The GroqTranscriber double: scripted words, or None when it can't."""
+
+    def __init__(self, answer: str | None) -> None:
+        self.answer = answer
+        self.calls: list[tuple[bytes, str, str]] = []
+
+    async def transcribe(self, data: bytes, filename: str, media_type: str = "") -> str | None:
+        self.calls.append((data, filename, media_type))
+        return self.answer
+
+
 def _zip(parts: dict[str, bytes]) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -80,6 +101,16 @@ class TestClassify:
 
     def test_everything_else_is_a_doc(self) -> None:
         assert classify_attachment("archive.zip", "application/zip") == "doc"
+
+    def test_mime_says_audio_and_video_too(self) -> None:
+        assert classify_attachment("no_extension", "audio/ogg") == "audio"
+        assert classify_attachment("no_extension", "video/mp4") == "video"
+
+    def test_filename_extensions_decide_audio_and_video(self) -> None:
+        assert classify_attachment("song.mp3", "") == "audio"
+        assert classify_attachment("voice-note.opus", "") == "audio"
+        assert classify_attachment("clip.mp4", "") == "video"
+        assert classify_attachment("screen-capture.webm", "") == "video"
 
 
 class TestImages:
@@ -204,6 +235,13 @@ class TestImages:
         assert "these images" in two
         assert attachments_note([AttachmentResult(None), AttachmentResult(None)]) == ""
 
+    def test_per_file_notes_ride_alongside_the_blind_note(self) -> None:
+        both = attachments_note(
+            [AttachmentResult(None, blind=True), AttachmentResult(None, note="voice words")]
+        )
+        assert "can't see" in both and "voice words" in both
+        assert attachments_note([AttachmentResult(None, note="just this")]) == "just this"
+
 
 class TestDocs:
     async def test_a_text_file_is_stored_with_its_content(self) -> None:
@@ -232,6 +270,72 @@ class TestDocs:
         payload = processor._events.ingested[0]["payload"]
         assert payload["extract_note"] == "no readable text could be extracted"
         assert "text" not in payload
+
+
+class TestAudio:
+    async def test_a_voice_note_is_transcribed_into_a_shared_audio_event(self) -> None:
+        transcriber = FakeTranscriber("the porch light is still on")
+        media = FakeMediaStore()
+        processor = AttachmentProcessor(
+            FakeRegistry(None), FakeEventStore(), media=media, voice=transcriber
+        )
+        note = _voice_note()
+        results = await processor.process(_message(note, text="listen to this"))
+
+        assert results[0].ingested is not None and results[0].ingested.stored is True
+        assert results[0].note == ""  # read plainly — nothing to apologize for
+        record = processor._events.ingested[0]
+        assert record["kind"] == "shared_audio"
+        payload = record["payload"]
+        assert payload["text"] == "the porch light is still on"
+        assert payload["caption"] == "listen to this"
+        kept = await media.get(payload["media_id"])
+        assert kept is not None and kept.data == note.data
+        # the transcription heard the real bytes, with their real names
+        assert transcriber.calls == [(note.data, "voice.ogg", "audio/ogg")]
+
+    async def test_without_a_transcriber_the_note_is_kept_and_said_plainly(self) -> None:
+        media = FakeMediaStore()
+        processor = AttachmentProcessor(FakeRegistry(None), FakeEventStore(), media=media)
+        note = _voice_note()
+        results = await processor.process(_message(note))
+
+        assert results[0].ingested is not None and results[0].ingested.stored is True
+        payload = processor._events.ingested[0]["payload"]
+        assert payload["transcribe_note"] == ("not transcribed — no transcription service answered")
+        assert "text" not in payload
+        kept = await media.get(payload["media_id"])
+        assert kept is not None and kept.data == note.data
+        # the drain turns the note into plain in-chat words
+        assert "couldn't transcribe" in attachments_note(results)
+        assert "GROQ_API_KEY" in results[0].note
+
+    async def test_a_failed_transcription_degrades_the_same_way(self) -> None:
+        transcriber = FakeTranscriber(None)
+        processor = AttachmentProcessor(FakeRegistry(None), FakeEventStore(), voice=transcriber)
+        results = await processor.process(_message(_voice_note()))
+        payload = processor._events.ingested[0]["payload"]
+        assert payload["transcribe_note"] == ("not transcribed — no transcription service answered")
+        assert "couldn't transcribe" in results[0].note
+
+
+class TestVideo:
+    async def test_a_shared_video_is_kept_with_an_honest_not_understood_row(self) -> None:
+        media = FakeMediaStore()
+        processor = AttachmentProcessor(FakeRegistry(None), FakeEventStore(), media=media)
+        clip = _video_clip()
+        results = await processor.process(_message(clip, text="the dog on skates"))
+
+        assert results[0].ingested is not None and results[0].ingested.stored is True
+        record = processor._events.ingested[0]
+        assert record["kind"] == "shared_video"
+        payload = record["payload"]
+        assert payload["understand_note"] == (
+            "kept, but not understood — video understanding isn't set up"
+        )
+        assert payload["caption"] == "the dog on skates"
+        kept = await media.get(payload["media_id"])
+        assert kept is not None and kept.data == clip.data
 
 
 class TestExtraction:

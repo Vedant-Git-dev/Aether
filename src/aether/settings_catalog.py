@@ -329,6 +329,11 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
         hint="Needed when the provider is set to the matching one.",
     ),
     CredentialSpec(
+        name="GROQ_API_KEY",
+        label="Voice transcription key",
+        hint="Groq's free key — with it, Aether reads the voice notes you send.",
+    ),
+    CredentialSpec(
         name="TELEGRAM_BOT_TOKEN",
         label="Telegram bot token",
         hint="From the bot you made for Aether. Paste it here, then turn Telegram on above.",

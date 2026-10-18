@@ -36,6 +36,7 @@ from .llm.embeddings import GeminiEmbedder
 from .llm.registry import ProviderRegistry
 from .logging_setup import configure_logging
 from .media.store import MediaStore
+from .media.voice import GroqTranscriber
 from .memory.context import ContextBuilder
 from .memory.crypto import Cipher, CryptoError, generate_key_b64
 from .memory.db import create_pool, run_migrations
@@ -264,8 +265,16 @@ def create_app(
             ScreenVision(providers, events, media=media_store) if providers else None
         )
         # shared chat files ride the same rails — the loop's drain calls it
+        # (the transcriber resolves GROQ_API_KEY fresh per note, so a paste
+        # applies without a restart and an unset key just leaves notes kept)
         app.state.attachments = (
-            AttachmentProcessor(providers, events, indexer=vectors, media=media_store)
+            AttachmentProcessor(
+                providers,
+                events,
+                indexer=vectors,
+                media=media_store,
+                voice=GroqTranscriber(env_resolver),
+            )
             if providers
             else None
         )

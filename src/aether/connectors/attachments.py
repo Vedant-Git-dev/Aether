@@ -25,6 +25,7 @@ from ..llm.json_utils import extract_json
 from ..llm.registry import ProviderRegistry
 from ..llm.types import ImageBlock, Message
 from ..media.store import MediaRef, MediaStore, MediaStoreFull
+from ..media.voice import GroqTranscriber
 from ..memory.entities import Sender
 from ..memory.events import EventStore, IngestResult
 from ..memory.vectors import VectorMemory
@@ -81,32 +82,38 @@ _IMAGE_MEDIA_TYPES = {
 @dataclass(frozen=True)
 class AttachmentResult:
     """One processed attachment. `blind` marks an image Aether could not
-    see (no vision-capable provider) — the drain turns that into the plain
-    note."""
+    see (no vision-capable provider); `note` is the plain in-chat word for
+    anything else the user should hear about this one file — the drain
+    turns both into words."""
 
     ingested: IngestResult | None
     blind: bool = False
+    note: str = ""
 
 
 def attachments_note(results: list[AttachmentResult]) -> str:
-    """The plain, in-chat words for images Aether couldn't see — "" when
-    there is nothing to say. One note for a whole burst."""
+    """The plain, in-chat words for attachments Aether couldn't fully
+    take in — "" when there is nothing to say. One note for a whole
+    burst, blind images first."""
     blind = sum(1 for r in results if r.blind)
-    if not blind:
-        return ""
-    noun = "this image" if blind == 1 else "these images"
-    return (
-        f"I can't see {noun} yet — no vision model is set. Set one with "
-        "/config (llm.vision_model), or pick a main model that can read "
-        "images, and I'll see what you send."
-    )
+    parts: list[str] = []
+    if blind:
+        noun = "this image" if blind == 1 else "these images"
+        parts.append(
+            f"I can't see {noun} yet — no vision model is set. Set one with "
+            "/config (llm.vision_model), or pick a main model that can read "
+            "images, and I'll see what you send."
+        )
+    parts.extend(r.note for r in results if r.note)
+    return " ".join(parts)
 
 
 class AttachmentProcessor:
     """User-shared files in (connectors download the bytes), encrypted memory
     events out. Images are described by the vision provider — perception
     only; documents keep their extracted text so a later turn can answer
-    questions about the content.
+    questions about the content. Voice notes are transcribed when Groq
+    answers, videos are kept honest-but-unwatched until frame jobs land.
 
     With a media store wired, the bytes themselves are kept too (encrypted,
     under the quota) and the event carries their media_id — so nothing a
@@ -118,17 +125,23 @@ class AttachmentProcessor:
         events: EventStore,
         indexer: VectorMemory | None = None,
         media: MediaStore | None = None,
+        voice: GroqTranscriber | None = None,
     ) -> None:
         self._providers = providers
         self._events = events
         self._indexer = indexer
         self._media = media
+        self._voice = voice
 
     async def process(self, message: InboundMessage) -> list[AttachmentResult]:
         out: list[AttachmentResult] = []
         for attachment in message.attachments:
             if attachment.kind == "image":
                 out.append(await self._image(attachment, message))
+            elif attachment.kind == "audio":
+                out.append(await self._audio(attachment, message))
+            elif attachment.kind == "video":
+                out.append(await self._video(attachment, message))
             else:
                 out.append(await self._doc(attachment, message))
         return out
@@ -209,6 +222,67 @@ class AttachmentProcessor:
         ingested = await self._events.ingest(
             source=message.surface,
             kind="shared_image",
+            payload=payload,
+            sender=Sender(platform=message.surface, handle=message.handle),
+        )
+        return AttachmentResult(ingested=ingested)
+
+    async def _audio(self, attachment: Attachment, message: InboundMessage) -> AttachmentResult:
+        """A voice note or audio file: bytes kept, words transcribed when a
+        transcription service answers. Without one the bytes still store
+        and the event says so plainly — never a dropped note."""
+        kept = await self._keep(attachment, message.surface)
+        transcript = ""
+        if self._voice is not None:
+            answer = await self._voice.transcribe(
+                attachment.data, attachment.filename, attachment.media_type
+            )
+            transcript = (answer or "").strip()
+        payload: dict[str, Any] = {
+            "filename": attachment.filename,
+            "media_type": attachment.media_type,
+            "chat_ref": message.chat_ref,
+        }
+        if kept is not None:
+            payload["media_id"] = kept.media_id
+        note = ""
+        if transcript:
+            payload["text"] = transcript[:DOC_TEXT_CAP]
+        else:
+            payload["transcribe_note"] = "not transcribed — no transcription service answered"
+            note = (
+                "I kept this voice note, but couldn't transcribe it — no "
+                "transcription service answered. Set GROQ_API_KEY in /config "
+                "and I'll read the ones you send."
+            )
+        if message.text:
+            payload["caption"] = message.text
+        ingested = await self._events.ingest(
+            source=message.surface,
+            kind="shared_audio",
+            payload=payload,
+            sender=Sender(platform=message.surface, handle=message.handle),
+        )
+        return AttachmentResult(ingested=ingested, note=note)
+
+    async def _video(self, attachment: Attachment, message: InboundMessage) -> AttachmentResult:
+        """A shared video: the bytes are kept and the event says so —
+        understanding (frames to the vision provider) arrives with the
+        workbench frame job, so this row never pretends it watched."""
+        kept = await self._keep(attachment, message.surface)
+        payload: dict[str, Any] = {
+            "filename": attachment.filename,
+            "media_type": attachment.media_type,
+            "chat_ref": message.chat_ref,
+            "understand_note": "kept, but not understood — video understanding isn't set up",
+        }
+        if kept is not None:
+            payload["media_id"] = kept.media_id
+        if message.text:
+            payload["caption"] = message.text
+        ingested = await self._events.ingest(
+            source=message.surface,
+            kind="shared_video",
             payload=payload,
             sender=Sender(platform=message.surface, handle=message.handle),
         )
