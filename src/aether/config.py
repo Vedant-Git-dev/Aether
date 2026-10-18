@@ -249,6 +249,12 @@ class WorkbenchConfig(BaseModel):
     # one job's own timeout; a job that exceeds it reads as a real
     # timed-out result, never a fallback
     job_timeout_minutes: int = 10
+    # the batch queue's own home: the repository that carries the runner
+    # workflow, and the branch it dispatches on. Empty means the batch
+    # provider stays unconstructed — the ladder simply never sees it.
+    actions_repo: str = ""
+    actions_workflow: str = ""
+    actions_ref: str = "main"
 
 
 class AppConfig(BaseModel):

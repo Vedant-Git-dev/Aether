@@ -571,6 +571,14 @@ class FakeEventStore:
     async def recent(self, limit: int = 50) -> list[Event]:
         return [self.events[i] for i in sorted(self.events, reverse=True)][:limit]
 
+    async def recent_memorable(self, limit: int = 50, hours: float | None = None) -> list[Event]:
+        rows = [e for e in self.events.values() if e.memorable]
+        if hours is not None:
+            cutoff = datetime.now(UTC) - timedelta(hours=hours)
+            rows = [e for e in rows if e.occurred_at > cutoff]
+        rows.sort(key=lambda e: e.id, reverse=True)
+        return rows[:limit]
+
     async def count_recent(self, source: str, hours: float = 1.0) -> int:
         return self.recent_counts.get(source, 0)
 

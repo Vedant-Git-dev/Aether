@@ -241,6 +241,22 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
                 hint="One job's own time limit — exceeding it counts as a real "
                 "timed-out result, never a fallback.",
             ),
+            FieldSpec(
+                path="workbench.actions_repo",
+                label="Batch queue repository",
+                hint="The repository (owner/name) whose runner workflow carries "
+                "the batch queue's jobs. Empty leaves the batch queue off.",
+            ),
+            FieldSpec(
+                path="workbench.actions_workflow",
+                label="Batch queue workflow",
+                hint="The workflow file name inside that repository (like aether-batch.yml).",
+            ),
+            FieldSpec(
+                path="workbench.actions_ref",
+                label="Batch queue branch",
+                hint="The branch the workflow dispatches on — main unless yours differs.",
+            ),
         ),
     ),
 )

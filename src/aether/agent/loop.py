@@ -2119,6 +2119,15 @@ class AgentLoop:
             raise RuntimeError(result.content)
         return result.content
 
+    async def execute_tool(self, call: ToolCall) -> str:
+        """One tool call through the full gate — policy, audit, approval
+        parking — for a caller that is not the model: the background
+        worker's skills. Returns the tool's content, parked or not, so a
+        skill can tell a staged action from a settled one by its words
+        (no trace is kept; the proactive task's own row is the record)."""
+        result = await self._execute(call)
+        return result.content
+
     # -- traces -------------------------------------------------------------------
 
     async def _save_trace(self, *, kind: str, label: str, payload: dict[str, Any]) -> None:

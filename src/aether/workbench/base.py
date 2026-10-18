@@ -110,7 +110,11 @@ class Workbench(Protocol):
     jobs here, itself — the ladder never encodes provider names);
     `run_job` does the work and cleans up in finally."""
 
-    name: str
+    # read-only: every adapter names itself through a property, and a
+    # plain attribute would make the member invariant — FakeWorkbench's
+    # instance attribute satisfies a property member just as well
+    @property
+    def name(self) -> str: ...
 
     async def available(self) -> bool: ...
 

@@ -120,3 +120,9 @@ workbench:                        # where background jobs run when they must not
   monthly_minutes_cap: 1500       # the batch queue's monthly wall-clock ceiling
   job_timeout_minutes: 10          # one job's own limit; exceeding it is a real
                                  # timed-out result, never a fallback
+  actions_repo: ""                 # the batch queue's own home: the repository
+                                 # (owner/name) whose runner workflow carries its
+                                 # jobs — empty leaves the batch queue off
+  actions_workflow: ""             # the workflow file name in that repository
+                                 # (like aether-batch.yml)
+  actions_ref: main                # the branch the workflow dispatches on

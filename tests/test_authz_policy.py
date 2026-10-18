@@ -229,6 +229,9 @@ def test_set_config_tuning_paths_are_allowed() -> None:
         "workbench.provider",
         "workbench.monthly_minutes_cap",
         "workbench.job_timeout_minutes",
+        "workbench.actions_repo",
+        "workbench.actions_workflow",
+        "workbench.actions_ref",
     ):
         ruling = policy.classify("set_config", {"op": "set", "path": path, "value": 1})
         assert ruling.decision is Decision.ALLOW, path

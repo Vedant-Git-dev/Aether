@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi import FastAPI, Response
@@ -46,7 +47,16 @@ from .routines import Routines
 from .scheduler import Scheduler, SchedulerWorker
 from .secret_env import EnvResolver
 from .secret_store import SecretStore
+from .skills import build_skills
 from .web import WebTools
+from .workbench import Workbench, ordered
+from .workbench import run as run_workbench
+from .workbench.base import JobLimits, JobResult, JobSpec
+from .workbench.github_actions import GitHubActionsWorkbench
+from .workbench.minutes import MinuteMeter
+from .workbench.modal import ModalWorkbench
+from .workbench.transfers import TransferStore
+from .workbench.vercel import VercelWorkbench
 from .workspace import Workspace, WorkspaceWriteError
 
 log = logging.getLogger("aether.main")
@@ -147,6 +157,50 @@ def create_app(
         web_tools = WebTools(resolver=env_resolver, counters=counters, config=config)
         app.state.web = web_tools
 
+        # --- the workbench: where a job runs when it must not run here ----
+        # every provider is inert without its keys, so the ladder is safe
+        # to build unconditionally — each provider answers for itself.
+        # The batch queue additionally needs its own repository named and
+        # this instance's public address (the one-time URLs it hands a
+        # runner have to point somewhere); without them it stays
+        # unconstructed and the ladder simply never sees it.
+        transfers = TransferStore(pool, cipher)
+        app.state.transfers = transfers
+        sandboxes: list[Workbench] = [
+            ModalWorkbench(resolver=env_resolver),
+            VercelWorkbench(resolver=env_resolver),
+        ]
+        actions = None
+        if (
+            config.workbench.actions_repo
+            and config.workbench.actions_workflow
+            and settings.public_url
+        ):
+            actions = GitHubActionsWorkbench(
+                resolver=env_resolver,
+                transfers=transfers,
+                public_url=settings.public_url,
+                repo=config.workbench.actions_repo,
+                workflow=config.workbench.actions_workflow,
+                ref=config.workbench.actions_ref,
+                monthly_minutes_cap=config.workbench.monthly_minutes_cap,
+                minutes=MinuteMeter(pool),
+            )
+            sandboxes.append(actions)
+        ladder = ordered(sandboxes, config.workbench.provider)
+
+        async def _run_job(spec: JobSpec) -> JobResult:
+            """One job through the routing ladder, with the configured job
+            timeout as a ceiling every spec is clamped to — a skill may
+            ask for less, never more."""
+            limits = JobLimits(
+                timeout_seconds=min(
+                    spec.limits.timeout_seconds, config.workbench.job_timeout_minutes * 60
+                ),
+                max_output_bytes=spec.limits.max_output_bytes,
+            )
+            return await run_workbench(replace(spec, limits=limits), ladder)
+
         # --- vector memory: free embeddings make recall semantic ----------
         # best effort, same as the providers — without a key the layer is a
         # quiet no-op and memory search reports the failure plainly
@@ -210,8 +264,7 @@ def create_app(
         app.state.entities = entities
         app.state.scheduler = scheduler
         # the proactive worker's task rows — the same audit chain as
-        # everything else; skills and the workbench plug in from their
-        # own modules
+        # everything else; the worker and its skills land later in boot
         proactive_store = ProactiveStore(pool, cipher, audit)
         app.state.proactive_store = proactive_store
         routines = Routines(pool, cipher, audit)
@@ -337,8 +390,9 @@ def create_app(
         # proactive.enabled every cycle, so it always spins and /resume
         # never needs a restart. Its own pause (the anomaly monitor, a
         # /pause) persists through the config store, and its notifications
-        # ride the loop's interruption budget. Skills and the workbench
-        # plug in from their own modules.
+        # ride the loop's interruption budget. The skills come from the
+        # registry; each run goes through the workbench ladder and the
+        # agent's own tool gate, so nothing bypasses policy or audit.
         async def _pause_proactive() -> None:
             await config_manager.set(
                 op="set", path="proactive.enabled", value=False, source="worker"
@@ -351,8 +405,11 @@ def create_app(
             store=proactive_store,
             budget=Budget(counters, config.proactive),
             config=config,
+            skills=build_skills(),
             events=events,
             workspace=workspace,
+            workbench=_run_job,
+            executor=agent.execute_tool,
             notify=_notify_proactive,
             pause=_pause_proactive,
         )
@@ -368,6 +425,8 @@ def create_app(
 
         await proactive_worker.stop()
         await worker.stop()
+        if actions is not None:
+            await actions.aclose()
         await agent.stop()
         for connector in connectors:
             await connector.stop()

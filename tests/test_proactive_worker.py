@@ -13,6 +13,7 @@ from fakes import FakeProactiveStore
 
 from aether.config import AppConfig, ProactiveConfig
 from aether.counters import today
+from aether.llm.types import ToolCall
 from aether.proactive import DISCARDED, DONE, FAILED, PENDING, Budget, Opportunity, ProactiveWorker
 from aether.proactive.worker import _PAUSE_NOTE, RunOutcome
 
@@ -48,13 +49,13 @@ class FakeSkill:
         self.plan_calls: list[Opportunity] = []
         self.run_calls: list[object] = []
 
-    async def detect(self, profile, events) -> list[Opportunity]:
+    async def detect(self, profile, events, executor=None) -> list[Opportunity]:
         self.detect_calls += 1
         found = self.found
         self.found = []
         return found
 
-    async def plan(self, opportunity, profile) -> dict:
+    async def plan(self, opportunity, profile, executor=None) -> dict:
         self.plan_calls.append(opportunity)
         return {"step": "go"}
 
@@ -67,12 +68,15 @@ def _config(**proactive) -> AppConfig:
     return AppConfig(proactive=ProactiveConfig(enabled=True, **proactive))
 
 
-def _worker(store, counters, config, skills, *, notify=None, pause=None) -> ProactiveWorker:
+def _worker(
+    store, counters, config, skills, *, notify=None, pause=None, executor=None
+) -> ProactiveWorker:
     return ProactiveWorker(
         store=store,
         budget=Budget(counters, config.proactive),
         config=config,
         skills=skills,
+        executor=executor,
         notify=notify,
         pause=pause,
     )
@@ -201,7 +205,7 @@ async def test_a_broken_skill_never_stops_the_others() -> None:
     store, counters = FakeProactiveStore(), FakeCounters()
 
     class Exploding(FakeSkill):
-        async def detect(self, profile, events):
+        async def detect(self, profile, events, executor=None):
             raise RuntimeError("the connector is down")
 
     broken = Exploding()
@@ -234,7 +238,7 @@ async def test_pending_rows_run_before_new_detection() -> None:
     order: list[str] = []
 
     class Ordered(FakeSkill):
-        async def detect(self, profile, events):
+        async def detect(self, profile, events, executor=None):
             order.append("detect")
             return [Opportunity(key="new", skill="followups", label="fresh", score=9.0)]
 
@@ -258,6 +262,47 @@ async def test_run_forever_rearms_running_rows_on_boot() -> None:
     await worker.stop()  # stop awaits the task, so the boot steps have run
     assert store.tasks[0].status == PENDING  # back in the queue, not stranded
     assert len(store.claims) == 1  # the seed — the re-armed row was requeued, not re-claimed
+
+
+# ---------------------------------------------------------------------------
+# the phase gate: planning reads only, run gets the full executor
+# ---------------------------------------------------------------------------
+
+
+async def test_planning_runs_read_only_and_run_gets_the_full_executor() -> None:
+    """The worker hands detect and plan an executor that refuses writes
+    in plain words before the policy is even asked; run receives the
+    full one, where the policy (not the phase) is the only gate."""
+    store, counters = FakeProactiveStore(), FakeCounters()
+    seen: dict[str, str] = {}
+
+    write = ToolCall(id="w", name="workspace_remember", arguments={"text": "n", "kind": "fact"})
+
+    async def full(call):
+        return "the write ran"
+
+    class Probe(FakeSkill):
+        async def detect(self, profile, events, executor=None):
+            assert executor is not None  # the worker always hands one over
+            seen["detect"] = await executor(write)
+            return [Opportunity(key="k", skill="followups", label="x", score=5.0)]
+
+        async def plan(self, opportunity, profile, executor=None):
+            assert executor is not None
+            seen["plan"] = await executor(write)
+            return {"step": "go"}
+
+        async def run(self, task, workbench, executor):
+            assert executor is not None
+            seen["run"] = await executor(write)
+            return self.outcome
+
+    worker = _worker(store, counters, _config(), [Probe()], executor=full)
+    assert await worker.cycle() == 1
+    assert seen["detect"].startswith("not run — planning only looks things up")
+    assert seen["plan"].startswith("not run — planning only looks things up")
+    assert seen["run"] == "the write ran"
+    assert store.tasks[0].status == DONE
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +330,7 @@ async def test_a_plan_or_run_crash_fails_the_row_without_stopping_the_cycle() ->
     boom.outcome = RunOutcome(summary="ok")
 
     class BadPlan(FakeSkill):
-        async def plan(self, opportunity, profile):
+        async def plan(self, opportunity, profile, executor=None):
             raise RuntimeError("planning exploded")
 
     bad_plan = BadPlan(found=[Opportunity(key="bad", skill="media", label="y", score=1.0)])
@@ -307,7 +352,7 @@ async def test_a_skill_disabled_between_claim_and_run_fails_honestly() -> None:
             super().__init__()
             self.config = config
 
-        async def detect(self, profile, events):
+        async def detect(self, profile, events, executor=None):
             self.config.proactive.skills = []  # a /config change mid-cycle
             return [Opportunity(key="k", skill="followups", label="x", score=5.0)]
 

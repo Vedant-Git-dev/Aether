@@ -38,6 +38,7 @@ from typing import Any, Protocol
 
 from ..config import AppConfig
 from ..counters import today
+from ..llm.types import ToolCall
 from .budget import Budget
 from .store import Opportunity, ProactiveStore, ProactiveTask
 
@@ -53,34 +54,69 @@ _PAUSE_NOTE = (
 
 Notifier = Callable[[str], Awaitable[None]]
 Pauser = Callable[[], Awaitable[None]]
+Executor = Callable[[ToolCall], Awaitable[str]]
+
+# the read-only vocabulary the planning phases (detect, plan) may use —
+# memory and workspace reads plus the web research pair. Everything
+# else is a change, and changes wait for the run phase; this gate is
+# code, so a policy ALLOW during planning still cannot carry a write.
+READ_TOOLS = frozenset(
+    {"memory_search", "workspace_read", "workspace_search", "web_fetch", "web_search"}
+)
+
+
+def read_only(executor: Executor) -> Executor:
+    """The planning-phase executor: reads pass through untouched, a write
+    is refused in plain words before the policy is even asked — the phase
+    gate, deterministic, in the orchestrator rather than the prompt."""
+
+    async def guarded(call: ToolCall) -> str:
+        if call.name not in READ_TOOLS:
+            return (
+                "not run — planning only looks things up, it never makes "
+                "changes; the call has to wait for the run phase"
+            )
+        return await executor(call)
+
+    return guarded
 
 
 @dataclass
 class RunOutcome:
     """What one run came back with. ``refused`` marks a run the policy
-    gate stopped — a parked or denied action — which the anomaly monitor
+    gate stopped outright — a denied action — which the anomaly monitor
     counts separately from a failure, because it means the skill keeps
-    proposing things it may not do."""
+    proposing things it may not do. ``failed`` marks a run that happened
+    and produced no result — a job that failed its own way — so the row
+    fails honestly while still charging what the run truly spent."""
 
     summary: str
     provider: str = ""
     tokens: int = 0
     sandbox_seconds: int = 0
     refused: bool = False
+    failed: bool = False
 
 
 class SkillSource(Protocol):
     """The slice of a skill the worker orchestrates — the full contract
     (sensitivity, declared actions, revalidation, plain-words summary)
-    lives with the skills themselves; this is the worker's read of it."""
+    lives with the skills themselves; this is the worker's read of it.
+    The executor detect and plan receive is read-gated (see ``read_only``);
+    run receives the full one, where the policy still parks anything
+    outbound."""
 
     name: str
 
-    async def detect(self, profile: Any, events: Any) -> list[Any]: ...
+    async def detect(self, profile: Any, events: Any, executor: Executor | None) -> list[Any]: ...
 
-    async def plan(self, opportunity: Any, profile: Any) -> dict[str, Any]: ...
+    async def plan(
+        self, opportunity: Any, profile: Any, executor: Executor | None
+    ) -> dict[str, Any]: ...
 
-    async def run(self, task: ProactiveTask, workbench: Any, executor: Any) -> RunOutcome: ...
+    async def run(
+        self, task: ProactiveTask, workbench: Any, executor: Executor | None
+    ) -> RunOutcome: ...
 
 
 class ProactiveWorker:
@@ -108,6 +144,8 @@ class ProactiveWorker:
         self._workspace = workspace
         self._workbench = workbench
         self._executor = executor
+        # the planning phases never see the full executor — reads only
+        self._read_executor = read_only(executor) if executor is not None else None
         self._notify = notify
         self._pause = pause
         self._stop = asyncio.Event()
@@ -206,7 +244,7 @@ class ProactiveWorker:
             if skill.name not in enabled:
                 continue
             try:
-                found.extend(await skill.detect(self._workspace, self._events))
+                found.extend(await skill.detect(self._workspace, self._events, self._read_executor))
             except Exception:
                 log.exception("proactive skill %s detect failed", skill.name)
         return found
@@ -229,7 +267,7 @@ class ProactiveWorker:
             detail=task.opportunity,
         )
         try:
-            plan = await skill.plan(opportunity, self._workspace)
+            plan = await skill.plan(opportunity, self._workspace, self._read_executor)
             await self._store.set_plan(task.id, plan)
             outcome = await skill.run(task, self._workbench, self._executor)
         except Exception as exc:
@@ -239,6 +277,18 @@ class ProactiveWorker:
         if outcome.refused:
             await self._store.fail(task.id, outcome.summary)
             await self._observe(task.skill, "refused")
+            return
+        if outcome.failed:
+            # the run happened and came back without a result — the row
+            # says so, and whatever it truly spent is still charged, so
+            # the daily brakes never undercount real work
+            await self._store.fail(task.id, outcome.summary)
+            await self._budget.charge(
+                day,
+                tasks=1,
+                tokens=outcome.tokens,
+                sandbox_seconds=outcome.sandbox_seconds,
+            )
             return
         await self._store.finish(task.id, outcome.summary, outcome.provider)
         await self._budget.charge(
