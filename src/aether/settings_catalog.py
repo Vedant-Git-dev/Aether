@@ -259,6 +259,48 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
             ),
         ),
     ),
+    GroupSpec(
+        key="media",
+        title="Media",
+        note="Shared and generated images, voice, and video are kept encrypted.",
+        fields=(
+            FieldSpec(
+                path="media.storage_quota_mb",
+                label="Storage quota",
+                hint="How many megabytes of media Aether keeps before the oldest "
+                "unreferenced items are removed. A full store refuses new media "
+                "in plain words.",
+                note="applies to the next media stored",
+            ),
+            FieldSpec(
+                path="media.image_provider",
+                label="Image maker",
+                hint="Who draws images when asked: a keyless free service, the "
+                "Gemini key you already have, or nobody.",
+                note="applies to the next image",
+            ),
+            FieldSpec(
+                path="media.max_images_per_day",
+                label="Daily image cap",
+                hint="The most images Aether may make in one day, chat and background together.",
+                note="applies to the next image",
+            ),
+            FieldSpec(
+                path="media.max_prompt_chars",
+                label="Prompt length cap",
+                hint="The most characters an image prompt may run to — prompts "
+                "travel to the image service, so they stay short.",
+                note="applies to the next image",
+            ),
+            FieldSpec(
+                path="media.max_sandbox_jobs_per_day",
+                label="Daily media job cap",
+                hint="The most video-frame and video-edit jobs one day may run "
+                "on the cloud workbench.",
+                note="applies to the next media job",
+            ),
+        ),
+    ),
 )
 
 

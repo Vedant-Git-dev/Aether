@@ -77,6 +77,8 @@ def _apply_note(path: str) -> str:
         return " — applies from the next cycle"
     if path.startswith("workbench."):
         return " — applies to the next job"
+    if path.startswith("media."):
+        return " — applies to the next media handled"
     return ""
 
 
@@ -89,6 +91,7 @@ _SECTION_NAMES = (
     "authz",
     "proactive",
     "workbench",
+    "media",
     "mcp_servers",
 )
 
@@ -925,6 +928,7 @@ class ConfigManager:
             ("authz", type(self._live.authz)),
             ("proactive", type(self._live.proactive)),
             ("workbench", type(self._live.workbench)),
+            ("media", type(self._live.media)),
         ):
             for field in model.model_fields:
                 if section_name == "contacts" and isinstance(
@@ -1058,6 +1062,13 @@ class ConfigManager:
             return (
                 f"workbench: {w.provider} first · {w.monthly_minutes_cap} batch minutes a month"
                 f" · {w.job_timeout_minutes}min a job"
+            )
+        if name == "media":
+            m = live.media
+            return (
+                f"media: keeps up to {_plain_value(m.storage_quota_mb)} MB"
+                f" · images via {m.image_provider}"
+                f" · at most {m.max_images_per_day} images and {m.max_sandbox_jobs_per_day} media jobs a day"
             )
         servers = live.mcp_servers
         if not servers:

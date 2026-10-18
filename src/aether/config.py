@@ -257,6 +257,26 @@ class WorkbenchConfig(BaseModel):
     actions_ref: str = "main"
 
 
+class MediaConfig(BaseModel):
+    """Shared and generated media — how much is kept, and how much is
+    made. The store reads this live, so a quota change applies to the
+    next stored item without a restart."""
+
+    # how much encrypted media may sit in Postgres before the oldest
+    # unreferenced items are evicted; a put with nothing left to evict
+    # is refused in plain words
+    storage_quota_mb: int = 200
+    # who draws images: pollinations is keyless and free (no SLA),
+    # gemini rides the existing AI Studio key, none turns generation off
+    image_provider: Literal["pollinations", "gemini", "none"] = "pollinations"
+    # the daily brakes: images made, and sandbox jobs that read or
+    # edit media (frame extraction, video edits)
+    max_images_per_day: int = 10
+    max_sandbox_jobs_per_day: int = 20
+    # image prompts travel to the image service — short by design
+    max_prompt_chars: int = 500
+
+
 class AppConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
@@ -268,6 +288,7 @@ class AppConfig(BaseModel):
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     proactive: ProactiveConfig = Field(default_factory=ProactiveConfig)
     workbench: WorkbenchConfig = Field(default_factory=WorkbenchConfig)
+    media: MediaConfig = Field(default_factory=MediaConfig)
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:

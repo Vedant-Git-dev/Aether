@@ -35,6 +35,7 @@ from .llm.base import ProviderError
 from .llm.embeddings import GeminiEmbedder
 from .llm.registry import ProviderRegistry
 from .logging_setup import configure_logging
+from .media.store import MediaStore
 from .memory.context import ContextBuilder
 from .memory.crypto import Cipher, CryptoError, generate_key_b64
 from .memory.db import create_pool, run_migrations
@@ -271,6 +272,12 @@ def create_app(
         app.state.routines = routines
         traces = Traces(pool, cipher)
         app.state.traces = traces
+        # encrypted media storage — shared files and generated images
+        # become AES-GCM blobs bound to their row, kept under a quota
+        # with least-recently-use eviction; references from pending
+        # approvals and undelivered results survive the broom
+        media_store = MediaStore(pool, cipher, config.media)
+        app.state.media_store = media_store
 
         # --- workspace: the human-editable Markdown identity/memory layer ---
         # an enhancement layer, not core plumbing: a workspace that can't be

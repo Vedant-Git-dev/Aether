@@ -126,3 +126,17 @@ workbench:                        # where background jobs run when they must not
   actions_workflow: ""             # the workflow file name in that repository
                                  # (like aether-batch.yml)
   actions_ref: main                # the branch the workflow dispatches on
+
+media:                           # shared and generated images, voice, video —
+                                 # all kept encrypted under one quota
+  storage_quota_mb: 200          # how much is kept before the oldest
+                                 # unreferenced items go; a full store refuses
+                                 # new media in plain words
+  image_provider: pollinations   # pollinations | gemini | none — who draws
+                                 # images when asked (gemini rides the
+                                 # existing GEMINI_API_KEY)
+  max_images_per_day: 10         # the daily brake on generated images
+  max_prompt_chars: 500          # image prompts travel to the image service —
+                                 # short by design
+  max_sandbox_jobs_per_day: 20   # frame-extraction and video-edit jobs on the
+                                 # workbench, per day
