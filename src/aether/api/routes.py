@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from ..agent.tools import with_plain_calls, with_plain_event
 from ..apps_catalog import CATALOG, recipe_for
 from ..composio_bridge import ComposioNotConfigured
+from ..proactive import DONE
 from ..settings_catalog import credential_for, settings_feed
 from ..workspace import SecretRejected, WorkspaceEntry, WorkspaceWriteError
 
@@ -37,6 +38,14 @@ def _authorized(request: Request, token: str | None) -> bool:
 
 class DecisionBody(BaseModel):
     decision: str  # "approve" | "deny"
+
+
+class TaskVerdictBody(BaseModel):
+    verdict: str  # "approve" | "revise" | "discard"
+
+
+class ProfileConfirmBody(BaseModel):
+    ids: list[str]  # the pending entries one "yes" covers, panel-side
 
 
 class PersonalityBody(BaseModel):
@@ -888,6 +897,100 @@ async def tasks_feed(request: Request, limit: int = 50, token: str | None = None
 
 
 _WORKSPACE_FILES = ("identity", "soul", "agents", "user", "memory")
+
+
+# the verdict buttons a finished row offers — the same options the chat
+# surfaces got, decided in one place so the panel can't drift from them
+def _verdict_options(task) -> list[str]:
+    if task.status != DONE or task.feedback is not None:
+        return []  # no verdict applies to work that never finished or moved on
+    return (
+        ["approve", "revise", "discard"]
+        if (task.plan or {}).get("approval_id") is not None
+        else ["approve", "discard"]
+    )
+
+
+@router.get("/api/proactive/tasks")
+async def proactive_tasks_feed(request: Request, limit: int = 50, token: str | None = None) -> dict:
+    """The background worker's task rows — the same list a chat-surface
+    result notification summarizes, newest first. A row's `options` are
+    the one-tap verdicts that still apply to it."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    store = getattr(request.app.state, "proactive_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="proactive worker is not wired")
+    tasks = await store.list(limit=min(limit, 200))
+    return {
+        "tasks": [
+            {
+                "id": t.id,
+                "skill": t.skill,
+                "label": t.label,
+                "status": t.status,
+                "result": t.result,
+                "feedback": t.feedback,
+                "feedback_note": t.feedback_note,
+                "provider": t.provider,
+                "day": t.day,
+                "created_at": t.created_at.isoformat(),
+                "options": _verdict_options(t),
+            }
+            for t in tasks
+        ]
+    }
+
+
+@router.post("/api/proactive/tasks/{task_id}/decide")
+async def decide_proactive_task(
+    task_id: int, body: TaskVerdictBody, request: Request, token: str | None = None
+) -> dict:
+    """The panel's one-tap verdicts on a finished task's result — the same
+    path a chat-surface button takes. `note` is the plain-words
+    acknowledgment (or why the tap didn't apply); None means the
+    carried-out action's own words are the acknowledgment."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    worker = getattr(request.app.state, "proactive_worker", None)
+    if worker is None:
+        raise HTTPException(status_code=503, detail="proactive worker is not wired")
+    if body.verdict not in ("approve", "revise", "discard"):
+        raise HTTPException(status_code=400, detail="unknown verdict")
+    note = await worker.decide_task(task_id, body.verdict)
+    return {"ok": True, "note": note}
+
+
+@router.get("/api/profile")
+async def profile_feed(request: Request, token: str | None = None) -> dict:
+    """Who the user is, as they have signed off on it: the confirmed
+    profile plus the pending entries waiting for one yes — the same
+    batch the chat confirmation message lists."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    workspace = getattr(request.app.state, "workspace", None)
+    if workspace is None:
+        raise HTTPException(status_code=503, detail="workspace is not enabled")
+    return {
+        "confirmed": [_entry_dict(e) for e in workspace.profile()],
+        "pending": [_entry_dict(e) for e in workspace.pending_profile()],
+    }
+
+
+@router.post("/api/profile/confirm")
+async def confirm_profile_entries(
+    body: ProfileConfirmBody, request: Request, token: str | None = None
+) -> dict:
+    """The panel's "yes" on pending profile entries — the same flip the
+    chat confirmation makes. Entries that aren't pending are left
+    alone, so a stale tap confirms nothing."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    workspace = getattr(request.app.state, "workspace", None)
+    if workspace is None:
+        raise HTTPException(status_code=503, detail="workspace is not enabled")
+    confirmed = workspace.confirm_profile(body.ids)
+    return {"ok": True, "confirmed": confirmed}
 
 
 def _entry_dict(entry: WorkspaceEntry) -> dict:

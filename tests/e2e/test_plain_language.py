@@ -136,8 +136,39 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     page.wait_for_timeout(500)
     text = page.locator("body").inner_text()
     assert "Read-only; nothing was changed" in text
+    # the background worker's lifecycle row reads plainly — actor, action
+    # and outcome all through the vocabulary, never the raw tokens
+    assert "Noted your verdict on background work" in text
     actors = page.locator("tbody tr td:nth-child(3)").all_inner_texts()
-    assert all(a in ("Aether", "You", "Scheduled check", "Routine") for a in actors)
+    assert all(
+        a in ("Aether", "You", "Scheduled check", "Routine", "Background worker") for a in actors
+    )
+
+    page.goto(f"{live_server}/#/tasks")
+    page.wait_for_selector('[data-testid="proactive-row"]')
+    page.wait_for_timeout(500)
+    text = page.locator("body").inner_text()
+    # skill names read through the vocabulary — never the raw tokens
+    assert "Following up on something you said" in text
+    assert "Background research" in text
+    assert "Notes on a file you shared" in text
+    assert "followups" not in text.lower()
+    assert "media" not in text.lower()
+    # a settled row shows its verdict in plain words, and no buttons
+    assert "Discarded" in text
+    assert "too detailed" in text
+    # the staged-approval row offers all three verdicts; the plain row two
+    assert page.locator('[data-testid="proactive-approve-2"]').count() == 1
+    assert page.locator('[data-testid="proactive-revise-2"]').count() == 1
+    assert page.locator('[data-testid="proactive-discard-3"]').count() == 1
+    assert page.locator('[data-testid="proactive-revise-3"]').count() == 0
+    # the one-tap round trip: the note lands, the row settles, buttons go
+    page.click('[data-testid="proactive-approve-2"]')
+    page.wait_for_timeout(500)
+    settled = page.locator("body").inner_text()
+    assert "noted — I'll keep doing things like that." in settled
+    assert "Approved" in settled
+    assert page.locator('[data-testid="proactive-approve-2"]').count() == 0
 
     page.goto(f"{live_server}/#/settings")
     page.wait_for_timeout(800)
@@ -184,6 +215,20 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     # write-only: cleared from the field, absent from body text
     assert page.locator('[data-testid="settings-cred-DISCORD_BOT_TOKEN"]').input_value() == ""
     assert "discord-token-9" not in page.locator("body").inner_text()
+
+    # the profile card: confirmed entries attributed plainly, pending ones
+    # waiting for one yes — the same flip the chat confirmation makes
+    page.wait_for_selector('[data-testid="profile-card"]')
+    profile_text = page.locator("body").inner_text()
+    assert "What Aether knows about you" in profile_text
+    assert "Aether noticed" in profile_text
+    assert "you are building a personal assistant you call Aether" in profile_text
+    assert page.locator('[data-testid="profile-pending-p-paper"]').count() == 1
+    page.click('[data-testid="profile-keep-p-paper"]')
+    page.wait_for_timeout(500)
+    assert page.locator('[data-testid="profile-pending-p-paper"]').count() == 0
+    assert page.locator('[data-testid="profile-confirmed-p-paper"]').count() == 1
+    assert "Noted." in page.locator("body").inner_text()
 
     page.goto(f"{live_server}/#/contacts")
     page.wait_for_selector('[data-testid="contact-row"]')

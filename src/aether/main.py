@@ -394,6 +394,9 @@ def create_app(
             carry_out=agent.decide,
             present=agent.present_result,
         )
+        # the panel's verdict buttons reach the worker's own decide path —
+        # the same one the chat surfaces' buttons take
+        app.state.proactive_worker = proactive_worker
 
         connectors = build_messaging_connectors(
             settings,

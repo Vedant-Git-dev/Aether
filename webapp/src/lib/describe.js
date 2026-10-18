@@ -21,7 +21,7 @@ export function personName(platform, handle) {
 
 export const ACTOR_LABELS = {
   agent: "Aether", scheduler: "Scheduled check", system: "Aether (automatic)", user: "You",
-  owner: "You", routine: "Routine",
+  owner: "You", routine: "Routine", worker: "Background worker",
 };
 
 // last-resort rendering for any internal token with no explicit label —
@@ -58,6 +58,11 @@ export const OUTCOME_LABELS = {
     "Changes who Aether listens to or what it's connected to — requires your approval",
   "an unrecognized config path can never apply silently — held for the user to look at":
     "An unrecognized setting — held for your review",
+  // the background worker's lifecycle rows, as they land on the audit page
+  "opportunity claimed as a pending task": "Picked up a piece of background work",
+  "task done": "Finished a piece of background work",
+  "task failed": "A piece of background work failed",
+  "task feedback recorded": "Noted your verdict on background work",
 };
 
 export const TRACE_KINDS = {
@@ -156,6 +161,7 @@ const NATIVE_TOOLS = {
   delete_routine: "Deleting a routine",
   web_fetch: "Reading a web page",
   web_search: "Searching the web",
+  proactive_task: "Background work",
 };
 
 const EXTRA_SOURCES = { screen: "Screen", web: "Web", user: "You", agent: "Aether" };
@@ -415,6 +421,42 @@ export function describeToolPattern(pattern) {
   const parts = group ? group[2].split("|").map((alt) => group[1] + alt + group[3]) : cleaned.split("|");
   return parts.map((part) => describeName(part.replace(/[()]/g, "")))
     .map((text, i) => (i ? text[0].toLowerCase() + text.slice(1) : text)).join(" or ");
+}
+
+// The background worker's own words — the raw skill names ("followups",
+// "research", "media") and verdict words ("approved", "revised",
+// "discarded") never reach the screen.
+export const SKILL_LABELS = {
+  followups: "Following up on something you said",
+  research: "Background research",
+  media: "Notes on a file you shared",
+};
+
+export function describeSkill(name) {
+  return SKILL_LABELS[name] || humanize(name);
+}
+
+export const FEEDBACK_LABELS = {
+  approved: "Approved",
+  revised: "Sent back for changes",
+  discarded: "Discarded",
+};
+
+export function describeFeedback(feedback) {
+  if (!feedback) return "";
+  return FEEDBACK_LABELS[feedback] || humanize(feedback);
+}
+
+// who first wrote a profile entry — "human" is one typed straight into the
+// workspace file by hand, past the confirmation flow
+export const PROFILE_SOURCES = {
+  agent: "Aether noticed",
+  user: "You said",
+  human: "You wrote",
+};
+
+export function describeProfileSource(source) {
+  return PROFILE_SOURCES[source] || humanize(source);
 }
 
 export const DECISION_LABELS = {

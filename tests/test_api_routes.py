@@ -12,6 +12,7 @@ from fakes import (
     FakeComposioBridge,
     FakeConfigManager,
     FakeEventStore,
+    FakeProactiveStore,
     FakeTraces,
 )
 from fastapi import FastAPI
@@ -112,6 +113,8 @@ def _app(
     transfers=None,
     settings: Settings | None = None,
     traces: FakeTraces | None = None,
+    proactive_store=None,
+    proactive_worker=None,
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(router)
@@ -145,6 +148,10 @@ def _app(
         app.state.transfers = transfers
     if traces is not None:
         app.state.traces = traces
+    if proactive_store is not None:
+        app.state.proactive_store = proactive_store
+    if proactive_worker is not None:
+        app.state.proactive_worker = proactive_worker
     return app
 
 
@@ -1064,6 +1071,151 @@ async def test_tasks_feed_reports_scheduled_actions() -> None:
             "created_at": "2026-09-26T00:00:00+00:00",
         }
     ]
+
+
+# ---------------------------------------------------------------------------
+# /api/proactive/tasks* — the background worker's rows and verdicts
+# ---------------------------------------------------------------------------
+
+
+class FakeProactiveWorker:
+    def __init__(self) -> None:
+        self.verdicts: list[tuple[int, str]] = []
+        self.answer: str | None = "dropped — I'll do less of that."
+
+    async def decide_task(self, task_id: int, verdict: str) -> str | None:
+        self.verdicts.append((task_id, verdict))
+        return self.answer
+
+
+_proactive_keys = iter(f"k{i}" for i in range(100))
+
+
+async def _proactive_row(
+    store: FakeProactiveStore, *, status: str = "done", approval_id=None, feedback=None
+) -> None:
+    task = await store.claim(
+        skill="followups",
+        key=next(_proactive_keys),
+        label="the draft",
+        opportunity={},
+        day="2026-10-18",
+    )
+    assert task is not None
+    await store.set_plan(task.id, {"approval_id": approval_id} if approval_id else {})
+    if status == "done":
+        await store.finish(task.id, "the result, in plain words")
+    else:
+        await store.fail(task.id, "the job died")
+    if feedback is not None:
+        await store.record_feedback(task.id, feedback)
+
+
+async def test_proactive_tasks_feed_is_token_guarded() -> None:
+    async with _client(_app(None, proactive_store=FakeProactiveStore())) as client:
+        assert (await client.get("/api/proactive/tasks")).status_code == 401
+
+
+async def test_proactive_tasks_feed_is_503_without_a_store_wired() -> None:
+    async with _client(_app(None)) as client:
+        response = await client.get("/api/proactive/tasks", params={"token": "secret"})
+    assert response.status_code == 503
+
+
+async def test_proactive_tasks_feed_offers_only_live_verdicts() -> None:
+    store = FakeProactiveStore()
+    await _proactive_row(store)  # plain result — nothing staged
+    await _proactive_row(store, approval_id=9)  # staged — all three verdicts
+    await _proactive_row(store, approval_id=9, feedback="approved")  # already decided
+    await _proactive_row(store, status="failed")  # work that never finished
+    async with _client(_app(None, proactive_store=store)) as client:
+        response = await client.get("/api/proactive/tasks", params={"token": "secret"})
+    rows = response.json()["tasks"]
+    # newest first — the failed row was claimed last
+    assert [r["options"] for r in rows] == [
+        [],
+        [],
+        ["approve", "revise", "discard"],
+        ["approve", "discard"],
+    ]
+    # the row is plain words the panel can show as-is
+    assert rows[3]["label"] == "the draft"
+    assert rows[3]["result"] == "the result, in plain words"
+    assert rows[3]["skill"] == "followups"  # translated by the panel, never shown raw
+
+
+async def test_proactive_decide_passes_the_verdict_through() -> None:
+    worker = FakeProactiveWorker()
+    async with _client(_app(None, proactive_worker=worker)) as client:
+        response = await client.post(
+            "/api/proactive/tasks/3/decide",
+            params={"token": "secret"},
+            json={"verdict": "discard"},
+        )
+    assert response.json() == {"ok": True, "note": "dropped — I'll do less of that."}
+    assert worker.verdicts == [(3, "discard")]
+
+
+async def test_proactive_decide_rejects_an_unknown_verdict_and_a_missing_worker() -> None:
+    worker = FakeProactiveWorker()
+    async with _client(_app(None, proactive_worker=worker)) as client:
+        response = await client.post(
+            "/api/proactive/tasks/3/decide",
+            params={"token": "secret"},
+            json={"verdict": "explode"},
+        )
+    assert response.status_code == 400
+    assert worker.verdicts == []
+    async with _client(_app(None)) as client:  # no worker on state
+        response = await client.post(
+            "/api/proactive/tasks/3/decide",
+            params={"token": "secret"},
+            json={"verdict": "discard"},
+        )
+    assert response.status_code == 503
+
+
+async def test_proactive_decide_is_token_guarded() -> None:
+    async with _client(_app(None, proactive_worker=FakeProactiveWorker())) as client:
+        response = await client.post("/api/proactive/tasks/3/decide", json={"verdict": "discard"})
+    assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# /api/profile* — who the user is, confirmed and pending
+# ---------------------------------------------------------------------------
+
+
+async def test_profile_feed_lists_confirmed_and_pending(tmp_path) -> None:
+    ws = _workspace(tmp_path)
+    ws.remember("lives in pune", kind="profile", source="user")
+    ws.remember("works on databases", kind="profile", source="agent")
+    async with _client(_app(None, workspace=ws)) as client:
+        assert (await client.get("/api/profile")).status_code == 401
+        response = await client.get("/api/profile", params={"token": "secret"})
+    body = response.json()
+    assert [e["text"] for e in body["confirmed"]] == ["lives in pune"]
+    assert [e["text"] for e in body["pending"]] == ["works on databases"]
+    assert body["pending"][0]["status"] == "pending"
+
+
+async def test_profile_confirm_flips_pending_entries(tmp_path) -> None:
+    ws = _workspace(tmp_path)
+    ws.remember("lives in pune", kind="profile", source="user")
+    guessed = ws.remember("works on databases", kind="profile", source="agent")
+    async with _client(_app(None, workspace=ws)) as client:
+        response = await client.post(
+            "/api/profile/confirm", params={"token": "secret"}, json={"ids": [guessed]}
+        )
+    assert response.json() == {"ok": True, "confirmed": 1}
+    assert [e.text for e in ws.profile()] == ["lives in pune", "works on databases"]
+    assert ws.pending_profile() == []
+
+
+async def test_profile_feed_is_503_without_a_workspace_wired() -> None:
+    async with _client(_app(None)) as client:
+        response = await client.get("/api/profile", params={"token": "secret"})
+    assert response.status_code == 503
 
 
 # ---------------------------------------------------------------------------

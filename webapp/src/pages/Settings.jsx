@@ -9,7 +9,8 @@ import { Card, Field, Select, Toggle, Button } from "../components/ui.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import { useToast } from "../components/Toasts.jsx";
 import { api, token, hasToken } from "../lib/api.js";
-import { friendlyValue } from "../lib/describe.js";
+import { fmtTime } from "../lib/format.js";
+import { friendlyValue, describeProfileSource } from "../lib/describe.js";
 
 export default function SettingsPage() {
   const toast = useToast();
@@ -206,6 +207,8 @@ export default function SettingsPage() {
         </div>
       </Card>
 
+      {hasToken() && <ProfileCard />}
+
       {hasToken() ? (
         feedError ? (
           <EmptyState title="Configuration isn't available." sub={feedError} />
@@ -298,6 +301,96 @@ export default function SettingsPage() {
         <div className="py-2 text-sm text-ink-3">Set your API token above first.</div>
       )}
     </div>
+  );
+}
+
+// The profile Aether carries into every reply and task: the confirmed
+// entries plus the ones it gathered on its own, each waiting for one yes —
+// the same flip the chat confirmation makes.
+function ProfileCard() {
+  const [profile, setProfile] = useState(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState({}); // entry id -> a keep in flight
+  const [status, setStatus] = useState({ text: "", bad: false });
+
+  const load = () => api("/api/profile").then(setProfile).catch((err) => setError(err.message));
+  useEffect(() => { load(); }, []);
+
+  const keep = async (id) => {
+    setBusy((b) => ({ ...b, [id]: true }));
+    try {
+      const d = await api("/api/profile/confirm", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ids: [id] }),
+      });
+      // zero means it was no longer pending — a stale tap confirms nothing
+      setStatus({ text: d.confirmed ? "Noted." : "that one isn't waiting anymore", bad: false });
+      load();
+    } catch (err) {
+      setStatus({ text: err.message, bad: true });
+    } finally {
+      setBusy((b) => ({ ...b, [id]: false }));
+    }
+  };
+
+  return (
+    <Card className="mb-4 p-4" data-testid="profile-card">
+      <h2 className="mb-2 text-sm font-semibold text-ink">What Aether knows about you</h2>
+      <p className="mb-3 text-xs text-ink-2">
+        The profile Aether carries into every reply and task. Entries it gathered on its own
+        wait here for your yes — the same confirmation it asks for in chat.
+      </p>
+      {error ? (
+        <div className="text-sm text-ink-3">Could not load: {error}</div>
+      ) : profile === null ? (
+        <div className="text-sm text-ink-3">Loading…</div>
+      ) : profile.confirmed.length === 0 && profile.pending.length === 0 ? (
+        <div className="text-sm text-ink-3">
+          Nothing yet — what you tell Aether about yourself will appear here.
+        </div>
+      ) : (
+        <>
+          {profile.confirmed.map((e) => (
+            <div
+              key={e.id}
+              data-testid={`profile-confirmed-${e.id}`}
+              className="border-t border-line py-2 first:border-t-0 first:pt-0"
+            >
+              <div className="text-sm text-ink">{e.text}</div>
+              <div className="text-xs text-ink-3">
+                {describeProfileSource(e.source)} · {fmtTime(e.at)}
+              </div>
+            </div>
+          ))}
+          {profile.pending.map((e) => (
+            <div key={e.id} data-testid={`profile-pending-${e.id}`} className="border-t border-line py-2">
+              <div className="text-sm text-ink">{e.text}</div>
+              <div className="text-xs text-ink-3">
+                {describeProfileSource(e.source)} · {fmtTime(e.at)}
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <Button
+                  kind="approve"
+                  data-testid={`profile-keep-${e.id}`}
+                  disabled={Boolean(busy[e.id])}
+                  onClick={() => keep(e.id)}
+                >
+                  Keep this
+                </Button>
+              </div>
+            </div>
+          ))}
+          {status.text && (
+            <div
+              data-testid="profile-status"
+              className={`mt-2 text-xs ${status.bad ? "text-danger" : "text-ink-3"}`}
+            >
+              {status.text}
+            </div>
+          )}
+        </>
+      )}
+    </Card>
   );
 }
 

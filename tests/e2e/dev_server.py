@@ -13,6 +13,7 @@ real routers, the real static files, just a fake persistence layer.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from re import compile as _re_compile
@@ -44,7 +45,9 @@ from aether.config_store import _apply_note
 from aether.connectors.base import InboundMessage
 from aether.memory.entities import Entity, EntityNote
 from aether.memory.events import Event
+from aether.proactive import ProactiveTask
 from aether.scheduler.jobs import ScheduledAction
+from aether.workspace import WorkspaceEntry
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "src" / "aether" / "web"
 API_TOKEN = "secret"
@@ -173,6 +176,18 @@ class FakeAudit:
                 "outcome": "executed after approval",
                 "created_at": now - timedelta(minutes=39),
                 "entry_hash": "d0a6f4b31c5e9a2d7f0b4e8c1a6d3f9b2e5c8a1d4f7b0e3c6a9d2f5b8e1c4a7d",
+            },
+            # the background worker's own row — the same lifecycle words the
+            # real store audits, so the audit page reads them plainly
+            {
+                "seq": 5,
+                "actor": "worker",
+                "tool_name": "proactive_task",
+                "decision": "info",
+                "rules_matched": "",
+                "outcome": "task feedback recorded",
+                "created_at": now - timedelta(minutes=12),
+                "entry_hash": "e1b7c5d42f6a8e0c1d3f5b7a9c2e4d6f8a0c2e4b6d8f0a2c4e6b8d0f2a4c6e8b",
             },
         ]
 
@@ -540,6 +555,166 @@ class FakeTraces:
         return next((t for t in self.rows if t.id == trace_id), None)
 
 
+class FakeProactiveStore:
+    """The background worker's task rows — two finished pieces of work with
+    live one-tap verdicts (one carrying a staged approval, so the panel
+    shows the three-button shape), and one already settled."""
+
+    def __init__(self, now: datetime) -> None:
+        self.rows = [
+            ProactiveTask(
+                id=3,
+                skill="research",
+                label="notes on the distributed-systems paper",
+                status="done",
+                opportunity_key="research:paper",
+                opportunity={},
+                plan={},
+                result=(
+                    "The paper's core claim holds only for small clusters; the "
+                    "section on failure modes lists three worth watching."
+                ),
+                feedback=None,
+                feedback_note=None,
+                provider="modal",
+                day=f"{now:%Y-%m-%d}",
+                created_at=now - timedelta(minutes=25),
+                updated_at=now - timedelta(minutes=20),
+            ),
+            ProactiveTask(
+                id=2,
+                skill="followups",
+                label="draft reply to sam about thursday",
+                status="done",
+                opportunity_key="followups:2",
+                opportunity={},
+                # a staged action — this row's Approve carries the send out
+                plan={"approval_id": 1},
+                result="Drafted a short reply confirming Thursday at 4 — it waits for your approval.",
+                feedback=None,
+                feedback_note=None,
+                provider=None,
+                day=f"{now:%Y-%m-%d}",
+                created_at=now - timedelta(hours=2),
+                updated_at=now - timedelta(hours=2),
+            ),
+            ProactiveTask(
+                id=1,
+                skill="media",
+                label="describe the standup recording you shared",
+                status="done",
+                opportunity_key="media:1",
+                opportunity={},
+                plan={},
+                result=(
+                    "A twelve-minute recording of a standup; the only decision "
+                    "taken was moving the demo to Friday."
+                ),
+                feedback="discarded",
+                feedback_note="too detailed",
+                provider="modal",
+                day=f"{now:%Y-%m-%d}",
+                created_at=now - timedelta(hours=5),
+                updated_at=now - timedelta(hours=4),
+            ),
+        ]
+
+    async def list(self, limit: int = 50) -> list[ProactiveTask]:
+        return self.rows[:limit]  # newest first, matching the real store
+
+    async def record_feedback(self, task_id: int, feedback: str, note: str = "") -> None:
+        row = next((r for r in self.rows if r.id == task_id), None)
+        if row is not None:
+            row.feedback = feedback
+            row.feedback_note = note or None
+
+
+class FakeProactiveWorker:
+    """The panel's one-tap verdicts on finished work — the same decide path
+    the chat-surface buttons take, applied to the fixture's rows so the
+    round trip works by hand."""
+
+    _FEEDBACK = {"approve": "approved", "revise": "revised", "discard": "discarded"}
+    _NOTES = {
+        "approve": "noted — I'll keep doing things like that.",
+        "revise": "noted — send me the corrected version and I'll take it from there.",
+        "discard": "dropped — I'll do less of that.",
+    }
+
+    def __init__(self, store: FakeProactiveStore) -> None:
+        self._store = store
+        self.verdicts: list[tuple[int, str]] = []
+
+    async def decide_task(self, task_id: int, verdict: str) -> str | None:
+        self.verdicts.append((task_id, verdict))
+        row = next((r for r in self._store.rows if r.id == task_id), None)
+        if row is None:
+            return "that task could not be found."
+        if row.feedback is not None:
+            return "that task was already decided."
+        await self._store.record_feedback(task_id, self._FEEDBACK[verdict])
+        return self._NOTES[verdict]
+
+
+class FakeWorkspace:
+    """The profile surface the Settings card reads — confirmed entries plus
+    the pending ones waiting for one yes, with the same flip the real
+    workspace's confirm makes."""
+
+    @staticmethod
+    def _at(now: datetime, minutes: int) -> str:
+        # the real store's shape: _now_iso(), an ISO string to the second
+        return (now - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+
+    def __init__(self, now: datetime) -> None:
+        self.entries = [
+            WorkspaceEntry(
+                id="p-you",
+                text="you prefer short, plain replies",
+                source="user",
+                at=self._at(now, 4320),
+                status="confirmed",
+            ),
+            WorkspaceEntry(
+                id="p-evening",
+                text="you are usually free after 7 in the evening",
+                source="user",
+                at=self._at(now, 4260),
+                status="confirmed",
+            ),
+            WorkspaceEntry(
+                id="p-proj",
+                text="you are building a personal assistant you call Aether",
+                source="agent",
+                at=self._at(now, 90),
+                status="pending",
+                confidence=0.8,
+            ),
+            WorkspaceEntry(
+                id="p-paper",
+                text="you are reading a paper on distributed systems",
+                source="agent",
+                at=self._at(now, 60),
+                status="pending",
+                confidence=0.7,
+            ),
+        ]
+
+    def profile(self) -> list[WorkspaceEntry]:
+        return [e for e in self.entries if e.status == "confirmed"]
+
+    def pending_profile(self) -> list[WorkspaceEntry]:
+        return [e for e in self.entries if e.status == "pending"]
+
+    def confirm_profile(self, entry_ids: list[str]) -> int:
+        confirmed = 0
+        for i, entry in enumerate(self.entries):
+            if entry.id in entry_ids and entry.status == "pending":
+                self.entries[i] = replace(entry, status="confirmed")
+                confirmed += 1
+        return confirmed
+
+
 class FakeConfigManager:
     """The read surface the panel uses (effective() like the real one) plus
     the write surface the Settings and Contacts pages need — validated like
@@ -813,6 +988,10 @@ def build_app() -> FastAPI:
     app.state.entities = FakeEntities(now)
     app.state.scheduler = FakeScheduler(now)
     app.state.traces = FakeTraces(now)
+    proactive_store = FakeProactiveStore(now)
+    app.state.proactive_store = proactive_store
+    app.state.proactive_worker = FakeProactiveWorker(proactive_store)
+    app.state.workspace = FakeWorkspace(now)
     app.state.config_manager = FakeConfigManager(config)
     app.state.tools = FakeTools()
     secret_store = FakeSecretStore()
