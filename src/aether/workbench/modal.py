@@ -42,6 +42,10 @@ log = logging.getLogger("aether.workbench.modal")
 _TOKEN_ID = "MODAL_TOKEN_ID"
 _TOKEN_SECRET = "MODAL_TOKEN_SECRET"
 _APP_NAME = "aether-workbench"  # one named app groups every sandbox on the dashboard
+# the image every job runs on: Debian plus ffmpeg, so video work (frame
+# extraction, edits) has the tool without any runtime install — Modal
+# builds this once and caches it, not per job
+_IMAGE = modal.Image.debian_slim().apt_install("ffmpeg")
 _WORKDIR = "/root"
 _ARTIFACTS = "artifacts"
 # the sandbox outlives the job by the slack, so a job at its own limit
@@ -57,8 +61,9 @@ _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 class ModalApi(Protocol):
     """The SDK seam — connect, find the app, make a sandbox — so no test
-    ever talks to the sandbox service. `connection` owns the client's
-    lifetime: it hands one over and closes it when the block ends."""
+    ever talks to the sandbox service. `connection` hands the client
+    over for the job; the live API keeps that client's lifetime (one
+    per credential pair, reused), and a job block simply borrows it."""
 
     def connection(self, token_id: str, token_secret: str) -> AbstractAsyncContextManager[Any]: ...
 
@@ -68,19 +73,29 @@ class ModalApi(Protocol):
 
 
 class _LiveModalApi:
-    """The thin, real SDK behind the seam."""
+    """The thin, real SDK behind the seam. modal 1.x's from_credentials
+    hands back an *already-opened* client that closes itself at process
+    shutdown — wrapping it in `async with` opened it a second time and
+    tripped the SDK's own re-open assert, so one client is cached per
+    credential pair and borrowed instead."""
+
+    def __init__(self) -> None:
+        self._client: Any = None
+        self._client_key: tuple[str, str] | None = None
 
     @asynccontextmanager
     async def connection(self, token_id: str, token_secret: str) -> AsyncGenerator[Any]:
-        async with await modal.Client.from_credentials.aio(token_id, token_secret) as client:
-            yield client
+        if self._client is None or self._client_key != (token_id, token_secret):
+            self._client = await modal.Client.from_credentials.aio(token_id, token_secret)
+            self._client_key = (token_id, token_secret)
+        yield self._client
 
     async def lookup_app(self, client: Any) -> Any:
         return await modal.App.lookup.aio(_APP_NAME, client=client, create_if_missing=True)
 
     async def create_sandbox(self, app: Any, *, timeout: int, client: Any) -> Any:
         return await modal.Sandbox.create.aio(
-            app=app, timeout=timeout, workdir=_WORKDIR, client=client
+            app=app, timeout=timeout, workdir=_WORKDIR, client=client, image=_IMAGE
         )
 
 
@@ -140,7 +155,7 @@ class ModalWorkbench:
         sandbox: Any = None
         try:
             try:
-                # the client lives for the job and closes when the block ends
+                # the job borrows the adapter's cached client for its block
                 async with self._api.connection(token_id, token_secret) as client:
                     try:
                         app = await self._api.lookup_app(client)

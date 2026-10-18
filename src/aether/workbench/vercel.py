@@ -148,19 +148,24 @@ class VercelWorkbench:
             )
         _validate(spec)
         started = time.monotonic()
-        box: Any = None
         try:
-            try:
-                # the credential scope lives for the job and ends with it
-                async with self._api.session(token, team_id, project_id):
-                    try:
-                        box = await self._api.create_sandbox(
-                            execution_time_limit=spec.limits.timeout_seconds + _LIFETIME_SLACK
-                        )
-                    except SandboxError as exc:
-                        raise WorkbenchError(
-                            f"the cloud sandbox didn't come up — {type(exc).__name__}."
-                        ) from exc
+            # the credential scope lives for the job and ends with it
+            async with self._api.session(token, team_id, project_id):
+                try:
+                    box = await self._api.create_sandbox(
+                        execution_time_limit=spec.limits.timeout_seconds + _LIFETIME_SLACK
+                    )
+                except SandboxError as exc:
+                    raise WorkbenchError(
+                        f"the cloud sandbox didn't come up — {type(exc).__name__}."
+                    ) from exc
+                # the guarantee: the sandbox dies whatever happened in
+                # it — destroyed here, inside the session, because the
+                # destroy call needs the same credential scope the
+                # sandbox was born in. (Destroying after the session
+                # closed failed on the closed session and left every
+                # sandbox to burn its own time limit.)
+                try:
                     try:
                         for name, content in spec.files.items():
                             await box.fs.write_text(f"{_WORKDIR}/{name}", content)
@@ -201,29 +206,30 @@ class VercelWorkbench:
                         duration=time.monotonic() - started,
                         provider=self.name,
                     )
-            except _TimedOut:
-                return JobResult(
-                    exit_ok=False,
-                    stdout="",
-                    stderr="the job ran past its time limit and was stopped.",
-                    artifacts={},
-                    duration=time.monotonic() - started,
-                    provider=self.name,
-                    timed_out=True,
-                )
-            except SandboxError as exc:
-                # the session itself never opened — a dispatch failure,
-                # same shape as a sandbox that didn't come up
-                raise WorkbenchError(
-                    f"the cloud sandbox didn't come up — {type(exc).__name__}."
-                ) from exc
-        finally:
-            if box is not None:
-                # the guarantee: the sandbox dies whatever happened in it
-                try:
-                    await box.destroy()
-                except Exception:
-                    log.warning("a sandbox couldn't be cleaned up", exc_info=True)
+                finally:
+                    # the guarantee: the sandbox dies whatever happened
+                    # in it — inside the session, where the destroy
+                    # call can still reach the API
+                    try:
+                        await box.destroy()
+                    except Exception:
+                        log.warning("a sandbox couldn't be cleaned up", exc_info=True)
+        except _TimedOut:
+            return JobResult(
+                exit_ok=False,
+                stdout="",
+                stderr="the job ran past its time limit and was stopped.",
+                artifacts={},
+                duration=time.monotonic() - started,
+                provider=self.name,
+                timed_out=True,
+            )
+        except SandboxError as exc:
+            # the session itself never opened — a dispatch failure,
+            # same shape as a sandbox that didn't come up
+            raise WorkbenchError(
+                f"the cloud sandbox didn't come up — {type(exc).__name__}."
+            ) from exc
 
     async def _collect_artifacts(self, box: Any) -> dict[str, bytes]:
         """Whatever the job left in its artifacts directory, as bytes —
