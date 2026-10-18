@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi import FastAPI, Response
@@ -29,6 +30,7 @@ from .connectors.mail_allowlist import MailAllowlist
 from .connectors.mcp_host import MCPHost
 from .connectors.registry import ToolRegistry
 from .connectors.screenvision import ScreenVision
+from .counters import DailyCounters
 from .llm.base import ProviderError
 from .llm.embeddings import GeminiEmbedder
 from .llm.registry import ProviderRegistry
@@ -40,10 +42,21 @@ from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
 from .memory.salience import LLMJudge, Salience
 from .memory.vectors import VectorMemory
+from .proactive import Budget, ProactiveStore, ProactiveWorker
 from .routines import Routines
 from .scheduler import Scheduler, SchedulerWorker
 from .secret_env import EnvResolver
 from .secret_store import SecretStore
+from .skills import build_skills
+from .web import WebTools
+from .workbench import Workbench, ordered
+from .workbench import run as run_workbench
+from .workbench.base import JobLimits, JobResult, JobSpec
+from .workbench.github_actions import GitHubActionsWorkbench
+from .workbench.minutes import MinuteMeter
+from .workbench.modal import ModalWorkbench
+from .workbench.transfers import TransferStore
+from .workbench.vercel import VercelWorkbench
 from .workspace import Workspace, WorkspaceWriteError
 
 log = logging.getLogger("aether.main")
@@ -106,6 +119,7 @@ def create_app(
         # in chat works without a boot.
         secret_store = SecretStore(pool, cipher)
         env_resolver = EnvResolver(secrets=secret_store)
+        app.state.secrets = secret_store
         app.state.resolver = env_resolver
         composio = ComposioBridge(env_resolver, secret_store)
         app.state.composio = composio
@@ -133,6 +147,59 @@ def create_app(
         app.state.cipher = cipher
         app.state.settings = settings
         app.state.config = config
+
+        # --- daily counters + the web tools ---------------------------------
+        # counts only (search cap today, the proactive budgets later) and
+        # the hardened fetch/search pair — both live on the resolver, so
+        # a key pasted after boot connects without a restart.
+        counters = DailyCounters(pool)
+        app.state.counters = counters
+        web_tools = WebTools(resolver=env_resolver, counters=counters, config=config)
+        app.state.web = web_tools
+
+        # --- the workbench: where a job runs when it must not run here ----
+        # every provider is inert without its keys, so the ladder is safe
+        # to build unconditionally — each provider answers for itself.
+        # The batch queue additionally needs its own repository named and
+        # this instance's public address (the one-time URLs it hands a
+        # runner have to point somewhere); without them it stays
+        # unconstructed and the ladder simply never sees it.
+        transfers = TransferStore(pool, cipher)
+        app.state.transfers = transfers
+        sandboxes: list[Workbench] = [
+            ModalWorkbench(resolver=env_resolver),
+            VercelWorkbench(resolver=env_resolver),
+        ]
+        actions = None
+        if (
+            config.workbench.actions_repo
+            and config.workbench.actions_workflow
+            and settings.public_url
+        ):
+            actions = GitHubActionsWorkbench(
+                resolver=env_resolver,
+                transfers=transfers,
+                public_url=settings.public_url,
+                repo=config.workbench.actions_repo,
+                workflow=config.workbench.actions_workflow,
+                ref=config.workbench.actions_ref,
+                monthly_minutes_cap=config.workbench.monthly_minutes_cap,
+                minutes=MinuteMeter(pool),
+            )
+            sandboxes.append(actions)
+        ladder = ordered(sandboxes, config.workbench.provider)
+
+        async def _run_job(spec: JobSpec) -> JobResult:
+            """One job through the routing ladder, with the configured job
+            timeout as a ceiling every spec is clamped to — a skill may
+            ask for less, never more."""
+            limits = JobLimits(
+                timeout_seconds=min(
+                    spec.limits.timeout_seconds, config.workbench.job_timeout_minutes * 60
+                ),
+                max_output_bytes=spec.limits.max_output_bytes,
+            )
+            return await run_workbench(replace(spec, limits=limits), ladder)
 
         # --- vector memory: free embeddings make recall semantic ----------
         # best effort, same as the providers — without a key the layer is a
@@ -196,6 +263,10 @@ def create_app(
         scheduler = Scheduler(pool, cipher, audit)
         app.state.entities = entities
         app.state.scheduler = scheduler
+        # the proactive worker's task rows — the same audit chain as
+        # everything else; the worker and its skills land later in boot
+        proactive_store = ProactiveStore(pool, cipher, audit)
+        app.state.proactive_store = proactive_store
         routines = Routines(pool, cipher, audit)
         app.state.routines = routines
         traces = Traces(pool, cipher)
@@ -204,16 +275,33 @@ def create_app(
         # --- workspace: the human-editable Markdown identity/memory layer ---
         # an enhancement layer, not core plumbing: a workspace that can't be
         # set up (bad permissions, a full disk) degrades to "no workspace"
-        # rather than taking the whole boot down with it.
+        # rather than taking the whole boot down with it. Encrypted at rest
+        # by default — except under the throwaway dev key, which changes
+        # every boot and would eat the files on the next restart.
         workspace: Workspace | None = None
         if config.workspace.enabled:
-            candidate = Workspace(config.workspace.path)
+            encrypt = config.workspace.encrypted and bool(settings.encryption_key)
+            if config.workspace.encrypted and not encrypt:
+                log.warning(
+                    "workspace staying plain text — the ephemeral dev key would "
+                    "make encrypted files unreadable on the next boot"
+                )
+            candidate = Workspace(config.workspace.path, cipher=cipher if encrypt else None)
             try:
                 first_run = candidate.ensure_scaffold()
             except WorkspaceWriteError as exc:
                 log.warning("workspace unavailable (%s) — continuing without it", exc)
             else:
                 workspace = candidate
+                if encrypt:
+                    migrated = candidate.migrate_plaintext()
+                    if migrated:
+                        await audit.append(
+                            actor="system",
+                            tool_name="workspace",
+                            decision="allow",
+                            outcome=f"encrypted {migrated} plaintext workspace file(s) at rest",
+                        )
                 log.info("workspace ready at %s (first run: %s)", workspace.root, first_run)
         app.state.workspace = workspace
 
@@ -269,8 +357,46 @@ def create_app(
             config_manager=config_manager,
             workspace=workspace,
             vectors=vectors,
+            web=web_tools,
         )
         log.info("native tools registered: %d", native)
+
+        # the background worker — off by default and self-gating on
+        # proactive.enabled every cycle, so it always spins and /resume
+        # never needs a restart. Its own pause (the anomaly monitor, a
+        # /pause) persists through the config store, and its notifications
+        # ride the loop's interruption budget. The skills come from the
+        # registry; each run goes through the workbench ladder and the
+        # agent's own tool gate, so nothing bypasses policy or audit.
+        # Built before the connectors: a task's Approve button reaches it
+        # through on_task_decision, and its results reach the user through
+        # the loop's own present fanout.
+        async def _pause_proactive() -> None:
+            await config_manager.set(
+                op="set", path="proactive.enabled", value=False, source="worker"
+            )
+
+        async def _notify_proactive(text: str) -> None:
+            await agent.note_to_user(text)
+
+        proactive_worker = ProactiveWorker(
+            store=proactive_store,
+            budget=Budget(counters, config.proactive),
+            config=config,
+            skills=build_skills(),
+            events=events,
+            workspace=workspace,
+            workbench=_run_job,
+            executor=agent.execute_tool,
+            notify=_notify_proactive,
+            pause=_pause_proactive,
+            approvals=approvals,
+            carry_out=agent.decide,
+            present=agent.present_result,
+        )
+        # the panel's verdict buttons reach the worker's own decide path —
+        # the same one the chat surfaces' buttons take
+        app.state.proactive_worker = proactive_worker
 
         connectors = build_messaging_connectors(
             settings,
@@ -278,6 +404,7 @@ def create_app(
             approvals=approvals,
             on_decision=agent.execute_decision,
             on_inbound=agent.handle_inbound,
+            on_task_decision=proactive_worker.decide_task,
         )
         surfaces.add_connectors(connectors)
         for connector in connectors:
@@ -296,8 +423,10 @@ def create_app(
         )
 
         worker = SchedulerWorker(scheduler, agent.execute_scheduled)
+
         agent.start()
         worker.start()
+        proactive_worker.start()
         log.info(
             "aether running — surfaces: web%s, agent loop + scheduler live",
             "".join(f", {c.name}" for c in connectors),
@@ -305,7 +434,10 @@ def create_app(
 
         yield
 
+        await proactive_worker.stop()
         await worker.stop()
+        if actions is not None:
+            await actions.aclose()
         await agent.stop()
         for connector in connectors:
             await connector.stop()

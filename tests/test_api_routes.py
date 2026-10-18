@@ -12,6 +12,7 @@ from fakes import (
     FakeComposioBridge,
     FakeConfigManager,
     FakeEventStore,
+    FakeProactiveStore,
     FakeTraces,
 )
 from fastapi import FastAPI
@@ -109,12 +110,15 @@ def _app(
     entities=None,
     scheduler=None,
     workspace=None,
+    transfers=None,
     settings: Settings | None = None,
     traces: FakeTraces | None = None,
+    proactive_store=None,
+    proactive_worker=None,
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(router)
-    app.state.settings = settings or Settings(_env_file=None, api_token="secret")
+    app.state.settings = settings or Settings.without_env_file(api_token="secret")
     app.state.config = config or AppConfig()
     if entities is not None:
         app.state.entities = entities
@@ -140,8 +144,14 @@ def _app(
         app.state.config_manager = config_manager
     if workspace is not None:
         app.state.workspace = workspace
+    if transfers is not None:
+        app.state.transfers = transfers
     if traces is not None:
         app.state.traces = traces
+    if proactive_store is not None:
+        app.state.proactive_store = proactive_store
+    if proactive_worker is not None:
+        app.state.proactive_worker = proactive_worker
     return app
 
 
@@ -1064,6 +1074,151 @@ async def test_tasks_feed_reports_scheduled_actions() -> None:
 
 
 # ---------------------------------------------------------------------------
+# /api/proactive/tasks* — the background worker's rows and verdicts
+# ---------------------------------------------------------------------------
+
+
+class FakeProactiveWorker:
+    def __init__(self) -> None:
+        self.verdicts: list[tuple[int, str]] = []
+        self.answer: str | None = "dropped — I'll do less of that."
+
+    async def decide_task(self, task_id: int, verdict: str) -> str | None:
+        self.verdicts.append((task_id, verdict))
+        return self.answer
+
+
+_proactive_keys = iter(f"k{i}" for i in range(100))
+
+
+async def _proactive_row(
+    store: FakeProactiveStore, *, status: str = "done", approval_id=None, feedback=None
+) -> None:
+    task = await store.claim(
+        skill="followups",
+        key=next(_proactive_keys),
+        label="the draft",
+        opportunity={},
+        day="2026-10-18",
+    )
+    assert task is not None
+    await store.set_plan(task.id, {"approval_id": approval_id} if approval_id else {})
+    if status == "done":
+        await store.finish(task.id, "the result, in plain words")
+    else:
+        await store.fail(task.id, "the job died")
+    if feedback is not None:
+        await store.record_feedback(task.id, feedback)
+
+
+async def test_proactive_tasks_feed_is_token_guarded() -> None:
+    async with _client(_app(None, proactive_store=FakeProactiveStore())) as client:
+        assert (await client.get("/api/proactive/tasks")).status_code == 401
+
+
+async def test_proactive_tasks_feed_is_503_without_a_store_wired() -> None:
+    async with _client(_app(None)) as client:
+        response = await client.get("/api/proactive/tasks", params={"token": "secret"})
+    assert response.status_code == 503
+
+
+async def test_proactive_tasks_feed_offers_only_live_verdicts() -> None:
+    store = FakeProactiveStore()
+    await _proactive_row(store)  # plain result — nothing staged
+    await _proactive_row(store, approval_id=9)  # staged — all three verdicts
+    await _proactive_row(store, approval_id=9, feedback="approved")  # already decided
+    await _proactive_row(store, status="failed")  # work that never finished
+    async with _client(_app(None, proactive_store=store)) as client:
+        response = await client.get("/api/proactive/tasks", params={"token": "secret"})
+    rows = response.json()["tasks"]
+    # newest first — the failed row was claimed last
+    assert [r["options"] for r in rows] == [
+        [],
+        [],
+        ["approve", "revise", "discard"],
+        ["approve", "discard"],
+    ]
+    # the row is plain words the panel can show as-is
+    assert rows[3]["label"] == "the draft"
+    assert rows[3]["result"] == "the result, in plain words"
+    assert rows[3]["skill"] == "followups"  # translated by the panel, never shown raw
+
+
+async def test_proactive_decide_passes_the_verdict_through() -> None:
+    worker = FakeProactiveWorker()
+    async with _client(_app(None, proactive_worker=worker)) as client:
+        response = await client.post(
+            "/api/proactive/tasks/3/decide",
+            params={"token": "secret"},
+            json={"verdict": "discard"},
+        )
+    assert response.json() == {"ok": True, "note": "dropped — I'll do less of that."}
+    assert worker.verdicts == [(3, "discard")]
+
+
+async def test_proactive_decide_rejects_an_unknown_verdict_and_a_missing_worker() -> None:
+    worker = FakeProactiveWorker()
+    async with _client(_app(None, proactive_worker=worker)) as client:
+        response = await client.post(
+            "/api/proactive/tasks/3/decide",
+            params={"token": "secret"},
+            json={"verdict": "explode"},
+        )
+    assert response.status_code == 400
+    assert worker.verdicts == []
+    async with _client(_app(None)) as client:  # no worker on state
+        response = await client.post(
+            "/api/proactive/tasks/3/decide",
+            params={"token": "secret"},
+            json={"verdict": "discard"},
+        )
+    assert response.status_code == 503
+
+
+async def test_proactive_decide_is_token_guarded() -> None:
+    async with _client(_app(None, proactive_worker=FakeProactiveWorker())) as client:
+        response = await client.post("/api/proactive/tasks/3/decide", json={"verdict": "discard"})
+    assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# /api/profile* — who the user is, confirmed and pending
+# ---------------------------------------------------------------------------
+
+
+async def test_profile_feed_lists_confirmed_and_pending(tmp_path) -> None:
+    ws = _workspace(tmp_path)
+    ws.remember("lives in pune", kind="profile", source="user")
+    ws.remember("works on databases", kind="profile", source="agent")
+    async with _client(_app(None, workspace=ws)) as client:
+        assert (await client.get("/api/profile")).status_code == 401
+        response = await client.get("/api/profile", params={"token": "secret"})
+    body = response.json()
+    assert [e["text"] for e in body["confirmed"]] == ["lives in pune"]
+    assert [e["text"] for e in body["pending"]] == ["works on databases"]
+    assert body["pending"][0]["status"] == "pending"
+
+
+async def test_profile_confirm_flips_pending_entries(tmp_path) -> None:
+    ws = _workspace(tmp_path)
+    ws.remember("lives in pune", kind="profile", source="user")
+    guessed = ws.remember("works on databases", kind="profile", source="agent")
+    async with _client(_app(None, workspace=ws)) as client:
+        response = await client.post(
+            "/api/profile/confirm", params={"token": "secret"}, json={"ids": [guessed]}
+        )
+    assert response.json() == {"ok": True, "confirmed": 1}
+    assert [e.text for e in ws.profile()] == ["lives in pune", "works on databases"]
+    assert ws.pending_profile() == []
+
+
+async def test_profile_feed_is_503_without_a_workspace_wired() -> None:
+    async with _client(_app(None)) as client:
+        response = await client.get("/api/profile", params={"token": "secret"})
+    assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
 # /api/workspace* — the human-editable Markdown identity/memory layer
 # ---------------------------------------------------------------------------
 
@@ -1247,3 +1402,349 @@ async def test_disconnect_removes_only_an_account_thats_ours() -> None:
     assert response.json() == {"disconnected": "gmail", "id": "acc-1"}
     assert bridge.disconnected == ["acc-1"]
     assert missing.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# /api/settings/fields + /api/settings/credentials — the editable surface
+# ---------------------------------------------------------------------------
+
+
+class _Resolver:
+    """Name-only secret resolver double — never a value."""
+
+    def __init__(self, known: set[str] | None = None) -> None:
+        self.known = known or {"TELEGRAM_BOT_TOKEN"}
+
+    async def known_names(self) -> set[str]:
+        return self.known
+
+
+class _SecretStore:
+    """SecretStore double: records what landed; the value never leaves."""
+
+    def __init__(self) -> None:
+        self.stored: dict[str, str] = {}
+
+    async def set(self, name: str, value: str) -> None:
+        self.stored[name] = value
+
+    async def names(self) -> set[str]:
+        return set(self.stored)
+
+
+async def test_settings_fields_are_token_guarded() -> None:
+    async with _client(_app(None, config_manager=FakeConfigManager())) as client:
+        for method, path in (
+            ("get", "/api/settings/fields"),
+            ("put", "/api/settings/fields/agent.tick_seconds"),
+            ("delete", "/api/settings/fields/agent.tick_seconds"),
+            ("put", "/api/settings/credentials/TELEGRAM_BOT_TOKEN"),
+        ):
+            response = await client.request(method, path, json={"value": "x"})
+            assert response.status_code == 401
+
+
+async def test_settings_fields_are_503_without_a_manager_wired() -> None:
+    async with _client(_app(None)) as client:
+        for method, path in (
+            ("get", "/api/settings/fields"),
+            ("put", "/api/settings/fields/agent.tick_seconds"),
+            ("delete", "/api/settings/fields/agent.tick_seconds"),
+            ("put", "/api/settings/credentials/TELEGRAM_BOT_TOKEN"),
+        ):
+            response = await client.request(
+                method, path, params={"token": "secret"}, json={"value": "x"}
+            )
+            assert response.status_code == 503
+
+
+async def test_settings_feed_carries_groups_kinds_and_apply_notes() -> None:
+    manager = FakeConfigManager(
+        effective_payload={
+            "sections": {},
+            "overrides": [
+                {"path": "salience.threshold", "value": 5},
+                {"path": "agent.personality", "value": "warmer"},
+            ],
+        }
+    )
+    app = _app(None, config=AppConfig(), config_manager=manager)
+    app.state.resolver = _Resolver()
+    async with _client(app) as client:
+        response = await client.get("/api/settings/fields", params={"token": "secret"})
+    data = response.json()
+    groups = {g["key"]: g for g in data["groups"]}
+    # the model group is the one that restarts, and says so up front
+    assert groups["llm"]["restart"] is True
+    assert groups["llm"]["note"]
+    assert all(not g["restart"] for k, g in groups.items() if k != "llm")
+    by_path = {f["path"]: f for g in data["groups"] for f in g["fields"]}
+    # kind and choices come from the model's own annotations
+    provider = by_path["llm.provider"]
+    assert provider["kind"] == "choice"
+    assert provider["choices"] == ["anthropic", "openai", "gemini", "ollama"]
+    assert by_path["llm.max_tokens"]["kind"] == "number"
+    assert by_path["llm.ollama_vision"]["kind"] == "toggle"
+    assert by_path["agent.quiet_hours"]["kind"] == "text"
+    assert by_path["agent.quiet_hours"]["none_ok"] is True
+    # the messaging toggles enumerate from the live config
+    assert by_path["messaging.telegram.enabled"]["kind"] == "toggle"
+    assert by_path["messaging.telegram.enabled"]["value"] is False
+    # the plain-words apply notes ride along, chat's own wording
+    assert by_path["agent.tick_seconds"]["note"] == "applies from the next tick"
+    # changed markers reflect the override rows
+    assert by_path["salience.threshold"]["changed"] is True
+    assert by_path["agent.tick_seconds"]["changed"] is False
+    # credentials are names and set flags only — a value never rides back
+    creds = {c["name"]: c for c in data["credentials"]}
+    assert set(creds) == {
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "TELEGRAM_BOT_TOKEN",
+        "DISCORD_BOT_TOKEN",
+        "SLACK_BOT_TOKEN",
+        "SLACK_APP_TOKEN",
+        "COMPOSIO_API_KEY",
+        "TAVILY_API_KEY",
+        "MODAL_TOKEN_ID",
+        "MODAL_TOKEN_SECRET",
+        "VERCEL_TOKEN",
+        "VERCEL_TEAM_ID",
+        "VERCEL_PROJECT_ID",
+        "GITHUB_ACTIONS_TOKEN",
+    }
+    assert creds["TELEGRAM_BOT_TOKEN"]["set"] is True
+    assert creds["DISCORD_BOT_TOKEN"]["set"] is False
+    assert all(set(c) == {"name", "label", "hint", "set"} for c in data["credentials"])
+
+
+async def test_setting_write_round_trips_and_audits() -> None:
+    manager = FakeConfigManager(set_reply="agent.tick_seconds set to 15")
+    audit = FakeAudit()
+    async with _client(_app(None, config_manager=manager, audit=audit)) as client:
+        response = await client.put(
+            "/api/settings/fields/agent.tick_seconds",
+            params={"token": "secret"},
+            json={"value": 15},
+        )
+    assert response.status_code == 200
+    body = response.json()
+    # the manager's plain reply rides back as the toast text
+    assert body["reply"] == "agent.tick_seconds set to 15"
+    # the fresh feed rides back with it — one round-trip
+    assert "groups" in body["feed"]
+    assert manager.set_calls == [
+        {"op": "set", "path": "agent.tick_seconds", "value": 15, "source": "panel"}
+    ]
+    assert audit.entries[0]["params"] == {"path": "agent.tick_seconds", "op": "set"}
+    assert audit.entries[0]["outcome"] == "changed from the panel"
+
+
+async def test_setting_refusal_is_the_managers_plain_words() -> None:
+    manager = FakeConfigManager(verdict=(False, "it needs to be a number"))
+    async with _client(_app(None, config_manager=manager)) as client:
+        response = await client.put(
+            "/api/settings/fields/agent.tick_seconds",
+            params={"token": "secret"},
+            json={"value": "soon"},
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "it needs to be a number"
+
+
+async def test_setting_paths_must_come_from_the_catalog() -> None:
+    manager = FakeConfigManager()
+    async with _client(_app(None, config_manager=manager)) as client:
+        stranger = await client.put(
+            "/api/settings/fields/contacts.mode",
+            params={"token": "secret"},
+            json={"value": "off"},
+        )
+        unknown = await client.put(
+            "/api/settings/fields/no.such.path",
+            params={"token": "secret"},
+            json={"value": 1},
+        )
+        reset = await client.delete(
+            "/api/settings/fields/salience.threshold", params={"token": "secret"}
+        )
+    # contacts has its own page; a stranger can't mint manager paths here
+    assert stranger.status_code == 404
+    assert unknown.status_code == 404
+    # the reset route asks for op="reset" and no value
+    assert reset.status_code == 200
+    assert manager.set_calls == [
+        {"op": "reset", "path": "salience.threshold", "value": None, "source": "panel"}
+    ]
+
+
+async def test_credential_paste_is_write_only_and_audits_the_name() -> None:
+    manager = FakeConfigManager()
+    audit = FakeAudit()
+    store = _SecretStore()
+    app = _app(None, config_manager=manager, audit=audit)
+    app.state.secrets = store
+    app.state.resolver = _Resolver()
+    async with _client(app) as client:
+        response = await client.put(
+            "/api/settings/credentials/DISCORD_BOT_TOKEN",
+            params={"token": "secret"},
+            json={"value": "discord-token-1"},
+        )
+    assert response.status_code == 200
+    assert store.stored == {"DISCORD_BOT_TOKEN": "discord-token-1"}
+    # the audit row carries the name only — the value is nowhere in it
+    assert audit.entries[0]["tool_name"] == "store_app_secret"
+    assert audit.entries[0]["params"] == {"name": "DISCORD_BOT_TOKEN"}
+    assert audit.entries[0]["outcome"] == "stored encrypted — value never recorded"
+    # the response is the fresh feed — the value never rides back out
+    text = response.text
+    assert "discord-token-1" not in text
+    assert {c["name"] for c in response.json()["credentials"]}
+
+
+async def test_credential_paste_reconnects_an_enabled_surface() -> None:
+    manager = FakeConfigManager()
+    store = _SecretStore()
+    config = AppConfig(messaging=MessagingConfig(telegram=PlatformToggle(enabled=True)))
+    app = _app(None, config=config, config_manager=manager)
+    app.state.secrets = store
+    app.state.resolver = _Resolver()
+    async with _client(app) as client:
+        response = await client.put(
+            "/api/settings/credentials/TELEGRAM_BOT_TOKEN",
+            params={"token": "secret"},
+            json={"value": "fresh-telegram-token"},
+        )
+    assert response.status_code == 200
+    # the same-value toggle write is what reconciles connectors with the
+    # fresh token — it fires only for a surface that is on
+    assert manager.set_calls == [
+        {
+            "op": "set",
+            "path": "messaging.telegram.enabled",
+            "value": True,
+            "source": "panel",
+        }
+    ]
+
+
+async def test_credential_paste_for_a_disabled_surface_waits_for_the_toggle() -> None:
+    manager = FakeConfigManager()
+    store = _SecretStore()
+    app = _app(None, config=AppConfig(), config_manager=manager)
+    app.state.secrets = store
+    app.state.resolver = _Resolver()
+    async with _client(app) as client:
+        response = await client.put(
+            "/api/settings/credentials/DISCORD_BOT_TOKEN",
+            params={"token": "secret"},
+            json={"value": "discord-token-1"},
+        )
+    assert response.status_code == 200
+    # nothing to reconcile — the surface's own toggle write will do it
+    assert manager.set_calls == []
+
+
+async def test_credential_paste_refuses_the_unknown_and_the_empty() -> None:
+    manager = FakeConfigManager()
+    store = _SecretStore()
+    app = _app(None, config_manager=manager)
+    app.state.secrets = store
+    async with _client(app) as client:
+        stranger = await client.put(
+            "/api/settings/credentials/EVIL_NAME",
+            params={"token": "secret"},
+            json={"value": "x"},
+        )
+        empty = await client.put(
+            "/api/settings/credentials/DISCORD_BOT_TOKEN",
+            params={"token": "secret"},
+            json={"value": "   "},
+        )
+    assert stranger.status_code == 404
+    assert empty.status_code == 400
+    assert store.stored == {}
+
+
+# -- one-time workbench transfers ------------------------------------------------
+
+
+class FakeTransfers:
+    def __init__(self, bundle: dict | None = None, accepts_results: bool = True) -> None:
+        self.bundle = bundle
+        self.accepts_results = accepts_results
+        self.bundles_taken: list[str] = []
+        self.results_posted: list[tuple[str, dict]] = []
+
+    async def take_bundle(self, token: str) -> dict | None:
+        self.bundles_taken.append(token)
+        return self.bundle
+
+    async def post_result(self, token: str, result: dict) -> bool:
+        self.results_posted.append((token, result))
+        return self.accepts_results
+
+
+async def test_a_runner_pulls_its_bundle_without_the_api_token() -> None:
+    # the one-time URL is the entire authentication — no token header
+    transfers = FakeTransfers(bundle={"script_name": "job.py", "files": {"job.py": "print(1)"}})
+    async with _client(_app(None, transfers=transfers)) as client:
+        response = await client.get("/api/workbench/bundle/a-one-time-token")
+    assert response.status_code == 200
+    assert response.json() == {"script_name": "job.py", "files": {"job.py": "print(1)"}}
+    assert transfers.bundles_taken == ["a-one-time-token"]
+
+
+async def test_a_spent_or_unknown_bundle_url_is_simply_not_found() -> None:
+    transfers = FakeTransfers(bundle=None)
+    async with _client(_app(None, transfers=transfers)) as client:
+        response = await client.get("/api/workbench/bundle/already-used")
+    assert response.status_code == 404
+
+
+async def test_a_runner_posts_its_result_once() -> None:
+    transfers = FakeTransfers()
+    async with _client(_app(None, transfers=transfers)) as client:
+        response = await client.post(
+            "/api/workbench/result/another-one-time-token",
+            json={"exit_code": 0, "stdout": "done", "stderr": ""},
+        )
+    assert response.status_code == 200
+    assert response.json() == {"stored": True}
+    assert transfers.results_posted == [
+        ("another-one-time-token", {"exit_code": 0, "stdout": "done", "stderr": ""})
+    ]
+
+
+async def test_a_refused_result_post_is_not_found_not_an_error() -> None:
+    transfers = FakeTransfers(accepts_results=False)
+    async with _client(_app(None, transfers=transfers)) as client:
+        response = await client.post(
+            "/api/workbench/result/spent",
+            json={"exit_code": 1, "stdout": "", "stderr": "boom"},
+        )
+    assert response.status_code == 404
+
+
+async def test_the_transfer_kinds_only_answer_their_own_verbs() -> None:
+    # GET answers only bundles, POST only results — anything else is not found
+    transfers = FakeTransfers(bundle={"script_name": "job.py", "files": {}})
+    async with _client(_app(None, transfers=transfers)) as client:
+        get_result = await client.get("/api/workbench/result/some-token")
+        post_bundle = await client.post(
+            "/api/workbench/bundle/some-token", json={"exit_code": 0, "stdout": "", "stderr": ""}
+        )
+    assert get_result.status_code == 404
+    assert post_bundle.status_code == 404
+
+
+async def test_transfers_not_wired_answers_503() -> None:
+    async with _client(_app(None)) as client:
+        get = await client.get("/api/workbench/bundle/some-token")
+        post = await client.post(
+            "/api/workbench/result/some-token", json={"exit_code": 0, "stdout": "", "stderr": ""}
+        )
+    assert get.status_code == 503
+    assert post.status_code == 503

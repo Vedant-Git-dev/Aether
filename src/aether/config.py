@@ -57,6 +57,21 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    @classmethod
+    def without_env_file(cls, **values: Any) -> Settings:
+        """Settings with the optional .env file deliberately not read — the
+        construction path tests and the config resolver take, so a real
+        .env sitting next to them can't leak into the values. (`_env_file`
+        is a real pydantic-settings argument, but the type checkers can't
+        see it — the one ignore lives here, once, not at every call site.)"""
+        return cls(_env_file=None, **values)  # type: ignore[call-arg]
+
+    @classmethod
+    def from_env_file(cls, env_file: str | Path, **values: Any) -> Settings:
+        """Settings with one specific .env file — the deliberate other
+        direction, for the tests that exercise the env-file path itself."""
+        return cls(_env_file=env_file, **values)  # type: ignore[call-arg]
+
 
 # --------------------------------------------------------------------------
 # config.yaml structure models
@@ -82,6 +97,10 @@ class AgentConfig(BaseModel):
     tick_seconds: float = 30.0
     max_tool_iterations: int = 12
     daily_surface_cap: int = 20
+    # the web search tool's own brake — shared by chat and the background
+    # worker, counted per day, so the free search allowance can't be
+    # burned in one afternoon
+    max_searches_per_day: int = 25
     # the interruption budget: unprompted commentary waits out this window
     # (local time, wraps midnight) unless an observation scores at/above the
     # urgent threshold. Replies to the user never wait.
@@ -194,6 +213,48 @@ class WorkspaceConfig(BaseModel):
 
     enabled: bool = True
     path: str = "aether-workspace"
+    # AES-256-GCM at rest with the server's key. Turning this off later
+    # makes new files plain text again but never decrypts what was
+    # already written — those keep reading as empty until re-created.
+    encrypted: bool = True
+
+
+class ProactiveConfig(BaseModel):
+    """The background worker — off by default, every cap a hard stop.
+    The worker reads this section live on every cycle, so a change made
+    in chat or the panel applies from the next cycle without a restart."""
+
+    enabled: bool = False
+    # how often the worker looks around; a cycle that finds nothing
+    # costs nothing but the look
+    interval_minutes: float = 30.0
+    # the daily brakes: tasks claimed, LLM tokens, sandbox time
+    max_tasks_per_day: int = 3
+    max_tokens_per_day: int = 100_000
+    max_sandbox_minutes_per_day: int = 20
+    # the notification brake for results (quiet hours ride their own budget)
+    notify_daily_cap: int = 5
+    # which skills the worker may run; names not in the registry are ignored
+    skills: list[str] = Field(default_factory=lambda: ["followups", "research", "media"])
+
+
+class WorkbenchConfig(BaseModel):
+    """Where background jobs run when they must not run on this machine.
+    The provider is the configured default; the routing ladder falls
+    through to the next available one on a dispatch failure."""
+
+    provider: Literal["modal", "vercel", "github_actions", "none"] = "modal"
+    # the batch queue bills wall-clock minutes — this month's ceiling
+    monthly_minutes_cap: int = 1500
+    # one job's own timeout; a job that exceeds it reads as a real
+    # timed-out result, never a fallback
+    job_timeout_minutes: int = 10
+    # the batch queue's own home: the repository that carries the runner
+    # workflow, and the branch it dispatches on. Empty means the batch
+    # provider stays unconstructed — the ladder simply never sees it.
+    actions_repo: str = ""
+    actions_workflow: str = ""
+    actions_ref: str = "main"
 
 
 class AppConfig(BaseModel):
@@ -205,6 +266,8 @@ class AppConfig(BaseModel):
     contacts: ContactsConfig = Field(default_factory=ContactsConfig)
     authz: AuthzConfig = Field(default_factory=AuthzConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
+    proactive: ProactiveConfig = Field(default_factory=ProactiveConfig)
+    workbench: WorkbenchConfig = Field(default_factory=WorkbenchConfig)
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:

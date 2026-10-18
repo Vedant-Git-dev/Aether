@@ -28,9 +28,11 @@ from aether.connectors.discord import ApprovalView, DiscordConnector
 from aether.connectors.slack import (
     APPROVE_ACTION,
     DENY_ACTION,
+    TASK_ACTION,
     SlackConnector,
     approval_blocks,
     event_to_inbound,
+    result_blocks,
 )
 from aether.connectors.telegram import SEND_ATTEMPTS, TelegramConnector
 
@@ -61,13 +63,29 @@ async def test_fresh_decisions_fire_on_decision_stale_do_not() -> None:
     assert decisions == [(5, APPROVED)]
 
 
+async def test_task_verdicts_pass_through_and_say_so_without_a_callback() -> None:
+    verdicts: list[tuple[int, str]] = []
+
+    async def on_task_decision(task_id: int, verb: str) -> str | None:
+        verdicts.append((task_id, verb))
+        return "dropped — I'll do less of that."
+
+    wired = MessagingConnector(enabled=True, on_task_decision=on_task_decision, on_inbound=None)
+    assert await wired._decide_task(3, "discard") == "dropped — I'll do less of that."
+    assert verdicts == [(3, "discard")]
+
+    # no callback (the worker absent, a bare connector) — never silence
+    bare = MessagingConnector(enabled=True)
+    assert await bare._decide_task(3, "approve") == "that task could not be found."
+
+
 # ---------------------------------------------------------------------------
 # connector factory: enabled flag AND tokens
 # ---------------------------------------------------------------------------
 
 
 def _settings(**kwargs) -> Settings:
-    return Settings(_env_file=None, **kwargs)
+    return Settings.without_env_file(**kwargs)
 
 
 def _config(telegram=False, discord_=False, slack=False) -> AppConfig:
@@ -134,8 +152,10 @@ class FlakyTelegramBot(FakeTelegramBot):
 
 class FakeTelegramApp:
     def __init__(self) -> None:
-        self.handlers: list[object] = []
-        self.error_handlers: list[object] = []
+        # Any, not object: the handlers are PTB shapes the fakes never build,
+        # and every test reaches through to .callback / .filters
+        self.handlers: list[Any] = []
+        self.error_handlers: list[Any] = []
         self.bot = FakeTelegramBot()
         self.updater = SimpleNamespace(start_polling=self._noop, stop=self._noop, polling=False)
         self.initialized = False
@@ -174,7 +194,7 @@ def _tg_update(
     )
 
 
-async def _started_telegram(approvals=None, decisions=None, inbound=None):
+async def _started_telegram(approvals=None, decisions=None, inbound=None, task_decisions=None):
     app = FakeTelegramApp()
     factory_calls: list[str] = []
 
@@ -187,6 +207,7 @@ async def _started_telegram(approvals=None, decisions=None, inbound=None):
         approvals=approvals,
         on_decision=decisions,
         on_inbound=inbound,
+        on_task_decision=task_decisions,
         app_factory=factory,
     )
     await connector.start()
@@ -383,6 +404,70 @@ async def test_telegram_button_press_on_an_unknown_approval_says_so() -> None:
     assert answered == ["that request could not be found."]
 
 
+def _tg_button_update(data: str, answered: list, cleared: list | None = None):
+    async def answer(text: str | None = None) -> None:
+        answered.append(text)
+
+    async def edit_message_reply_markup(reply_markup=None) -> None:
+        if cleared is not None:
+            cleared.append(reply_markup is None)
+
+    return SimpleNamespace(
+        callback_query=SimpleNamespace(
+            data=data, answer=answer, edit_message_reply_markup=edit_message_reply_markup
+        )
+    )
+
+
+async def test_telegram_task_verdict_decides_and_retires_the_buttons() -> None:
+    verdicts: list[tuple[int, str]] = []
+
+    async def on_task_decision(task_id: int, verb: str) -> str | None:
+        verdicts.append((task_id, verb))
+        return None  # a fresh tap — the outcome is the acknowledgment
+
+    connector, app = await _started_telegram(task_decisions=on_task_decision)
+    button_handler = app.handlers[1].callback
+    answered: list[str | None] = []
+    cleared: list[bool] = []
+    await button_handler(_tg_button_update("aether:task:approve:12", answered, cleared), None)
+    assert verdicts == [(12, "approve")]
+    assert answered == [None]  # no toast — the carried-out action's words arrive
+    assert cleared == [True]
+
+
+async def test_telegram_task_verdict_without_a_callback_says_so() -> None:
+    connector, app = await _started_telegram()
+    button_handler = app.handlers[1].callback
+    answered: list[str | None] = []
+    await button_handler(_tg_button_update("aether:task:discard:12", answered), None)
+    assert answered == ["that task could not be found."]
+
+
+async def test_telegram_an_odd_task_callback_is_ignored_quietly() -> None:
+    connector, app = await _started_telegram()
+    button_handler = app.handlers[1].callback
+    answered: list[str | None] = []
+    cleared: list[bool] = []
+    await button_handler(_tg_button_update("aether:task:explode:12", answered, cleared), None)
+    await button_handler(_tg_button_update("aether:task:approve:twelve", answered, cleared), None)
+    assert answered == [None, None]
+    assert cleared == []  # nothing was decided, so nothing was retired
+
+
+async def test_telegram_present_result_sends_only_the_offered_verdicts() -> None:
+    connector, app = await _started_telegram()
+    await app.handlers[0].callback(_tg_update("hi"), None)  # establish the reply target
+    await connector.present_result(3, "the digest, in plain words", ("approve", "discard"))
+    sent = app.bot.sent[-1]
+    assert sent["text"] == "the digest, in plain words"
+    buttons = [b for row in sent["reply_markup"].inline_keyboard for b in row]
+    assert [b.callback_data for b in buttons] == ["aether:task:approve:3", "aether:task:discard:3"]
+    # nothing to offer — plain text, no buttons at all
+    await connector.present_result(4, "a plain note")
+    assert app.bot.sent[-1]["reply_markup"] is None
+
+
 async def test_telegram_send_retries_through_network_blips() -> None:
     connector, app = await _started_telegram()
     app.bot = FlakyTelegramBot(failures=2)
@@ -454,7 +539,7 @@ def _dc_message(text: str, *, dm: bool = True, bot: bool = False, reply_to=None)
     )
 
 
-async def _started_discord(approvals=None, decisions=None, inbound=None):
+async def _started_discord(approvals=None, decisions=None, inbound=None, task_decisions=None):
     bot = SimpleNamespace(
         events={},
         started_with=None,
@@ -480,6 +565,7 @@ async def _started_discord(approvals=None, decisions=None, inbound=None):
         approvals=approvals,
         on_decision=decisions,
         on_inbound=inbound,
+        on_task_decision=task_decisions,
         bot_factory=lambda: bot,
     )
     await connector.start()
@@ -595,6 +681,58 @@ async def test_discord_disabled_never_builds_a_bot() -> None:
     await connector.stop()
 
 
+async def test_discord_a_results_view_builds_only_the_offered_verdicts() -> None:
+    verdicts: list[tuple[int, str]] = []
+
+    async def on_task_decision(task_id: int, verb: str) -> str | None:
+        verdicts.append((task_id, verb))
+        return None
+
+    connector, _ = await _started_discord(task_decisions=on_task_decision)
+    await connector.on_message(_dc_message("hi"))  # establish the reply channel
+    await connector.present_result(5, "the digest, in plain words", ("approve", "discard"))
+    channel = connector._channel
+    sent = channel.sent[-1]
+    assert sent["content"] == "the digest, in plain words"
+    view = sent["view"]
+    assert [child.label for child in view.children] == ["Approve", "Discard"]
+
+    # a fresh tap retires the buttons and needs no note — the outcome
+    # message from the carried-out action is the acknowledgment
+    edits: list[dict] = []
+
+    async def edit_message(content=None, view=None) -> None:
+        edits.append({"content": content, "view": view})
+
+    interaction = SimpleNamespace(response=SimpleNamespace(edit_message=edit_message))
+    pressed = view.children[0].callback
+    await pressed(interaction)
+    assert verdicts == [(5, "approve")]
+    assert all(child.disabled for child in view.children)
+    assert edits == [{"content": None, "view": view}]
+
+
+async def test_discord_a_stale_verdict_tap_gets_a_note_not_silence() -> None:
+    async def on_task_decision(task_id: int, verb: str) -> str | None:
+        return "that task was already decided."
+
+    connector, _ = await _started_discord(task_decisions=on_task_decision)
+    await connector.on_message(_dc_message("hi"))
+    await connector.present_result(6, "the digest", ("discard",))
+    view = connector._channel.sent[-1]["view"]
+    assert [child.label for child in view.children] == ["Discard"]
+
+    edits: list[dict] = []
+
+    async def edit_message(content=None, view=None) -> None:
+        edits.append({"content": content, "view": view})
+
+    await view.children[0].callback(
+        SimpleNamespace(response=SimpleNamespace(edit_message=edit_message))
+    )
+    assert edits == [{"content": "that task was already decided.", "view": view}]
+
+
 # ---------------------------------------------------------------------------
 # slack (fake AsyncApp + socket handler)
 # ---------------------------------------------------------------------------
@@ -675,7 +813,7 @@ def test_slack_approval_blocks_carry_action_ids_and_values() -> None:
     ]
 
 
-async def _started_slack(approvals=None, decisions=None, inbound=None):
+async def _started_slack(approvals=None, decisions=None, inbound=None, task_decisions=None):
     app = FakeSlackApp()
     socket = FakeSlackSocket()
     connector = SlackConnector(
@@ -684,12 +822,13 @@ async def _started_slack(approvals=None, decisions=None, inbound=None):
         approvals=approvals,
         on_decision=decisions,
         on_inbound=inbound,
+        on_task_decision=task_decisions,
         app_factory=lambda token: app,
         socket_factory=lambda a, tok: socket,
     )
     await connector.start()
     assert socket.connected
-    assert set(app.listeners) == {"message", APPROVE_ACTION, DENY_ACTION}
+    assert set(app.listeners) == {"message", APPROVE_ACTION, DENY_ACTION, TASK_ACTION}
     return connector, app, socket
 
 
@@ -825,6 +964,92 @@ async def test_slack_without_both_tokens_stays_down() -> None:
     await connector.start()
     assert connector._app is None
     await connector.stop()
+
+
+def test_slack_result_blocks_carry_one_action_id_and_verb_values() -> None:
+    blocks = result_blocks(12, "the digest, in plain words", ("approve", "discard"))
+    assert blocks[0]["text"]["text"] == "the digest, in plain words"
+    elements = blocks[1]["elements"]
+    # one action id for every verdict — the value carries "verb:task id"
+    assert [(e["action_id"], e["value"]) for e in elements] == [
+        (TASK_ACTION, "approve:12"),
+        (TASK_ACTION, "discard:12"),
+    ]
+    assert [e["style"] for e in elements] == ["primary", "danger"]
+
+
+async def test_slack_result_flow_posts_and_a_verdict_retires_the_buttons() -> None:
+    verdicts: list[tuple[int, str]] = []
+
+    async def on_task_decision(task_id: int, verb: str) -> str | None:
+        verdicts.append((task_id, verb))
+        return None
+
+    connector, app, _ = await _started_slack(task_decisions=on_task_decision)
+    await app.listeners["message"](
+        {"channel_type": "im", "user": "U123", "text": "hi", "channel": "D1"},
+        None,
+        app.client,
+    )
+
+    await connector.present_result(12, "the digest, in plain words", ("approve", "discard"))
+    posted = app.client.posted[-1]
+    assert posted["text"] == "the digest, in plain words"
+    assert posted["blocks"][1]["elements"][0]["value"] == "approve:12"
+
+    acked: list[bool] = []
+
+    async def ack() -> None:
+        acked.append(True)
+
+    body = {
+        "actions": [{"value": "discard:12"}],
+        "channel": {"id": "D1"},
+        "message": {
+            "ts": "123.456",
+            "text": "the digest, in plain words",
+            "blocks": posted["blocks"],
+        },
+    }
+    await app.listeners[TASK_ACTION](ack, body, app.client)
+    assert verdicts == [(12, "discard")]
+    assert acked == [True]
+    updated = app.client.updated[-1]
+    assert [b["type"] for b in updated["blocks"]] == ["section"]  # buttons retired, no note
+
+    # an odd verb or payload is logged and dropped, never raised
+    await app.listeners[TASK_ACTION](ack, {"actions": [{"value": "explode:12"}]}, app.client)
+    await app.listeners[TASK_ACTION](ack, {"actions": [{"value": "oops"}]}, app.client)
+    assert verdicts == [(12, "discard")]
+
+
+async def test_slack_a_stale_task_verdict_gets_a_small_note() -> None:
+    async def on_task_decision(task_id: int, verb: str) -> str | None:
+        return "that task was already decided."
+
+    connector, app, _ = await _started_slack(task_decisions=on_task_decision)
+
+    async def ack() -> None:
+        pass
+
+    body = {
+        "actions": [{"value": "revise:7"}],
+        "channel": {"id": "D1"},
+        "message": {
+            "ts": "123.456",
+            "text": "the digest",
+            "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn", "text": "the digest"}},
+                {"type": "actions"},
+            ],
+        },
+    }
+    await app.listeners[TASK_ACTION](ack, body, app.client)
+    updated = app.client.updated[-1]
+    assert updated["blocks"][-1] == {
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": "_that task was already decided._"}],
+    }
 
 
 # ---------------------------------------------------------------------------

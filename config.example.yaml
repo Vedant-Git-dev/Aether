@@ -34,6 +34,7 @@ agent:
   tick_seconds: 30               # agent loop cadence
   max_tool_iterations: 12         # tool-call turns per activation before forcing a summary
   daily_surface_cap: 20           # max high-salience items surfaced per day
+  max_searches_per_day: 25       # web searches per day (chat + background share it); needs TAVILY_API_KEY
 
 salience:
   threshold: 6.0                 # 0-10; events below are stored but never surface
@@ -93,4 +94,35 @@ authz:
 
 workspace:
   enabled: true                  # the human-editable identity/memory Markdown files
-  path: aether-workspace          # created on first boot; edit the files directly anytime
+  path: aether-workspace          # created on first boot
+  encrypted: true                 # files sit as AES-256-GCM blobs, edited through the
+                                 # panel; turning this off later never decrypts what
+                                 # was already written encrypted
+
+proactive:                        # the background worker — OFF by default
+  enabled: false
+  interval_minutes: 30            # how often it looks around; a look that finds
+                                 # nothing costs nothing
+  max_tasks_per_day: 3            # the daily brakes — tasks claimed, LLM tokens,
+  max_tokens_per_day: 100000      # and sandbox time. A spent budget skips the
+  max_sandbox_minutes_per_day: 20 # cycle; it never crashes or overspends
+  notify_daily_cap: 5             # the most result notifications one day carries
+  skills: [followups, research, media]  # which skills it may run; unknown names
+                                 # are ignored. /pause and /resume switch it from
+                                 # chat, and it also pauses itself if too much
+                                 # comes back wrong
+
+workbench:                        # where background jobs run when they must not
+                                 # run on this machine — never with Aether's keys
+  provider: modal                 # modal | vercel | github_actions | none — the
+                                 # configured default; the ladder falls through to
+                                 # the next available one on a dispatch failure
+  monthly_minutes_cap: 1500       # the batch queue's monthly wall-clock ceiling
+  job_timeout_minutes: 10          # one job's own limit; exceeding it is a real
+                                 # timed-out result, never a fallback
+  actions_repo: ""                 # the batch queue's own home: the repository
+                                 # (owner/name) whose runner workflow carries its
+                                 # jobs — empty leaves the batch queue off
+  actions_workflow: ""             # the workflow file name in that repository
+                                 # (like aether-batch.yml)
+  actions_ref: main                # the branch the workflow dispatches on

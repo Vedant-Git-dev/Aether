@@ -136,14 +136,99 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     page.wait_for_timeout(500)
     text = page.locator("body").inner_text()
     assert "Read-only; nothing was changed" in text
+    # the background worker's lifecycle row reads plainly — actor, action
+    # and outcome all through the vocabulary, never the raw tokens
+    assert "Noted your verdict on background work" in text
     actors = page.locator("tbody tr td:nth-child(3)").all_inner_texts()
-    assert all(a in ("Aether", "You", "Scheduled check", "Routine") for a in actors)
+    assert all(
+        a in ("Aether", "You", "Scheduled check", "Routine", "Background worker") for a in actors
+    )
+
+    page.goto(f"{live_server}/#/tasks")
+    page.wait_for_selector('[data-testid="proactive-row"]')
+    page.wait_for_timeout(500)
+    text = page.locator("body").inner_text()
+    # skill names read through the vocabulary — never the raw tokens
+    assert "Following up on something you said" in text
+    assert "Background research" in text
+    assert "Notes on a file you shared" in text
+    assert "followups" not in text.lower()
+    assert "media" not in text.lower()
+    # a settled row shows its verdict in plain words, and no buttons
+    assert "Discarded" in text
+    assert "too detailed" in text
+    # the staged-approval row offers all three verdicts; the plain row two
+    assert page.locator('[data-testid="proactive-approve-2"]').count() == 1
+    assert page.locator('[data-testid="proactive-revise-2"]').count() == 1
+    assert page.locator('[data-testid="proactive-discard-3"]').count() == 1
+    assert page.locator('[data-testid="proactive-revise-3"]').count() == 0
+    # the one-tap round trip: the note lands, the row settles, buttons go
+    page.click('[data-testid="proactive-approve-2"]')
+    page.wait_for_timeout(500)
+    settled = page.locator("body").inner_text()
+    assert "noted — I'll keep doing things like that." in settled
+    assert "Approved" in settled
+    assert page.locator('[data-testid="proactive-approve-2"]').count() == 0
 
     page.goto(f"{live_server}/#/settings")
     page.wait_for_timeout(800)
     text = page.locator("body").inner_text()
     assert '"warm and a little informal"' not in text
     assert "warm and a little informal" in text
+
+    # the editable surface renders from the backend's feed: the model
+    # group says it restarts, and every control carries its effective value
+    assert "Saving one of these restarts Aether itself" in text
+    assert page.locator('[data-testid="settings-field-llm.provider"]').input_value() == "anthropic"
+    assert page.locator('[data-testid="settings-field-agent.tick_seconds"]').input_value() == "30"
+
+    # a number edit round-trips through the config manager and earns the
+    # changed marker and its way back
+    page.fill('[data-testid="settings-field-agent.tick_seconds"]', "15")
+    page.click('[data-testid="settings-save-agent.tick_seconds"]')
+    page.wait_for_timeout(500)
+    assert page.locator('[data-testid="settings-field-agent.tick_seconds"]').input_value() == "15"
+    assert page.locator('[data-testid="settings-reset-agent.tick_seconds"]').count() == 1
+    page.click('[data-testid="settings-reset-agent.tick_seconds"]')
+    page.wait_for_timeout(500)
+    assert page.locator('[data-testid="settings-field-agent.tick_seconds"]').input_value() == "30"
+    assert page.locator('[data-testid="settings-reset-agent.tick_seconds"]').count() == 0
+
+    # a bad quiet window refuses in the backend's own plain words, inline
+    page.fill('[data-testid="settings-field-agent.quiet_hours"]', "banana")
+    page.click('[data-testid="settings-save-agent.quiet_hours"]')
+    page.wait_for_selector('[data-testid="settings-error-agent.quiet_hours"]')
+    error_text = page.locator('[data-testid="settings-error-agent.quiet_hours"]').inner_text()
+    assert "the quiet window reads like 23:00-08:00" in error_text
+
+    # a pasted credential flips its badge; the value never reaches the page
+    assert (
+        page.locator('[data-testid="settings-cred-set-DISCORD_BOT_TOKEN"]').inner_text()
+        == "not stored"
+    )
+    page.fill('[data-testid="settings-cred-DISCORD_BOT_TOKEN"]', "discord-token-9")
+    page.click('[data-testid="settings-cred-save-DISCORD_BOT_TOKEN"]')
+    page.wait_for_timeout(500)
+    assert (
+        page.locator('[data-testid="settings-cred-set-DISCORD_BOT_TOKEN"]').inner_text() == "stored"
+    )
+    # write-only: cleared from the field, absent from body text
+    assert page.locator('[data-testid="settings-cred-DISCORD_BOT_TOKEN"]').input_value() == ""
+    assert "discord-token-9" not in page.locator("body").inner_text()
+
+    # the profile card: confirmed entries attributed plainly, pending ones
+    # waiting for one yes — the same flip the chat confirmation makes
+    page.wait_for_selector('[data-testid="profile-card"]')
+    profile_text = page.locator("body").inner_text()
+    assert "What Aether knows about you" in profile_text
+    assert "Aether noticed" in profile_text
+    assert "you are building a personal assistant you call Aether" in profile_text
+    assert page.locator('[data-testid="profile-pending-p-paper"]').count() == 1
+    page.click('[data-testid="profile-keep-p-paper"]')
+    page.wait_for_timeout(500)
+    assert page.locator('[data-testid="profile-pending-p-paper"]').count() == 0
+    assert page.locator('[data-testid="profile-confirmed-p-paper"]').count() == 1
+    assert "Noted." in page.locator("body").inner_text()
 
     page.goto(f"{live_server}/#/contacts")
     page.wait_for_selector('[data-testid="contact-row"]')

@@ -28,6 +28,7 @@ import contextlib
 import json
 import logging
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,7 @@ from ..routines import Routines, trigger_matches
 from ..scheduler.jobs import ScheduledAction, Scheduler
 from ..secret_env import EnvResolver
 from ..secret_store import SecretStore
+from ..workspace import SecretRejected, WorkspaceWriteError
 from .apps_wizard import AppsWizard
 from .config_wizard import ConfigWizard
 from .config_wizard import coerce_config_value as _coerce_config_value
@@ -252,6 +254,25 @@ class SurfaceFanout:
         if not self.connectors and self.hub is None:
             log.warning("approval #%d has no surface to appear on", approval_id)
 
+    async def present_result(self, task_id: int, text: str, options: Sequence[str] = ()) -> None:
+        """A finished background task's result, with the one-tap verdicts
+        that apply to it. The web chat gets the words like any other
+        unprompted note; the chat surfaces get them with the buttons
+        attached. The verdicts themselves are decided in the worker, which
+        owns the task row — this fanout only carries them."""
+        if self.hub is not None:
+            try:
+                await self.hub.broadcast(text)
+            except Exception:
+                log.exception("web chat broadcast failed")
+        for connector in self.connectors:
+            try:
+                await connector.present_result(task_id, text, options)
+            except Exception:
+                log.exception("%s result presentation failed", connector.name)
+        if not self.connectors and self.hub is None:
+            log.warning("task #%d result has no surface to appear on", task_id)
+
 
 def _settled_key(tool: str, params: Any) -> str:
     """A stable identity for 'this exact tool call' — same tool name and
@@ -400,6 +421,9 @@ class AgentLoop:
         self._wizard: ConfigWizard | None = None
         # the guided /apps walk in progress, if any — same rules, memory only
         self._apps_walk: AppsWizard | None = None
+        # the pending profile entries a batched confirmation listed — the
+        # ids armed for the next "yes"; memory only, gone on the next message
+        self._profile_confirm: list[str] | None = None
         # mcp servers whose "I'll tell you the moment it's up" was already
         # said this boot — a flapping server never announces twice
         self._announced_ready: set[str] = set()
@@ -535,6 +559,28 @@ class AgentLoop:
             log.info("held for quiet hours: %s", text[:80])
             return None
         return await self._surfaces.send_to_user(text)
+
+    async def note_to_user(self, text: str, *, urgent: float = 0.0) -> dict[str, str] | None:
+        """The unprompted-note seam for the rest of the app — the
+        background worker's plain notifications ride the same
+        interruption budget (quiet hours, holding, batching) as the
+        loop's own words, so they can never nag around the user's night."""
+        return await self._notify(text, urgent=urgent)
+
+    async def present_result(self, task_id: int, text: str, options: Sequence[str] = ()) -> None:
+        """A finished background task's result, with its one-tap verdicts
+        attached where the surfaces can carry buttons. Rides the same
+        interruption budget as every other unprompted word: during quiet
+        hours the words are held and batched for the morning (no buttons —
+        a verdict tap hours later would hit a world that moved on), and
+        the task stays in the panel for its decision instead."""
+        if not text.strip():
+            return
+        if self._quiet_now():
+            self._held.append(text)
+            log.info("held for quiet hours: %s", text[:80])
+            return
+        await self._surfaces.present_result(task_id, text, options)
 
     # -- the loop ---------------------------------------------------------------
 
@@ -737,6 +783,35 @@ class AgentLoop:
                     self._apps_walk = None  # done, or goodbye — nothing is waiting
                 await self._surfaces.send_to_user(reply)
                 return True
+        if self._profile_confirm is not None:
+            # one shot: the batched confirmation listed these entries, and
+            # whatever comes next either confirms them or is a correction
+            armed, self._profile_confirm = self._profile_confirm, None
+            if not text.startswith("/"):
+                if text.strip().lower() in ("yes", "y", "ok", "okay", "confirm", "all good"):
+                    confirmed = self._workspace.confirm_profile(armed)
+                    reply = (
+                        f"kept {confirmed} of them — thank you."
+                        if confirmed
+                        else "nothing was still waiting — already settled."
+                    )
+                    await self._surfaces.send_to_user(reply)
+                    return True
+                # a correction — normal chat: the model hears it and can
+                # supersede the wrong entries through the workspace tools
+                return False
+            # a command while the confirmation waited: the wait is over and
+            # the command runs below — the entries stay pending for later
+        if first == "/profile":
+            self._wizard = None
+            self._apps_walk = None
+            await self._surfaces.send_to_user(self._profile_command(text))
+            return True
+        if first in ("/pause", "/resume"):
+            self._wizard = None
+            self._apps_walk = None
+            await self._surfaces.send_to_user(await self._pause_resume_command(first))
+            return True
         if text.lower() != "/verify":
             return False
         try:
@@ -823,6 +898,64 @@ class AgentLoop:
                 f"approval (#{held}). Tap approve and it's done."
             )
         return result.content
+
+    # -- /profile: who the user is, seeded and confirmed deterministically ----
+
+    def _profile_command(self, text: str) -> str:
+        """/profile — the deterministic front door to the user's profile.
+        `/profile <one line>` seeds a confirmed entry straight from their
+        own words; bare /profile shows what's confirmed and gathers
+        everything the agent inferred into one batched confirmation. No
+        model, no ingest, no tokens — the same vocabulary as /verify."""
+        if self._workspace is None:
+            return "the workspace isn't on this instance, so there's no profile to keep."
+        parts = text.split(maxsplit=1)
+        line = parts[1].strip() if len(parts) > 1 else ""
+        if line:
+            try:
+                self._workspace.remember(line, "profile", source="user")
+            except SecretRejected:
+                return "that looks like a secret or key — I won't store that."
+            except ValueError:
+                return "that didn't look like a line I could keep."
+            except WorkspaceWriteError as exc:
+                return f"not saved — {exc}"
+            return (
+                "Noted — part of your profile now. Say /profile anytime to see or fix what I have."
+            )
+        confirmed = self._workspace.profile()
+        pending = self._workspace.pending_profile()
+        if pending:
+            self._profile_confirm = [e.id for e in pending]
+            listed = "\n".join(f"{i}. {e.text}" for i, e in enumerate(pending, start=1))
+            return (
+                "Here is what I have gathered about you:\n"
+                f"{listed}\n"
+                "Reply yes to keep all of it, or tell me what to fix."
+            )
+        if confirmed:
+            shown = "\n".join(f"- {e.text}" for e in confirmed)
+            return f"Your profile so far:\n{shown}\nNothing new is waiting."
+        return "I don't have anything about you yet — /profile <one line> tells me who you are."
+
+    # -- /pause /resume: the background worker's switch ---------------------------
+
+    async def _pause_resume_command(self, word: str) -> str:
+        """/pause and /resume — the background worker's switch in plain
+        words. The user's own word is the approval, so the write rides the
+        same executor path as a /config line — classified, audited,
+        persisted — and the worker reads the switch live on its next
+        cycle. No model, no ingest, no tokens."""
+        want = word == "/resume"
+        if self._config_manager is None:
+            return "config management isn't wired on this instance, so there's no background worker to switch."
+        if self._config.proactive.enabled == want:
+            return (
+                "the background worker is already running — say /pause to stop it."
+                if want
+                else "the background worker is already off — say /resume when you want it back."
+            )
+        return await self._apply_config("set", "proactive.enabled", want)
 
     # -- /apps: the status render and the connect plumbing ---------------------------
 
@@ -2019,6 +2152,15 @@ class AgentLoop:
         )
         if result.is_error:
             raise RuntimeError(result.content)
+        return result.content
+
+    async def execute_tool(self, call: ToolCall) -> str:
+        """One tool call through the full gate — policy, audit, approval
+        parking — for a caller that is not the model: the background
+        worker's skills. Returns the tool's content, parked or not, so a
+        skill can tell a staged action from a settled one by its words
+        (no trace is kept; the proactive task's own row is the record)."""
+        result = await self._execute(call)
         return result.content
 
     # -- traces -------------------------------------------------------------------

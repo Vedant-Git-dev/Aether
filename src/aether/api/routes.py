@@ -1,7 +1,10 @@
 """REST endpoints. `settings` and component instances are read from
 `request.app.state`, which the lifespan in main.py populates before the
 server accepts traffic. Everything except /healthz is token-guarded —
-the panel sends its token with every call.
+the panel sends its token with every call. The one other exception is
+the workbench transfer pair: a runner holds a single-use, short-lived
+URL whose unguessable token is the entire authentication, so those
+routes (and only those) are open by design.
 """
 
 from __future__ import annotations
@@ -16,6 +19,8 @@ from pydantic import BaseModel
 from ..agent.tools import with_plain_calls, with_plain_event
 from ..apps_catalog import CATALOG, recipe_for
 from ..composio_bridge import ComposioNotConfigured
+from ..proactive import DONE
+from ..settings_catalog import credential_for, settings_feed
 from ..workspace import SecretRejected, WorkspaceEntry, WorkspaceWriteError
 
 log = logging.getLogger("aether.api")
@@ -35,6 +40,14 @@ class DecisionBody(BaseModel):
     decision: str  # "approve" | "deny"
 
 
+class TaskVerdictBody(BaseModel):
+    verdict: str  # "approve" | "revise" | "discard"
+
+
+class ProfileConfirmBody(BaseModel):
+    ids: list[str]  # the pending entries one "yes" covers, panel-side
+
+
 class PersonalityBody(BaseModel):
     text: str
 
@@ -50,6 +63,14 @@ class ContactBody(BaseModel):
 
 class ContactModeBody(BaseModel):
     mode: str = ""  # "enforce" | "off" — checked by hand for a plain 400
+
+
+class SettingsValueBody(BaseModel):
+    value: Any = None  # a choice/string/number/bool, or None to clear
+
+
+class CredentialBody(BaseModel):
+    value: str = ""  # the pasted secret — consumed here, never echoed
 
 
 @router.post("/api/screen-capture", status_code=202)
@@ -307,10 +328,18 @@ async def _contacts_state(request: Request) -> dict:
     }
 
 
-async def _panel_config_write(request: Request, *, op: str, path: str, value: Any) -> dict:
+async def _panel_config_write(
+    request: Request,
+    *,
+    op: str,
+    path: str,
+    value: Any,
+    refresh=None,
+) -> tuple[str, dict]:
     """One owner-made config change from the panel: refuse with plain words
     when the manager won't take it, record the landing in the audit chain,
-    and answer with the fresh state so the page updates in one round-trip."""
+    and answer with the manager's reply plus the fresh state (whose builder
+    the caller picks) so the page updates in one round-trip."""
     manager = getattr(request.app.state, "config_manager", None)
     if manager is None:
         raise HTTPException(status_code=503, detail="config management is not wired")
@@ -326,7 +355,9 @@ async def _panel_config_write(request: Request, *, op: str, path: str, value: An
             params={"path": path, "op": op},
             outcome="changed from the panel",
         )
-    return await _contacts_state(request)
+    if refresh is None:
+        refresh = _contacts_state
+    return note, await refresh(request)
 
 
 @router.get("/api/contacts")
@@ -347,12 +378,13 @@ async def add_contact(body: ContactBody, request: Request, token: str | None = N
     handle = body.handle.strip()
     if not handle:
         raise HTTPException(status_code=400, detail="an allowlist entry needs a handle")
-    return await _panel_config_write(
+    _, state = await _panel_config_write(
         request,
         op="add",
         path="contacts.allowlist",
         value={"platform": body.platform.strip() or "*", "handle": handle},
     )
+    return state
 
 
 @router.delete("/api/contacts/allowlist")
@@ -361,12 +393,13 @@ async def remove_contact(body: ContactBody, request: Request, token: str | None 
     exact entry shown, the same way '/config remove' does."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
-    return await _panel_config_write(
+    _, state = await _panel_config_write(
         request,
         op="remove",
         path="contacts.allowlist",
         value={"platform": body.platform.strip() or "*", "handle": body.handle.strip()},
     )
+    return state
 
 
 @router.put("/api/contacts/mode")
@@ -379,7 +412,8 @@ async def set_contacts_mode(
         raise HTTPException(status_code=401, detail="bad or missing token")
     if body.mode not in ("enforce", "off"):
         raise HTTPException(status_code=400, detail="it must be one of: enforce, off")
-    return await _panel_config_write(request, op="set", path="contacts.mode", value=body.mode)
+    _, state = await _panel_config_write(request, op="set", path="contacts.mode", value=body.mode)
+    return state
 
 
 def _app_contacts_path(key: str, setting: str) -> str:
@@ -401,10 +435,12 @@ async def set_app_contacts_mode(
         raise HTTPException(status_code=401, detail="bad or missing token")
     path = _app_contacts_path(key, "mode")
     if body.mode == "default":
-        return await _panel_config_write(request, op="reset", path=path, value=None)
+        _, state = await _panel_config_write(request, op="reset", path=path, value=None)
+        return state
     if body.mode not in ("enforce", "off"):
         raise HTTPException(status_code=400, detail="it must be one of: enforce, off, default")
-    return await _panel_config_write(request, op="set", path=path, value=body.mode)
+    _, state = await _panel_config_write(request, op="set", path=path, value=body.mode)
+    return state
 
 
 @router.post("/api/contacts/apps/{key}/allowlist")
@@ -418,12 +454,13 @@ async def add_app_contact(
     handle = body.handle.strip()
     if not handle:
         raise HTTPException(status_code=400, detail="an allowlist entry needs a handle")
-    return await _panel_config_write(
+    _, state = await _panel_config_write(
         request,
         op="add",
         path=_app_contacts_path(key, "allowlist"),
         value={"platform": key.lower(), "handle": handle},
     )
+    return state
 
 
 @router.delete("/api/contacts/apps/{key}/allowlist")
@@ -437,7 +474,7 @@ async def remove_app_contact(
     # the entry's own platform as the card showed it; the app key is the
     # fallback so a starry default can't miss the slice the row lives in
     platform = body.platform.strip()
-    return await _panel_config_write(
+    _, state = await _panel_config_write(
         request,
         op="remove",
         path=_app_contacts_path(key, "allowlist"),
@@ -446,6 +483,123 @@ async def remove_app_contact(
             "handle": body.handle.strip(),
         },
     )
+    return state
+
+
+# -- the editable settings surface: the whole config through one gate ------------
+#
+# Everything the Settings page can change flows through ConfigManager —
+# the same validation, persistence, live-apply and audit trail chat's
+# /config uses — so the two entry points can never drift. Credentials are
+# the one thing the manager doesn't hold: they go straight to the
+# encrypted store, by name only, exactly as a chat paste does.
+
+
+async def _settings_state(request: Request) -> dict:
+    """The editable feed: the catalog's groups over the live config, every
+    field with its effective value, plus the credential paste fields with
+    their set flags — names only, values never ride back out."""
+    manager = getattr(request.app.state, "config_manager", None)
+    if manager is None:
+        raise HTTPException(status_code=503, detail="config management is not wired")
+    effective = await manager.effective()
+    changed = {row["path"] for row in effective.get("overrides", [])}
+    resolver = getattr(request.app.state, "resolver", None)
+    known = await resolver.known_names() if resolver is not None else set()
+    return settings_feed(request.app.state.config, changed, known)
+
+
+async def _known_setting(request: Request, path: str) -> None:
+    """The path must name a field the catalog knows — a stranger in the URL
+    can't mint a ConfigManager path the page never offered."""
+    feed = await _settings_state(request)
+    if path not in {f["path"] for g in feed["groups"] for f in g["fields"]}:
+        raise HTTPException(status_code=404, detail="that isn't a setting the page knows")
+
+
+@router.get("/api/settings/fields")
+async def settings_fields(request: Request, token: str | None = None) -> dict:
+    """Everything editable, grouped, with the right control per kind and
+    the plain-words note for when each change bites."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    return await _settings_state(request)
+
+
+@router.put("/api/settings/fields/{path}")
+async def set_setting(
+    path: str, body: SettingsValueBody, request: Request, token: str | None = None
+) -> dict:
+    """One setting saved — validated and live-applied by the manager, whose
+    plain reply (the restart words for a model change, the when-it-bites
+    note otherwise) rides back as the page's toast."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    await _known_setting(request, path)
+    reply, feed = await _panel_config_write(
+        request, op="set", path=path, value=body.value, refresh=_settings_state
+    )
+    return {"reply": reply, "feed": feed}
+
+
+@router.delete("/api/settings/fields/{path}")
+async def reset_setting(path: str, request: Request, token: str | None = None) -> dict:
+    """One setting back to what config.yaml says — the same reset chat's
+    '/config reset' makes."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    await _known_setting(request, path)
+    reply, feed = await _panel_config_write(
+        request, op="reset", path=path, value=None, refresh=_settings_state
+    )
+    return {"reply": reply, "feed": feed}
+
+
+@router.put("/api/settings/credentials/{name}")
+async def set_credential(
+    name: str, body: CredentialBody, request: Request, token: str | None = None
+) -> dict:
+    """One pasted credential into the encrypted store — write-only: the
+    value is consumed here, never echoed, never audited, never logged. When
+    it belongs to an enabled chat surface, the same-value toggle write that
+    follows is what makes the surface reconnect with the fresh token now
+    (the manager's connector diff reads tokens on every write)."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    spec = credential_for(name)
+    if spec is None:
+        raise HTTPException(status_code=404, detail="no credential is named that")
+    secrets = getattr(request.app.state, "secrets", None)
+    if secrets is None:
+        raise HTTPException(status_code=503, detail="the secret store is not wired")
+    value = body.value.strip()
+    if not value:
+        raise HTTPException(status_code=400, detail="paste a value first")
+    await secrets.set(name, value)
+    audit = getattr(request.app.state, "audit", None)
+    if audit is not None:
+        # the chat paste's exact discipline: the name only, never the value
+        await audit.append(
+            actor="owner",
+            tool_name="store_app_secret",
+            decision="allow",
+            rules_matched="builtin:internal",
+            params={"name": name},
+            outcome="stored encrypted — value never recorded",
+        )
+    if spec.platform:
+        toggle = getattr(request.app.state.config.messaging, spec.platform, None)
+        if toggle is not None and toggle.enabled:
+            # no audit row for this one — the paste above is the record
+            manager = getattr(request.app.state, "config_manager", None)
+            if manager is not None:
+                await manager.set_verdict(
+                    op="set",
+                    path=f"messaging.{spec.platform}.enabled",
+                    value=True,
+                    source="panel",
+                )
+    return await _settings_state(request)
 
 
 @router.get("/api/settings/personality")
@@ -745,6 +899,100 @@ async def tasks_feed(request: Request, limit: int = 50, token: str | None = None
 _WORKSPACE_FILES = ("identity", "soul", "agents", "user", "memory")
 
 
+# the verdict buttons a finished row offers — the same options the chat
+# surfaces got, decided in one place so the panel can't drift from them
+def _verdict_options(task) -> list[str]:
+    if task.status != DONE or task.feedback is not None:
+        return []  # no verdict applies to work that never finished or moved on
+    return (
+        ["approve", "revise", "discard"]
+        if (task.plan or {}).get("approval_id") is not None
+        else ["approve", "discard"]
+    )
+
+
+@router.get("/api/proactive/tasks")
+async def proactive_tasks_feed(request: Request, limit: int = 50, token: str | None = None) -> dict:
+    """The background worker's task rows — the same list a chat-surface
+    result notification summarizes, newest first. A row's `options` are
+    the one-tap verdicts that still apply to it."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    store = getattr(request.app.state, "proactive_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="proactive worker is not wired")
+    tasks = await store.list(limit=min(limit, 200))
+    return {
+        "tasks": [
+            {
+                "id": t.id,
+                "skill": t.skill,
+                "label": t.label,
+                "status": t.status,
+                "result": t.result,
+                "feedback": t.feedback,
+                "feedback_note": t.feedback_note,
+                "provider": t.provider,
+                "day": t.day,
+                "created_at": t.created_at.isoformat(),
+                "options": _verdict_options(t),
+            }
+            for t in tasks
+        ]
+    }
+
+
+@router.post("/api/proactive/tasks/{task_id}/decide")
+async def decide_proactive_task(
+    task_id: int, body: TaskVerdictBody, request: Request, token: str | None = None
+) -> dict:
+    """The panel's one-tap verdicts on a finished task's result — the same
+    path a chat-surface button takes. `note` is the plain-words
+    acknowledgment (or why the tap didn't apply); None means the
+    carried-out action's own words are the acknowledgment."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    worker = getattr(request.app.state, "proactive_worker", None)
+    if worker is None:
+        raise HTTPException(status_code=503, detail="proactive worker is not wired")
+    if body.verdict not in ("approve", "revise", "discard"):
+        raise HTTPException(status_code=400, detail="unknown verdict")
+    note = await worker.decide_task(task_id, body.verdict)
+    return {"ok": True, "note": note}
+
+
+@router.get("/api/profile")
+async def profile_feed(request: Request, token: str | None = None) -> dict:
+    """Who the user is, as they have signed off on it: the confirmed
+    profile plus the pending entries waiting for one yes — the same
+    batch the chat confirmation message lists."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    workspace = getattr(request.app.state, "workspace", None)
+    if workspace is None:
+        raise HTTPException(status_code=503, detail="workspace is not enabled")
+    return {
+        "confirmed": [_entry_dict(e) for e in workspace.profile()],
+        "pending": [_entry_dict(e) for e in workspace.pending_profile()],
+    }
+
+
+@router.post("/api/profile/confirm")
+async def confirm_profile_entries(
+    body: ProfileConfirmBody, request: Request, token: str | None = None
+) -> dict:
+    """The panel's "yes" on pending profile entries — the same flip the
+    chat confirmation makes. Entries that aren't pending are left
+    alone, so a stale tap confirms nothing."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    workspace = getattr(request.app.state, "workspace", None)
+    if workspace is None:
+        raise HTTPException(status_code=503, detail="workspace is not enabled")
+    confirmed = workspace.confirm_profile(body.ids)
+    return {"ok": True, "confirmed": confirmed}
+
+
 def _entry_dict(entry: WorkspaceEntry) -> dict:
     return {
         "id": entry.id,
@@ -833,3 +1081,60 @@ async def workspace_search_feed(
         raise HTTPException(status_code=503, detail="workspace is not enabled")
     hits = workspace.search(query, limit=min(limit, 50))
     return {"hits": [{"file": h.file, "id": h.id, "text": h.text, "score": h.score} for h in hits]}
+
+
+# -- one-time workbench transfers -------------------------------------------------
+# The token in the path IS the authentication: random 32 bytes, single-use,
+# dead within minutes. No API token is ever sent, and the routes answer to
+# nothing else.
+
+_RESULT_TEXT_LIMIT = 1024 * 1024  # a generous log — anything past is clipped
+
+
+def _clip_result_text(text: str) -> str:
+    return text if len(text) <= _RESULT_TEXT_LIMIT else text[:_RESULT_TEXT_LIMIT] + "…"
+
+
+class WorkbenchResultBody(BaseModel):
+    exit_code: int
+    stdout: str = ""
+    stderr: str = ""
+
+
+@router.get("/api/workbench/{kind}/{token}")
+async def workbench_transfer_get(kind: str, token: str, request: Request) -> dict:
+    """A batch runner pulls its job's files here — once. Unknown, spent, or
+    expired URLs are simply not found."""
+    if kind != "bundle":
+        raise HTTPException(status_code=404, detail="no such transfer")
+    transfers = getattr(request.app.state, "transfers", None)
+    if transfers is None:
+        raise HTTPException(status_code=503, detail="workbench transfers not wired")
+    payload = await transfers.take_bundle(token)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="no such transfer")
+    return payload
+
+
+@router.post("/api/workbench/{kind}/{token}")
+async def workbench_transfer_post(
+    kind: str, token: str, body: WorkbenchResultBody, request: Request
+) -> dict:
+    """A batch runner pushes its job's outcome here — once. The streams are
+    clipped server-side before they are stored."""
+    if kind != "result":
+        raise HTTPException(status_code=404, detail="no such transfer")
+    transfers = getattr(request.app.state, "transfers", None)
+    if transfers is None:
+        raise HTTPException(status_code=503, detail="workbench transfers not wired")
+    stored = await transfers.post_result(
+        token,
+        {
+            "exit_code": body.exit_code,
+            "stdout": _clip_result_text(body.stdout),
+            "stderr": _clip_result_text(body.stderr),
+        },
+    )
+    if not stored:
+        raise HTTPException(status_code=404, detail="no such transfer")
+    return {"stored": True}

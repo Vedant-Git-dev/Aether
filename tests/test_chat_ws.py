@@ -52,7 +52,7 @@ def _app(agent=None, history: FakeHistory | None = None):
     history = history or FakeHistory()
     app = FastAPI()
     app.include_router(chat_router)
-    app.state.settings = Settings(_env_file=None, api_token="secret")
+    app.state.settings = Settings.without_env_file(api_token="secret")
     app.state.chat_history = history
     hub = ChatHub(history)
     app.state.chat_hub = hub

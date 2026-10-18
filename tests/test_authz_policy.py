@@ -54,6 +54,22 @@ def test_internal_tools_are_allowed() -> None:
         assert ruling.matched_rule == "builtin:internal"
 
 
+def test_web_research_tools_are_read_only_allowed() -> None:
+    """The hardened fetch and the key-gated search: external by
+    destination (never internal), read-only by construction (allowed).
+    Explicit, because the read-only verb anchor would miss the web_
+    prefix — and the neighbors stay fail-safe."""
+    policy = Policy([])
+    for name in ("web_fetch", "web_search"):
+        ruling = policy.classify(name)
+        assert ruling.decision is Decision.ALLOW, name
+        assert ruling.matched_rule == "builtin:web-research", name
+    # a look-alike never rides the rule — only fetch and search do
+    for name in ("web_post", "web_fetch_all", "web_search_and_send", "webfetch"):
+        ruling = policy.classify(name)
+        assert ruling.decision is Decision.REQUIRE_APPROVAL, name
+
+
 def test_internal_prefix_does_not_swallow_mcp_namespaced_tools() -> None:
     """An MCP server literally named 'workspace' or 'memory' must not have
     its tools auto-allowed via the internal-tool carve-out — the flat name
@@ -203,6 +219,19 @@ def test_set_config_tuning_paths_are_allowed() -> None:
         "agent.quiet_hours",
         "salience.threshold",
         "salience.rate_cap_per_hour",
+        "proactive.enabled",
+        "proactive.interval_minutes",
+        "proactive.max_tasks_per_day",
+        "proactive.max_tokens_per_day",
+        "proactive.max_sandbox_minutes_per_day",
+        "proactive.notify_daily_cap",
+        "proactive.skills",
+        "workbench.provider",
+        "workbench.monthly_minutes_cap",
+        "workbench.job_timeout_minutes",
+        "workbench.actions_repo",
+        "workbench.actions_workflow",
+        "workbench.actions_ref",
     ):
         ruling = policy.classify("set_config", {"op": "set", "path": path, "value": 1})
         assert ruling.decision is Decision.ALLOW, path

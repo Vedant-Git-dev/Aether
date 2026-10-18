@@ -13,12 +13,15 @@ real routers, the real static files, just a fake persistence layer.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from re import compile as _re_compile
 
 from fastapi import FastAPI, Response, WebSocket
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from aether.agent.traces import Trace
 from aether.api import router as api_router
@@ -38,13 +41,19 @@ from aether.config import (
     Settings,
     TransportConfig,
 )
+from aether.config_store import _apply_note
 from aether.connectors.base import InboundMessage
 from aether.memory.entities import Entity, EntityNote
 from aether.memory.events import Event
+from aether.proactive import ProactiveTask
 from aether.scheduler.jobs import ScheduledAction
+from aether.workspace import WorkspaceEntry
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "src" / "aether" / "web"
 API_TOKEN = "secret"
+
+# the quiet window's shape — the fixture's own plain-words refusal gate
+_QUIET_HOURS_RE = _re_compile(r"\d{2}:\d{2}-\d{2}:\d{2}")
 
 # the apps that carry their own contacts slice, matching the config model
 _APPS_WITH_OWN_LISTS = ("gmail", "telegram", "discord", "slack")
@@ -167,6 +176,18 @@ class FakeAudit:
                 "outcome": "executed after approval",
                 "created_at": now - timedelta(minutes=39),
                 "entry_hash": "d0a6f4b31c5e9a2d7f0b4e8c1a6d3f9b2e5c8a1d4f7b0e3c6a9d2f5b8e1c4a7d",
+            },
+            # the background worker's own row — the same lifecycle words the
+            # real store audits, so the audit page reads them plainly
+            {
+                "seq": 5,
+                "actor": "worker",
+                "tool_name": "proactive_task",
+                "decision": "info",
+                "rules_matched": "",
+                "outcome": "task feedback recorded",
+                "created_at": now - timedelta(minutes=12),
+                "entry_hash": "e1b7c5d42f6a8e0c1d3f5b7a9c2e4d6f8a0c2e4b6d8f0a2c4e6b8d0f2a4c6e8b",
             },
         ]
 
@@ -534,14 +555,185 @@ class FakeTraces:
         return next((t for t in self.rows if t.id == trace_id), None)
 
 
+class FakeProactiveStore:
+    """The background worker's task rows — two finished pieces of work with
+    live one-tap verdicts (one carrying a staged approval, so the panel
+    shows the three-button shape), and one already settled."""
+
+    def __init__(self, now: datetime) -> None:
+        self.rows = [
+            ProactiveTask(
+                id=3,
+                skill="research",
+                label="notes on the distributed-systems paper",
+                status="done",
+                opportunity_key="research:paper",
+                opportunity={},
+                plan={},
+                result=(
+                    "The paper's core claim holds only for small clusters; the "
+                    "section on failure modes lists three worth watching."
+                ),
+                feedback=None,
+                feedback_note=None,
+                provider="modal",
+                day=f"{now:%Y-%m-%d}",
+                created_at=now - timedelta(minutes=25),
+                updated_at=now - timedelta(minutes=20),
+            ),
+            ProactiveTask(
+                id=2,
+                skill="followups",
+                label="draft reply to sam about thursday",
+                status="done",
+                opportunity_key="followups:2",
+                opportunity={},
+                # a staged action — this row's Approve carries the send out
+                plan={"approval_id": 1},
+                result="Drafted a short reply confirming Thursday at 4 — it waits for your approval.",
+                feedback=None,
+                feedback_note=None,
+                provider=None,
+                day=f"{now:%Y-%m-%d}",
+                created_at=now - timedelta(hours=2),
+                updated_at=now - timedelta(hours=2),
+            ),
+            ProactiveTask(
+                id=1,
+                skill="media",
+                label="describe the standup recording you shared",
+                status="done",
+                opportunity_key="media:1",
+                opportunity={},
+                plan={},
+                result=(
+                    "A twelve-minute recording of a standup; the only decision "
+                    "taken was moving the demo to Friday."
+                ),
+                feedback="discarded",
+                feedback_note="too detailed",
+                provider="modal",
+                day=f"{now:%Y-%m-%d}",
+                created_at=now - timedelta(hours=5),
+                updated_at=now - timedelta(hours=4),
+            ),
+        ]
+
+    async def list(self, limit: int = 50) -> list[ProactiveTask]:
+        return self.rows[:limit]  # newest first, matching the real store
+
+    async def record_feedback(self, task_id: int, feedback: str, note: str = "") -> None:
+        row = next((r for r in self.rows if r.id == task_id), None)
+        if row is not None:
+            row.feedback = feedback
+            row.feedback_note = note or None
+
+
+class FakeProactiveWorker:
+    """The panel's one-tap verdicts on finished work — the same decide path
+    the chat-surface buttons take, applied to the fixture's rows so the
+    round trip works by hand."""
+
+    _FEEDBACK = {"approve": "approved", "revise": "revised", "discard": "discarded"}
+    _NOTES = {
+        "approve": "noted — I'll keep doing things like that.",
+        "revise": "noted — send me the corrected version and I'll take it from there.",
+        "discard": "dropped — I'll do less of that.",
+    }
+
+    def __init__(self, store: FakeProactiveStore) -> None:
+        self._store = store
+        self.verdicts: list[tuple[int, str]] = []
+
+    async def decide_task(self, task_id: int, verdict: str) -> str | None:
+        self.verdicts.append((task_id, verdict))
+        row = next((r for r in self._store.rows if r.id == task_id), None)
+        if row is None:
+            return "that task could not be found."
+        if row.feedback is not None:
+            return "that task was already decided."
+        await self._store.record_feedback(task_id, self._FEEDBACK[verdict])
+        return self._NOTES[verdict]
+
+
+class FakeWorkspace:
+    """The profile surface the Settings card reads — confirmed entries plus
+    the pending ones waiting for one yes, with the same flip the real
+    workspace's confirm makes."""
+
+    @staticmethod
+    def _at(now: datetime, minutes: int) -> str:
+        # the real store's shape: _now_iso(), an ISO string to the second
+        return (now - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+
+    def __init__(self, now: datetime) -> None:
+        self.entries = [
+            WorkspaceEntry(
+                id="p-you",
+                text="you prefer short, plain replies",
+                source="user",
+                at=self._at(now, 4320),
+                status="confirmed",
+            ),
+            WorkspaceEntry(
+                id="p-evening",
+                text="you are usually free after 7 in the evening",
+                source="user",
+                at=self._at(now, 4260),
+                status="confirmed",
+            ),
+            WorkspaceEntry(
+                id="p-proj",
+                text="you are building a personal assistant you call Aether",
+                source="agent",
+                at=self._at(now, 90),
+                status="pending",
+                confidence=0.8,
+            ),
+            WorkspaceEntry(
+                id="p-paper",
+                text="you are reading a paper on distributed systems",
+                source="agent",
+                at=self._at(now, 60),
+                status="pending",
+                confidence=0.7,
+            ),
+        ]
+
+    def profile(self) -> list[WorkspaceEntry]:
+        return [e for e in self.entries if e.status == "confirmed"]
+
+    def pending_profile(self) -> list[WorkspaceEntry]:
+        return [e for e in self.entries if e.status == "pending"]
+
+    def confirm_profile(self, entry_ids: list[str]) -> int:
+        confirmed = 0
+        for i, entry in enumerate(self.entries):
+            if entry.id in entry_ids and entry.status == "pending":
+                self.entries[i] = replace(entry, status="confirmed")
+                confirmed += 1
+        return confirmed
+
+
 class FakeConfigManager:
     """The read surface the panel uses (effective() like the real one) plus
-    the small write surface the Contacts page needs — applied to the
-    fixture's live AppConfig in memory, so the page round-trips by hand
-    without Postgres."""
+    the write surface the Settings and Contacts pages need — validated like
+    the real manager and applied to the fixture's live AppConfig in memory,
+    so the page round-trips by hand without Postgres. Nothing persists:
+    restart resets the fixture."""
+
+    # the sections whose plain fields the Settings page edits
+    _SETTABLE = ("llm", "agent", "salience", "authz")
 
     def __init__(self, config: AppConfig) -> None:
         self._config = config
+        # the override rows effective() reports — seeded with the baseline
+        # the fixture pretends chat made, grown by every panel write
+        self._changed: dict[str, object] = {
+            "authz.approval_ttl_hours": 24,
+            "agent.personality": "warm and a little informal",
+        }
+        self._baseline: dict[str, object] = {}  # path -> value before its first override
 
     async def effective(self) -> dict:
         return {
@@ -557,15 +749,59 @@ class FakeConfigManager:
                 "agent": {"quiet_hours": ""},
                 "llm": {"provider": "anthropic", "model": "claude-sonnet-5"},
             },
-            "overrides": [
-                {"path": "authz.approval_ttl_hours", "value": 24},
-                {"path": "agent.personality", "value": "warm and a little informal"},
-            ],
+            "overrides": [{"path": p, "value": v} for p, v in self._changed.items()],
         }
+
+    def _live_target(self, path: str) -> tuple[BaseModel, str] | None:
+        """(holder, field) the path writes to, or None when the path isn't
+        one the fixture's vocabulary speaks."""
+        parts = path.split(".")
+        if len(parts) == 2 and parts[0] in self._SETTABLE:
+            return getattr(self._config, parts[0]), parts[1]
+        if (
+            len(parts) == 3
+            and parts[0] == "messaging"
+            and parts[1] in type(self._config.messaging).model_fields
+            and parts[2] == "enabled"
+        ):
+            return getattr(self._config.messaging, parts[1]), "enabled"
+        if len(parts) == 3 and parts[0] == "mcp_servers" and parts[2] == "enabled":
+            server = next((s for s in self._config.mcp_servers if s.name == parts[1]), None)
+            if server is not None:
+                return server, "enabled"
+        return None
 
     async def set_verdict(
         self, *, op: str, path: str, value: object = None, source: str = "panel"
     ) -> tuple[bool, str]:
+        # plain fields: validate against the model's own annotation so a
+        # refusal reads the way the real manager's would
+        target = self._live_target(path)
+        if target is not None:
+            holder, field = target
+            if op == "reset":
+                if path not in self._baseline:
+                    return False, "that one is already what config.yaml says"
+                setattr(holder, field, self._baseline[path])
+                del self._changed[path]
+                return True, f"{path} is back to what config.yaml says."
+            if field == "enabled" and not isinstance(value, bool):
+                return False, "it needs to be true or false"
+            annotation = type(holder).model_fields[field].annotation
+            if field == "quiet_hours" and not (
+                value is None or (isinstance(value, str) and _QUIET_HOURS_RE.fullmatch(value))
+            ):
+                return False, "the quiet window reads like 23:00-08:00, or none"
+            try:
+                checked = TypeAdapter(annotation).validate_python(value)
+            except ValidationError:
+                return False, "that isn't a value this setting takes"
+            if path not in self._baseline:
+                self._baseline[path] = getattr(holder, field)
+            setattr(holder, field, checked)
+            self._changed[path] = checked
+            return True, f"{path} set to {_plain(checked)}{_apply_note(path)}"
+
         # the contacts vocabulary the panel writes: the default's mode and
         # list, plus one app's own contacts.<app>.mode / contacts.<app>.allowlist
         parts = path.split(".")
@@ -576,7 +812,7 @@ class FakeConfigManager:
         elif len(parts) == 2 and parts[0] == "contacts":
             field = parts[1]
         else:
-            return False, "the dev fixture only speaks the contacts settings"
+            return False, "the dev fixture only speaks the settings the pages show"
         if field == "mode":
             if op == "reset":
                 # only an app's own switch resets — back to following the default
@@ -607,6 +843,34 @@ class FakeConfigManager:
         return True, "changed in the dev fixture — nothing persists across restarts"
 
 
+def _plain(value: object) -> str:
+    """A value the way the real manager says it — none/true/false."""
+    if value is None:
+        return "none"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return str(value)
+
+
+class FakeSecretStore:
+    """The encrypted store's write surface: values in, names out — a pasted
+    credential never travels anywhere the page could read it back."""
+
+    def __init__(self) -> None:
+        self.stored: dict[str, str] = {}
+
+    async def set(self, name: str, value: str) -> None:
+        self.stored[name] = value
+
+    async def get(self, name: str) -> str | None:
+        return self.stored.get(name)
+
+    async def names(self) -> set[str]:
+        return set(self.stored)
+
+
 class FakeTools:
     """The registry's read surface: which MCP servers answered and how many
     actions each exposes."""
@@ -619,10 +883,15 @@ class FakeTools:
 
 
 class FakeResolver:
-    """Secret-name surface only — the apps feed checks key presence by name."""
+    """Secret-name surface only — the apps and settings feeds check key
+    presence by name. Names pasted into the fake store count too, so a
+    credential paste flips its badge in one round-trip."""
+
+    def __init__(self, store: FakeSecretStore) -> None:
+        self._store = store
 
     async def known_names(self) -> set[str]:
-        return {"TELEGRAM_BOT_TOKEN"}
+        return {"TELEGRAM_BOT_TOKEN"} | await self._store.names()
 
 
 class FakeHubBridge:
@@ -675,9 +944,8 @@ def build_app() -> FastAPI:
     if panel_built:
         app.mount("/assets", StaticFiles(directory=WEB_DIR), name="web-assets")
 
-    # _env_file is load-bearing: without it pydantic-settings would read a
-    # real .env sitting next to this fixture. Pyright's stubs miss the param.
-    app.state.settings = Settings(_env_file=None, api_token=API_TOKEN)  # type: ignore[call-arg]
+    # .env is deliberately not read: a real one may sit next to this fixture
+    app.state.settings = Settings.without_env_file(api_token=API_TOKEN)
     config = AppConfig(
         authz=AuthzConfig(
             rules=[
@@ -720,9 +988,15 @@ def build_app() -> FastAPI:
     app.state.entities = FakeEntities(now)
     app.state.scheduler = FakeScheduler(now)
     app.state.traces = FakeTraces(now)
+    proactive_store = FakeProactiveStore(now)
+    app.state.proactive_store = proactive_store
+    app.state.proactive_worker = FakeProactiveWorker(proactive_store)
+    app.state.workspace = FakeWorkspace(now)
     app.state.config_manager = FakeConfigManager(config)
     app.state.tools = FakeTools()
-    app.state.resolver = FakeResolver()
+    secret_store = FakeSecretStore()
+    app.state.secrets = secret_store
+    app.state.resolver = FakeResolver(secret_store)
     app.state.composio = FakeHubBridge()
 
     @app.get("/")

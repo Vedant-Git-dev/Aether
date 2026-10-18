@@ -57,6 +57,7 @@ _APPLY_NOTES = {
     "agent.tick_seconds": " — applies from the next tick",
     "agent.max_tool_iterations": " — applies from the next turn",
     "agent.quiet_hours": " — the quiet window is live right away",
+    "agent.max_searches_per_day": " — applies to the next search",
     "salience.threshold": " — applies to the next scored event",
     "salience.rate_cap_per_hour": " — applies to the next scored event",
     "contacts.mode": " — applies to the next message I see",
@@ -72,10 +73,24 @@ def _apply_note(path: str) -> str:
         return _APPLY_NOTES[path]
     if path.startswith("contacts."):
         return " — applies to the next message I see"
+    if path.startswith("proactive."):
+        return " — applies from the next cycle"
+    if path.startswith("workbench."):
+        return " — applies to the next job"
     return ""
 
 
-_SECTION_NAMES = ("llm", "agent", "salience", "messaging", "contacts", "authz", "mcp_servers")
+_SECTION_NAMES = (
+    "llm",
+    "agent",
+    "salience",
+    "messaging",
+    "contacts",
+    "authz",
+    "proactive",
+    "workbench",
+    "mcp_servers",
+)
 
 
 class ConfigError(ValueError):
@@ -712,9 +727,8 @@ class ConfigManager:
             value = await self._resolver.resolve(field.upper())
             if value:
                 values[field] = value
-        # _env_file=None is load-bearing (read the resolver, not .env) but
-        # isn't in BaseSettings' typed signature — pydantic-settings takes it
-        return Settings(_env_file=None, **values)  # type: ignore[call-arg]
+        # the resolver is the source here — .env is deliberately not read
+        return Settings.without_env_file(**values)
 
     async def _apply_mcp(self) -> str:
         """Make the host match the list: stop what left or changed, start
@@ -909,6 +923,8 @@ class ConfigManager:
             ("salience", type(self._live.salience)),
             ("contacts", type(self._live.contacts)),
             ("authz", type(self._live.authz)),
+            ("proactive", type(self._live.proactive)),
+            ("workbench", type(self._live.workbench)),
         ):
             for field in model.model_fields:
                 if section_name == "contacts" and isinstance(
@@ -1000,7 +1016,8 @@ class ConfigManager:
             a = live.agent
             return (
                 f"agent: tick {_plain_value(a.tick_seconds)}s · up to {a.max_tool_iterations} "
-                f"tool calls a turn · daily cap {a.daily_surface_cap} · quiet hours "
+                f"tool calls a turn · daily cap {a.daily_surface_cap} · "
+                f"{a.max_searches_per_day} web searches a day · quiet hours "
                 f"{a.quiet_hours or 'off'} (urgent at {_plain_value(a.quiet_urgent_salience)})"
             )
         if name == "salience":
@@ -1028,6 +1045,20 @@ class ConfigManager:
             a = live.authz
             plural = "rule" if len(a.rules) == 1 else "rules"
             return f"authz: {len(a.rules)} user {plural} · approvals wait {_plain_value(a.approval_ttl_hours)}h"
+        if name == "proactive":
+            p = live.proactive
+            state = "on" if p.enabled else "off"
+            return (
+                f"proactive: background work {state} · every {_plain_value(p.interval_minutes)}min"
+                f" · at most {p.max_tasks_per_day} tasks a day · skills: "
+                f"{', '.join(p.skills) or 'none'}"
+            )
+        if name == "workbench":
+            w = live.workbench
+            return (
+                f"workbench: {w.provider} first · {w.monthly_minutes_cap} batch minutes a month"
+                f" · {w.job_timeout_minutes}min a job"
+            )
         servers = live.mcp_servers
         if not servers:
             return "mcp_servers: none configured"

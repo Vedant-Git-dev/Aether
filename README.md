@@ -16,6 +16,12 @@ filing, following up. Every action is checked against a policy you wrote
 before it runs, and every decision is written to a tamper-evident log you
 can read afterwards.
 
+It can also work while you are away — following up, researching,
+describing files — inside budgets you set, bringing back results that
+wait for your verdict. That mode is off by default;
+["A night with Aether"](#a-night-with-aether) shows what it looks like
+switched on.
+
 ---
 
 ## A day with Aether
@@ -42,6 +48,42 @@ Thursday comes and goes. You are busy, not careless.
 
 You never had to trust the agent blindly. You had to trust a policy you
 can read and a log you can verify.
+
+## A night with Aether
+
+You tell Aether who you are once — a line about your work, your
+schedule, how you like your replies. That is the seed of a profile, and
+the only thing it takes on faith. Everything it notices about you later
+lands as a pending entry that waits for your yes.
+
+With the background worker switched on, every half hour or so:
+
+1. It looks around your memory for things you left open — a promise you
+   made, a thread you meant to answer, a file you shared and never
+   described.
+2. It drafts the follow-up, runs a web search on what you were reading
+   about, or sends the file through a describing job — at most a few
+   tasks a day, inside the budgets in `config.yaml`.
+3. Results arrive as short messages — five a day at most, held during
+   your quiet hours — each with one-tap buttons: **Approve**, **Revise**
+   or **Discard**. The same buttons sit on the panel's Tasks page, and
+   Revise simply means: send the corrected version in chat and it takes
+   it from there.
+4. Approve carries the action out, but only after re-checking that the
+   thread is still open and the slot is still free. If the world moved
+   on, it says so plainly and drops the draft instead of sending.
+5. Discard teaches it: the same opportunity never comes back, and the
+   skill that produced it carries less weight for the next month.
+
+If too much comes back wrong — three discards in a row, or one skill
+refused three times — the worker pauses itself and says so in one
+message. You can also say `/pause` or `/resume` in chat at any moment.
+
+Heavy work does not run on your machine. A job runs in a throwaway cloud
+sandbox — Modal by default, Vercel as a fallback, or a GitHub Actions
+batch queue for patient, non-sensitive jobs
+([`docs/github-actions-sandbox.md`](docs/github-actions-sandbox.md)) —
+which receives only the files the task needs and never Aether's keys.
 
 ## Why this exists
 
@@ -122,6 +164,29 @@ flowchart TD
   on it. It is strictly perception-only: it never acts inside an app it
   cannot reliably interact with.
 
+### Works while you sleep
+
+- **A profile you confirm.** What you tell Aether about yourself is the
+  seed; what it gathers on its own waits as pending entries until you
+  say yes — in chat, or on the panel's Settings page.
+- **Skills, not free rein.** Follow-ups on promises it finds in memory,
+  background research over the web, and descriptions of files you
+  share. Each tool call a skill makes still passes the same policy
+  gate, and detection and planning are hard-limited to read-only tools
+  in code, not in a prompt.
+- **Web research, capped and untrusted.** A hardened page fetcher and a
+  free-tier search tool, both capped per day. Fetched pages and search
+  results are data: they can never write your profile directly — the
+  only path from web content to the profile is a proposal that lands as
+  pending, waiting for your confirmation.
+- **Budgets and a kill switch.** Tasks, tokens, sandbox minutes and
+  notifications per day, all in config, all checked before the work
+  happens. The worker is off by default, and pauses itself — a pause
+  that survives restarts — if its work keeps coming back wrong.
+- **Verdicts that teach.** Approve, revise or discard from any surface:
+  chat, Telegram, Discord, Slack or the panel. Feedback shapes which
+  skills run next month, and the same opportunity never fires twice.
+
 ### Flexibility
 
 - **Bring your own model.** Claude (Anthropic API), OpenAI, Google Gemini,
@@ -162,6 +227,8 @@ flowchart TB
         Mem["Memory store<br/>encrypted (AES-256-GCM), deduplicated, entity-resolved"]
         Authz["Authz + audit<br/>deterministic policy, one-tap approvals, hash chain"]
         Sched["Scheduler<br/>persisted actions, re-armed on boot"]
+        Worker["Background worker<br/>budgeted skills, off by default"]
+        Bench["Workbench<br/>throwaway cloud sandboxes"]
 
         Chat --> Loop
         Loop --> LLM
@@ -169,6 +236,9 @@ flowchart TB
         Loop --> Mem
         Loop --> Authz
         Loop --- Sched
+        Worker --> Loop
+        Worker --> Mem
+        Worker --> Bench
     
 
     Mem --> DB[("Neon Postgres<br/>encrypted at rest")]
@@ -209,6 +279,15 @@ other.
 | `.env` | Secrets | Database URL, encryption key, provider API keys, bot tokens |
 | `config.yaml` | Structure | LLM provider choice, MCP servers, messaging toggles, contact allowlist, authorization rules |
 
+The structure side is also editable from the panel's Settings page: every
+supported setting grouped, validated, and live-applied through the same
+path chat's `/config` uses — same persistence, same audit trail, same
+plain-words refusals. Model changes restart Aether itself (back in a few
+seconds); everything else applies on the spot. Credentials there are
+paste-only: a value goes straight into the encrypted store and is never
+shown back. `config.yaml` (or the defaults, when no file exists) stays
+the base every change can be reset to.
+
 ## Security model and what we do not claim
 
 Aether asks for a lot of access, so it says plainly where its guarantees
@@ -217,9 +296,11 @@ end.
 - **Encryption at rest** uses AES-256-GCM with a server-held key. This
   protects stored history against a database-level compromise, such as a
   leaked backup or a breached storage provider, and still lets the agent
-  reason over history while your devices are offline. It does **not**
-  protect against a compromise of the server process itself. That is a
-  separate, harder problem.
+  reason over history while your devices are offline. The workspace
+  files — your identity, notes and profile — are encrypted the same
+  way, and file names and sizes remain visible metadata, the same trade
+  the database rows make. It does **not** protect against a compromise
+  of the server process itself. That is a separate, harder problem.
 - **Where secrets live.** Keys and OAuth tokens are in the same encrypted
   store: never in `config.yaml`, never in the audit record, which names
   keys only. If you paste a key into chat, it transits that platform and
@@ -232,6 +313,13 @@ end.
 - **LLM inference** happens at your configured provider. Zero-data-
   retention tiers and a dedicated secrets-management service are on the
   roadmap; today a platform environment variable holds the encryption key.
+- **Background work has the same shape, not a softer one.** The worker
+  runs off by default and only inside the budgets in `config.yaml`. A
+  sandbox provider sees the files a task hands it — never Aether's
+  keys, tokens or database — and the encryption guarantees above cover
+  what comes back, not what went out. Fetched pages and search results
+  are data, never instructions: they cannot change your policy, and
+  they reach your profile only as a proposal you confirm.
 
 To report a vulnerability, see [SECURITY.md](SECURITY.md) before opening
 an issue.

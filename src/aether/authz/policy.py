@@ -5,18 +5,22 @@ before it executes. First match wins:
 
 1. user rules from config.yaml — explicit trust or distrust, a regex on the
    tool name, optionally combined with a regex on the call parameters
-2. set_config — personal tuning (agent.*, salience.*, llm.*) -> ALLOW;
+2. set_config — personal tuning (agent.*, salience.*, llm.*, and the
+   background-work sections proactive.*/workbench.* — the user's own
+   budgets and switches, with the worst case a capped retry) -> ALLOW;
    a connect the user just drove in chat (origin "walk" from the /apps
    pick-and-paste — a loop-internal argument the model can never produce)
    on mcp_servers or messaging -> ALLOW, because the user's pick was the
    approval; every other config path (the security sections, an unknown or
    missing one, contacts/authz under any origin) -> REQUIRE_APPROVAL
 3. internal Aether tools (memory, scheduling, capture requests) -> ALLOW
-4. risky verbs (send, delete, pay, ...) -> REQUIRE_APPROVAL
-5. read-only verbs (list, search, get, ...) -> ALLOW
-6. anything else -> REQUIRE_APPROVAL
+4. Aether's web research (the hardened fetch, the key-gated search) ->
+   ALLOW — read-only by construction, external by destination
+5. risky verbs (send, delete, pay, ...) -> REQUIRE_APPROVAL
+6. read-only verbs (list, search, get, ...) -> ALLOW
+7. anything else -> REQUIRE_APPROVAL
 
-The verb ladders (4 and 5) run against the lowercased tool name: Composio
+The verb ladders (5 and 6) run against the lowercased tool name: Composio
 names its tools UPPER_SNAKE (composio__GMAIL_SEND_EMAIL), and a verb is a
 verb in either case — without it every hub tool would park at fail-safe.
 A composio tool's name is TOOLKIT_ACTION (gmail is metadata, send_email is
@@ -46,7 +50,7 @@ class Decision(StrEnum):
 @dataclass(frozen=True)
 class Ruling:
     decision: Decision
-    matched_rule: str  # "user:<pattern>" | "builtin:walk-connect" | "builtin:config-tune" | "builtin:config-security" | "builtin:internal" | "builtin:risky" | "builtin:read-only" | "default:fail-safe"
+    matched_rule: str  # "user:<pattern>" | "builtin:walk-connect" | "builtin:config-tune" | "builtin:config-security" | "builtin:internal" | "builtin:web-research" | "builtin:risky" | "builtin:read-only" | "default:fail-safe"
     reason: str
 
 
@@ -81,6 +85,13 @@ _RISKY = re.compile(
 # never grants read-only status on its own.
 _READONLY = re.compile(r"(^|__)(list|search|get|read|fetch|find|query)([a-z_]|$)")
 
+# Aether's own web research — the hardened fetch and the key-gated search.
+# They reach the public web, so they are not internal, but they only read:
+# the fetcher's address rules and byte caps make it observation, not
+# action. Explicit rather than riding the verb ladder, because the names
+# start with "web_" and the read-only verb anchor would miss them.
+_WEB_RESEARCH = re.compile(r"^web_(fetch|search)$")
+
 
 # The config vocabulary's two faces, by path root. Personal tuning applies
 # right away; the security sections change who Aether listens to, what it
@@ -89,7 +100,7 @@ _READONLY = re.compile(r"(^|__)(list|search|get|read|fetch|find|query)([a-z_]|$)
 # apply silently. The airtight direction matters because an approved call
 # is carried out without re-classifying — park-time is the only gate a
 # security write passes, and the worst case is an extra approval tap.
-_CONFIG_TUNING_ROOTS = {"agent", "salience", "llm"}
+_CONFIG_TUNING_ROOTS = {"agent", "salience", "llm", "proactive", "workbench"}
 _CONFIG_SECURITY_ROOTS = {"contacts", "authz", "messaging", "mcp_servers"}
 
 
@@ -150,6 +161,12 @@ class Policy:
         if _INTERNAL.match(tool_name):
             return Ruling(
                 Decision.ALLOW, "builtin:internal", "internal tool, touches only Aether's own state"
+            )
+        if _WEB_RESEARCH.match(tool_name):
+            return Ruling(
+                Decision.ALLOW,
+                "builtin:web-research",
+                "web research — reads a page or search results, nothing is changed",
             )
         lowered = tool_name.lower()  # Composio's UPPER_SNAKE names classify by the same verbs
         if lowered.startswith("composio__"):

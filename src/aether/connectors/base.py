@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -67,6 +67,10 @@ class InboundMessage:
 InboundHandler = Callable[[InboundMessage], Awaitable[None]]
 # (approval_id, APPROVED | DENIED) — the Phase-6 executor's cue
 DecisionCallback = Callable[[int, str], Awaitable[None]]
+# (task_id, "approve" | "revise" | "discard") -> a short plain-words note
+# when the tap didn't apply (stale, double-pressed), None when it did —
+# the proactive worker's decide_task owns the freshness
+TaskDecisionCallback = Callable[[int, str], Awaitable[str | None]]
 
 
 class ApprovalDecider(Protocol):
@@ -94,11 +98,13 @@ class MessagingConnector:
         approvals: ApprovalDecider | None = None,
         on_decision: DecisionCallback | None = None,
         on_inbound: InboundHandler | None = None,
+        on_task_decision: TaskDecisionCallback | None = None,
     ) -> None:
         self._enabled = enabled
         self._approvals = approvals
         self._on_decision = on_decision
         self._on_inbound = on_inbound
+        self._on_task_decision = on_task_decision
 
     @property
     def enabled(self) -> bool:
@@ -139,6 +145,22 @@ class MessagingConnector:
             # button rendering and this tap
             return "that approval has expired."
         return "that request was already decided."
+
+    async def _decide_task(self, task_id: int, decision: str) -> str | None:
+        """The shared path behind a result's one-tap verdicts. The worker
+        owns freshness — a second tap on an already-decided task answers
+        plainly there. None means the tap applied; the verdict's outcome
+        (the carried-out action's own words, or the button going quiet)
+        is the acknowledgment."""
+        if self._on_task_decision is None:
+            return "that task could not be found."
+        return await self._on_task_decision(task_id, decision)
+
+    async def present_result(self, task_id: int, text: str, options: Sequence[str] = ()) -> None:
+        """A finished background task's result, with the one-tap verdicts
+        that apply to it. A surface that doesn't do buttons needs nothing
+        here — the words still reach its chat through the result's plain
+        text, and the decision rides any other surface or the panel."""
 
     async def _emit_inbound(self, message: InboundMessage) -> None:
         if self._on_inbound is not None:

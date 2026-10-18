@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -24,6 +25,7 @@ from .base import (
     InboundHandler,
     InboundMessage,
     MessagingConnector,
+    TaskDecisionCallback,
     classify_attachment,
 )
 
@@ -49,6 +51,7 @@ class TelegramConnector(MessagingConnector):
         approvals: ApprovalDecider | None = None,
         on_decision: DecisionCallback | None = None,
         on_inbound: InboundHandler | None = None,
+        on_task_decision: TaskDecisionCallback | None = None,
         app_factory: Any = None,
     ) -> None:
         super().__init__(
@@ -56,6 +59,7 @@ class TelegramConnector(MessagingConnector):
             approvals=approvals,
             on_decision=on_decision,
             on_inbound=on_inbound,
+            on_task_decision=on_task_decision,
         )
         self._token = token
         self._app_factory = app_factory or self._default_app_factory
@@ -182,10 +186,28 @@ class TelegramConnector(MessagingConnector):
 
     async def _on_button(self, update: Update, context: Any) -> None:
         query = update.callback_query
-        data = query.data if query is not None else ""
+        if query is None:
+            return
+        data = query.data or ""
         if not data or not data.startswith(_CALLBACK_PREFIX):
             return
-        action, _, id_part = data[len(_CALLBACK_PREFIX) :].partition(":")
+        body = data[len(_CALLBACK_PREFIX) :]
+        # a task verdict rides its own namespace — "task:<verb>:<task id>"
+        # — so it can never collide with an approval's "<verb>:<approval id>"
+        if body.startswith("task:"):
+            verb, _, id_part = body[len("task:") :].partition(":")
+            if verb not in ("approve", "revise", "discard") or not id_part.isdigit():
+                log.warning("odd telegram callback data: %r", data)
+                with contextlib.suppress(Exception):
+                    await query.answer()
+                return
+            note = await self._decide_task(int(id_part), verb)
+            with contextlib.suppress(Exception):  # answered whatever happened
+                await query.answer(text=note) if note else await query.answer()
+            with contextlib.suppress(Exception):
+                await query.edit_message_reply_markup(reply_markup=None)
+            return
+        action, _, id_part = body.partition(":")
         if not id_part.isdigit() or action not in ("approve", "deny"):
             log.warning("odd telegram callback data: %r", data)
             with contextlib.suppress(Exception):
@@ -230,6 +252,21 @@ class TelegramConnector(MessagingConnector):
                 ]
             ]
         )
+        await self._send(text, reply_markup=keyboard)
+
+    async def present_result(self, task_id: int, text: str, options: Sequence[str] = ()) -> None:
+        """A finished background task's result plus the one-tap verdicts
+        that apply to it. An odd verdict name never reaches the buttons —
+        the fixed vocabulary stays fixed."""
+        labels = {"approve": "Approve", "revise": "Revise", "discard": "Discard"}
+        buttons = [
+            InlineKeyboardButton(
+                labels[verb], callback_data=f"{_CALLBACK_PREFIX}task:{verb}:{task_id}"
+            )
+            for verb in ("approve", "revise", "discard")
+            if verb in options
+        ]
+        keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
         await self._send(text, reply_markup=keyboard)
 
     async def _send(self, text: str, reply_markup: Any) -> str | None:

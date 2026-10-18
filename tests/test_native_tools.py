@@ -37,6 +37,7 @@ class NativeKit:
         config_manager: FakeConfigManager | None = None,
         workspace: object | None = None,
         vectors: object | None = None,
+        web: object | None = None,
     ) -> None:
         self.registry = ToolRegistry()
         self.events = events or FakeEventStore()
@@ -54,7 +55,7 @@ class NativeKit:
             entities=self.entities,
             approvals=self.approvals,
             scheduler=self.scheduler,
-            surfaces=SurfaceFanout([self.connector]),
+            surfaces=SurfaceFanout([self.connector]),  # type: ignore[arg-type] — the fake speaks the same shape
             capture_box=self.box,
             routines=routines,  # None keeps the routine tools unregistered
             traces=traces,  # same for the decision-replay tool
@@ -62,6 +63,7 @@ class NativeKit:
             config_manager=config_manager,  # and the config tools
             workspace=workspace,  # and the workspace tools
             vectors=vectors,  # and the semantic search layer
+            web=web,  # and the hardened fetch + search pair
         )
 
     async def run(self, name: str, params: dict) -> str:
@@ -85,6 +87,7 @@ async def test_seven_native_tools_register() -> None:
                 "send_chat_message",
             )
         )
+        if t is not None
     }
     assert names == {
         "memory_search",
@@ -654,7 +657,7 @@ async def test_workspace_remember_and_search_round_trip(tmp_path) -> None:
     assert "prefers concise notifications" in found
 
     assert await kit.run("workspace_remember", {"text": "x"}) == (
-        "workspace_remember needs text and a kind: preference, fact, or daily."
+        "workspace_remember needs text and a kind: preference, fact, daily, or profile."
     )
 
 
@@ -733,3 +736,36 @@ async def test_workspace_finish_bootstrap_removes_the_marker(tmp_path) -> None:
     assert await kit.run("workspace_finish_bootstrap", {}) == "First-run setup marked complete."
     assert await kit.run("workspace_finish_bootstrap", {}) == "No first-run setup was pending."
     assert await kit.run("workspace_read", {"file": "bootstrap"}) == "bootstrap is empty."
+
+
+class FakeWebTools:
+    """The web tools surface NativeKit needs — canned answers, no network."""
+
+    def __init__(self, fetch_reply: str = "page text", search_reply: str = "results") -> None:
+        self.fetch_reply = fetch_reply
+        self.search_reply = search_reply
+        self.calls: list[tuple[str, dict]] = []
+
+    async def fetch_tool(self, params: dict) -> str:
+        self.calls.append(("web_fetch", params))
+        return self.fetch_reply
+
+    async def search_tool(self, params: dict) -> str:
+        self.calls.append(("web_search", params))
+        return self.search_reply
+
+
+async def test_web_tools_register_only_when_wired() -> None:
+    bare = NativeKit()
+    assert bare.registry.get("web_fetch") is None
+    assert bare.registry.get("web_search") is None
+
+    web = FakeWebTools()
+    kit = NativeKit(web=web)
+    assert kit.count == bare.count + 2
+    assert await kit.run("web_fetch", {"url": "https://example.com/x"}) == "page text"
+    assert await kit.run("web_search", {"query": "tea"}) == "results"
+    assert web.calls == [
+        ("web_fetch", {"url": "https://example.com/x"}),
+        ("web_search", {"query": "tea"}),
+    ]
