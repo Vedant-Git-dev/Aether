@@ -7,7 +7,7 @@ from __future__ import annotations
 import io
 import zipfile
 
-from fakes import FakeEventStore, FakeProvider, FakeRegistry
+from fakes import FakeEventStore, FakeMediaStore, FakeProvider, FakeRegistry
 
 from aether.connectors.attachments import (
     AttachmentProcessor,
@@ -57,7 +57,9 @@ def _message(*attachments: Attachment, text: str = "") -> InboundMessage:
 
 
 def _image() -> Attachment:
-    return Attachment("image", "cat.png", "image/png", b"\x89PNG-fake")
+    # a real PNG magic — the store sniffs, so a truncated signature would
+    # store as a download-only blob, not an image
+    return Attachment("image", "cat.png", "image/png", b"\x89PNG\r\n\x1a\n" + b"fake")
 
 
 def _zip(parts: dict[str, bytes]) -> bytes:
@@ -114,6 +116,55 @@ class TestImages:
         assert any(
             isinstance(b, ImageBlock) and b.media_type == "image/png" for b in messages[0].blocks
         )
+
+    async def test_with_a_store_the_image_bytes_are_kept(self) -> None:
+        provider = FakeProvider([Turn(text='{"description": "a cat"}')])
+        media = FakeMediaStore()
+        processor = AttachmentProcessor(FakeRegistry(provider), FakeEventStore(), media=media)
+        await processor.process(_message(_image()))
+
+        payload = processor._events.ingested[0]["payload"]
+        record = await media.get(payload["media_id"])
+        assert record is not None
+        assert (
+            record.data == b"\x89PNG\r\n\x1a\n" + b"fake"
+        )  # the bytes round-trip, not just the description
+        assert record.media_type == "image/png"  # sniffed, never the declared MIME
+
+    async def test_a_doc_keeps_its_bytes_too(self) -> None:
+        media = FakeMediaStore()
+        processor = AttachmentProcessor(FakeRegistry(None), FakeEventStore(), media=media)
+        attachment = Attachment("doc", "notes.txt", "text/plain", b"remember the milk")
+        await processor.process(_message(attachment))
+
+        payload = processor._events.ingested[0]["payload"]
+        record = await media.get(payload["media_id"])
+        assert record is not None
+        assert record.data == b"remember the milk"
+
+    async def test_a_full_store_degrades_to_text_only(self) -> None:
+        provider = FakeProvider([Turn(text='{"description": "a cat"}')])
+        media = FakeMediaStore()
+        media.full = True
+        processor = AttachmentProcessor(FakeRegistry(provider), FakeEventStore(), media=media)
+        results = await processor.process(_message(_image()))
+
+        assert results[0].blind is False  # still seen, still remembered
+        assert "media_id" not in processor._events.ingested[0]["payload"]
+
+    async def test_a_blind_image_still_stores_its_bytes(self) -> None:
+        media = FakeMediaStore()
+        processor = AttachmentProcessor(FakeRegistry(None), FakeEventStore(), media=media)
+        results = await processor.process(_message(_image(), text="my new bike"))
+
+        assert results[0].blind is True  # the plain note still reads
+        record = processor._events.ingested[0]
+        assert record["kind"] == "shared_image"
+        payload = record["payload"]
+        kept = await media.get(payload["media_id"])
+        assert kept is not None and kept.data == b"\x89PNG\r\n\x1a\n" + b"fake"
+        assert "not seen yet" in payload["seen_note"]
+        assert payload["caption"] == "my new bike"
 
     async def test_no_vision_provider_is_blind_never_crashes(self) -> None:
         processor = AttachmentProcessor(FakeRegistry(None), FakeEventStore())

@@ -10,6 +10,7 @@ from typing import Any
 from aether.agent.traces import Trace
 from aether.authz.approvals import PENDING, Approval
 from aether.llm.types import Message, ToolCall, ToolResult, ToolSpec, Turn
+from aether.media.store import MediaRecord, MediaRef, MediaStoreFull, sniff_media_type
 from aether.memory.context import AgentContext
 from aether.memory.entities import Entity, PersonRef
 from aether.memory.events import Event, IngestResult
@@ -598,6 +599,62 @@ class FakeEventStore:
         self.updates.append(
             (event_id, score, memorable, {"category": category, "actionability": actionability})
         )
+
+
+class FakeMediaStore:
+    """MediaStore double: same MediaRef/MediaRecord shapes and the same
+    sniffed-type truth, in memory. `full = True` makes every put refuse
+    like the real quota does; tests drop keys from `rows` (or clear it) to
+    simulate eviction."""
+
+    def __init__(self) -> None:
+        self.rows: dict[int, MediaRecord] = {}
+        self.full = False
+        self._next = 1
+
+    async def put(
+        self,
+        data: bytes,
+        *,
+        filename: str = "",
+        origin: str = "",
+        width: int | None = None,
+        height: int | None = None,
+        duration_s: float | None = None,
+    ) -> MediaRef:
+        if not data:
+            raise ValueError("the media store refuses empty bytes")
+        if self.full:
+            raise MediaStoreFull("media storage is full — test double")
+        for media_id, record in self.rows.items():
+            if record.data == data:  # dedup: same bytes, same row
+                return MediaRef(
+                    media_id=media_id,
+                    media_type=record.media_type,
+                    filename=record.filename,
+                    size=record.size,
+                )
+        media_id = self._next
+        self._next += 1
+        self.rows[media_id] = MediaRecord(
+            media_id=media_id,
+            filename=filename,
+            media_type=sniff_media_type(data),
+            size=len(data),
+            data=data,
+        )
+        return MediaRef(
+            media_id=media_id,
+            media_type=sniff_media_type(data),
+            filename=filename,
+            size=len(data),
+        )
+
+    async def get(self, media_id: int) -> MediaRecord | None:
+        return self.rows.get(media_id)
+
+    async def total_bytes(self) -> int:
+        return sum(record.size for record in self.rows.values())
 
 
 class FakeEmbedder:

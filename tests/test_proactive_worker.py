@@ -326,6 +326,20 @@ async def test_planning_runs_read_only_and_run_gets_the_full_executor() -> None:
     assert store.tasks[0].status == DONE
 
 
+async def test_look_at_media_passes_the_planning_gate() -> None:
+    """look_at_media reads stored bytes and writes nothing new, so the
+    planning phases may use it — the gate decides by name, and it is in
+    READ_TOOLS."""
+    from aether.proactive.worker import read_only
+
+    async def full(call: ToolCall) -> str:
+        return "a ginger cat on a windowsill"
+
+    guarded = read_only(full)  # type: ignore[arg-type] — the fake speaks the same shape
+    look = ToolCall(id="l", name="look_at_media", arguments={"media_id": 3})
+    assert await guarded(look) == "a ginger cat on a windowsill"
+
+
 # ---------------------------------------------------------------------------
 # failures, refusals, and the skill leaving the list mid-flight
 # ---------------------------------------------------------------------------

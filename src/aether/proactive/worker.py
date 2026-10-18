@@ -69,7 +69,14 @@ ApprovalCarrier = Callable[[int, str], Awaitable[Any]]
 # else is a change, and changes wait for the run phase; this gate is
 # code, so a policy ALLOW during planning still cannot carry a write.
 READ_TOOLS = frozenset(
-    {"memory_search", "workspace_read", "workspace_search", "web_fetch", "web_search"}
+    {
+        "memory_search",
+        "workspace_read",
+        "workspace_search",
+        "web_fetch",
+        "web_search",
+        "look_at_media",
+    }
 )
 
 

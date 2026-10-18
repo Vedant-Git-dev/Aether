@@ -13,6 +13,7 @@ import logging
 from ..llm.json_utils import extract_json
 from ..llm.registry import ProviderRegistry
 from ..llm.types import ImageBlock, Message
+from ..media.store import MediaStore, MediaStoreFull
 from ..memory.events import EventStore, IngestResult
 
 log = logging.getLogger("aether.connectors.screenvision")
@@ -28,11 +29,20 @@ SYSTEM_PROMPT = (
 
 
 class ScreenVision:
-    """Screenshots in (the companion uploads them), encrypted memory events out."""
+    """Screenshots in (the companion uploads them), encrypted memory events
+    out. With a media store wired, the capture's bytes are kept too (the
+    event carries their media_id), so a screen can be looked at again
+    instead of remembered only through its description."""
 
-    def __init__(self, providers: ProviderRegistry, events: EventStore) -> None:
+    def __init__(
+        self,
+        providers: ProviderRegistry,
+        events: EventStore,
+        media: MediaStore | None = None,
+    ) -> None:
         self._providers = providers
         self._events = events
+        self._media = media
 
     async def record(self, png: bytes, note: str = "") -> IngestResult | None:
         """Describe one screenshot and store it as an event. None when no
@@ -71,4 +81,10 @@ class ScreenVision:
         payload = {k: v for k, v in described.items() if v not in (None, "", [])}
         if note:
             payload["user_note"] = note
+        if self._media is not None:
+            try:
+                kept = await self._media.put(png, filename="screen.png", origin="screen")
+                payload["media_id"] = kept.media_id
+            except MediaStoreFull:
+                log.warning("media store full — the capture is kept as text only")
         return await self._events.ingest(source="screen", kind="screen_capture", payload=payload)

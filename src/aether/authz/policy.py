@@ -66,7 +66,7 @@ class Ruling:
 # "delete"/"remove".
 _INTERNAL = re.compile(
     r"^(?!.*__)(memory_\w+|note_entity|schedule_action|request_screen_capture"
-    r"|get_pending_approvals|send_chat_message|create_routine|list_routines"
+    r"|look_at_media|get_pending_approvals|send_chat_message|create_routine|list_routines"
     r"|set_routine_enabled|delete_routine|explain_decision|verify_integrity"
     r"|get_config|workspace_\w+)$"
 )

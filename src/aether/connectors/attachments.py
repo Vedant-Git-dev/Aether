@@ -18,11 +18,13 @@ import re
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from xml.etree import ElementTree
 
 from ..llm.json_utils import extract_json
 from ..llm.registry import ProviderRegistry
 from ..llm.types import ImageBlock, Message
+from ..media.store import MediaRef, MediaStore, MediaStoreFull
 from ..memory.entities import Sender
 from ..memory.events import EventStore, IngestResult
 from ..memory.vectors import VectorMemory
@@ -104,17 +106,23 @@ class AttachmentProcessor:
     """User-shared files in (connectors download the bytes), encrypted memory
     events out. Images are described by the vision provider — perception
     only; documents keep their extracted text so a later turn can answer
-    questions about the content."""
+    questions about the content.
+
+    With a media store wired, the bytes themselves are kept too (encrypted,
+    under the quota) and the event carries their media_id — so nothing a
+    user shared is discarded after one look."""
 
     def __init__(
         self,
         providers: ProviderRegistry,
         events: EventStore,
         indexer: VectorMemory | None = None,
+        media: MediaStore | None = None,
     ) -> None:
         self._providers = providers
         self._events = events
         self._indexer = indexer
+        self._media = media
 
     async def process(self, message: InboundMessage) -> list[AttachmentResult]:
         out: list[AttachmentResult] = []
@@ -125,11 +133,46 @@ class AttachmentProcessor:
                 out.append(await self._doc(attachment, message))
         return out
 
+    async def _keep(self, attachment: Attachment, surface: str) -> MediaRef | None:
+        """Store the bytes before the ingest, so the event can point at
+        them. A full store degrades to an event without a media_id —
+        never a dropped message and never a crash."""
+        if self._media is None:
+            return None
+        try:
+            return await self._media.put(
+                attachment.data, filename=attachment.filename, origin=surface
+            )
+        except MediaStoreFull:
+            log.warning("media store full — the file %s is kept as text only", attachment.filename)
+            return None
+
     async def _image(self, attachment: Attachment, message: InboundMessage) -> AttachmentResult:
+        kept = await self._keep(attachment, message.surface)
         provider = self._providers.for_role("vision")
         if provider is None or not provider.supports_vision:
-            log.warning("shared image dropped: no vision-capable provider configured")
-            return AttachmentResult(ingested=None, blind=True)
+            # no eyes right now — still remember that the image arrived and
+            # keep its bytes, so a later look_at_media (or a configured
+            # vision model) can see it
+            log.info("shared image kept unseen: no vision-capable provider configured")
+            ingested = None
+            if kept is not None:
+                payload = {
+                    "filename": attachment.filename,
+                    "media_type": attachment.media_type,
+                    "media_id": kept.media_id,
+                    "seen_note": "not seen yet — no vision model is set",
+                }
+                if message.text:
+                    payload["caption"] = message.text
+                payload["chat_ref"] = message.chat_ref
+                ingested = await self._events.ingest(
+                    source=message.surface,
+                    kind="shared_image",
+                    payload=payload,
+                    sender=Sender(platform=message.surface, handle=message.handle),
+                )
+            return AttachmentResult(ingested=ingested, blind=True)
         turn = await provider.complete(
             IMAGE_SYSTEM_PROMPT,
             [
@@ -158,6 +201,8 @@ class AttachmentProcessor:
         payload = {k: v for k, v in described.items() if v not in (None, "", [])}
         payload["filename"] = attachment.filename
         payload["media_type"] = attachment.media_type
+        if kept is not None:
+            payload["media_id"] = kept.media_id
         if message.text:
             payload["caption"] = message.text
         payload["chat_ref"] = message.chat_ref
@@ -170,12 +215,15 @@ class AttachmentProcessor:
         return AttachmentResult(ingested=ingested)
 
     async def _doc(self, attachment: Attachment, message: InboundMessage) -> AttachmentResult:
+        kept = await self._keep(attachment, message.surface)
         text = extract_doc_text(attachment.filename, attachment.media_type, attachment.data)
-        payload: dict[str, str] = {
+        payload: dict[str, Any] = {
             "filename": attachment.filename,
             "media_type": attachment.media_type,
             "chat_ref": message.chat_ref,
         }
+        if kept is not None:
+            payload["media_id"] = kept.media_id
         if text:
             payload["text"] = text[:DOC_TEXT_CAP]
         else:

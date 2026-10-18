@@ -11,6 +11,9 @@ from fakes import (
     FakeConfigManager,
     FakeEntities,
     FakeEventStore,
+    FakeMediaStore,
+    FakeProvider,
+    FakeRegistry,
     FakeRoutines,
     FakeScheduler,
     FakeSurfaceConnector,
@@ -22,6 +25,7 @@ from aether.agent.loop import CaptureRequestBox, SurfaceFanout
 from aether.agent.tools import FAILURE_REPLY, plain_replay, register_native_tools
 from aether.authz.audit import ChainVerification
 from aether.connectors.registry import ToolRegistry
+from aether.llm.types import Turn
 from aether.memory.events import Event
 from aether.memory.vectors import MemoryHit
 from aether.workspace import Workspace
@@ -38,6 +42,8 @@ class NativeKit:
         workspace: object | None = None,
         vectors: object | None = None,
         web: object | None = None,
+        media: object | None = None,
+        providers: object | None = None,
     ) -> None:
         self.registry = ToolRegistry()
         self.events = events or FakeEventStore()
@@ -64,6 +70,8 @@ class NativeKit:
             workspace=workspace,  # and the workspace tools
             vectors=vectors,  # and the semantic search layer
             web=web,  # and the hardened fetch + search pair
+            media=media,  # and the stored-media look-again tool
+            providers=providers,
         )
 
     async def run(self, name: str, params: dict) -> str:
@@ -310,6 +318,86 @@ async def test_send_chat_message_fans_out() -> None:
     assert out == "Sent to the user's chat surfaces."
     assert kit.connector.sent == ["the deploy finished"]
     assert await kit.run("send_chat_message", {"text": "  "}) == "send_chat_message needs text."
+
+
+# ---------------------------------------------------------------------------
+# look_at_media — stored bytes seen again, on demand
+# ---------------------------------------------------------------------------
+
+
+async def test_look_at_media_registers_only_when_store_and_eyes_are_wired() -> None:
+    """Without a media store or providers the tool is not offered at all —
+    same shape as every other feature-gated native tool."""
+    store = FakeMediaStore()
+
+    def names(kit: NativeKit) -> set[str]:
+        return {s.name for s in kit.registry.specs()}
+
+    assert "look_at_media" not in names(NativeKit())
+    assert "look_at_media" not in names(NativeKit(media=store))  # bytes but no eyes
+    assert "look_at_media" not in names(
+        NativeKit(providers=FakeRegistry(FakeProvider([])))
+    )  # eyes but no bytes
+    assert "look_at_media" in names(
+        NativeKit(media=store, providers=FakeRegistry(FakeProvider([])))
+    )
+
+
+async def test_look_at_media_describes_the_stored_image_again() -> None:
+    store = FakeMediaStore()
+    kept = await store.put(
+        b"\x89PNG\r\n\x1a\n" + b"fake-cat", filename="cat.png", origin="telegram"
+    )
+    provider = FakeProvider([Turn(text="A ginger cat asleep on a keyboard")])
+    kit = NativeKit(media=store, providers=FakeRegistry(provider))
+
+    out = await kit.run("look_at_media", {"media_id": kept.media_id, "question": "the cat?"})
+    assert out == "A ginger cat asleep on a keyboard"
+
+    # the vision turn carried the stored bytes and the question, no tools
+    system, messages, tools = provider.calls[0]
+    assert tools == []
+    assert "the cat?" in messages[0].text
+    from aether.llm.types import ImageBlock
+
+    assert any(isinstance(b, ImageBlock) for b in messages[0].blocks)
+
+
+async def test_look_at_media_answers_plainly_when_the_blob_is_gone() -> None:
+    store = FakeMediaStore()
+    kept = await store.put(b"\x89PNG\r\n\x1a\n" + b"fake", filename="gone.png", origin="telegram")
+    store.rows.pop(kept.media_id)  # evicted to make room, say
+    kit = NativeKit(media=store, providers=FakeRegistry(FakeProvider([])))
+
+    out = await kit.run("look_at_media", {"media_id": kept.media_id})
+    assert "no longer stored" in out
+
+
+async def test_look_at_media_refuses_a_non_image_in_plain_words() -> None:
+    store = FakeMediaStore()
+    kept = await store.put(b"ID3" + b"x" * 64, filename="voice.mp3", origin="telegram")
+    kit = NativeKit(media=store, providers=FakeRegistry(FakeProvider([])))
+
+    out = await kit.run("look_at_media", {"media_id": kept.media_id})
+    assert "not an image" in out
+    assert "audio" in out
+
+
+async def test_look_at_media_without_vision_says_so_plainly() -> None:
+    store = FakeMediaStore()
+    kept = await store.put(b"\x89PNG\r\n\x1a\n" + b"fake", filename="cat.png", origin="telegram")
+    kit = NativeKit(media=store, providers=FakeRegistry(None))
+
+    out = await kit.run("look_at_media", {"media_id": kept.media_id})
+    assert "can't see images" in out
+    assert "vision_model" in out
+
+
+async def test_look_at_media_rejects_a_missing_or_bad_id() -> None:
+    store = FakeMediaStore()
+    kit = NativeKit(media=store, providers=FakeRegistry(FakeProvider([])))
+    assert "needs media_id" in await kit.run("look_at_media", {})
+    assert "needs media_id" in await kit.run("look_at_media", {"media_id": "one"})
 
 
 # ---------------------------------------------------------------------------

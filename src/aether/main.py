@@ -240,6 +240,15 @@ def create_app(
         log.info("mcp tools in the namespace: %d", tools.sync_mcp_tools())
         app.state.tools = tools
 
+        # --- encrypted media storage ----------------------------------------
+        # shared files, screen captures, and later generated images become
+        # AES-GCM blobs bound to their row, kept under a quota with
+        # least-recently-use eviction; references from pending approvals
+        # and undelivered results survive the broom. Wired here because
+        # the perception layers below store into it.
+        media_store = MediaStore(pool, cipher, config.media)
+        app.state.media_store = media_store
+
         # --- llm providers (best effort: the agent boots without keys) ----
         try:
             providers = ProviderRegistry.from_config(settings, config.llm)
@@ -251,10 +260,14 @@ def create_app(
                 exc,
             )
         app.state.providers = providers
-        app.state.screen_vision = ScreenVision(providers, events) if providers else None
+        app.state.screen_vision = (
+            ScreenVision(providers, events, media=media_store) if providers else None
+        )
         # shared chat files ride the same rails — the loop's drain calls it
         app.state.attachments = (
-            AttachmentProcessor(providers, events, indexer=vectors) if providers else None
+            AttachmentProcessor(providers, events, indexer=vectors, media=media_store)
+            if providers
+            else None
         )
 
         judge_provider = providers.for_role("salience") if providers else None
@@ -272,12 +285,6 @@ def create_app(
         app.state.routines = routines
         traces = Traces(pool, cipher)
         app.state.traces = traces
-        # encrypted media storage — shared files and generated images
-        # become AES-GCM blobs bound to their row, kept under a quota
-        # with least-recently-use eviction; references from pending
-        # approvals and undelivered results survive the broom
-        media_store = MediaStore(pool, cipher, config.media)
-        app.state.media_store = media_store
 
         # --- workspace: the human-editable Markdown identity/memory layer ---
         # an enhancement layer, not core plumbing: a workspace that can't be
@@ -365,6 +372,8 @@ def create_app(
             workspace=workspace,
             vectors=vectors,
             web=web_tools,
+            media=media_store,
+            providers=providers,
         )
         log.info("native tools registered: %d", native)
 
