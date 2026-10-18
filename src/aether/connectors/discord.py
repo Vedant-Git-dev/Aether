@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 import discord
@@ -20,6 +21,7 @@ from .base import (
     InboundHandler,
     InboundMessage,
     MessagingConnector,
+    TaskDecisionCallback,
     classify_attachment,
 )
 
@@ -58,6 +60,52 @@ class ApprovalView(discord.ui.View):
             await interaction.response.edit_message(view=self)
 
 
+class ResultView(discord.ui.View):
+    """A background task's one-tap verdicts, built from the options the
+    task actually offers — in-memory like the approval buttons, so a
+    restart's tasks surface in the web panel instead."""
+
+    _LABELS = {"approve": "Approve", "revise": "Revise", "discard": "Discard"}
+    _STYLES = {
+        "approve": discord.ButtonStyle.green,
+        "revise": discord.ButtonStyle.secondary,
+        "discard": discord.ButtonStyle.red,
+    }
+
+    def __init__(
+        self,
+        decide_task: Any,
+        task_id: int,
+        options: Sequence[str] = (),
+    ) -> None:
+        super().__init__(timeout=None)
+        self._decide_task = decide_task
+        self._task_id = task_id
+        for verb, label in self._LABELS.items():
+            if verb not in options:
+                continue
+            button = discord.ui.Button(label=label, style=self._STYLES[verb])
+            button.callback = self._pressed(verb)
+            self.add_item(button)
+
+    def _pressed(self, decision: str) -> Any:
+        async def press(interaction: discord.Interaction) -> None:
+            note = await self._decide_task(self._task_id, decision)
+            for child in self.children:
+                # py-cord's stubs leave `disabled` off Item — the attribute
+                # exists on every real button, so the call is dynamic
+                setattr(child, "disabled", True)  # noqa: B010 — see comment above
+            # same trade as the approval buttons: a fresh verdict needs no
+            # extra note (the outcome is the acknowledgment); a stale or
+            # double tap gets a short one so it never lands silently
+            if note:
+                await interaction.response.edit_message(content=note, view=self)
+            else:
+                await interaction.response.edit_message(view=self)
+
+        return press
+
+
 def _is_dm(channel: Any) -> bool:
     """Duck-typed so unit tests can pass lightweight fakes."""
     return getattr(channel, "type", None) == discord.ChannelType.private
@@ -74,6 +122,7 @@ class DiscordConnector(MessagingConnector):
         approvals: ApprovalDecider | None = None,
         on_decision: DecisionCallback | None = None,
         on_inbound: InboundHandler | None = None,
+        on_task_decision: TaskDecisionCallback | None = None,
         bot_factory: Any = None,
     ) -> None:
         super().__init__(
@@ -81,6 +130,7 @@ class DiscordConnector(MessagingConnector):
             approvals=approvals,
             on_decision=on_decision,
             on_inbound=on_inbound,
+            on_task_decision=on_task_decision,
         )
         self._token = token
         self._bot_factory = bot_factory or self._default_bot_factory
@@ -211,4 +261,15 @@ class DiscordConnector(MessagingConnector):
         await self._channel.send(
             content=text,
             view=ApprovalView(self._decide_and_explain, approval_id),
+        )
+
+    async def present_result(self, task_id: int, text: str, options: Sequence[str] = ()) -> None:
+        """A finished background task's result plus the one-tap verdicts
+        that apply to it."""
+        if self._channel is None:
+            log.info("discord: no DM channel yet — result visible in the web panel")
+            return
+        await self._channel.send(
+            content=text,
+            view=ResultView(self._decide_task, task_id, options),
         )

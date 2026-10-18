@@ -28,6 +28,7 @@ import contextlib
 import json
 import logging
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -252,6 +253,25 @@ class SurfaceFanout:
                 log.exception("%s approval presentation failed", connector.name)
         if not self.connectors and self.hub is None:
             log.warning("approval #%d has no surface to appear on", approval_id)
+
+    async def present_result(self, task_id: int, text: str, options: Sequence[str] = ()) -> None:
+        """A finished background task's result, with the one-tap verdicts
+        that apply to it. The web chat gets the words like any other
+        unprompted note; the chat surfaces get them with the buttons
+        attached. The verdicts themselves are decided in the worker, which
+        owns the task row — this fanout only carries them."""
+        if self.hub is not None:
+            try:
+                await self.hub.broadcast(text)
+            except Exception:
+                log.exception("web chat broadcast failed")
+        for connector in self.connectors:
+            try:
+                await connector.present_result(task_id, text, options)
+            except Exception:
+                log.exception("%s result presentation failed", connector.name)
+        if not self.connectors and self.hub is None:
+            log.warning("task #%d result has no surface to appear on", task_id)
 
 
 def _settled_key(tool: str, params: Any) -> str:
@@ -546,6 +566,21 @@ class AgentLoop:
         interruption budget (quiet hours, holding, batching) as the
         loop's own words, so they can never nag around the user's night."""
         return await self._notify(text, urgent=urgent)
+
+    async def present_result(self, task_id: int, text: str, options: Sequence[str] = ()) -> None:
+        """A finished background task's result, with its one-tap verdicts
+        attached where the surfaces can carry buttons. Rides the same
+        interruption budget as every other unprompted word: during quiet
+        hours the words are held and batched for the morning (no buttons —
+        a verdict tap hours later would hit a world that moved on), and
+        the task stays in the panel for its decision instead."""
+        if not text.strip():
+            return
+        if self._quiet_now():
+            self._held.append(text)
+            log.info("held for quiet hours: %s", text[:80])
+            return
+        await self._surfaces.present_result(task_id, text, options)
 
     # -- the loop ---------------------------------------------------------------
 

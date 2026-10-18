@@ -19,7 +19,7 @@ from ..llm.types import ToolCall
 from ..proactive.store import Opportunity, ProactiveTask
 from ..proactive.worker import RunOutcome
 from ..workbench.base import SENSITIVE
-from .base import DENIED, HELD, EventReader, Executor, ProfileSource, Runner
+from .base import DENIED, HELD, EventReader, Executor, ProfileSource, Runner, held_approval
 
 _MARKERS = ("i'll", "i will", "remind", "follow up", "get back")
 # the one send this example knows by name — the codebase's own
@@ -118,9 +118,12 @@ class FollowupsSkill:
         if reply.startswith(DENIED):
             return RunOutcome(summary=reply, refused=True)
         if reply.startswith(HELD):
+            # the staged action's id rides back so the task's own Approve
+            # button carries exactly this one out (after revalidation)
             return RunOutcome(
                 summary="I drafted the follow-up reply and it's waiting for your OK",
                 tokens=0,
+                approval_id=held_approval(reply),
             )
         return RunOutcome(summary="the reminder is in your chat", tokens=0)
 

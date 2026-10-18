@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from fakes import FakeProactiveStore
 
+from aether.authz.approvals import DENIED
 from aether.config import AppConfig, ProactiveConfig
 from aether.counters import today
 from aether.llm.types import ToolCall
@@ -38,16 +39,19 @@ class FakeCounters:
 class FakeSkill:
     """A skill double: a detect list it hands out once, a plan, and one
     run outcome. Tests re-script `found` between cycles (streak tests need
-    a fresh key each time) and swap `outcome` to steer the monitor."""
+    a fresh key each time), swap `outcome` to steer the monitor, and flip
+    `fresh` to steer an Approve's revalidation."""
 
     name = "followups"
 
     def __init__(self, *, found=None, outcome=None) -> None:
         self.found = list(found or [])
         self.outcome = outcome or RunOutcome(summary="the result", tokens=100, sandbox_seconds=30)
+        self.fresh = True  # what revalidate answers when a task is approved
         self.detect_calls = 0
         self.plan_calls: list[Opportunity] = []
         self.run_calls: list[object] = []
+        self.revalidate_calls: list[Opportunity] = []
 
     async def detect(self, profile, events, executor=None) -> list[Opportunity]:
         self.detect_calls += 1
@@ -63,13 +67,27 @@ class FakeSkill:
         self.run_calls.append(task)
         return self.outcome
 
+    async def revalidate(self, opportunity, profile, events) -> bool:
+        self.revalidate_calls.append(opportunity)
+        return self.fresh
+
 
 def _config(**proactive) -> AppConfig:
     return AppConfig(proactive=ProactiveConfig(enabled=True, **proactive))
 
 
 def _worker(
-    store, counters, config, skills, *, notify=None, pause=None, executor=None
+    store,
+    counters,
+    config,
+    skills,
+    *,
+    notify=None,
+    pause=None,
+    executor=None,
+    present=None,
+    approvals=None,
+    carry_out=None,
 ) -> ProactiveWorker:
     return ProactiveWorker(
         store=store,
@@ -79,6 +97,9 @@ def _worker(
         executor=executor,
         notify=notify,
         pause=pause,
+        present=present,
+        approvals=approvals,
+        carry_out=carry_out,
     )
 
 
@@ -430,3 +451,242 @@ async def test_revised_feedback_counts_toward_neither_streak() -> None:
     for _ in range(10):
         await worker.note_feedback("research", "revised")
     assert pauses == [] and notes == []
+
+
+# ---------------------------------------------------------------------------
+# result notifications: the cap, the options, and what never presents
+# ---------------------------------------------------------------------------
+
+
+def _present_recorder():
+    shown: list[tuple[int, str, tuple[str, ...]]] = []
+
+    async def present(task_id: int, text: str, options) -> None:
+        shown.append((task_id, text, tuple(options)))
+
+    return present, shown
+
+
+async def _done_row(store, *, approval_id=None, plan=None) -> None:
+    """A finished row the way the cycle leaves one: claimed, planned, done."""
+    task = await store.claim(skill="followups", key="k", label="x", opportunity={}, day=today())
+    assert task is not None
+    merged = dict(plan or {})
+    if approval_id is not None:
+        merged["approval_id"] = approval_id
+    await store.set_plan(task.id, merged)
+    await store.finish(task.id, "the result")
+
+
+async def test_a_finished_result_presents_under_the_cap() -> None:
+    day = today()
+    store, counters = FakeProactiveStore(), FakeCounters()
+    skill = FakeSkill(found=[Opportunity(key="k", skill="followups", label="x", score=5.0)])
+    present, shown = _present_recorder()
+    worker = _worker(store, counters, _config(), [skill], present=present)
+    assert await worker.cycle() == 1
+    assert shown == [(1, "the result", ("approve", "discard"))]  # nothing staged
+    assert counters.values[(day, "notifications")] == 1
+
+
+async def test_a_staged_action_presents_all_three_verdicts_and_links_it() -> None:
+    store, counters = FakeProactiveStore(), FakeCounters()
+    skill = FakeSkill(
+        found=[Opportunity(key="k", skill="followups", label="x", score=5.0)],
+        outcome=RunOutcome(summary="drafted", approval_id=9),
+    )
+    present, shown = _present_recorder()
+    worker = _worker(store, counters, _config(), [skill], present=present)
+    assert await worker.cycle() == 1
+    # the id rode the outcome into the plan blob before anything shipped
+    assert store.linked == [(1, 9)]
+    assert store.tasks[0].plan == {"step": "go", "approval_id": 9}
+    assert shown == [(1, "drafted", ("approve", "revise", "discard"))]
+
+
+async def test_a_spent_notification_cap_skips_the_presentation() -> None:
+    day = today()
+    store = FakeProactiveStore()
+    counters = FakeCounters(values={(day, "notifications"): 5})  # the default cap
+    skill = FakeSkill(found=[Opportunity(key="k", skill="followups", label="x", score=5.0)])
+    present, shown = _present_recorder()
+    worker = _worker(store, counters, _config(), [skill], present=present)
+    assert await worker.cycle() == 1
+    assert shown == []  # still done, still charged for the work itself
+    assert counters.values[(day, "notifications")] == 5  # nothing extra spent
+    assert counters.bumps.count((day, "notifications", 1)) == 0
+
+
+async def test_a_failed_or_refused_run_never_presents() -> None:
+    store, counters = FakeProactiveStore(), FakeCounters()
+    present, shown = _present_recorder()
+    refused = FakeSkill(
+        found=[Opportunity(key="r", skill="followups", label="x", score=9.0)],
+        outcome=RunOutcome(summary="parked", refused=True),
+    )
+    failed = FakeSkill(
+        found=[Opportunity(key="f", skill="followups", label="y", score=1.0)],
+        outcome=RunOutcome(summary="the job died", failed=True),
+    )
+    worker = _worker(store, counters, _config(), [refused, failed], present=present)
+    assert await worker.cycle() == 2
+    assert shown == []  # no verdict applies to work that never finished
+    assert all(t.status == FAILED for t in store.tasks)
+
+
+# ---------------------------------------------------------------------------
+# the one-tap verdicts: approve (fresh and stale), revise, discard
+# ---------------------------------------------------------------------------
+
+
+class FakeApprovals:
+    """The approval store's decide: recorded, never consulted further —
+    the worker only ever retires a staged action with a denial."""
+
+    def __init__(self) -> None:
+        self.decisions: list[tuple[int, str]] = []
+
+    async def decide(self, approval_id, decision, actor="owner") -> None:
+        self.decisions.append((approval_id, decision))
+
+
+def _carry_recorder(answer: str | None = "done"):
+    carried: list[tuple[int, str]] = []
+
+    async def carry_out(approval_id: int, decision: str):
+        carried.append((approval_id, decision))
+        return answer
+
+    return carry_out, carried
+
+
+async def test_a_missing_task_says_so() -> None:
+    store, counters = FakeProactiveStore(), FakeCounters()
+    worker = _worker(store, counters, _config(), [FakeSkill()])
+    assert await worker.decide_task(404, "approve") == "that task could not be found."
+
+
+async def test_an_odd_verb_answers_nothing() -> None:
+    store, counters = FakeProactiveStore(), FakeCounters()
+    await _done_row(store)
+    worker = _worker(store, counters, _config(), [FakeSkill()])
+    assert await worker.decide_task(1, "explode") is None
+
+
+async def test_a_second_tap_on_a_decided_task_says_so() -> None:
+    store, counters = FakeProactiveStore(), FakeCounters()
+    await _done_row(store)
+    worker = _worker(store, counters, _config(), [FakeSkill()])
+    assert await worker.decide_task(1, "approve") is not None
+    assert await worker.decide_task(1, "discard") == "that task was already decided."
+    assert store.tasks[0].feedback == "approved"  # the first tap still stands
+
+
+async def test_approve_carries_out_a_fresh_staged_action() -> None:
+    store, counters = FakeProactiveStore(), FakeCounters()
+    skill = FakeSkill()
+    approvals = FakeApprovals()
+    carry_out, carried = _carry_recorder()
+    await _done_row(store, approval_id=9)
+    worker = _worker(store, counters, _config(), [skill], approvals=approvals, carry_out=carry_out)
+    assert await worker.decide_task(1, "approve") is None  # the outcome is the ack
+    assert carried == [(9, "approve")]
+    assert len(skill.revalidate_calls) == 1  # never fired blindly
+    assert store.tasks[0].feedback == "approved"
+    assert approvals.decisions == []  # the staged action fired, not died
+
+
+async def test_approve_of_a_moved_on_world_drops_the_draft() -> None:
+    store, counters = FakeProactiveStore(), FakeCounters()
+    skill = FakeSkill()
+    skill.fresh = False  # revalidate says the thread already moved on
+    approvals = FakeApprovals()
+    carry_out, carried = _carry_recorder()
+    await _done_row(store, approval_id=9)
+    worker = _worker(store, counters, _config(), [skill], approvals=approvals, carry_out=carry_out)
+    note = await worker.decide_task(1, "approve")
+    assert note == "that had moved on, so I dropped the draft — nothing was sent."
+    assert carried == []  # nothing was sent
+    task = store.tasks[0]
+    assert task.feedback == "discarded" and task.feedback_note == "stale"
+    assert approvals.decisions == [(9, DENIED)]  # its buttons can never fire it
+
+
+async def test_approve_of_a_revalidate_crash_counts_as_stale() -> None:
+    store, counters = FakeProactiveStore(), FakeCounters()
+    approvals = FakeApprovals()
+
+    class Exploding(FakeSkill):
+        async def revalidate(self, opportunity, profile, events):
+            raise RuntimeError("the connector is down")
+
+    skill = Exploding()
+    carry_out, carried = _carry_recorder()
+    await _done_row(store, approval_id=9)
+    worker = _worker(store, counters, _config(), [skill], approvals=approvals, carry_out=carry_out)
+    note = await worker.decide_task(1, "approve")
+    assert note == "that had moved on, so I dropped the draft — nothing was sent."
+    assert carried == []  # fail-safe: an unverifiable action never fires
+    assert store.tasks[0].feedback == "discarded"
+
+
+async def test_approve_of_an_expired_staged_action_never_fires() -> None:
+    store, counters = FakeProactiveStore(), FakeCounters()
+    approvals = FakeApprovals()
+    carry_out, carried = _carry_recorder(answer=None)  # the approval store refused
+    await _done_row(store, approval_id=9)
+    worker = _worker(
+        store, counters, _config(), [FakeSkill()], approvals=approvals, carry_out=carry_out
+    )
+    note = await worker.decide_task(1, "approve")
+    assert note == "that approval had expired — the action never ran."
+    assert carried == [(9, "approve")]  # asked, refused — nothing fired
+
+
+async def test_approve_without_a_staged_action_is_just_feedback() -> None:
+    store, counters = FakeProactiveStore(), FakeCounters()
+    carry_out, carried = _carry_recorder()
+    await _done_row(store)  # a plain result — nothing staged
+    worker = _worker(store, counters, _config(), [FakeSkill()], carry_out=carry_out)
+    assert await worker.decide_task(1, "approve") == "noted — I'll keep doing things like that."
+    assert carried == []  # there was nothing to carry out
+    assert store.tasks[0].feedback == "approved"
+
+
+async def test_revise_parks_the_task_and_retires_the_stale_draft() -> None:
+    store, counters = FakeProactiveStore(), FakeCounters()
+    approvals = FakeApprovals()
+    carry_out, carried = _carry_recorder()
+    await _done_row(store, approval_id=9)
+    worker = _worker(
+        store, counters, _config(), [FakeSkill()], approvals=approvals, carry_out=carry_out
+    )
+    note = await worker.decide_task(1, "revise")
+    assert note == "noted — send me the corrected version and I'll take it from there."
+    assert carried == []
+    assert store.tasks[0].feedback == "revised"
+    assert approvals.decisions == [(9, DENIED)]  # the draft as staged is dead
+
+
+async def test_discard_drops_everything_and_records_it() -> None:
+    store, counters = FakeProactiveStore(), FakeCounters()
+    approvals = FakeApprovals()
+    carry_out, carried = _carry_recorder()
+    await _done_row(store, approval_id=9)
+    worker = _worker(
+        store, counters, _config(), [FakeSkill()], approvals=approvals, carry_out=carry_out
+    )
+    assert await worker.decide_task(1, "discard") == "dropped — I'll do less of that."
+    assert carried == []
+    assert store.tasks[0].feedback == "discarded"
+    assert approvals.decisions == [(9, DENIED)]  # whatever was staged never fires
+
+
+async def test_approve_of_a_retired_skill_never_fires() -> None:
+    store, counters = FakeProactiveStore(), FakeCounters()
+    carry_out, carried = _carry_recorder()
+    await _done_row(store, approval_id=9)
+    worker = _worker(store, counters, _config(skills=[]), [FakeSkill()], carry_out=carry_out)
+    assert await worker.decide_task(1, "approve") == "its skill is no longer active."
+    assert carried == []
+    assert store.tasks[0].feedback is None  # the row stays open, nothing recorded

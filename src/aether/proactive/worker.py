@@ -36,6 +36,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from ..authz.approvals import DENIED
 from ..config import AppConfig
 from ..counters import today
 from ..llm.types import ToolCall
@@ -55,6 +56,13 @@ _PAUSE_NOTE = (
 Notifier = Callable[[str], Awaitable[None]]
 Pauser = Callable[[], Awaitable[None]]
 Executor = Callable[[ToolCall], Awaitable[str]]
+# (task id, plain-words result, which one-tap verdicts apply) — the
+# result notification, routed through the loop so it rides the same
+# interruption budget as every other unprompted word
+Presenter = Callable[[int, str, tuple[str, ...]], Awaitable[None]]
+# decide a parked approval and carry the fresh verdict out — the loop's own
+# path, so a carried-out action gets its trace, its audit, and its words
+ApprovalCarrier = Callable[[int, str], Awaitable[Any]]
 
 # the read-only vocabulary the planning phases (detect, plan) may use —
 # memory and workspace reads plus the web research pair. Everything
@@ -88,7 +96,9 @@ class RunOutcome:
     counts separately from a failure, because it means the skill keeps
     proposing things it may not do. ``failed`` marks a run that happened
     and produced no result — a job that failed its own way — so the row
-    fails honestly while still charging what the run truly spent."""
+    fails honestly while still charging what the run truly spent.
+    ``approval_id`` names the parked action a run staged, when it did —
+    the one the task's Approve button carries out after revalidation."""
 
     summary: str
     provider: str = ""
@@ -96,6 +106,7 @@ class RunOutcome:
     sandbox_seconds: int = 0
     refused: bool = False
     failed: bool = False
+    approval_id: int | None = None
 
 
 class SkillSource(Protocol):
@@ -118,6 +129,8 @@ class SkillSource(Protocol):
         self, task: ProactiveTask, workbench: Any, executor: Executor | None
     ) -> RunOutcome: ...
 
+    async def revalidate(self, opportunity: Any, profile: Any, events: Any) -> bool: ...
+
 
 class ProactiveWorker:
     """Background loop: re-arm on boot, then one cycle per interval."""
@@ -135,6 +148,9 @@ class ProactiveWorker:
         executor: Any = None,
         notify: Notifier | None = None,
         pause: Pauser | None = None,
+        present: Presenter | None = None,
+        approvals: Any = None,
+        carry_out: ApprovalCarrier | None = None,
     ) -> None:
         self._store = store
         self._budget = budget
@@ -148,6 +164,9 @@ class ProactiveWorker:
         self._read_executor = read_only(executor) if executor is not None else None
         self._notify = notify
         self._pause = pause
+        self._present = present
+        self._approvals = approvals
+        self._carry_out = carry_out
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         # the anomaly monitor's streaks — ephemeral by design: the pause
@@ -291,6 +310,10 @@ class ProactiveWorker:
             )
             return
         await self._store.finish(task.id, outcome.summary, outcome.provider)
+        if outcome.approval_id is not None:
+            # the staged action's id joins the plan blob before the result
+            # notification ships, so the Approve tap can always find it
+            await self._store.link_approval(task.id, outcome.approval_id)
         await self._budget.charge(
             day,
             tasks=1,
@@ -298,6 +321,30 @@ class ProactiveWorker:
             sandbox_seconds=outcome.sandbox_seconds,
         )
         await self._observe(task.skill, "ok")
+        await self._present_result(task, outcome, day)
+
+    async def _present_result(self, task: ProactiveTask, outcome: RunOutcome, day: str) -> None:
+        """Ship the result to the user under the notification cap — the
+        same daily-brake discipline as everything else the worker spends.
+        A run that staged an action carries all three verdicts; a plain
+        result carries the two that mean something (there is nothing to
+        revise — the work is done). Refused and failed rows stay in the
+        panel: no verdict applies to work that never finished."""
+        if self._present is None:
+            return
+        if not await self._budget.notify_room(day):
+            log.info("result notification skipped: today's notification cap is spent")
+            return
+        await self._budget.charge(day, notifications=1)
+        options = (
+            ("approve", "revise", "discard")
+            if outcome.approval_id is not None
+            else ("approve", "discard")
+        )
+        try:
+            await self._present(task.id, outcome.summary, options)
+        except Exception:
+            log.exception("result notification for task %d failed", task.id)
 
     # -- the anomaly monitor -------------------------------------------------------
 
@@ -345,3 +392,95 @@ class ProactiveWorker:
             await self._observe(skill, "ok")
         elif feedback == "discarded":
             await self._observe(skill, "discarded")
+
+    # -- the one-tap verdicts on a result ----------------------------------------
+
+    # the button verbs, mapped onto the feedback the row stores
+    _VERDICTS = {"approve": "approved", "revise": "revised", "discard": "discarded"}
+
+    async def decide_task(self, task_id: int, decision: str) -> str | None:
+        """The one-tap verdict on a finished task's result. Returns None
+        when the tap applied (its outcome is the acknowledgment — the
+        carried-out action's own words, or the button going quiet), or a
+        short plain-words note when it didn't, so a stale or double tap
+        is never met with silence.
+
+        Approve carries out the task's staged action — but never blindly:
+        the skill revalidates live state first, and a draft whose world
+        moved on is dropped, not fired. With nothing staged, the verdict
+        is the feedback itself: this kind of result was useful. Revise
+        parks the task for the user's edited reply and retires the stale
+        draft; Discard retires it and says so.
+        """
+        task = await self._store.get(task_id)
+        if task is None:
+            return "that task could not be found."
+        if task.feedback is not None:
+            return "that task was already decided."
+        verdict = self._VERDICTS.get(decision)
+        if verdict is None:
+            return None  # an odd tap — the store's vocabulary is the worker's own
+        linked = (task.plan or {}).get("approval_id")
+
+        if verdict == "approved" and linked is not None:
+            skill = next((s for s in self._skills if s.name == task.skill), None)
+            if skill is None or skill.name not in self._config.proactive.skills:
+                return "its skill is no longer active."
+            fresh = False
+            if hasattr(skill, "revalidate"):
+                try:
+                    fresh = await skill.revalidate(
+                        Opportunity(
+                            key=task.opportunity_key,
+                            skill=task.skill,
+                            label=task.label,
+                            detail=task.opportunity,
+                        ),
+                        self._workspace,
+                        self._events,
+                    )
+                except Exception:
+                    log.exception("revalidating task %d before its approve", task_id)
+            if not fresh:
+                # the world moved on — the staged action must never fire,
+                # and the row says why
+                await self._store.record_feedback(task_id, "discarded", note="stale")
+                await self._kill_approval(linked)
+                return "that had moved on, so I dropped the draft — nothing was sent."
+            await self._store.record_feedback(task_id, "approved")
+            if self._carry_out is None:
+                return "that approval could not be carried out here."
+            carried = await self._carry_out(linked, "approve")
+            if carried is None:
+                # fresh by revalidation but no longer decidable — the
+                # approval's own expiry clock ran out first
+                return "that approval had expired — the action never ran."
+            await self._observe(task.skill, "ok")
+            return None  # the carried-out action's own words are the acknowledgment
+
+        if verdict == "approved":
+            # a plain result — the verdict is the feedback: keep doing this
+            await self._store.record_feedback(task_id, "approved")
+            await self._observe(task.skill, "ok")
+            return "noted — I'll keep doing things like that."
+
+        if verdict == "revised":
+            await self._store.record_feedback(task_id, "revised")
+            await self._kill_approval(linked)  # the draft as staged is dead
+            return "noted — send me the corrected version and I'll take it from there."
+
+        # discard — whatever was staged must never fire
+        await self._store.record_feedback(task_id, "discarded")
+        await self._kill_approval(linked)
+        await self._observe(task.skill, "discarded")
+        return "dropped — I'll do less of that."
+
+    async def _kill_approval(self, approval_id: Any) -> None:
+        """Retire a task's staged action quietly — decided denied in the
+        store so its own one-tap buttons can never fire it later. The
+        verdict's acknowledgment comes from the task path, not a second
+        dismissal message."""
+        if approval_id is None or self._approvals is None:
+            return
+        with contextlib.suppress(Exception):
+            await self._approvals.decide(approval_id, DENIED)

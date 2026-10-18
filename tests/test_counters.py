@@ -28,8 +28,10 @@ async def test_fields_do_not_bleed_into_each_other(db) -> None:
     day = today()
     await counters.bump(day, "searches", 4)
     await counters.bump(day, "tasks", 2)
+    await counters.bump(day, "notifications")
     assert await counters.value(day, "searches") == 4
     assert await counters.value(day, "tasks") == 2
+    assert await counters.value(day, "notifications") == 1
     assert await counters.value(day, "tokens") == 0
 
 

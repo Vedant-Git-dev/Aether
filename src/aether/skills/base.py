@@ -22,6 +22,7 @@ a sandbox job) without pretending to more judgment than code has.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
@@ -40,6 +41,20 @@ Runner = Callable[[JobSpec], Awaitable[JobResult]]
 # staged action can be told from a settled one without parsing anything
 HELD = "held for approval"  # the call parked — the user has been asked
 DENIED = "denied by policy"  # the call was refused outright
+
+# the parked call's id inside its reply — "held for approval (#9) — …".
+# Reading it back is the only way a skill can tell the worker WHICH
+# staged action its task is waiting on, so the task's own Approve button
+# can carry exactly that one out.
+_HELD_ID = re.compile(rf"{re.escape(HELD)} \(#(\d+)\)")
+
+
+def held_approval(reply: str) -> int | None:
+    """The approval id from a parked call's reply, or None when the reply
+    isn't a parked one. The number is the loop's own — the same one the
+    one-tap buttons answer."""
+    found = _HELD_ID.search(reply)
+    return int(found.group(1)) if found else None
 
 
 class ProfileSource(Protocol):

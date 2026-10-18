@@ -361,31 +361,6 @@ def create_app(
         )
         log.info("native tools registered: %d", native)
 
-        connectors = build_messaging_connectors(
-            settings,
-            config,
-            approvals=approvals,
-            on_decision=agent.execute_decision,
-            on_inbound=agent.handle_inbound,
-        )
-        surfaces.add_connectors(connectors)
-        for connector in connectors:
-            await connector.start()
-
-        # the manager can now live-apply a chat-made change: swap the policy,
-        # diff the connectors, diff the mcp host, re-parse quiet hours, or
-        # arm a self-restart for an llm.* change
-        config_manager.wire(
-            loop=agent,
-            surfaces=surfaces,
-            tools=tools,
-            host=host,
-            approvals=approvals,
-            resolver=env_resolver,
-        )
-
-        worker = SchedulerWorker(scheduler, agent.execute_scheduled)
-
         # the background worker — off by default and self-gating on
         # proactive.enabled every cycle, so it always spins and /resume
         # never needs a restart. Its own pause (the anomaly monitor, a
@@ -393,6 +368,9 @@ def create_app(
         # ride the loop's interruption budget. The skills come from the
         # registry; each run goes through the workbench ladder and the
         # agent's own tool gate, so nothing bypasses policy or audit.
+        # Built before the connectors: a task's Approve button reaches it
+        # through on_task_decision, and its results reach the user through
+        # the loop's own present fanout.
         async def _pause_proactive() -> None:
             await config_manager.set(
                 op="set", path="proactive.enabled", value=False, source="worker"
@@ -412,7 +390,37 @@ def create_app(
             executor=agent.execute_tool,
             notify=_notify_proactive,
             pause=_pause_proactive,
+            approvals=approvals,
+            carry_out=agent.decide,
+            present=agent.present_result,
         )
+
+        connectors = build_messaging_connectors(
+            settings,
+            config,
+            approvals=approvals,
+            on_decision=agent.execute_decision,
+            on_inbound=agent.handle_inbound,
+            on_task_decision=proactive_worker.decide_task,
+        )
+        surfaces.add_connectors(connectors)
+        for connector in connectors:
+            await connector.start()
+
+        # the manager can now live-apply a chat-made change: swap the policy,
+        # diff the connectors, diff the mcp host, re-parse quiet hours, or
+        # arm a self-restart for an llm.* change
+        config_manager.wire(
+            loop=agent,
+            surfaces=surfaces,
+            tools=tools,
+            host=host,
+            approvals=approvals,
+            resolver=env_resolver,
+        )
+
+        worker = SchedulerWorker(scheduler, agent.execute_scheduled)
+
         agent.start()
         worker.start()
         proactive_worker.start()

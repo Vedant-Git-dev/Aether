@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
@@ -19,6 +20,7 @@ from .base import (
     InboundHandler,
     InboundMessage,
     MessagingConnector,
+    TaskDecisionCallback,
     classify_attachment,
 )
 
@@ -26,6 +28,9 @@ log = logging.getLogger("aether.connectors.slack")
 
 APPROVE_ACTION = "aether_approve"
 DENY_ACTION = "aether_deny"
+# one action id for every task verdict — the value carries "verb:task id",
+# so a new verdict never needs a new Slack app action
+TASK_ACTION = "aether_task"
 
 
 def event_to_inbound(
@@ -103,6 +108,36 @@ def approval_blocks(approval_id: int, text: str) -> list[dict[str, Any]]:
     ]
 
 
+def result_blocks(task_id: int, text: str, options: Sequence[str] = ()) -> list[dict[str, Any]]:
+    """Block Kit payload for a finished task's result: the plain-words
+    summary and the one-tap verdicts that apply to it, each carrying
+    "verb:task id" in its value."""
+    styles = {"approve": "primary", "revise": "default", "discard": "danger"}
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": text,
+            },
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": verb.capitalize()},
+                    "action_id": TASK_ACTION,
+                    "value": f"{verb}:{task_id}",
+                    "style": styles[verb],
+                }
+                for verb in ("approve", "revise", "discard")
+                if verb in options
+            ],
+        },
+    ]
+
+
 class SlackConnector(MessagingConnector):
     name = "slack"
 
@@ -115,6 +150,7 @@ class SlackConnector(MessagingConnector):
         approvals: ApprovalDecider | None = None,
         on_decision: DecisionCallback | None = None,
         on_inbound: InboundHandler | None = None,
+        on_task_decision: TaskDecisionCallback | None = None,
         app_factory: Any = None,
         socket_factory: Any = None,
     ) -> None:
@@ -123,6 +159,7 @@ class SlackConnector(MessagingConnector):
             approvals=approvals,
             on_decision=on_decision,
             on_inbound=on_inbound,
+            on_task_decision=on_task_decision,
         )
         self._bot_token = bot_token
         self._app_token = app_token
@@ -159,6 +196,7 @@ class SlackConnector(MessagingConnector):
         app.event("message")(self.on_message)
         app.action(APPROVE_ACTION)(self.on_approve)
         app.action(DENY_ACTION)(self.on_deny)
+        app.action(TASK_ACTION)(self.on_task_verdict)
         socket = self._socket_factory(app, self._app_token)
         await socket.connect_async()
         self._app, self._socket = app, socket
@@ -234,6 +272,33 @@ class SlackConnector(MessagingConnector):
     async def on_deny(self, ack: Any, body: dict[str, Any], client: Any) -> None:
         await self._handle_button(ack, body, client, DENIED)
 
+    async def on_task_verdict(self, ack: Any, body: dict[str, Any], client: Any) -> None:
+        """A result's one-tap verdict — the value carries "verb:task id"."""
+        await ack()
+        try:
+            verb, _, id_part = str(body["actions"][0]["value"]).partition(":")
+            task_id = int(id_part)
+        except (KeyError, IndexError, TypeError, ValueError):
+            log.warning("odd slack task action payload: %r", body)
+            return
+        if verb not in ("approve", "revise", "discard"):
+            log.warning("odd slack task verdict: %r", verb)
+            return
+        note = await self._decide_task(task_id, verb)
+        with contextlib.suppress(Exception):
+            message = body.get("message", {})
+            blocks = [b for b in message.get("blocks", []) if b.get("type") != "actions"]
+            if note:
+                blocks.append(
+                    {"type": "context", "elements": [{"type": "mrkdwn", "text": f"_{note}_"}]}
+                )
+            await client.chat_update(
+                channel=body["channel"]["id"],
+                ts=message["ts"],
+                text=message.get("text", ""),
+                blocks=blocks,
+            )
+
     async def _handle_button(
         self, ack: Any, body: dict[str, Any], client: Any, decision: str
     ) -> None:
@@ -291,4 +356,16 @@ class SlackConnector(MessagingConnector):
             channel=self._chat_ref,
             text=text,
             blocks=approval_blocks(approval_id, text),
+        )
+
+    async def present_result(self, task_id: int, text: str, options: Sequence[str] = ()) -> None:
+        """A finished background task's result plus the one-tap verdicts
+        that apply to it."""
+        if self._app is None or not self._chat_ref:
+            log.info("slack: nowhere to send yet — result visible in the web panel")
+            return
+        await self._app.client.chat_postMessage(
+            channel=self._chat_ref,
+            text=text,
+            blocks=result_blocks(task_id, text, options),
         )

@@ -23,6 +23,7 @@ from aether.memory.events import Event
 from aether.proactive.store import Opportunity, ProactiveTask
 from aether.proactive.worker import READ_TOOLS, read_only
 from aether.skills import FollowupsSkill, MediaSkill, ResearchSkill, build_skills
+from aether.skills.base import held_approval
 from aether.skills.research import _week
 from aether.web import _NOT_CONNECTED
 from aether.workbench.base import (
@@ -199,9 +200,16 @@ async def test_followups_run_parks_an_external_reply_for_approval() -> None:
     outcome = await FollowupsSkill().run(task, None, executor)
     assert outcome.summary == "I drafted the follow-up reply and it's waiting for your OK"
     assert outcome.refused is False  # parked is asked, not refused
+    assert outcome.approval_id == 9  # which staged action the Approve tap carries out
     (call,) = executor.calls
     assert call.name == "composio__GMAIL_SEND_EMAIL"
     assert call.arguments["recipient"] == "mike@example.com"
+
+
+def test_held_approval_reads_the_parked_id_from_a_reply() -> None:
+    assert held_approval("held for approval (#9) — the user has been asked") == 9
+    assert held_approval("denied by policy: that action is turned off") is None
+    assert held_approval("the reminder is in your chat") is None
 
 
 async def test_followups_run_reports_a_denial_as_refused() -> None:

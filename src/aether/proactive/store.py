@@ -214,6 +214,26 @@ class ProactiveStore:
             outcome="task failed",
         )
 
+    async def link_approval(self, task_id: int, approval_id: int) -> None:
+        """Remember which parked action this task's Approve button carries
+        out. The link lands in the plan blob — the row's own 'what the
+        skill decided' — so it is encrypted and row-bound like everything
+        else, and no new column names an approval on a task row."""
+        row = await self._pool.fetchrow(
+            "SELECT plan_enc FROM proactive_tasks WHERE id = $1", task_id
+        )
+        if row is None:
+            return
+        plan: dict[str, Any] = {}
+        if row["plan_enc"]:
+            plan = self._cipher.decrypt_json(row["plan_enc"], aad=_aad("plan_enc", task_id))
+        plan["approval_id"] = approval_id
+        await self._pool.execute(
+            "UPDATE proactive_tasks SET plan_enc = $1, updated_at = now() WHERE id = $2",
+            self._cipher.encrypt_json(plan, aad=_aad("plan_enc", task_id)),
+            task_id,
+        )
+
     async def record_feedback(
         self, task_id: int, feedback: str, note: str = "", actor: str = "owner"
     ) -> None:

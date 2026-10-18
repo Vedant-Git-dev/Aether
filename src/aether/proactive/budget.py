@@ -63,6 +63,13 @@ class Budget:
             return "today's sandbox time"
         return None
 
+    async def notify_room(self, day: str | None = None) -> bool:
+        """True when today's result-notification cap still has room — the
+        same live-read discipline as every other budget, so a chat-made
+        change to the cap applies from the next cycle."""
+        day = day or today()
+        return await self._counters.value(day, "notifications") < self._config.notify_daily_cap
+
     async def charge(
         self,
         day: str | None = None,
@@ -70,6 +77,7 @@ class Budget:
         tasks: int = 0,
         tokens: int = 0,
         sandbox_seconds: int = 0,
+        notifications: int = 0,
     ) -> None:
         """Record what one finished task spent. Zero-cost parts of a task
         charge nothing — a skill that ran no sandbox job spends no time."""
@@ -80,3 +88,5 @@ class Budget:
             await self._counters.bump(day, "tokens", tokens)
         if sandbox_seconds:
             await self._counters.bump(day, "sandbox_seconds", sandbox_seconds)
+        if notifications:
+            await self._counters.bump(day, "notifications", notifications)

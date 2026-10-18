@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -488,6 +489,7 @@ class FakeSurfaceConnector:
         self.name = name
         self.sent: list[str] = []
         self.approvals_presented: list[tuple[int, str]] = []
+        self.results_presented: list[tuple[int, str, tuple[str, ...]]] = []
         self.starts = 0
         self.stops = 0
         self._ids = 0
@@ -505,6 +507,9 @@ class FakeSurfaceConnector:
 
     async def present_approval(self, approval_id: int, text: str) -> None:
         self.approvals_presented.append((approval_id, text))
+
+    async def present_result(self, task_id: int, text: str, options: Sequence[str] = ()) -> None:
+        self.results_presented.append((task_id, text, tuple(options)))
 
 
 class FakeSchedStore:
@@ -935,6 +940,7 @@ class FakeProactiveStore:
         self._next_id = 1
         self._now = datetime.now(UTC)
         self.weights: dict[str, float] = {}
+        self.linked: list[tuple[int, int]] = []
 
     def _find(self, task_id: int) -> ProactiveTask:
         return next(t for t in self.tasks if t.id == task_id)
@@ -1002,6 +1008,11 @@ class FakeProactiveStore:
         task.status = FAILED
         task.result = error
         self.transitions.append((task_id, FAILED))
+
+    async def link_approval(self, task_id: int, approval_id: int) -> None:
+        task = self._find(task_id)
+        task.plan = {**(task.plan or {}), "approval_id": approval_id}
+        self.linked.append((task_id, approval_id))
 
     async def record_feedback(
         self, task_id: int, feedback: str, note: str = "", actor: str = "owner"

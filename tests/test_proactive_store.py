@@ -112,6 +112,31 @@ async def test_lifecycle_transitions_land_on_the_row(db) -> None:
 
 
 @pytest.mark.integration
+async def test_link_approval_merges_into_the_encrypted_plan(db) -> None:
+    store = _make_store(db)
+    task = await _claim(
+        store, skill="followups", key="k", label="k", opportunity={}, day="2026-10-17"
+    )
+    await store.set_plan(task.id, {"step": "send the draft"})
+    await store.link_approval(task.id, 9)
+    row = await _get(store, task.id)
+    assert row.plan == {"step": "send the draft", "approval_id": 9}
+
+    raw = await db.fetchval("SELECT plan_enc FROM proactive_tasks WHERE id = $1", task.id)
+    assert b"approval_id" not in raw  # encrypted, same trade as the rest of the blob
+
+    # a task that never planned merges into an empty blob all the same
+    bare = await _claim(
+        store, skill="research", key="bare", label="b", opportunity={}, day="2026-10-17"
+    )
+    await store.link_approval(bare.id, 4)
+    assert (await _get(store, bare.id)).plan == {"approval_id": 4}
+
+    # a missing row is a no-op, not a crash — the notification already shipped
+    await store.link_approval(404, 1)
+
+
+@pytest.mark.integration
 async def test_pending_and_requeue_running_arms_the_queue(db) -> None:
     store = _make_store(db)
     ready = await _claim(
