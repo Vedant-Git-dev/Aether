@@ -81,15 +81,22 @@ class Settings(BaseSettings):
 class LLMConfig(BaseModel):
     provider: Literal["anthropic", "openai", "gemini", "ollama"] = "anthropic"
     model: str = "claude-opus-5"
-    vision_model: str | None = None
+    # each medium's perception, tri-state: None (default) = that medium is
+    # off, "base" = the main model takes it, or a specific model id. The
+    # knob is the routing truth — whether the chosen model truly accepts
+    # the medium is discovered at call time, and the perception ladder
+    # degrades honestly on a refusal.
+    image_model: str | None = None
+    audio_model: str | None = None
+    video_model: str | None = None
     salience_model: str | None = None
     # the free embedding model that makes memory semantically searchable;
     # none (or a missing Gemini key) leaves memory search unavailable
     embedding_model: str | None = "gemini-embedding-001"
     max_tokens: int = 16000
     # Ollama's vision ability depends entirely on which model was pulled;
-    # the hosted providers are inherently vision-capable. Setting a
-    # vision_model implies this regardless.
+    # the hosted providers are inherently vision-capable. Setting an
+    # image_model implies this regardless.
     ollama_vision: bool = False
 
 

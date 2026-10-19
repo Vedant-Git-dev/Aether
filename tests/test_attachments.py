@@ -4,6 +4,7 @@ test_screenvision.py.)"""
 
 from __future__ import annotations
 
+import base64
 import io
 import zipfile
 
@@ -17,7 +18,9 @@ from aether.connectors.attachments import (
     extract_doc_text,
 )
 from aether.connectors.base import Attachment, InboundMessage, classify_attachment
-from aether.llm.types import ImageBlock, Turn
+from aether.llm.base import ProviderError
+from aether.llm.types import AudioBlock, ImageBlock, Turn, VideoBlock
+from aether.media.frames import WatchOutcome
 
 MINIMAL_PDF = b"""%PDF-1.4
 1 0 obj
@@ -81,6 +84,37 @@ class FakeTranscriber:
     async def transcribe(self, data: bytes, filename: str, media_type: str = "") -> str | None:
         self.calls.append((data, filename, media_type))
         return self.answer
+
+
+class RefusingProvider(FakeProvider):
+    """A provider whose wire can't carry the medium — the call-time
+    discovery the ladder runs on."""
+
+    async def complete(self, system, messages, tools) -> Turn:
+        raise ProviderError("this wire carries text and images only")
+
+
+class RoleRegistry:
+    """ProviderRegistry double that answers per role — the ladder tests
+    need a video model that isn't also the image model."""
+
+    def __init__(self, **roles) -> None:
+        self._roles = roles
+
+    def for_role(self, role: str):
+        return self._roles.get(role)
+
+
+class FakeFrameWatcher:
+    """FrameWatcher double: one scripted outcome, every call recorded."""
+
+    def __init__(self, outcome: WatchOutcome) -> None:
+        self.outcome = outcome
+        self.calls: list[tuple[bytes, str, str]] = []
+
+    async def watch(self, video: bytes, media_type: str, label: str) -> WatchOutcome:
+        self.calls.append((video, media_type, label))
+        return self.outcome
 
 
 def _zip(parts: dict[str, bytes]) -> bytes:
@@ -226,7 +260,7 @@ class TestImages:
         one = attachments_note([AttachmentResult(None, blind=True)])
         assert one == (
             "I can't see this image yet — no vision model is set. Set one with "
-            "/config (llm.vision_model), or pick a main model that can read "
+            "/config (llm.image_model), or pick a main model that can read "
             "images, and I'll see what you send."
         )
         two = attachments_note(
@@ -294,35 +328,174 @@ class TestAudio:
         # the transcription heard the real bytes, with their real names
         assert transcriber.calls == [(note.data, "voice.ogg", "audio/ogg")]
 
-    async def test_without_a_transcriber_the_note_is_kept_and_said_plainly(self) -> None:
+    async def test_an_audio_model_listens_directly(self) -> None:
+        provider = FakeProvider(
+            [
+                Turn(
+                    text=(
+                        '{"description": "a two-minute ramble about the porch light", '
+                        '"text_spoken": ["the porch light is still on"]}'
+                    )
+                )
+            ]
+        )
+        processor = AttachmentProcessor(RoleRegistry(audio=provider), FakeEventStore())
+        note = _voice_note()
+        results = await processor.process(_message(note, text="listen to this"))
+
+        record = processor._events.ingested[0]
+        assert record["kind"] == "shared_audio"
+        payload = record["payload"]
+        assert payload["description"] == "a two-minute ramble about the porch light"
+        assert payload["text_spoken"] == ["the porch light is still on"]
+        # listened, not transcribed — and no apology rides along
+        assert "text" not in payload
+        assert "transcribe_note" not in payload
+        assert results[0].note == ""
+        # the audio turn carried the real bytes
+        assert any(isinstance(b, AudioBlock) for b in provider.calls[0][1][0].blocks)
+
+    async def test_a_refused_audio_note_falls_back_to_transcription(self) -> None:
+        transcriber = FakeTranscriber("the porch light is still on")
+        processor = AttachmentProcessor(
+            RoleRegistry(audio=RefusingProvider([])), FakeEventStore(), voice=transcriber
+        )
+        results = await processor.process(_message(_voice_note()))
+
+        payload = processor._events.ingested[0]["payload"]
+        assert payload["text"] == "the porch light is still on"
+        assert "transcribe_note" not in payload
+        assert results[0].note == ""
+        # the fallback actually ran
+        assert transcriber.calls
+
+    async def test_a_refused_note_without_a_transcriber_names_both_gaps(self) -> None:
+        processor = AttachmentProcessor(RoleRegistry(audio=RefusingProvider([])), FakeEventStore())
+        results = await processor.process(_message(_voice_note()))
+
+        payload = processor._events.ingested[0]["payload"]
+        assert payload["transcribe_note"] == (
+            "not understood — the configured audio model couldn't take it "
+            "and no transcription service is set"
+        )
+        assert "text" not in payload
+        # the fact rides the payload for the agent to say — nothing canned
+        assert results[0].note == ""
+
+    async def test_without_a_transcriber_the_note_is_kept_with_the_plain_fact(self) -> None:
         media = FakeMediaStore()
-        processor = AttachmentProcessor(FakeRegistry(None), FakeEventStore(), media=media)
+        processor = AttachmentProcessor(RoleRegistry(), FakeEventStore(), media=media)
         note = _voice_note()
         results = await processor.process(_message(note))
 
         assert results[0].ingested is not None and results[0].ingested.stored is True
         payload = processor._events.ingested[0]["payload"]
-        assert payload["transcribe_note"] == ("not transcribed — no transcription service answered")
+        assert payload["transcribe_note"] == (
+            "not understood — no audio model or transcription service is set"
+        )
         assert "text" not in payload
         kept = await media.get(payload["media_id"])
         assert kept is not None and kept.data == note.data
-        # the drain turns the note into plain in-chat words
-        assert "couldn't transcribe" in attachments_note(results)
-        assert "GROQ_API_KEY" in results[0].note
+        # no canned chat note — the agent speaks from the payload
+        assert results[0].note == ""
+        assert attachments_note(results) == ""
 
     async def test_a_failed_transcription_degrades_the_same_way(self) -> None:
         transcriber = FakeTranscriber(None)
-        processor = AttachmentProcessor(FakeRegistry(None), FakeEventStore(), voice=transcriber)
+        processor = AttachmentProcessor(RoleRegistry(), FakeEventStore(), voice=transcriber)
         results = await processor.process(_message(_voice_note()))
         payload = processor._events.ingested[0]["payload"]
-        assert payload["transcribe_note"] == ("not transcribed — no transcription service answered")
-        assert "couldn't transcribe" in results[0].note
+        assert payload["transcribe_note"] == "not understood — no transcription service answered"
+        assert results[0].note == ""
 
 
 class TestVideo:
-    async def test_a_shared_video_is_kept_with_an_honest_not_understood_row(self) -> None:
+    async def test_a_video_model_watches_directly(self) -> None:
+        provider = FakeProvider([Turn(text='{"description": "a dog on skates"}')])
+        processor = AttachmentProcessor(RoleRegistry(video=provider), FakeEventStore())
+        clip = _video_clip()
+        results = await processor.process(_message(clip, text="the dog on skates"))
+
+        record = processor._events.ingested[0]
+        assert record["kind"] == "shared_video"
+        payload = record["payload"]
+        assert payload["description"] == "a dog on skates"
+        # watched, not apologized for
+        assert "understand_note" not in payload
+        assert results[0].note == ""
+        # the video turn carried the real bytes
+        assert any(isinstance(b, VideoBlock) for b in provider.calls[0][1][0].blocks)
+
+    async def test_a_refused_video_falls_through_to_frames(self) -> None:
+        image = FakeProvider([Turn(text='{"description": "a dog rolling past"}')])
+        watcher = FakeFrameWatcher(
+            WatchOutcome(frames={"frame_00.jpg": b"jpg bytes"}, duration_seconds=9.5)
+        )
+        processor = AttachmentProcessor(
+            RoleRegistry(video=RefusingProvider([]), image=image),
+            FakeEventStore(),
+            frames=watcher,
+        )
+        clip = _video_clip()
+        results = await processor.process(_message(clip))
+
+        payload = processor._events.ingested[0]["payload"]
+        assert payload["description"] == "a dog rolling past"
+        assert payload["understand_note"] == (
+            "understood from evenly spaced frames, not watched directly"
+        )
+        assert payload["duration"] == 9.5
+        assert results[0].note == ""
+        # the frames rung actually ran, with the real bytes
+        assert watcher.calls == [(clip.data, "video/mp4", "clip.mp4")]
+
+    async def test_frames_ride_as_images_in_frame_order(self) -> None:
+        image = FakeProvider([Turn(text='{"description": "two frames"}')])
+        watcher = FakeFrameWatcher(
+            WatchOutcome(frames={"frame_01.jpg": b"two", "frame_00.jpg": b"one"})
+        )
+        processor = AttachmentProcessor(RoleRegistry(image=image), FakeEventStore(), frames=watcher)
+        await processor.process(_message(_video_clip()))
+
+        blocks = [b for b in image.calls[0][1][0].blocks if isinstance(b, ImageBlock)]
+        assert [b.data_b64 for b in blocks] == [
+            base64.b64encode(b"one").decode("ascii"),
+            base64.b64encode(b"two").decode("ascii"),
+        ]
+
+    async def test_a_refused_video_with_no_image_model_names_both_gaps(self) -> None:
+        processor = AttachmentProcessor(RoleRegistry(video=RefusingProvider([])), FakeEventStore())
+        results = await processor.process(_message(_video_clip()))
+
+        payload = processor._events.ingested[0]["payload"]
+        assert payload["understand_note"] == (
+            "kept, but not understood — the configured video model couldn't "
+            "take it, and no image model is set to read frames"
+        )
+        assert "description" not in payload
+        assert results[0].note == ""
+
+    async def test_a_spent_budget_says_what_happened(self) -> None:
+        image = FakeProvider([])
+        watcher = FakeFrameWatcher(
+            WatchOutcome(
+                frames={}, duration_seconds=None, reason="today's video job budget is spent"
+            )
+        )
+        processor = AttachmentProcessor(RoleRegistry(image=image), FakeEventStore(), frames=watcher)
+        results = await processor.process(_message(_video_clip()))
+
+        payload = processor._events.ingested[0]["payload"]
+        assert payload["understand_note"] == (
+            "kept, but not understood — today's video job budget is spent"
+        )
+        # the image model never fired — the budget stopped the rung first
+        assert image.calls == []
+        assert results[0].note == ""
+
+    async def test_a_shared_video_is_kept_with_the_plain_fact(self) -> None:
         media = FakeMediaStore()
-        processor = AttachmentProcessor(FakeRegistry(None), FakeEventStore(), media=media)
+        processor = AttachmentProcessor(RoleRegistry(), FakeEventStore(), media=media)
         clip = _video_clip()
         results = await processor.process(_message(clip, text="the dog on skates"))
 
@@ -331,11 +504,14 @@ class TestVideo:
         assert record["kind"] == "shared_video"
         payload = record["payload"]
         assert payload["understand_note"] == (
-            "kept, but not understood — video understanding isn't set up"
+            "kept, but not understood — no video model or image model is set"
         )
         assert payload["caption"] == "the dog on skates"
         kept = await media.get(payload["media_id"])
         assert kept is not None and kept.data == clip.data
+        # no canned chat note — the agent says it from the payload
+        assert results[0].note == ""
+        assert attachments_note(results) == ""
 
 
 class TestExtraction:

@@ -30,7 +30,7 @@ async def test_models_answers_the_openai_compatible_probe(tmp_path) -> None:
         {
             "provider": "ollama",
             "model": "llama3",
-            "vision_model": "llava",
+            "image_model": "llava",
             "salience_model": "llama3",
         },
     ) as client:

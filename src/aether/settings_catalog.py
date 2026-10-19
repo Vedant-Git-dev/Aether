@@ -65,9 +65,24 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
                 hint="The model name the provider answers to.",
             ),
             FieldSpec(
-                path="llm.vision_model",
-                label="Vision model",
-                hint="A second model that reads images. Empty means none.",
+                path="llm.image_model",
+                label="Image model",
+                hint="The model that reads images — a model name, or base to "
+                "use the main model. Empty means images stay unseen.",
+                none_ok=True,
+            ),
+            FieldSpec(
+                path="llm.audio_model",
+                label="Audio model",
+                hint="The model that listens to audio — a model name, or base "
+                "to use the main model. Empty leaves only transcription.",
+                none_ok=True,
+            ),
+            FieldSpec(
+                path="llm.video_model",
+                label="Video model",
+                hint="The model that watches video — a model name, or base to "
+                "use the main model. Empty falls back to frames.",
                 none_ok=True,
             ),
             FieldSpec(

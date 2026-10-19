@@ -519,11 +519,11 @@ def register_native_tools(
                 f"That is a {record.media_type} file, not an image — I can "
                 "only look at images for now."
             )
-        provider = providers.for_role("vision")
+        provider = providers.for_role("image")
         if provider is None or not provider.supports_vision:
             return (
                 "I can't see images right now — no vision model is set. Set "
-                "one with /config (llm.vision_model) and I'll look."
+                "one with /config (llm.image_model) and I'll look."
             )
         try:
             turn = await provider.complete(
@@ -1235,7 +1235,8 @@ def register_native_tools(
                         "agent.daily_surface_cap, agent.quiet_hours, "
                         "agent.quiet_urgent_salience, salience.threshold, "
                         "salience.rate_cap_per_hour, llm.provider, llm.model, "
-                        "llm.vision_model, llm.salience_model, llm.max_tokens, "
+                        "llm.image_model, llm.audio_model, llm.video_model, "
+                        "llm.salience_model, llm.max_tokens, "
                         "llm.ollama_vision, messaging.<platform>.enabled, "
                         "contacts.mode, contacts.allowlist, authz.rules, "
                         "authz.approval_ttl_hours, mcp_servers, "

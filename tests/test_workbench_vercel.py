@@ -68,6 +68,11 @@ class FakeFs:
             raise self._sandbox._write_raises
         self._sandbox.written[path] = text
 
+    async def write_bytes(self, path: str, data: bytes) -> None:
+        if self._sandbox._write_raises is not None:
+            raise self._sandbox._write_raises
+        self._sandbox.written_bytes[path] = data
+
     async def read_bytes(self, path: str) -> bytes:
         self._sandbox.reads.append(path)
         return self._sandbox.disk.get(path, b"")
@@ -87,6 +92,7 @@ class FakeBox:
         write_raises: Exception | None = None,
     ) -> None:
         self.written: dict[str, str] = {}
+        self.written_bytes: dict[str, bytes] = {}
         self.run_log: list[dict] = []
         self.reads: list[str] = []
         self.destroyed = 0
@@ -228,6 +234,48 @@ async def test_a_job_writes_only_its_files_and_runs_only_its_script() -> None:
     assert result.provider == "vercel"
     assert result.stdout == "all good"
     assert box.destroyed == 1  # the sandbox died with the job
+
+
+async def test_binary_files_ride_along_as_bytes() -> None:
+    # a video or voice note can't be text — binary_files carries it in
+    box = FakeBox(result=FakeCompleted(returncode=0, stdout="watched", stderr=""))
+    wb, _ = bench(full_resolver(), box)
+    s = JobSpec(
+        script_name="job.py",
+        files={"job.py": "print('hi')"},
+        binary_files={"clip.mp4": b"\x00\x00\x00\x18ftypisom"},
+        meta={"sensitivity": "ordinary"},
+    )
+    result = await wb.run_job(s)
+    assert result.exit_ok
+    assert box.written_bytes == {"/vercel/sandbox/clip.mp4": b"\x00\x00\x00\x18ftypisom"}
+    # the bytes are the same bytes — nothing recoded or truncated on the way
+    assert box.written == {"/vercel/sandbox/job.py": "print('hi')"}
+
+
+async def test_a_name_claimed_by_both_text_and_binary_is_refused() -> None:
+    wb, _ = bench(full_resolver(), FakeBox())
+    s = JobSpec(
+        script_name="job.py",
+        files={"job.py": "print('hi')"},
+        binary_files={"job.py": b"bytes"},
+        meta={"sensitivity": "ordinary"},
+    )
+    with pytest.raises(WorkbenchError, match="both claim"):
+        await wb.run_job(s)
+
+
+async def test_an_unsafe_binary_name_is_refused() -> None:
+    wb, _ = bench(full_resolver(), FakeBox())
+    for bad in ("../escape.mp4", "a/b.mp4", "-flag.mp4"):
+        s = JobSpec(
+            script_name="job.py",
+            files={"job.py": "print('hi')"},
+            binary_files={bad: b"bytes"},
+            meta={"sensitivity": "ordinary"},
+        )
+        with pytest.raises(WorkbenchError, match="plain file name"):
+            await wb.run_job(s)
 
 
 async def test_a_failed_script_is_a_real_result() -> None:

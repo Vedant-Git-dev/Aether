@@ -390,7 +390,7 @@ async def test_look_at_media_without_vision_says_so_plainly() -> None:
 
     out = await kit.run("look_at_media", {"media_id": kept.media_id})
     assert "can't see images" in out
-    assert "vision_model" in out
+    assert "image_model" in out
 
 
 async def test_look_at_media_rejects_a_missing_or_bad_id() -> None:
@@ -665,12 +665,12 @@ async def test_set_config_delegates_and_passes_explicit_null_through() -> None:
     assert manager.set_calls == [
         {"op": "set", "path": "agent.tick_seconds", "value": 10, "source": "tool"}
     ]
-    # explicit null is a legal value (clearing llm.vision_model) — it must
+    # explicit null is a legal value (clearing llm.image_model) — it must
     # reach the manager, not be mistaken for a missing one
-    await kit.run("set_config", {"op": "set", "path": "llm.vision_model", "value": None})
+    await kit.run("set_config", {"op": "set", "path": "llm.image_model", "value": None})
     assert manager.set_calls[-1] == {
         "op": "set",
-        "path": "llm.vision_model",
+        "path": "llm.image_model",
         "value": None,
         "source": "tool",
     }

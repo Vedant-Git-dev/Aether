@@ -2621,7 +2621,7 @@ async def test_no_vision_means_one_plain_note_and_no_image_memory() -> None:
     # the plain note lands first, then the turn's own reply
     assert kit.connector.sent[0] == (
         "I can't see this image yet — no vision model is set. Set one with "
-        "/config (llm.vision_model), or pick a main model that can read "
+        "/config (llm.image_model), or pick a main model that can read "
         "images, and I'll see what you send."
     )
     assert [r["kind"] for r in kit.events.ingested] == ["chat_message"]

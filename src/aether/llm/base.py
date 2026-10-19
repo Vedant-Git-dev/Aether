@@ -18,12 +18,19 @@ class Provider(Protocol):
 
     `complete` is a single request/response exchange — no tool execution.
     The manual tool-use loop in `agent.py` drives it.
+
+    Which model handles a medium is user config (the tri-state knobs), not
+    a provider claim — the chosen model's own acceptance is discovered at
+    call time. An adapter that cannot carry a medium's block fails loudly
+    in its mapper (user media is never silently dropped); the caller's
+    ladder catches that refusal and degrades — video to workbench frames,
+    audio to transcription — or says so plainly.
     """
 
     name: str  # "anthropic" | "openai" | "gemini" | "ollama" | "fake"
     model: str  # concrete model id sent to the API
     supports_tools: bool
-    supports_vision: bool
+    supports_vision: bool  # accepts ImageBlock
 
     async def complete(
         self,

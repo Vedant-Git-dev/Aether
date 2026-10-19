@@ -68,36 +68,53 @@ def test_salience_role_defaults_to_reasoning_provider() -> None:
     assert registry.for_role("salience") is registry.for_role("reasoning")
 
 
-def test_vision_role_defaults_to_reasoning_provider() -> None:
-    # Hosted providers are vision-capable, so vision falls back to default.
+def test_perception_roles_are_off_by_default() -> None:
+    # The tri-state knobs default to None — every medium is off until the
+    # user turns one on, whatever the provider can do.
     registry = ProviderRegistry.from_config(_settings(anthropic_api_key="k"), LLMConfig())
-    assert registry.for_role("vision") is registry.for_role("reasoning")
-
-
-def test_vision_role_none_for_ollama_without_vision_support() -> None:
-    registry = ProviderRegistry.from_config(
-        _settings(), LLMConfig(provider="ollama", model="llama3.3")
-    )
     assert registry.for_role("reasoning") is not None
-    assert registry.for_role("vision") is None
+    assert registry.for_role("image") is None
+    assert registry.for_role("audio") is None
+    assert registry.for_role("video") is None
 
 
-def test_ollama_vision_flag_and_explicit_vision_model() -> None:
-    # The config flag opts the default model into vision.
-    flagged = ProviderRegistry.from_config(
-        _settings(), LLMConfig(provider="ollama", model="llava", ollama_vision=True)
+def test_base_knob_routes_a_medium_to_the_main_model() -> None:
+    registry = ProviderRegistry.from_config(
+        _settings(anthropic_api_key="k"),
+        LLMConfig(image_model="base", audio_model="base", video_model="base"),
     )
-    assert flagged.for_role("vision") is flagged.for_role("reasoning")
+    assert registry.for_role("image") is registry.for_role("reasoning")
+    assert registry.for_role("audio") is registry.for_role("reasoning")
+    assert registry.for_role("video") is registry.for_role("reasoning")
 
-    # An explicit vision_model is trusted to accept images.
+
+def test_explicit_knob_builds_its_own_provider() -> None:
+    # A specific model is a deliberate choice — its own provider instance,
+    # whether or not the base model could ever do the job.
     explicit = ProviderRegistry.from_config(
-        _settings(), LLMConfig(provider="ollama", model="llama3.3", vision_model="qwen2.5vl:7b")
+        _settings(ollama_base_url="http://localhost:11434/v1"),
+        LLMConfig(provider="ollama", model="llama3.3", image_model="qwen2.5vl:7b"),
     )
-    vision = explicit.for_role("vision")
-    assert vision is not None
-    assert vision is not explicit.for_role("reasoning")
-    assert vision.model == "qwen2.5vl:7b"
-    assert vision.supports_vision is True
+    image = explicit.for_role("image")
+    assert image is not None
+    assert image is not explicit.for_role("reasoning")
+    assert image.model == "qwen2.5vl:7b"
+    assert image.supports_vision is True
+
+
+def test_ollama_vision_flag_still_gates_the_base_provider() -> None:
+    # The flag is the user's own claim about their pulled model — with a
+    # "base" image knob it decides whether the base provider may see.
+    flagged = ProviderRegistry.from_config(
+        _settings(),
+        LLMConfig(provider="ollama", model="llava", ollama_vision=True, image_model="base"),
+    )
+    assert flagged.for_role("image") is flagged.for_role("reasoning")
+    assert flagged.for_role("image").supports_vision is True
+    unflagged = ProviderRegistry.from_config(
+        _settings(), LLMConfig(provider="ollama", model="llava", image_model="base")
+    )
+    assert unflagged.for_role("reasoning").supports_vision is False
 
 
 def test_unknown_role_falls_back_to_reasoning() -> None:

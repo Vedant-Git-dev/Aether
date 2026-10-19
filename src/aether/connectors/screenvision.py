@@ -48,7 +48,7 @@ class ScreenVision:
         """Describe one screenshot and store it as an event. None when no
         vision-capable provider is configured — the API layer turns that
         into a 503 so the companion can tell the user why."""
-        provider = self._providers.for_role("vision")
+        provider = self._providers.for_role("image")
         if provider is None or not provider.supports_vision:
             log.warning("screen capture dropped: no vision-capable provider configured")
             return None

@@ -21,9 +21,11 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
+from ..llm.base import ProviderError
 from ..llm.json_utils import extract_json
 from ..llm.registry import ProviderRegistry
-from ..llm.types import ImageBlock, Message
+from ..llm.types import AudioBlock, ImageBlock, Message, Turn, VideoBlock
+from ..media.frames import FrameWatcher
 from ..media.store import MediaRef, MediaStore, MediaStoreFull
 from ..media.voice import GroqTranscriber
 from ..memory.entities import Sender
@@ -68,6 +70,37 @@ IMAGE_SYSTEM_PROMPT = (
     '"notable": [<anything unusual or worth remembering>]}'
 )
 
+VIDEO_SYSTEM_PROMPT = (
+    "You watch one video the user shared in chat and report what is in it. "
+    "Perception only — never propose or take actions.\n"
+    'Reply with strict JSON only: {"description": <one or two sentences about '
+    "what happens in the video>, "
+    '"people": [<names or handles visible>], '
+    '"text_visible": [<any text readable in the video>], '
+    '"notable": [<anything unusual or worth remembering>]}'
+)
+
+FRAMES_SYSTEM_PROMPT = (
+    "You are shown evenly spaced frames pulled from one video the user "
+    "shared in chat — stills, not the motion between them. Report what the "
+    "video shows. Perception only — never propose or take actions.\n"
+    'Reply with strict JSON only: {"description": <one or two sentences about '
+    "what happens in the video>, "
+    '"people": [<names or handles visible>], '
+    '"text_visible": [<any text readable in the frames>], '
+    '"notable": [<anything unusual or worth remembering>]}'
+)
+
+AUDIO_SYSTEM_PROMPT = (
+    "You listen to one audio clip or voice note the user shared in chat and "
+    "report what is said and heard. Perception only — never propose or take "
+    "actions.\n"
+    'Reply with strict JSON only: {"description": <one or two sentences about '
+    "what the audio says>, "
+    '"text_spoken": [<the words spoken, verbatim where clear>], '
+    '"notable": [<anything unusual or worth remembering>]}'
+)
+
 _IMAGE_MEDIA_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -101,19 +134,37 @@ def attachments_note(results: list[AttachmentResult]) -> str:
         noun = "this image" if blind == 1 else "these images"
         parts.append(
             f"I can't see {noun} yet — no vision model is set. Set one with "
-            "/config (llm.vision_model), or pick a main model that can read "
+            "/config (llm.image_model), or pick a main model that can read "
             "images, and I'll see what you send."
         )
     parts.extend(r.note for r in results if r.note)
     return " ".join(parts)
 
 
+def _vision_payload(turn: Turn) -> dict[str, Any] | None:
+    """A perception turn's answer as clean payload facts — strict JSON when
+    the model obeyed, its raw text otherwise, None when it said nothing
+    worth keeping."""
+    try:
+        described = extract_json(turn.text)
+        if not isinstance(described, dict):
+            raise ValueError("perception turn returned a non-object")
+    except Exception:
+        raw = (turn.text or "").strip()
+        return {"description": raw[:1000]} if raw else None
+    clean = {k: v for k, v in described.items() if v not in (None, "", [])}
+    return clean or None
+
+
 class AttachmentProcessor:
     """User-shared files in (connectors download the bytes), encrypted memory
     events out. Images are described by the vision provider — perception
     only; documents keep their extracted text so a later turn can answer
-    questions about the content. Voice notes are transcribed when Groq
-    answers, videos are kept honest-but-unwatched until frame jobs land.
+    questions about the content. Video and audio climb a ladder: the model
+    configured for that medium directly, then the fallback (frames a cloud
+    sandbox pulled, transcription), then the plain fact in the payload —
+    the agent reads the payload and says what's missing in its own words,
+    so no note here speaks for it.
 
     With a media store wired, the bytes themselves are kept too (encrypted,
     under the quota) and the event carries their media_id — so nothing a
@@ -126,12 +177,14 @@ class AttachmentProcessor:
         indexer: VectorMemory | None = None,
         media: MediaStore | None = None,
         voice: GroqTranscriber | None = None,
+        frames: FrameWatcher | None = None,
     ) -> None:
         self._providers = providers
         self._events = events
         self._indexer = indexer
         self._media = media
         self._voice = voice
+        self._frames = frames
 
     async def process(self, message: InboundMessage) -> list[AttachmentResult]:
         out: list[AttachmentResult] = []
@@ -162,7 +215,7 @@ class AttachmentProcessor:
 
     async def _image(self, attachment: Attachment, message: InboundMessage) -> AttachmentResult:
         kept = await self._keep(attachment, message.surface)
-        provider = self._providers.for_role("vision")
+        provider = self._providers.for_role("image")
         if provider is None or not provider.supports_vision:
             # no eyes right now — still remember that the image arrived and
             # keep its bytes, so a later look_at_media (or a configured
@@ -228,16 +281,12 @@ class AttachmentProcessor:
         return AttachmentResult(ingested=ingested)
 
     async def _audio(self, attachment: Attachment, message: InboundMessage) -> AttachmentResult:
-        """A voice note or audio file: bytes kept, words transcribed when a
-        transcription service answers. Without one the bytes still store
-        and the event says so plainly — never a dropped note."""
+        """A voice note or audio clip through the ladder: the audio model
+        directly when one is set (its refusal is its own answer and falls
+        through), then transcription, then the plain fact in the payload —
+        the agent says what's missing in its own words, never a canned
+        note here."""
         kept = await self._keep(attachment, message.surface)
-        transcript = ""
-        if self._voice is not None:
-            answer = await self._voice.transcribe(
-                attachment.data, attachment.filename, attachment.media_type
-            )
-            transcript = (answer or "").strip()
         payload: dict[str, Any] = {
             "filename": attachment.filename,
             "media_type": attachment.media_type,
@@ -245,41 +294,189 @@ class AttachmentProcessor:
         }
         if kept is not None:
             payload["media_id"] = kept.media_id
-        note = ""
-        if transcript:
-            payload["text"] = transcript[:DOC_TEXT_CAP]
-        else:
-            payload["transcribe_note"] = "not transcribed — no transcription service answered"
-            note = (
-                "I kept this voice note, but couldn't transcribe it — no "
-                "transcription service answered. Set GROQ_API_KEY in /config "
-                "and I'll read the ones you send."
-            )
         if message.text:
             payload["caption"] = message.text
+        understood = False
+        refused = False
+        # rung 1 — the audio model, exactly as configured
+        audio_provider = self._providers.for_role("audio")
+        if audio_provider is not None:
+            try:
+                turn = await audio_provider.complete(
+                    AUDIO_SYSTEM_PROMPT,
+                    [
+                        Message.user(
+                            "What is said in this audio?"
+                            + (f"\nThe user said: {message.text}" if message.text else ""),
+                            audio=[
+                                AudioBlock(
+                                    data_b64=base64.b64encode(attachment.data).decode("ascii"),
+                                    media_type=_audio_media_type(attachment, kept),
+                                )
+                            ],
+                        )
+                    ],
+                    tools=[],
+                )
+            except ProviderError as exc:
+                # the configured model can't take audio — its own answer,
+                # discovered at call time; the ladder falls through
+                refused = True
+                log.info("the audio model refused the audio: %s", exc)
+            else:
+                described = _vision_payload(turn)
+                if described is not None:
+                    payload.update(described)
+                    understood = True
+        # rung 2 — transcription, when a service answers
+        transcript = ""
+        if not understood and self._voice is not None:
+            answer = await self._voice.transcribe(
+                attachment.data, attachment.filename, attachment.media_type
+            )
+            transcript = (answer or "").strip()
+            if transcript:
+                payload["text"] = transcript[:DOC_TEXT_CAP]
+                understood = True
+        # rung 3 — the plain fact, for the agent to say in its own words
+        if not understood:
+            if refused and self._voice is None:
+                payload["transcribe_note"] = (
+                    "not understood — the configured audio model couldn't "
+                    "take it and no transcription service is set"
+                )
+            elif refused:
+                payload["transcribe_note"] = (
+                    "not understood — the configured audio model couldn't "
+                    "take it and transcription didn't answer"
+                )
+            elif self._voice is None:
+                payload["transcribe_note"] = (
+                    "not understood — no audio model or transcription service is set"
+                )
+            else:
+                payload["transcribe_note"] = "not understood — no transcription service answered"
         ingested = await self._events.ingest(
             source=message.surface,
             kind="shared_audio",
             payload=payload,
             sender=Sender(platform=message.surface, handle=message.handle),
         )
-        return AttachmentResult(ingested=ingested, note=note)
+        return AttachmentResult(ingested=ingested)
 
     async def _video(self, attachment: Attachment, message: InboundMessage) -> AttachmentResult:
-        """A shared video: the bytes are kept and the event says so —
-        understanding (frames to the vision provider) arrives with the
-        workbench frame job, so this row never pretends it watched."""
+        """A shared video through the ladder: the video model directly when
+        one is set (its refusal is its own answer and falls through), then
+        the image model over frames a cloud sandbox pulled, then the plain
+        fact in the payload — the agent says what's missing in its own
+        words, never a canned note here."""
         kept = await self._keep(attachment, message.surface)
         payload: dict[str, Any] = {
             "filename": attachment.filename,
             "media_type": attachment.media_type,
             "chat_ref": message.chat_ref,
-            "understand_note": "kept, but not understood — video understanding isn't set up",
         }
         if kept is not None:
             payload["media_id"] = kept.media_id
         if message.text:
             payload["caption"] = message.text
+        understood = False
+        # rung 1 — the video model, exactly as configured
+        video_provider = self._providers.for_role("video")
+        if video_provider is not None:
+            try:
+                turn = await video_provider.complete(
+                    VIDEO_SYSTEM_PROMPT,
+                    [
+                        Message.user(
+                            "What is in this video?"
+                            + (f"\nThe user said: {message.text}" if message.text else ""),
+                            videos=[
+                                VideoBlock(
+                                    data_b64=base64.b64encode(attachment.data).decode("ascii"),
+                                    media_type=_video_media_type(attachment, kept),
+                                )
+                            ],
+                        )
+                    ],
+                    tools=[],
+                )
+            except ProviderError as exc:
+                # the configured model can't take video — its own answer,
+                # discovered at call time; the ladder falls through
+                log.info("the video model refused the video: %s", exc)
+            else:
+                described = _vision_payload(turn)
+                if described is not None:
+                    payload.update(described)
+                    understood = True
+        # rung 2 — the image model over frames a cloud sandbox pulled
+        if not understood:
+            image_provider = self._providers.for_role("image")
+            if image_provider is None or not image_provider.supports_vision:
+                if video_provider is not None:
+                    # the configured video model refused, and nothing here
+                    # can read frames either — the plain fact for the agent
+                    payload["understand_note"] = (
+                        "kept, but not understood — the configured video model "
+                        "couldn't take it, and no image model is set to read frames"
+                    )
+                # else nothing is set for video at all — rung 3 says so
+            elif self._frames is None:
+                payload["understand_note"] = (
+                    "kept, but not understood — no cloud sandbox is available to pull frames"
+                )
+            else:
+                outcome = await self._frames.watch(
+                    attachment.data, _video_media_type(attachment, kept), attachment.filename
+                )
+                if outcome.frames:
+                    try:
+                        turn = await image_provider.complete(
+                            FRAMES_SYSTEM_PROMPT,
+                            [
+                                Message.user(
+                                    "What is in this video?"
+                                    + (f"\nThe user said: {message.text}" if message.text else ""),
+                                    images=[
+                                        ImageBlock(
+                                            data_b64=base64.b64encode(data).decode("ascii"),
+                                            media_type="image/jpeg",
+                                        )
+                                        for _, data in sorted(outcome.frames.items())
+                                    ],
+                                )
+                            ],
+                            tools=[],
+                        )
+                    except ProviderError as exc:
+                        log.info("the image model refused the frames: %s", exc)
+                        payload["understand_note"] = (
+                            "kept, but not understood — the frames reached an "
+                            "image model that couldn't take them"
+                        )
+                    else:
+                        described = _vision_payload(turn)
+                        if described is not None:
+                            payload.update(described)
+                            payload["understand_note"] = (
+                                "understood from evenly spaced frames, not watched directly"
+                            )
+                            if outcome.duration_seconds is not None:
+                                payload["duration"] = outcome.duration_seconds
+                            understood = True
+                        else:
+                            payload["understand_note"] = (
+                                "kept, but not understood — the image model "
+                                "said nothing about the frames"
+                            )
+                else:
+                    payload["understand_note"] = f"kept, but not understood — {outcome.reason}"
+        # rung 3 — nothing set for video at all: the plain fact
+        if not understood and "understand_note" not in payload:
+            payload["understand_note"] = (
+                "kept, but not understood — no video model or image model is set"
+            )
         ingested = await self._events.ingest(
             source=message.surface,
             kind="shared_video",
@@ -340,6 +537,28 @@ def _image_media_type(attachment: Attachment) -> str:
     if (attachment.media_type or "").startswith("image/"):
         return attachment.media_type
     return _IMAGE_MEDIA_TYPES.get(Path(attachment.filename or "").suffix.lower(), "image/png")
+
+
+def _video_media_type(attachment: Attachment, kept: MediaRef | None) -> str:
+    """A real video MIME for the provider adapters — the sniffed stored
+    type first (the store never trusts a platform's claim), then the
+    platform's, then an mp4 default."""
+    if kept is not None and (kept.media_type or "").startswith("video/"):
+        return kept.media_type
+    if (attachment.media_type or "").startswith("video/"):
+        return attachment.media_type
+    return "video/mp4"
+
+
+def _audio_media_type(attachment: Attachment, kept: MediaRef | None) -> str:
+    """A real audio MIME for the provider adapters — the sniffed stored
+    type first, then the platform's, then an ogg default (what voice
+    notes almost always are)."""
+    if kept is not None and (kept.media_type or "").startswith("audio/"):
+        return kept.media_type
+    if (attachment.media_type or "").startswith("audio/"):
+        return attachment.media_type
+    return "audio/ogg"
 
 
 # -- document text extraction --------------------------------------------------

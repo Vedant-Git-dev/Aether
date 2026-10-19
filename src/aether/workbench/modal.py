@@ -113,6 +113,11 @@ def _validate(spec: JobSpec) -> None:
     for name in spec.files:
         if not _SAFE_NAME.fullmatch(name):
             raise WorkbenchError(f"a job file ({name!r}) isn't a plain file name — not run.")
+    for name in spec.binary_files:
+        if not _SAFE_NAME.fullmatch(name):
+            raise WorkbenchError(f"a job file ({name!r}) isn't a plain file name — not run.")
+        if name in spec.files:
+            raise WorkbenchError(f"the job's text and binary files both claim {name!r} — not run.")
 
 
 def _clip(text: str, limit: int) -> str:
@@ -171,6 +176,8 @@ class ModalWorkbench:
                     try:
                         for name, content in spec.files.items():
                             await sandbox.filesystem.write_text.aio(content, f"{_WORKDIR}/{name}")
+                        for name, data in spec.binary_files.items():
+                            await sandbox.filesystem.write_bytes.aio(data, f"{_WORKDIR}/{name}")
                         proc = await sandbox.exec.aio(
                             "python",
                             spec.script_name,

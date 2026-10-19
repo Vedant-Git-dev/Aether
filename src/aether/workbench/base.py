@@ -56,13 +56,15 @@ class JobLimits:
 
 @dataclass(frozen=True)
 class JobSpec:
-    """One job — a named script plus the files it needs. The dict of
-    files is the job's whole world; the meta carries who asked for it
-    (task_id, label) and what class of work it is (sensitivity,
-    latency_class)."""
+    """One job — a named script plus the files it needs. The dicts of
+    text and binary files are the job's whole world (binary files carry
+    what can't be text: a video to watch, audio to read); the meta
+    carries who asked for it (task_id, label) and what class of work it
+    is (sensitivity, latency_class)."""
 
     script_name: str
     files: dict[str, str] = field(default_factory=dict)
+    binary_files: dict[str, bytes] = field(default_factory=dict)
     limits: JobLimits = field(default_factory=JobLimits)
     meta: dict[str, Any] = field(default_factory=dict)
 

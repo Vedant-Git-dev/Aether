@@ -35,6 +35,7 @@ from .llm.base import ProviderError
 from .llm.embeddings import GeminiEmbedder
 from .llm.registry import ProviderRegistry
 from .logging_setup import configure_logging
+from .media.frames import FrameWatcher
 from .media.store import MediaStore
 from .media.voice import GroqTranscriber
 from .memory.context import ContextBuilder
@@ -203,6 +204,10 @@ def create_app(
             )
             return await run_workbench(replace(spec, limits=limits), ladder)
 
+        # the perception ladder's frames rung — the same job ladder every
+        # other sandbox job travels, under the media job budget
+        frame_watcher = FrameWatcher(_run_job, counters, config.media)
+
         # --- vector memory: free embeddings make recall semantic ----------
         # best effort, same as the providers — without a key the layer is a
         # quiet no-op and memory search reports the failure plainly
@@ -274,6 +279,7 @@ def create_app(
                 indexer=vectors,
                 media=media_store,
                 voice=GroqTranscriber(env_resolver),
+                frames=frame_watcher,
             )
             if providers
             else None
@@ -494,7 +500,12 @@ def create_app(
         the only error line in an otherwise clean log. Model ids are not
         secrets — the same reasoning that leaves /health unguarded."""
         llm = config.llm
-        ids = {llm.model} | {m for m in (llm.vision_model, llm.salience_model) if m}
+        # "base" means the main model by another word — it's already listed
+        ids = {llm.model} | {
+            m
+            for m in (llm.image_model, llm.audio_model, llm.video_model, llm.salience_model)
+            if m and m != "base"
+        }
         return {
             "object": "list",
             "data": [

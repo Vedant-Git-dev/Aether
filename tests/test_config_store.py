@@ -175,14 +175,14 @@ async def test_set_then_reset_roundtrips_through_the_store() -> None:
 
 async def test_set_explicit_none_clears_the_setting() -> None:
     manager, store, live = _manager()
-    live.llm.vision_model = "qwen-vision"  # some earlier value, not from chat
+    live.llm.image_model = "qwen-vision"  # some earlier value, not from chat
 
-    reply = await manager.set(op="set", path="llm.vision_model", value=None)
-    assert "llm.vision_model set to none" in reply
+    reply = await manager.set(op="set", path="llm.image_model", value=None)
+    assert "llm.image_model set to none" in reply
     # no server is registered in tests, so the self-restart degrades honestly
     assert reply.endswith(" — it loads on the next boot")
-    assert store.rows == {"llm.vision_model": None}
-    assert live.llm.vision_model is None
+    assert store.rows == {"llm.image_model": None}
+    assert live.llm.image_model is None
 
 
 async def test_set_refuses_bad_values_and_persists_nothing() -> None:

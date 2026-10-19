@@ -157,10 +157,25 @@ _SECTIONS: tuple[_Section, ...] = (
                 "restart me, back in a few seconds)",
             ),
             _Setting(
-                "llm.vision_model",
-                "vision_model",
-                "a separate model that reads images",
-                "which model should read images? (currently {cur} — or none to use my main model)",
+                "llm.image_model",
+                "image_model",
+                "the model that reads images",
+                "which model should read images? (currently {cur} — base for "
+                "my main model, or none to leave images unseen)",
+            ),
+            _Setting(
+                "llm.audio_model",
+                "audio_model",
+                "the model that listens to audio",
+                "which model should listen to audio? (currently {cur} — base "
+                "for my main model, or none to leave only transcription)",
+            ),
+            _Setting(
+                "llm.video_model",
+                "video_model",
+                "the model that watches video",
+                "which model should watch video? (currently {cur} — base for "
+                "my main model, or none to fall back to frames)",
             ),
             _Setting(
                 "llm.salience_model",

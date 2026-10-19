@@ -1,10 +1,15 @@
 """Resolve configuration into Provider instances, one per role.
 
 A single provider backs the agent, with optional per-role model overrides
-(`salience_model`, `vision_model`) that build extra instances of the same
-provider class with a different model id — one provider choice governs
-everything, while each job can run on a smaller/cheaper model where it
-makes sense.
+that build extra instances of the same provider class with a different
+model id — one provider choice governs everything, while each job can
+run on a smaller/cheaper model where it makes sense.
+
+Perception is per-medium: image, audio, and video are separate roles,
+each set by a tri-state knob — off (default), "base" (the main model
+takes it), or a specific model id. The knob is the routing truth; what
+the chosen model truly accepts is discovered at call time, and the
+caller's ladder degrades honestly on a refusal.
 """
 
 from __future__ import annotations
@@ -16,7 +21,10 @@ from .gemini_provider import GeminiProvider
 from .ollama_provider import OllamaProvider
 from .openai_provider import OpenAIProvider
 
-ROLES = ("reasoning", "salience", "vision")
+ROLES = ("reasoning", "salience", "image", "audio", "video")
+
+# the knob's word for "the main model takes this medium"
+BASE = "base"
 
 
 def _build(settings: Settings, llm: LLMConfig, model: str, vision_capable: bool) -> Provider:
@@ -34,7 +42,7 @@ def _build(settings: Settings, llm: LLMConfig, model: str, vision_capable: bool)
 
 
 class ProviderRegistry:
-    """The resolved provider for each role; `vision` may be None."""
+    """The resolved provider for each role; perception roles may be None."""
 
     def __init__(self, providers: dict[str, Provider | None]) -> None:
         self._providers = providers
@@ -55,13 +63,28 @@ class ProviderRegistry:
         providers: dict[str, Provider | None] = {
             "reasoning": default,
             "salience": default,
-            "vision": default if default.supports_vision else None,
+            "image": _medium(settings, llm, default, llm.image_model),
+            "audio": _medium(settings, llm, default, llm.audio_model),
+            "video": _medium(settings, llm, default, llm.video_model),
         }
         if llm.salience_model and llm.salience_model != llm.model:
             providers["salience"] = _build(settings, llm, llm.salience_model, default_vision)
-        if llm.vision_model and llm.vision_model != llm.model:
-            # An explicit vision_model is a deliberate choice — trust that
-            # it accepts images even though a local Ollama can't be probed.
-            vision = _build(settings, llm, llm.vision_model, vision_capable=True)
-            providers["vision"] = vision if vision.supports_vision else None
         return cls(providers)
+
+
+def _medium(
+    settings: Settings,
+    llm: LLMConfig,
+    base: Provider,
+    knob: str | None,
+) -> Provider | None:
+    """One perception role from its tri-state knob: off -> None (the
+    default), "base" -> the main model, or a specific model id (a
+    deliberate choice). Whether the chosen model truly accepts the medium
+    is discovered at call time — a refusal falls to the caller's ladder,
+    which degrades honestly."""
+    if not knob:
+        return None  # off — the default
+    if knob == BASE:
+        return base
+    return _build(settings, llm, knob, vision_capable=True)

@@ -1010,10 +1010,14 @@ class ConfigManager:
         if name == "llm":
             llm = live.llm
             text = f"llm: {llm.provider} · {llm.model}"
-            if llm.vision_model:
-                text += f" · vision {llm.vision_model}"
-            if llm.salience_model:
-                text += f" · salience {llm.salience_model}"
+            for label, knob in (
+                ("images", llm.image_model),
+                ("audio", llm.audio_model),
+                ("video", llm.video_model),
+                ("salience", llm.salience_model),
+            ):
+                if knob:
+                    text += f" · {label} {knob}"
             text += f" · max {_plain_value(llm.max_tokens)} tokens"
             return text
         if name == "agent":

@@ -209,7 +209,7 @@ def test_set_config_tuning_paths_are_allowed() -> None:
     for path in (
         "llm.provider",
         "llm.model",
-        "llm.vision_model",
+        "llm.image_model",
         "llm.salience_model",
         "llm.max_tokens",
         "llm.ollama_vision",

@@ -10,7 +10,17 @@ from google import genai
 from google.genai import types as gtypes
 
 from .base import ProviderError
-from .types import ImageBlock, Message, TextBlock, ToolCall, ToolResult, ToolSpec, Turn
+from .types import (
+    AudioBlock,
+    ImageBlock,
+    Message,
+    TextBlock,
+    ToolCall,
+    ToolResult,
+    ToolSpec,
+    Turn,
+    VideoBlock,
+)
 
 # JSON Schema spellings -> the casing the genai SDK's Schema type expects.
 _TYPE_NAMES = {
@@ -87,6 +97,17 @@ def messages_to_gemini(messages: list[Message]) -> list[dict[str, Any]]:
                 if isinstance(b, TextBlock) and b.text:
                     parts.append({"text": b.text})
                 elif isinstance(b, ImageBlock):
+                    parts.append(
+                        {
+                            "inline_data": {
+                                "mime_type": b.media_type,
+                                "data": b.data_b64,
+                            }
+                        }
+                    )
+                elif isinstance(b, (VideoBlock, AudioBlock)):
+                    # Gemini watches video and listens to audio natively —
+                    # the same inline shape, a different MIME
                     parts.append(
                         {
                             "inline_data": {
