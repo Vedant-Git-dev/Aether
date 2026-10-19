@@ -113,6 +113,32 @@ def _plain_value(value: Any) -> str:
     return str(value)
 
 
+# what an empty perception knob means, by field — the honest off, not a
+# raw blank that reads as "maybe something is set"
+_KNOB_EMPTY_TEXT = {
+    "image_model": "empty — images stay unseen",
+    "audio_model": "empty — only voice transcription, when connected",
+    "video_model": "empty — no video model (frames through the image model, when one is set)",
+}
+# what 'base' means, by field — the main model doing that sense itself
+_KNOB_BASE_TEXT = {
+    "image_model": "base — the main model reads images",
+    "audio_model": "base — the main model listens to audio",
+    "video_model": "base — the main model watches video",
+}
+
+
+def _llm_knob_text(field: str, value: Any, main_model: str) -> str:
+    """The llm perception knobs rendered as what they mean, never as raw
+    knob words — 'base' is the main model, empty is the honest off, so
+    config text can't be misread as 'nothing is set' when something is."""
+    if value == "base":
+        return f"{_KNOB_BASE_TEXT[field]} (model {main_model})"
+    if not value:
+        return _KNOB_EMPTY_TEXT[field]
+    return _plain_value(value)
+
+
 def _plain_entry(entry: Any) -> str:
     """One list entry as it reads in chat."""
     if isinstance(entry, ContactRule):
@@ -1017,7 +1043,11 @@ class ConfigManager:
                 ("salience", llm.salience_model),
             ):
                 if knob:
-                    text += f" · {label} {knob}"
+                    # 'base' reads as the main model it resolves to — the
+                    # overview shows the truth the running process serves
+                    # with, never a knob word that looks like nothing
+                    resolved = llm.model if knob == "base" else knob
+                    text += f" · {label} {resolved}"
             text += f" · max {_plain_value(llm.max_tokens)} tokens"
             return text
         if name == "agent":
@@ -1099,6 +1129,10 @@ class ConfigManager:
         section_live = getattr(self._live, name)
         section_base = getattr(self._base, name)
         for field in type(section_live).model_fields:
+            if name == "llm" and field == "ollama_vision" and section_live.provider != "ollama":
+                # ollama_vision only governs Ollama — showing it under
+                # another provider reads as a real setting and misleads
+                continue
             live_v = getattr(section_live, field)
             base_v = getattr(section_base, field)
             if isinstance(live_v, list):
@@ -1111,11 +1145,30 @@ class ConfigManager:
                 lines.extend(f"    {_plain_entry(e)}" for e in live_v.allowlist)
             else:
                 marker = " (changed from config.yaml)" if live_v != base_v else ""
-                lines.append(f"  {field} = {_plain_value(live_v)}{marker}")
+                shown = (
+                    _llm_knob_text(field, live_v, section_live.model)
+                    if name == "llm" and field in _KNOB_EMPTY_TEXT
+                    else _plain_value(live_v)
+                )
+                lines.append(f"  {field} = {shown}{marker}")
         return "\n".join(lines)
 
     def _one_show(self, resolved: _Resolved) -> str:
         live_v = getattr(resolved.container, resolved.field)
+        # the perception knobs say what they mean, not their raw words
+        knob = (
+            _llm_knob_text(resolved.field, live_v, self._live.llm.model)
+            if resolved.canonical.startswith("llm.") and resolved.field in _KNOB_EMPTY_TEXT
+            else None
+        )
+        if knob is not None:
+            suffix = (
+                " (changed from config.yaml)"
+                if resolved.base_container is None
+                or live_v != getattr(resolved.base_container, resolved.field)
+                else ""
+            )
+            return f"{resolved.canonical} = {knob}{suffix}"
         if resolved.base_container is None:
             return f"{resolved.canonical} = {_plain_value(live_v)} (not in config.yaml — set from chat)"
         base_v = getattr(resolved.base_container, resolved.field)

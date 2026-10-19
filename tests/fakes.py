@@ -226,6 +226,13 @@ class FakeApprovals:
         now = datetime.now(UTC)
         return [a for a in self.created if a.status == PENDING and a.expires_at > now]
 
+    async def find_pending(self, tool_name: str, params: dict) -> Approval | None:
+        # mirrors the store: the still-pending row for this exact call
+        for approval in await self.list_pending():
+            if approval.tool_name == tool_name and approval.params == params:
+                return approval
+        return None
+
     async def expire_overdue(self) -> int:
         flipped = 0
         for a in self.created:

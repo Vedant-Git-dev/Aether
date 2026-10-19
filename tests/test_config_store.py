@@ -844,3 +844,43 @@ async def test_a_set_survives_a_fresh_boot() -> None:
     assert await manager2.bootstrap() == 2
     assert fresh.agent.tick_seconds == 10.0
     assert fresh.contacts.allowlist == [ContactRule(platform="telegram", handle="@friend")]
+
+
+async def test_the_perception_knobs_render_as_meaning_not_raw_words() -> None:
+    # "base" and empty are the two words the model kept misreading as
+    # "no vision model is set" — the show paths say what each means, so
+    # a copy of the config can never say nothing is set when something is
+    live = AppConfig()
+    live.llm.image_model = "base"
+    live.llm.audio_model = None
+    live.llm.video_model = "custom-vision"
+    manager, _, _ = _manager(live=live)
+
+    assert await manager.show("llm.image_model") == (
+        "llm.image_model = base — the main model reads images (model claude-opus-5)"
+    )
+    assert await manager.show("llm.audio_model") == (
+        "llm.audio_model = empty — only voice transcription, when connected"
+    )
+    assert await manager.show("llm.video_model") == ("llm.video_model = custom-vision")
+
+    section = await manager.show("llm")
+    assert "image_model = base — the main model reads images (model claude-opus-5)" in section
+    assert "audio_model = empty — only voice transcription, when connected" in section
+    assert "video_model = custom-vision" in section
+
+
+async def test_ollama_vision_is_hidden_under_other_providers() -> None:
+    # the flag governs Ollama alone — under Gemini its raw copy reads as
+    # a real setting and fed the bot's wrong self-diagnosis, so it isn't
+    # shown at all when the provider isn't Ollama
+    live = AppConfig()
+    live.llm.provider = "gemini"
+    manager, _, _ = _manager(live=live)
+
+    section = await manager.show("llm")
+    assert "ollama_vision" not in section
+    # under Ollama it stays — a real setting the user actually owns
+    live.llm.provider = "ollama"
+    manager, _, _ = _manager(live=live)
+    assert "ollama_vision" in await manager.show("llm")

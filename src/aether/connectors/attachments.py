@@ -141,6 +141,40 @@ def attachments_note(results: list[AttachmentResult]) -> str:
     return " ".join(parts)
 
 
+def senses_text(providers: ProviderRegistry, voice: bool, frames: bool) -> str:
+    """What the agent's senses actually are right now, resolved from the
+    knobs — the system prompt carries this so the model never has to guess
+    from raw config values (where 'base' reads as nothing being set)."""
+    image = providers.for_role("image")
+    audio = providers.for_role("audio")
+    video = providers.for_role("video")
+    lines = ["Your senses right now, resolved from the running settings:"]
+    if image is not None and image.supports_vision:
+        lines.append(f"- images: you read them (model {image.model})")
+    else:
+        lines.append("- images: you cannot read them — nothing is set for them")
+    if audio is not None:
+        lines.append(f"- audio: you listen to it directly (model {audio.model})")
+    elif voice:
+        lines.append("- audio: no model listens, but voice notes are transcribed for you")
+    else:
+        lines.append("- audio: you cannot hear it — nothing is set for it")
+    if video is not None:
+        lines.append(f"- video: you watch it directly (model {video.model})")
+    elif image is not None and image.supports_vision and frames:
+        lines.append(
+            f"- video: no model watches it, but frames pulled from a shared video reach you as images (model {image.model})"
+        )
+    else:
+        lines.append("- video: you cannot watch it — nothing is set for it")
+    lines.append(
+        "These are the truth about your senses this turn. Never guess them "
+        "from config values, never claim a sense you don't have, and never "
+        "refuse a shared file without trying it first."
+    )
+    return "\n".join(lines)
+
+
 def _vision_payload(turn: Turn) -> dict[str, Any] | None:
     """A perception turn's answer as clean payload facts — strict JSON when
     the model obeyed, its raw text otherwise, None when it said nothing
@@ -189,6 +223,19 @@ class AttachmentProcessor:
     async def process(self, message: InboundMessage) -> list[AttachmentResult]:
         out: list[AttachmentResult] = []
         for attachment in message.attachments:
+            role = (
+                attachment.kind if attachment.kind in ("image", "audio", "video") else "reasoning"
+            )
+            provider = self._providers.for_role(role)
+            log.info(
+                "attachment %s (%s) from chat %s message %s — %s model: %s",
+                attachment.kind,
+                attachment.filename,
+                message.chat_ref,
+                message.message_id or "?",
+                role,
+                provider.model if provider is not None else "none",
+            )
             if attachment.kind == "image":
                 out.append(await self._image(attachment, message))
             elif attachment.kind == "audio":
@@ -198,6 +245,10 @@ class AttachmentProcessor:
             else:
                 out.append(await self._doc(attachment, message))
         return out
+
+    def capabilities_note(self) -> str:
+        """The resolved senses for the system prompt — see senses_text."""
+        return senses_text(self._providers, self._voice is not None, self._frames is not None)
 
     async def _keep(self, attachment: Attachment, surface: str) -> MediaRef | None:
         """Store the bytes before the ingest, so the event can point at
@@ -227,7 +278,11 @@ class AttachmentProcessor:
                     "filename": attachment.filename,
                     "media_type": attachment.media_type,
                     "media_id": kept.media_id,
-                    "seen_note": "not seen yet — no vision model is set",
+                    "seen_note": (
+                        "not seen yet — no vision model is set; the user was "
+                        "already told this in chat, so answer what they "
+                        "actually asked without re-explaining the failure"
+                    ),
                 }
                 if message.text:
                     payload["caption"] = message.text

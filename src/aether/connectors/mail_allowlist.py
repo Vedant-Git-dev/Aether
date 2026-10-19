@@ -69,7 +69,25 @@ class MailAllowlist:
 
         kept = [m for m in messages if self._keep(m)]
         dropped = len(messages) - len(kept)
+        if not self._armed():
+            # the allowlist is switched off (globally or for gmail) — the
+            # results really are the whole truth, and claiming they're
+            # filtered would be its own kind of lie
+            return result
+        if not dropped and not all(
+            isinstance(m, dict) and (_addresses(m.get("sender")) or _addresses(m.get("to")))
+            for m in messages
+        ):
+            # nothing was dropped and some shape here is one the filter
+            # can't judge — the envelope passes through untouched rather
+            # than claiming a filtering that didn't happen
+            return result
+        # the note rides the result itself, so the model can tell the user
+        # their mail is always filtered — the same plain words every turn,
+        # instead of results that look complete when they aren't
+        note = "these results are filtered by the Gmail allowlist"
         if dropped:
+            note += f" — {dropped} message{'' if dropped == 1 else 's'} not on it were left out"
             await self._audit.append(
                 actor="system",
                 tool_name=name,
@@ -80,9 +98,18 @@ class MailAllowlist:
                     " not on the Gmail allowlist"
                 ),
             )
-            envelope["data"]["messages"] = kept
-            return json.dumps(envelope, ensure_ascii=False)
-        return result
+        envelope["data"]["messages"] = kept
+        envelope["data"]["allowlist_note"] = note
+        return json.dumps(envelope, ensure_ascii=False)
+
+    def _armed(self) -> bool:
+        """Whether the allowlist actually bites for gmail — a probe through
+        the same precedence _keep uses (the app's own switch, else the
+        section default), so "off" never claims its results are filtered
+        and "enforce" never hides that it is."""
+        return not is_allowlisted(
+            self._contacts, "gmail", Sender(platform="email", handle="probe@aether.invalid")
+        )
 
     def _keep(self, message: Any) -> bool:
         """The user's mail rule: keep self-addressed mail, mail from an

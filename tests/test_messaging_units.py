@@ -129,8 +129,10 @@ class FakeTelegramBot:
     def __init__(self) -> None:
         self.sent: list[dict] = []
 
-    async def send_message(self, chat_id: int, text: str, reply_markup=None) -> SimpleNamespace:
-        self.sent.append({"chat_id": chat_id, "text": text, "reply_markup": reply_markup})
+    async def send_message(
+        self, chat_id: int, text: str, reply_markup=None, **kwargs
+    ) -> SimpleNamespace:
+        self.sent.append({"chat_id": chat_id, "text": text, "reply_markup": reply_markup, **kwargs})
         # the way telegram answers a send — the id that links a why? back
         return SimpleNamespace(message_id=100 + len(self.sent))
 
@@ -143,11 +145,13 @@ class FlakyTelegramBot(FakeTelegramBot):
         super().__init__()
         self.failures = failures
 
-    async def send_message(self, chat_id: int, text: str, reply_markup=None) -> SimpleNamespace:
+    async def send_message(
+        self, chat_id: int, text: str, reply_markup=None, **kwargs
+    ) -> SimpleNamespace:
         if self.failures > 0:
             self.failures -= 1
             raise NetworkError("httpx.ConnectError: tls handshake failed")
-        return await super().send_message(chat_id, text, reply_markup)
+        return await super().send_message(chat_id, text, reply_markup, **kwargs)
 
 
 class FakeTelegramApp:
@@ -1068,6 +1072,8 @@ def _tg_file_update(
     document: SimpleNamespace | None = None,
     voice: bool = False,
     video_note: bool = False,
+    video: bool = False,
+    audio: bool = False,
     name: str = "file",
     mime: str = "",
     size: int = 9,
@@ -1079,7 +1085,7 @@ def _tg_file_update(
         return SimpleNamespace(download_as_bytearray=download)
 
     item = SimpleNamespace(file_name=name, mime_type=mime, file_size=size, get_file=get_file)
-    if document is None and not photo and not voice and not video_note:
+    if document is None and not photo and not voice and not video_note and not video and not audio:
         document = item
     return SimpleNamespace(
         effective_message=SimpleNamespace(
@@ -1090,6 +1096,8 @@ def _tg_file_update(
             document=document,
             voice=item if voice else None,
             video_note=item if video_note else None,
+            video=item if video else None,
+            audio=item if audio else None,
             reply_to_message=None,
         ),
         effective_user=SimpleNamespace(username="vedant", id=1),
@@ -1161,6 +1169,54 @@ async def test_telegram_a_video_note_flows_as_video() -> None:
     assert received[0].attachments == (
         Attachment("video", "video_note.mp4", "video/mp4", b"mp4-bytes"),
     )
+
+
+async def test_telegram_a_video_sent_as_a_video_flows_as_video() -> None:
+    # a regular mp4 rides message.video — for a long time nothing collected
+    # it, so a captioned video was answered text-only, as if unsent
+    received: list[InboundMessage] = []
+
+    async def inbound(message: InboundMessage) -> None:
+        received.append(message)
+
+    connector, app = await _started_telegram(inbound=inbound)
+    await app.handlers[0].callback(
+        _tg_file_update(b"clip-bytes", caption="what's in this?", video=True), None
+    )
+    assert received[0].text == "what's in this?"
+    assert received[0].attachments == (
+        Attachment("video", "video.mp4", "video/mp4", b"clip-bytes"),
+    )
+
+
+async def test_telegram_an_audio_file_flows_as_audio() -> None:
+    received: list[InboundMessage] = []
+
+    async def inbound(message: InboundMessage) -> None:
+        received.append(message)
+
+    connector, app = await _started_telegram(inbound=inbound)
+    await app.handlers[0].callback(
+        _tg_file_update(b"mp3-bytes", caption="", audio=True, name="song.mp3", mime="audio/mpeg"),
+        None,
+    )
+    assert received[0].attachments == (Attachment("audio", "song.mp3", "audio/mpeg", b"mp3-bytes"),)
+
+
+async def test_telegram_a_send_quotes_the_message_it_answers() -> None:
+    # every reply visually binds to the inbound it answers, so a busy chat
+    # reads in order — and a send before any inbound arrived goes out
+    # without the quote rather than failing
+    connector, _ = await _started_telegram()
+    connector._chat_ref = "42"
+    await connector.send_to_user("before any inbound")  # no id yet — plain send
+    connector._reply_message_id = 777
+    await connector.send_to_user("answering you")
+    bot = connector._app.bot
+    assert "reply_parameters" not in bot.sent[0]
+    quoted = bot.sent[1]["reply_parameters"]
+    assert quoted.message_id == 777
+    assert quoted.allow_sending_without_reply is True
 
 
 async def test_telegram_oversize_and_failed_downloads_skip_not_die() -> None:

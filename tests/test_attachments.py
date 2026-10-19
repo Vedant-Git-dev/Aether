@@ -16,6 +16,7 @@ from aether.connectors.attachments import (
     attachments_note,
     extract_doc_parts,
     extract_doc_text,
+    senses_text,
 )
 from aether.connectors.base import Attachment, InboundMessage, classify_attachment
 from aether.llm.base import ProviderError
@@ -244,6 +245,72 @@ class TestImages:
         results = await processor.process(_message(_image()))
         assert results[0].blind is True
         assert provider.calls == []
+
+    async def test_an_unseen_image_says_it_was_already_told(self) -> None:
+        # the seen_note exists so the agent doesn't re-explain a failure the
+        # connector already announced — "already told in chat" is the load-
+        # bearing phrase
+        media = FakeMediaStore()
+        processor = AttachmentProcessor(FakeRegistry(None), FakeEventStore(), media=media)
+        await processor.process(_message(_image(), text="what is this?"))
+        payload = processor._events.ingested[0]["payload"]
+        assert payload["seen_note"] == (
+            "not seen yet — no vision model is set; the user was already "
+            "told this in chat, so answer what they actually asked without "
+            "re-explaining the failure"
+        )
+
+
+class TestSenses:
+    """senses_text — the capabilities block riding every system prompt, so
+    the model never guesses its senses from raw config values (where
+    'base' reads as nothing being set)."""
+
+    def test_every_role_resolved_names_its_model(self) -> None:
+        text = senses_text(FakeRegistry(FakeProvider([])), voice=False, frames=False)
+        assert text.startswith("Your senses right now, resolved from the running settings:")
+        assert "- images: you read them (model fake-model)" in text
+        assert "- audio: you listen to it directly (model fake-model)" in text
+        assert "- video: you watch it directly (model fake-model)" in text
+        assert "never claim a sense you don't have" in text
+
+    def test_nothing_set_says_so_per_sense(self) -> None:
+        text = senses_text(RoleRegistry(), voice=False, frames=False)
+        assert "- images: you cannot read them — nothing is set for them" in text
+        assert "- audio: you cannot hear it — nothing is set for it" in text
+        assert "- video: you cannot watch it — nothing is set for it" in text
+
+    def test_a_blind_image_provider_is_not_an_eye(self) -> None:
+        provider = FakeProvider([])
+        provider.supports_vision = False
+        text = senses_text(RoleRegistry(image=provider), voice=False, frames=False)
+        assert "- images: you cannot read them — nothing is set for them" in text
+
+    def test_voice_transcription_is_a_ladder_rung_not_a_model(self) -> None:
+        text = senses_text(RoleRegistry(), voice=True, frames=False)
+        assert "- audio: no model listens, but voice notes are transcribed for you" in text
+
+    def test_frames_reach_the_agent_as_images(self) -> None:
+        # image set, video not — frames are the honest in-between rung
+        text = senses_text(RoleRegistry(image=FakeProvider([])), voice=False, frames=True)
+        assert (
+            "- video: no model watches it, but frames pulled from a shared "
+            "video reach you as images (model fake-model)" in text
+        )
+
+    def test_frames_do_not_count_without_an_eye(self) -> None:
+        text = senses_text(RoleRegistry(), voice=True, frames=True)
+        assert "- video: you cannot watch it — nothing is set for it" in text
+
+    def test_the_processor_reads_its_own_senses(self) -> None:
+        processor = AttachmentProcessor(
+            FakeRegistry(FakeProvider([])),
+            FakeEventStore(),
+            frames=FakeFrameWatcher(WatchOutcome(frames={})),
+        )
+        assert processor.capabilities_note() == senses_text(
+            processor._providers, voice=False, frames=True
+        )
 
     async def test_non_json_vision_turn_stores_raw_text(self) -> None:
         processor = AttachmentProcessor(

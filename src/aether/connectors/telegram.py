@@ -12,7 +12,7 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyParameters, Update
 from telegram.error import NetworkError
 from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filters
 
@@ -65,6 +65,7 @@ class TelegramConnector(MessagingConnector):
         self._app_factory = app_factory or self._default_app_factory
         self._app: Any = None
         self._chat_ref: str | None = None
+        self._reply_message_id: int | None = None
         self._send_backoff = SEND_BACKOFF_SECONDS
 
     @staticmethod
@@ -120,6 +121,17 @@ class TelegramConnector(MessagingConnector):
         handle = f"@{user.username}" if user.username else f"id:{user.id}"
         chat_ref = str(message.chat_id)
         self._chat_ref = chat_ref
+        # the platform's own id for this message — outbound replies quote
+        # it, so an answer is visually bound to what it answers, and the
+        # structured log can correlate the two
+        message_id = getattr(message, "message_id", None)
+        self._reply_message_id = message_id
+        log.info(
+            "telegram inbound: chat=%s message=%s attachments=%d",
+            chat_ref,
+            message_id,
+            len(attachments),
+        )
         reply_to = getattr(message, "reply_to_message", None)
         await self._emit_inbound(
             InboundMessage(
@@ -130,6 +142,7 @@ class TelegramConnector(MessagingConnector):
                 reply_to_id=str(reply_to.message_id) if reply_to is not None else "",
                 reply_to_text=(reply_to.text or "") if reply_to is not None else "",
                 attachments=tuple(attachments),
+                message_id=str(message_id) if message_id is not None else "",
             )
         )
 
@@ -163,6 +176,21 @@ class TelegramConnector(MessagingConnector):
             data = await self._download(video_note, "video_note.mp4")
             if data is not None:
                 out.append(Attachment("video", "video_note.mp4", "video/mp4", data))
+        # a video sent as a video (not a note) and a music file ride their
+        # own fields too — without these the bytes never arrived at all and
+        # a captioned video was answered text-only, as if unsent
+        video = getattr(message, "video", None)
+        if video is not None:
+            data = await self._download(video, "video.mp4")
+            if data is not None:
+                out.append(Attachment("video", "video.mp4", "video/mp4", data))
+        audio = getattr(message, "audio", None)
+        if audio is not None:
+            name = getattr(audio, "file_name", None) or "audio.mp3"
+            media = getattr(audio, "mime_type", None) or "audio/mpeg"
+            data = await self._download(audio, name)
+            if data is not None:
+                out.append(Attachment("audio", name, media, data))
         return out
 
     async def _download(self, telegram_file: Any, filename: str) -> bytes | None:
@@ -288,8 +316,20 @@ class TelegramConnector(MessagingConnector):
             return None
         for attempt in range(1, SEND_ATTEMPTS + 1):
             try:
+                kwargs: dict[str, Any] = {}
+                if self._reply_message_id is not None:
+                    # every reply visually quotes the message it answers, so
+                    # a busy chat reads in order instead of guessing which
+                    # question an answer belongs to. The target can be gone
+                    # (deleted, or a proactive send long after the last
+                    # inbound) — then Telegram sends without the quote
+                    # rather than failing the reply
+                    kwargs["reply_parameters"] = ReplyParameters(
+                        message_id=self._reply_message_id,
+                        allow_sending_without_reply=True,
+                    )
                 sent = await app.bot.send_message(
-                    chat_id=int(self._chat_ref), text=text, reply_markup=reply_markup
+                    chat_id=int(self._chat_ref), text=text, reply_markup=reply_markup, **kwargs
                 )
                 # getattr so test fakes without a message_id still send fine
                 return str(getattr(sent, "message_id", "") or "") or None

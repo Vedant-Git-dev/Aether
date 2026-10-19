@@ -117,6 +117,26 @@ def test_ollama_vision_flag_still_gates_the_base_provider() -> None:
     assert unflagged.for_role("reasoning").supports_vision is False
 
 
+def test_ollama_vision_never_gates_a_hosted_provider() -> None:
+    # the flag speaks only about the model the user pulled for Ollama —
+    # under Gemini (or any hosted provider) it is inert, and a panel copy
+    # of the raw config must never read as "no vision model is set"
+    registry = ProviderRegistry.from_config(
+        _settings(gemini_api_key="test"),
+        LLMConfig(
+            provider="gemini",
+            model="gemini-3.1-flash-lite",
+            ollama_vision=False,  # unchecked in the panel — meaningless here
+            image_model="base",
+            audio_model="base",
+            video_model="base",
+        ),
+    )
+    for role in ("image", "audio", "video"):
+        assert registry.for_role(role) is registry.for_role("reasoning")
+    assert registry.for_role("image").supports_vision is True
+
+
 def test_unknown_role_falls_back_to_reasoning() -> None:
     registry = ProviderRegistry.from_config(_settings(anthropic_api_key="k"), LLMConfig())
     assert registry.for_role("nonexistent-role") is registry.for_role("reasoning")

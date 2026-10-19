@@ -58,6 +58,7 @@ from ..memory.entities import Sender
 from ..memory.events import Event, EventStore
 from ..memory.salience import Salience
 from ..memory.vectors import MemoryHit, VectorMemory
+from ..restart import pending as restart_pending
 from ..routines import Routines, trigger_matches
 from ..scheduler.jobs import ScheduledAction, Scheduler
 from ..secret_env import EnvResolver
@@ -632,6 +633,14 @@ class AgentLoop:
             drained.append(self._queue.get_nowait())
         messages: list[InboundMessage] = []
         for message in drained:
+            log.info(
+                "drained inbound: surface=%s chat=%s message=%s text_chars=%d attachments=%d",
+                message.surface,
+                message.chat_ref,
+                message.message_id or "?",
+                len(message.text),
+                len(message.attachments),
+            )
             # the deterministic vocabulary answers here, before anything is
             # ingested or any model is woken: a /verify badge and a why?
             # replay cost no tokens and store no memory — they are reads,
@@ -812,6 +821,11 @@ class AgentLoop:
             self._apps_walk = None
             await self._surfaces.send_to_user(await self._pause_resume_command(first))
             return True
+        if text.lower() == "/status":
+            self._wizard = None
+            self._apps_walk = None
+            await self._surfaces.send_to_user(await self._status_command())
+            return True
         if text.lower() != "/verify":
             return False
         try:
@@ -835,6 +849,48 @@ class AgentLoop:
         # quiet hours
         await self._surfaces.send_to_user(text)
         return True
+
+    async def _status_command(self) -> str:
+        """The plain state of the senses and the queues — resolved models,
+        not raw config knobs, so a "what can you actually see?" question is
+        answered from the truth the running process serves with."""
+        lines: list[str] = []
+
+        def resolved(role: str, doing: str) -> str:
+            provider = self._providers.for_role(role) if self._providers else None
+            if provider is None:
+                return f"{doing}: nothing set"
+            return f"{doing}: {provider.model}"
+
+        lines.append(resolved("reasoning", "main model"))
+        lines.append(resolved("image", "reading images"))
+        lines.append(resolved("audio", "listening to audio"))
+        lines.append(resolved("video", "watching video"))
+        if self._config_manager is not None:
+            try:
+                effective = await self._config_manager.effective()
+                overrides = effective.get("overrides") or []
+                if overrides:
+                    lines.append(
+                        "changed from config.yaml: "
+                        + ", ".join(str(entry.get("path")) for entry in overrides)
+                    )
+                else:
+                    lines.append("nothing changed from config.yaml")
+            except Exception:
+                log.exception("/status could not read the settings ledger")
+        if self._approvals is not None:
+            pending_rows = await self._approvals.list_pending()
+            lines.append(
+                f"{len(pending_rows)} approval(s) waiting for you"
+                if pending_rows
+                else "no approvals waiting"
+            )
+        depth = self._queue.qsize()
+        lines.append(f"{depth} message(s) queued" if depth else "nothing queued")
+        if restart_pending():
+            lines.append("a restart is coming to load saved settings — back in a few seconds")
+        return "Right now:\n" + "\n".join(f"- {line}" for line in lines)
 
     async def _config_command(self, text: str) -> bool:
         """The /config command, deterministic end to end: no ingest, no
@@ -1425,6 +1481,11 @@ class AgentLoop:
 
     async def _system_prompt(self) -> str:
         base = SYSTEM_PROMPT.format(owner="the user", apps=self._connected_apps())
+        if isinstance(self._attachments, AttachmentProcessor):
+            # the resolved senses ride every prompt — the model answers
+            # "can you see this?" from the truth, never from raw config
+            # values or stale history
+            base = f"{base}\n\n{self._attachments.capabilities_note()}"
         if self._workspace is not None:
             block = self._workspace.context_block()
             if block:
@@ -1780,7 +1841,12 @@ class AgentLoop:
             who = note.payload.get("handle") or "someone"
             lines.append(f"- note on {who}: {note.payload.get('note', '')}")
         if ctx.pending_approvals:
-            lines.append(f"- {len(ctx.pending_approvals)} approval(s) still waiting for the user")
+            lines.append(
+                f"- {len(ctx.pending_approvals)} approval(s) already presented to "
+                "the user with one-tap buttons — do not ask, remind, or bring "
+                "them up again; they run (or quietly don't) the moment the "
+                "user decides"
+            )
         if ctx.today_memorable:
             lines.append(f"- {ctx.today_memorable} memorable event(s) so far today")
         return "\n".join(lines)
@@ -1989,6 +2055,23 @@ class AgentLoop:
                     self._note_call(trace, call, result, ruling=ruling)
                     return result
 
+        # the same call already parked and still waiting: one request means
+        # one question in front of the user — a second row for the same
+        # ask is how one approved send later becomes two
+        existing = await self._approvals.find_pending(call.name, call.arguments)
+        if existing is not None:
+            result = ToolResult(
+                tool_call_id=call.id,
+                name=call.name,
+                content=(
+                    f"already waiting for the user (#{existing.id}) — the same "
+                    "request is in front of them with one-tap buttons. Do not "
+                    "propose it again."
+                ),
+            )
+            self._note_call(trace, call, result, ruling=ruling, approval_id=existing.id)
+            return result
+
         # REQUIRE_APPROVAL: park it, ask, and let the turn go on
         approval = await self._approvals.create(
             tool_name=call.name,
@@ -2034,6 +2117,7 @@ class AgentLoop:
             await self._surfaces.send_to_user(
                 describe_dismissed(approval.tool_name, approval.params)
             )
+            log.info("approval %s denied — nothing ran", approval.id)
             await self._remember_outcome(approval, "action_denied", "denied by the user")
             return
         trace: dict[str, Any] = {
@@ -2074,6 +2158,7 @@ class AgentLoop:
             )
         else:
             await self._approvals.mark_executed(approval.id)
+            log.info("approval %s executed", approval.id)
             trace["result"] = result
             trace["is_error"] = False
             # plain words only — the exact result stays in the decision

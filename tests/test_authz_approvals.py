@@ -97,6 +97,28 @@ async def test_list_pending_returns_only_pending(db) -> None:
 
 
 @pytest.mark.integration
+async def test_find_pending_matches_the_exact_call_once(db) -> None:
+    # the park path's once-per-request guard: the same tool and params find
+    # their waiting row; a decided row, an expired one, and a different
+    # params run all miss
+    approvals = await _make_approvals(db)
+    stale = await approvals.create(tool_name="t__mail", params={"to": "a@b.c"})
+    await approvals.create(tool_name="t__mail", params={"to": "x@y.z"})
+    decided = await approvals.create(tool_name="t__mail", params={"to": "q@r.s"})
+    await approvals.decide(decided.id, APPROVED)
+    await db.execute(
+        "UPDATE pending_approvals SET expires_at = now() - interval '1 hour' WHERE id = $1",
+        stale.id,
+    )
+
+    hit = await approvals.find_pending("t__mail", {"to": "x@y.z"})
+    assert hit is not None and hit.tool_name == "t__mail"
+    assert await approvals.find_pending("t__mail", {"to": "a@b.c"}) is None  # expired
+    assert await approvals.find_pending("t__mail", {"to": "q@r.s"}) is None  # decided
+    assert await approvals.find_pending("t__other", {"to": "x@y.z"}) is None  # other tool
+
+
+@pytest.mark.integration
 async def test_expire_overdue_flips_and_audits(db) -> None:
     approvals = await _make_approvals(db, ttl_hours=0.0)  # expires immediately
     stale = await approvals.create(tool_name="t__stale", params={"x": 1})

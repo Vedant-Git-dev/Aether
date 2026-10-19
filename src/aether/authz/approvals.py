@@ -151,6 +151,7 @@ class Approvals:
             params=params,
             outcome=f"{decision} by {decided_by}",
         )
+        log.info("approval %s decided %s by %s", approval_id, decision, decided_by)
         return Approval(
             id=approval_id,
             tool_name=row["tool_name"],
@@ -230,6 +231,14 @@ class Approvals:
         if row is None:
             return None
         return self._to_approval(row)
+
+    async def find_pending(self, tool_name: str, params: dict[str, Any]) -> Approval | None:
+        """The still-pending approval for this exact call, if one exists —
+        the park path asks the user once per request, never twice."""
+        for approval in await self.list_pending():
+            if approval.tool_name == tool_name and approval.params == params:
+                return approval
+        return None
 
     async def list_pending(self) -> list[Approval]:
         rows = await self._pool.fetch(

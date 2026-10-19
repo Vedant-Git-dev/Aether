@@ -66,7 +66,9 @@ class InboundMessage:
     of the message it's about.
 
     `attachments` are the files the message carried, bytes already
-    downloaded by the connector.
+    downloaded by the connector. `message_id` is the platform's own id for
+    this message, when it gives one — structured logs correlate a turn
+    with the exact inbound that started it.
     """
 
     surface: str  # "telegram" | "discord" | "slack" | "web"
@@ -76,6 +78,7 @@ class InboundMessage:
     reply_to_id: str = ""  # platform id of the message this one answers, if any
     reply_to_text: str = ""  # its text, when the platform hands it over
     attachments: tuple[Attachment, ...] = ()
+    message_id: str = ""  # this message's own platform id, when there is one
 
 
 InboundHandler = Callable[[InboundMessage], Awaitable[None]]
