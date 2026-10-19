@@ -24,8 +24,8 @@ result, so nothing is ever run twice by a well-meaning retry.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import re
 import time
 from collections.abc import AsyncGenerator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -35,7 +35,7 @@ import modal
 from modal.exception import Error as ModalError
 from modal.exception import ExecTimeoutError, SandboxTimeoutError
 
-from .base import JobResult, JobSpec, KeyResolver, WorkbenchError
+from .base import JobResult, JobSpec, KeyResolver, WorkbenchError, clip, validate_names
 
 log = logging.getLogger("aether.workbench.modal")
 
@@ -50,9 +50,6 @@ _LIFETIME_SLACK = 120
 # one artifact may be at most this big — a captions file is a few KB; a
 # job trying to drag a whole dataset back is skipped, not crashed on
 _ARTIFACT_LIMIT = 20 * 1024 * 1024
-# a flat file name — no paths, no shell metacharacters, nothing that
-# could climb out of the job's directory
-_SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 class ModalApi(Protocol):
@@ -82,26 +79,6 @@ class _LiveModalApi:
         return await modal.Sandbox.create.aio(
             app=app, timeout=timeout, workdir=_WORKDIR, client=client
         )
-
-
-def _validate(spec: JobSpec) -> None:
-    """Names a spec may carry: flat, plain, and boring. The script name
-    reaches an argument vector, so nothing here could inject anyway —
-    but a boring name is still required, so a spec can't smuggle a path
-    or a flag into the job's world."""
-    if not _SAFE_NAME.fullmatch(spec.script_name):
-        raise WorkbenchError(
-            f"the job's script name ({spec.script_name!r}) isn't a plain file name — not run."
-        )
-    if spec.script_name not in spec.files:
-        raise WorkbenchError("the job's script wasn't among its files — not run.")
-    for name in spec.files:
-        if not _SAFE_NAME.fullmatch(name):
-            raise WorkbenchError(f"a job file ({name!r}) isn't a plain file name — not run.")
-
-
-def _clip(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[:limit] + "…"
 
 
 class ModalWorkbench:
@@ -135,7 +112,7 @@ class ModalWorkbench:
             raise WorkbenchError(
                 "the sandbox key pair isn't set — both halves can be pasted on the settings page."
             )
-        _validate(spec)
+        validate_names(spec)
         started = time.monotonic()
         sandbox: Any = None
         try:
@@ -154,8 +131,12 @@ class ModalWorkbench:
                             f"the cloud sandbox didn't come up — {type(exc).__name__}."
                         ) from exc
                     try:
-                        for name, content in spec.files.items():
-                            await sandbox.filesystem.write_text.aio(content, f"{_WORKDIR}/{name}")
+                        await asyncio.gather(
+                            *(
+                                sandbox.filesystem.write_text.aio(content, f"{_WORKDIR}/{name}")
+                                for name, content in spec.files.items()
+                            )
+                        )
                         proc = await sandbox.exec.aio(
                             "python",
                             spec.script_name,
@@ -184,8 +165,8 @@ class ModalWorkbench:
                         ) from exc
                     return JobResult(
                         exit_ok=code == 0,
-                        stdout=_clip(stdout, spec.limits.max_output_bytes),
-                        stderr=_clip(stderr, spec.limits.max_output_bytes),
+                        stdout=clip(stdout, spec.limits.max_output_bytes),
+                        stderr=clip(stderr, spec.limits.max_output_bytes),
                         artifacts=artifacts,
                         duration=time.monotonic() - started,
                         provider=self.name,
@@ -213,15 +194,17 @@ class ModalWorkbench:
             entries = await sandbox.filesystem.list_files.aio(f"{_WORKDIR}/{_ARTIFACTS}")
         except Exception:
             return out  # no artifacts directory — nothing to collect
-        for entry in entries:
-            if not entry.is_file():
-                continue
-            try:
-                data = await sandbox.filesystem.read_bytes.aio(
-                    f"{_WORKDIR}/{_ARTIFACTS}/{entry.name}"
-                )
-            except Exception:
-                log.debug("an artifact couldn't be read back", exc_info=True)
+        files = [entry for entry in entries if entry.is_file()]
+        reads = await asyncio.gather(
+            *(
+                sandbox.filesystem.read_bytes.aio(f"{_WORKDIR}/{_ARTIFACTS}/{entry.name}")
+                for entry in files
+            ),
+            return_exceptions=True,
+        )
+        for entry, data in zip(files, reads, strict=True):
+            if isinstance(data, BaseException):
+                log.debug("an artifact couldn't be read back", exc_info=data)
                 continue
             if len(data) > _ARTIFACT_LIMIT:
                 log.info("an artifact was over the size limit and wasn't kept")

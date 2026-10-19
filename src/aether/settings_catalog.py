@@ -24,7 +24,7 @@ from typing import Any, Literal, get_args, get_origin
 from pydantic import BaseModel
 
 from .config import AppConfig
-from .config_store import _apply_note
+from .config_store import apply_note
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,7 @@ class FieldSpec:
     path: str  # the ConfigManager path — also the field's identity everywhere
     label: str  # how it reads on the page
     hint: str  # one plain sentence: what the setting does
-    note: str = ""  # when it bites, when _apply_note has nothing
+    note: str = ""  # when it bites, when apply_note has nothing
     none_ok: bool = False  # text fields where empty means "not set"
 
 
@@ -261,6 +261,13 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
     ),
 )
 
+# every path the page can write — a static set, so checking whether a path
+# is one of them never needs to rebuild the live feed (that's an effective()
+# read plus settings_feed()'s own walk over every group) just to answer yes/no
+ALL_FIELD_PATHS: frozenset[str] = frozenset(
+    field.path for group in SETTINGS_GROUPS for field in group.fields
+)
+
 
 @dataclass(frozen=True)
 class CredentialSpec:
@@ -400,7 +407,7 @@ def _field_type(model: type[BaseModel], field: str) -> tuple[str, list[str]]:
 def _field_feed(config: AppConfig, spec: FieldSpec, changed: set[str]) -> dict:
     model, field, value = _walk(config, spec.path)
     kind, choices = _field_type(model, field)
-    note = spec.note or _apply_note(spec.path).removeprefix(" — ")
+    note = spec.note or apply_note(spec.path).removeprefix(" — ")
     return {
         "path": spec.path,
         "label": spec.label,

@@ -38,6 +38,7 @@ from typing import Any, Protocol
 
 from ..authz.approvals import DENIED
 from ..config import AppConfig
+from ..connectors.base import TASK_VERDICTS
 from ..counters import today
 from ..llm.types import ToolCall
 from .budget import Budget
@@ -238,7 +239,7 @@ class ProactiveWorker:
             reverse=True,
         )
         for opp in found:
-            if await self._budget.room(day) - ran <= 0:
+            if await self._budget.room(day) <= 0:
                 break
             task = await self._store.claim(
                 skill=opp.skill,
@@ -254,18 +255,21 @@ class ProactiveWorker:
         return ran
 
     async def _detect(self) -> list[Any]:
-        """Ask every enabled skill what it found. A skill that crashes or
-        names itself out of the configured list is skipped — one broken
-        skill can never stop the others."""
-        enabled = self._config.proactive.skills
+        """Ask every enabled skill what it found, concurrently — one
+        skill's network/DB calls never wait on another's. A skill that
+        crashes or names itself out of the configured list is skipped —
+        one broken skill can never stop the others."""
+        enabled = [s for s in self._skills if s.name in self._config.proactive.skills]
+        results = await asyncio.gather(
+            *(s.detect(self._workspace, self._events, self._read_executor) for s in enabled),
+            return_exceptions=True,
+        )
         found: list[Any] = []
-        for skill in self._skills:
-            if skill.name not in enabled:
+        for skill, result in zip(enabled, results, strict=True):
+            if isinstance(result, BaseException):
+                log.exception("proactive skill %s detect failed", skill.name, exc_info=result)
                 continue
-            try:
-                found.extend(await skill.detect(self._workspace, self._events, self._read_executor))
-            except Exception:
-                log.exception("proactive skill %s detect failed", skill.name)
+            found.extend(result)
         return found
 
     async def _execute_task(self, task: ProactiveTask, day: str) -> None:
@@ -395,8 +399,10 @@ class ProactiveWorker:
 
     # -- the one-tap verdicts on a result ----------------------------------------
 
-    # the button verbs, mapped onto the feedback the row stores
-    _VERDICTS = {"approve": "approved", "revise": "revised", "discard": "discarded"}
+    # the button verbs, mapped onto the feedback the row stores — keys
+    # always match TASK_VERDICTS, the one source every surface's buttons
+    # share, so an added or renamed verb can't desync from here
+    _VERDICTS = dict(zip(TASK_VERDICTS, ("approved", "revised", "discarded"), strict=True))
 
     async def decide_task(self, task_id: int, decision: str) -> str | None:
         """The one-tap verdict on a finished task's result. Returns None

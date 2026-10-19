@@ -14,6 +14,7 @@ import httpx
 from ..authz.approvals import APPROVED, DENIED
 from .attachments import MAX_ATTACHMENT_BYTES, reported_size_exceeds_cap
 from .base import (
+    TASK_VERDICTS,
     ApprovalDecider,
     Attachment,
     DecisionCallback,
@@ -131,7 +132,7 @@ def result_blocks(task_id: int, text: str, options: Sequence[str] = ()) -> list[
                     "value": f"{verb}:{task_id}",
                     "style": styles[verb],
                 }
-                for verb in ("approve", "revise", "discard")
+                for verb in TASK_VERDICTS
                 if verb in options
             ],
         },
@@ -281,7 +282,7 @@ class SlackConnector(MessagingConnector):
         except (KeyError, IndexError, TypeError, ValueError):
             log.warning("odd slack task action payload: %r", body)
             return
-        if verb not in ("approve", "revise", "discard"):
+        if verb not in TASK_VERDICTS:
             log.warning("odd slack task verdict: %r", verb)
             return
         note = await self._decide_task(task_id, verb)

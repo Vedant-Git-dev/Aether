@@ -41,7 +41,7 @@ from aether.config import (
     Settings,
     TransportConfig,
 )
-from aether.config_store import _apply_note
+from aether.config_store import apply_note
 from aether.connectors.base import InboundMessage
 from aether.memory.entities import Entity, EntityNote
 from aether.memory.events import Event
@@ -800,7 +800,7 @@ class FakeConfigManager:
                 self._baseline[path] = getattr(holder, field)
             setattr(holder, field, checked)
             self._changed[path] = checked
-            return True, f"{path} set to {_plain(checked)}{_apply_note(path)}"
+            return True, f"{path} set to {_plain(checked)}{apply_note(path)}"
 
         # the contacts vocabulary the panel writes: the default's mode and
         # list, plus one app's own contacts.<app>.mode / contacts.<app>.allowlist

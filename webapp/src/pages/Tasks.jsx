@@ -9,6 +9,7 @@ import { Button, Card, SectionLabel } from "../components/ui.jsx";
 import EmptyState, { NoToken } from "../components/EmptyState.jsx";
 import { useToast } from "../components/Toasts.jsx";
 import { api, hasToken } from "../lib/api.js";
+import { useBusyAction } from "../lib/busy.js";
 import { fmtTime } from "../lib/format.js";
 import { describeTool, describeSkill, describeFeedback, plainText } from "../lib/describe.js";
 import { statusColor } from "../lib/status.js";
@@ -29,7 +30,7 @@ export default function TasksPage() {
 
   const [proactive, setProactive] = useState(null);
   const [proactiveError, setProactiveError] = useState("");
-  const [busy, setBusy] = useState({}); // task id -> the verdict in flight
+  const [busy, runBusy] = useBusyAction(); // task id -> the verdict in flight
   const [notes, setNotes] = useState({}); // task id -> the decide path's plain note
 
   useEffect(() => {
@@ -49,26 +50,25 @@ export default function TasksPage() {
 
   const visible = (tasks || []).filter((t) => filter === "all" || t.status === filter);
 
-  const decide = async (id, verdict) => {
-    setBusy((b) => ({ ...b, [id]: verdict }));
-    try {
-      const d = await api(`/api/proactive/tasks/${id}/decide`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ verdict }),
-      });
-      // a null note means the carried-out action's own words are the
-      // acknowledgment — the refetched row's plain verdict label says it
-      setNotes((n) => ({ ...n, [id]: d.note || "" }));
-    } catch (err) {
-      setNotes((n) => ({ ...n, [id]: err.message }));
-    } finally {
-      setBusy((b) => ({ ...b, [id]: "" }));
-      api("/api/proactive/tasks")
-        .then((d) => setProactive(d.tasks))
-        .catch(() => {}); // the row's own state still tells the truth
-    }
-  };
+  const decide = (id, verdict) =>
+    runBusy(id, verdict, async () => {
+      try {
+        const d = await api(`/api/proactive/tasks/${id}/decide`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ verdict }),
+        });
+        // a null note means the carried-out action's own words are the
+        // acknowledgment — the refetched row's plain verdict label says it
+        setNotes((n) => ({ ...n, [id]: d.note || "" }));
+      } catch (err) {
+        setNotes((n) => ({ ...n, [id]: err.message }));
+      } finally {
+        api("/api/proactive/tasks")
+          .then((d) => setProactive(d.tasks))
+          .catch(() => {}); // the row's own state still tells the truth
+      }
+    });
 
   return (
     <div>

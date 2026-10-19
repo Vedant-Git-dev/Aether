@@ -72,6 +72,16 @@ DecisionCallback = Callable[[int, str], Awaitable[None]]
 # the proactive worker's decide_task owns the freshness
 TaskDecisionCallback = Callable[[int, str], Awaitable[str | None]]
 
+# the one-tap verdicts a finished task's result offers, and their display
+# labels — one source so every surface's buttons and the worker that
+# interprets their taps can never desync over a renamed or added verb
+TASK_VERDICTS: tuple[str, ...] = ("approve", "revise", "discard")
+TASK_VERDICT_LABELS: dict[str, str] = {
+    "approve": "Approve",
+    "revise": "Revise",
+    "discard": "Discard",
+}
+
 
 class ApprovalDecider(Protocol):
     """What messaging connectors need from the approvals store."""

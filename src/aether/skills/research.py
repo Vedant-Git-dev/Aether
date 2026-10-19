@@ -17,7 +17,7 @@ from typing import Any
 from ..llm.types import ToolCall
 from ..proactive.store import Opportunity, ProactiveTask
 from ..proactive.worker import RunOutcome
-from ..web import _NOT_CONNECTED
+from ..web import NOT_CONNECTED
 from ..workbench.base import ORDINARY
 from .base import EventReader, Executor, ProfileSource, Runner
 
@@ -90,7 +90,7 @@ class ResearchSkill:
                 plain="search the web",
             )
         )
-        if results == _NOT_CONNECTED or results.startswith(_NOT_RUN):
+        if results == NOT_CONNECTED or results.startswith(_NOT_RUN):
             # the look never happened — the row says so, honestly
             raise RuntimeError(results)
         if results.startswith("No results"):
