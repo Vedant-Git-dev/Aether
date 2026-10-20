@@ -137,6 +137,11 @@ class ModalWorkbench:
     def name(self) -> str:
         return "modal"
 
+    @property
+    def has_ffmpeg(self) -> bool:
+        # baked into the sandbox image at build time — no runtime install
+        return True
+
     async def available(self) -> bool:
         return bool(
             await self._resolver.resolve(_TOKEN_ID) and await self._resolver.resolve(_TOKEN_SECRET)

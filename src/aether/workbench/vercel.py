@@ -129,6 +129,13 @@ class VercelWorkbench:
     def name(self) -> str:
         return "vercel"
 
+    @property
+    def has_ffmpeg(self) -> bool:
+        # no runtime install without sandbox egress we restrict, and no
+        # prebuilt snapshot carries it — the editor refuses up front
+        # rather than discovering the absence mid-job
+        return False
+
     async def available(self) -> bool:
         return bool(
             await self._resolver.resolve(_TOKEN)

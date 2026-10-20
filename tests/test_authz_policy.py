@@ -35,6 +35,7 @@ def test_internal_tools_are_allowed() -> None:
         "schedule_action",
         "request_screen_capture",
         "look_at_media",
+        "edit_video",
         "get_pending_approvals",
         "send_chat_message",
         "create_routine",

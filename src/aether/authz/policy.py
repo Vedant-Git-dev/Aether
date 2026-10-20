@@ -61,12 +61,15 @@ class Ruling:
 # routine tools because they manage Aether's own stored instructions
 # (delete_routine removes a stored trigger, not anything external), and the
 # workspace tools because they only read/write Aether's own Markdown
-# workspace on disk — checked before the risky verbs, which is what lets
-# "delete_routine" and "workspace_remove" (if ever added) win over the bare
-# "delete"/"remove".
+# workspace on disk. edit_video writes only a new row in Aether's own
+# encrypted store from a sandbox job under the media budget — the file
+# goes nowhere until a separate act sends it, and that send parks like
+# any outbound message. Checked before the risky verbs, which is what
+# lets "delete_routine" and "workspace_remove" (if ever added) win over
+# the bare "delete"/"remove".
 _INTERNAL = re.compile(
     r"^(?!.*__)(memory_\w+|note_entity|schedule_action|request_screen_capture"
-    r"|look_at_media|get_pending_approvals|send_chat_message|create_routine|list_routines"
+    r"|look_at_media|edit_video|get_pending_approvals|send_chat_message|create_routine|list_routines"
     r"|set_routine_enabled|delete_routine|explain_decision|verify_integrity"
     r"|get_config|workspace_\w+)$"
 )

@@ -202,6 +202,12 @@ def bench(
 # -- the gate and the claim ------------------------------------------------------
 
 
+def test_ffmpeg_is_baked_into_the_image() -> None:
+    # the capability the editor asks before any bytes travel
+    wb = ModalWorkbench(resolver=FakeResolver("id", "secret"))
+    assert wb.has_ffmpeg is True
+
+
 async def test_inert_without_the_key_pair() -> None:
     for resolver in (
         FakeResolver(None, None),

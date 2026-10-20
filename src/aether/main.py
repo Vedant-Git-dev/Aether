@@ -35,6 +35,7 @@ from .llm.base import ProviderError
 from .llm.embeddings import GeminiEmbedder
 from .llm.registry import ProviderRegistry
 from .logging_setup import configure_logging
+from .media.editing import MediaEditor
 from .media.frames import FrameWatcher
 from .media.store import MediaStore
 from .media.voice import GroqTranscriber
@@ -255,6 +256,19 @@ def create_app(
         media_store = MediaStore(pool, cipher, config.media)
         app.state.media_store = media_store
 
+        # whether any sandbox on the ladder could take an edit job —
+        # asked before any bytes travel, because editing has no
+        # degraded fallback to fall back to
+        async def _ffmpeg_capable() -> bool:
+            for sandbox in ladder:
+                if await sandbox.available() and sandbox.has_ffmpeg:
+                    return True
+            return False
+
+        # the edit job's runner — same ladder, same media job budget
+        editor = MediaEditor(_run_job, counters, config.media, media_store, _ffmpeg_capable)
+        app.state.media_editor = editor
+
         # --- llm providers (best effort: the agent boots without keys) ----
         try:
             providers = ProviderRegistry.from_config(settings, config.llm)
@@ -389,6 +403,7 @@ def create_app(
             web=web_tools,
             media=media_store,
             providers=providers,
+            editor=editor,
         )
         log.info("native tools registered: %d", native)
 

@@ -26,6 +26,8 @@ from aether.agent.tools import FAILURE_REPLY, plain_replay, register_native_tool
 from aether.authz.audit import ChainVerification
 from aether.connectors.registry import ToolRegistry
 from aether.llm.types import Turn
+from aether.media.editing import EditOutcome
+from aether.media.store import MediaRef
 from aether.memory.events import Event
 from aether.memory.vectors import MemoryHit
 from aether.workspace import Workspace
@@ -44,6 +46,7 @@ class NativeKit:
         web: object | None = None,
         media: object | None = None,
         providers: object | None = None,
+        editor: object | None = None,
     ) -> None:
         self.registry = ToolRegistry()
         self.events = events or FakeEventStore()
@@ -72,6 +75,7 @@ class NativeKit:
             web=web,  # and the hardened fetch + search pair
             media=media,  # and the stored-media look-again tool
             providers=providers,
+            editor=editor,  # and the fixed-op video edit tool
         )
 
     async def run(self, name: str, params: dict) -> str:
@@ -398,6 +402,70 @@ async def test_look_at_media_rejects_a_missing_or_bad_id() -> None:
     kit = NativeKit(media=store, providers=FakeRegistry(FakeProvider([])))
     assert "needs media_id" in await kit.run("look_at_media", {})
     assert "needs media_id" in await kit.run("look_at_media", {"media_id": "one"})
+
+
+# ---------------------------------------------------------------------------
+# edit_video — the fixed-op ffmpeg job, stored under a new media id
+# ---------------------------------------------------------------------------
+
+
+class FakeEditor:
+    """The MediaEditor double: records the ask, hands back a scripted
+    outcome — the tool's own validation and wording is what's under
+    test here, not the job's."""
+
+    def __init__(self, outcome: EditOutcome | None = None) -> None:
+        self.calls: list[tuple[int, str, dict]] = []
+        self.outcome = outcome
+
+    async def edit(self, media_id: int, operation: str, params: dict) -> EditOutcome:
+        self.calls.append((media_id, operation, dict(params)))
+        return self.outcome or EditOutcome(reason="no outcome scripted")
+
+
+async def test_edit_video_registers_only_when_the_editor_is_wired() -> None:
+    """No editor, no dead tool spec — same shape as every other
+    feature-gated native tool."""
+
+    def names(kit: NativeKit) -> set[str]:
+        return {s.name for s in kit.registry.specs()}
+
+    assert "edit_video" not in names(NativeKit())
+    assert "edit_video" in names(NativeKit(editor=FakeEditor()))
+
+
+async def test_edit_video_names_the_new_media_id() -> None:
+    editor = FakeEditor(
+        outcome=EditOutcome(
+            media_ref=MediaRef(
+                media_id=9, media_type="video/mp4", filename="clip-edited.mp4", size=120
+            )
+        )
+    )
+    kit = NativeKit(editor=editor)
+
+    out = await kit.run("edit_video", {"media_id": 3, "operation": "mute"})
+
+    assert out == "The edit is done — the new copy is stored as media id 9."
+    assert editor.calls == [(3, "mute", {})]
+
+
+async def test_edit_video_passes_only_the_operation_its_own_params() -> None:
+    editor = FakeEditor(outcome=EditOutcome(reason="trim needs start and end in seconds"))
+    kit = NativeKit(editor=editor)
+
+    out = await kit.run("edit_video", {"media_id": 3, "operation": "trim", "start": 1, "end": 5})
+
+    assert out == "trim needs start and end in seconds"
+    assert editor.calls == [(3, "trim", {"start": 1, "end": 5})]
+
+
+async def test_edit_video_needs_an_id_and_an_operation() -> None:
+    editor = FakeEditor()
+    kit = NativeKit(editor=editor)
+    assert "needs media_id" in await kit.run("edit_video", {"operation": "mute"})
+    assert "needs an operation" in await kit.run("edit_video", {"media_id": 3})
+    assert editor.calls == []  # nothing reached the editor
 
 
 # ---------------------------------------------------------------------------

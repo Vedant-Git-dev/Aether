@@ -340,6 +340,22 @@ async def test_look_at_media_passes_the_planning_gate() -> None:
     assert await guarded(look) == "a ginger cat on a windowsill"
 
 
+async def test_edit_video_is_refused_in_planning_and_allowed_in_run() -> None:
+    """edit_video writes a new stored blob, so planning may not touch it
+    — the gate decides by name, and it is deliberately absent from
+    READ_TOOLS."""
+    from aether.proactive.worker import read_only
+
+    async def full(call: ToolCall) -> str:
+        return "The edit is done — the new copy is stored as media id 7."
+
+    guarded = read_only(full)  # type: ignore[arg-type] — the fake speaks the same shape
+    edit = ToolCall(id="e", name="edit_video", arguments={"media_id": 3, "operation": "mute"})
+    assert (await guarded(edit)).startswith("not run — planning only looks things up")
+    # the run phase's executor is the full one — the policy gates, not the phase
+    assert (await full(edit)).startswith("The edit is done")
+
+
 # ---------------------------------------------------------------------------
 # failures, refusals, and the skill leaving the list mid-flight
 # ---------------------------------------------------------------------------

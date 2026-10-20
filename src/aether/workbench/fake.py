@@ -29,8 +29,13 @@ class FakeWorkbench:
         accept: bool | Callable[[JobSpec], bool] = True,
         result: JobResult | None = None,
         handler: Callable[[JobSpec], Awaitable[JobResult]] | None = None,
+        has_ffmpeg: bool = True,
     ) -> None:
         self.name = name
+        # a plain attribute, satisfying the protocol's property member the
+        # same way `name` does — tests flip it to exercise the editor's
+        # up-front refusal
+        self.has_ffmpeg = has_ffmpeg
         self._available = available
         self._accept = accept
         self._result = result

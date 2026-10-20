@@ -118,6 +118,13 @@ class Workbench(Protocol):
     @property
     def name(self) -> str: ...
 
+    # whether ffmpeg is baked into this adapter's sandbox image. Editing
+    # has no degraded fallback (understanding degrades to a text
+    # description; an edit either happens or it doesn't), so the editor
+    # asks this up front and refuses before any bytes travel.
+    @property
+    def has_ffmpeg(self) -> bool: ...
+
     async def available(self) -> bool: ...
 
     async def accepts(self, spec: JobSpec) -> bool: ...

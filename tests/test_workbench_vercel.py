@@ -175,6 +175,14 @@ def full_resolver() -> FakeResolver:
 # -- the gate and the claim -------------------------------------------------------
 
 
+def test_ffmpeg_is_absent_from_the_image() -> None:
+    # the capability the editor asks before any bytes travel — no
+    # runtime install without egress we restrict, so the honest answer
+    # is no, and editing refuses up front
+    wb = VercelWorkbench(resolver=full_resolver())
+    assert wb.has_ffmpeg is False
+
+
 async def test_inert_without_the_full_key_set() -> None:
     for resolver in (
         FakeResolver(None, None, None),

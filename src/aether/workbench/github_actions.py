@@ -161,6 +161,12 @@ class GitHubActionsWorkbench:
     def name(self) -> str:
         return "github_actions"
 
+    @property
+    def has_ffmpeg(self) -> bool:
+        # the hosted ubuntu runners ship ffmpeg in their image — no
+        # workflow step installs it, and none is needed
+        return True
+
     async def aclose(self) -> None:
         """Close the HTTP client if this adapter built its own."""
         if self._owns_client:

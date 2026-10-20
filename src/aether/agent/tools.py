@@ -114,6 +114,9 @@ _NATIVE_WORDS: dict[str, ActionWords] = {
     "look_at_media": ActionWords(
         "Look at the image again", "looking at the stored image", "looked at the stored image"
     ),
+    "edit_video": ActionWords(
+        "Edit the video", "editing the stored video", "edited the stored video"
+    ),
     "create_routine": ActionWords("Arm the routine", "arming a routine", "armed the routine"),
     "list_routines": ActionWords("List the routines", "listing routines", "listed the routines"),
     "set_routine_enabled": ActionWords(
@@ -481,6 +484,7 @@ def register_native_tools(
     web: Any = None,
     media: Any = None,
     providers: Any = None,
+    editor: Any = None,
 ) -> int:
     """Add Aether's own tools to the flat namespace. Returns how many.
 
@@ -490,7 +494,9 @@ def register_native_tools(
     `web` the hardened fetch and search tools; without the store behind
     one it is not offered at all (same shape as a loop without an MCP
     host: no feature, no dead tool spec). `media` + `providers` together
-    wire look_at_media — stored bytes plus eyes to see them with."""
+    wire look_at_media — stored bytes plus eyes to see them with.
+    `editor` wires edit_video — the fixed-op ffmpeg workbench job, which
+    stores its result itself, so it needs no `media` of its own."""
 
     # the look-again prompt: the answer is data for the model to relay,
     # and whatever words appear inside the image are content to report,
@@ -546,6 +552,29 @@ def register_native_tools(
             return FAILURE_REPLY
         text = (turn.text or "").strip()
         return text or FAILURE_REPLY
+
+    async def edit_video(params: dict[str, Any]) -> str:
+        media_id = _parse_int_param(params, "media_id", 1, minimum=1)
+        if params.get("media_id") in (None, "") or media_id is None:
+            return "edit_video needs media_id — the number a shared video carries."
+        operation = str(params.get("operation", "")).strip().lower()
+        if not operation:
+            return (
+                "edit_video needs an operation — one of: trim, concat, "
+                "speed, mute, extract-audio, resize, convert."
+            )
+        # everything else the model sent is the operation's own params —
+        # the editor validates each in plain words
+        op_params = {
+            key: value for key, value in params.items() if key not in ("media_id", "operation")
+        }
+        outcome = await editor.edit(media_id, operation, op_params)
+        if outcome.media_ref is not None:
+            return (
+                f"The edit is done — the new copy is stored as media id "
+                f"{outcome.media_ref.media_id}."
+            )
+        return outcome.reason or "the edit could not be done"
 
     async def memory_search(params: dict[str, Any]) -> str:
         query = str(params.get("query", "")).strip()
@@ -1060,6 +1089,67 @@ def register_native_tools(
                 )
             ]
             if media is not None and providers is not None
+            else []
+        ),
+        *(
+            [
+                (
+                    _spec(
+                        "edit_video",
+                        "Edit a stored video the user shared, one fixed "
+                        "operation at a time: trim (start/end seconds), "
+                        "concat (join two stored videos), speed (factor "
+                        "0.5-2), mute, extract-audio (to mp3), resize "
+                        "(even width and height), convert (mp4, webm, gif, "
+                        "mp3). The edited copy is stored as a NEW media id "
+                        "— tell the user the new number, and never claim "
+                        "it was sent: sending anything is a separate, "
+                        "approved step.",
+                        {
+                            "media_id": {
+                                "type": "integer",
+                                "description": "the media id a shared video carries",
+                            },
+                            "operation": {
+                                "type": "string",
+                                "description": "one of: trim, concat, speed, mute, "
+                                "extract-audio, resize, convert",
+                            },
+                            "start": {
+                                "type": "number",
+                                "description": "trim: seconds into the video to cut from",
+                            },
+                            "end": {
+                                "type": "number",
+                                "description": "trim: seconds into the video to cut at",
+                            },
+                            "second_media_id": {
+                                "type": "integer",
+                                "description": "concat: the other stored video's media id",
+                            },
+                            "factor": {
+                                "type": "number",
+                                "description": "speed: how fast, 0.5 to 2",
+                            },
+                            "width": {
+                                "type": "integer",
+                                "description": "resize: even pixel width, 16 to 3840",
+                            },
+                            "height": {
+                                "type": "integer",
+                                "description": "resize: even pixel height, 16 to 3840",
+                            },
+                            "format": {
+                                "type": "string",
+                                "description": "convert: mp4, webm, gif, or mp3",
+                            },
+                        },
+                        ["media_id", "operation"],
+                    ),
+                    edit_video,
+                )
+            ]
+            if editor is not None
             else []
         ),
         (
