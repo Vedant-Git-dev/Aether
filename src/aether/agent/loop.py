@@ -42,6 +42,7 @@ from ..config_store import ConfigManager
 from ..config_store import actions_word as _actions_word
 from ..connectors.attachments import AttachmentProcessor, attachments_note
 from ..connectors.base import (
+    Attachment,
     ConnectorUnavailableError,
     InboundMessage,
     MessagingConnector,
@@ -212,13 +213,19 @@ class SurfaceFanout:
                 return connector
         return None
 
-    async def send_to_user(self, text: str) -> dict[str, str]:
+    async def send_to_user(
+        self, text: str, *, attachment: Attachment | None = None
+    ) -> dict[str, str]:
         """Fan out to every enabled surface, collecting where the words
         landed: {connector name: platform message id}. Those ids are what
         link a user's later "why?" back to the trace of this send. The hub
         has no id, and a dying surface never takes the loop down — its
-        slot is just missing from the map."""
+        slot is just missing from the map. Media rides to the chat
+        connectors only — the hub and the transcript stay text-only; the
+        attachment is passed only when one is present, so connectors and
+        test doubles that never send files see no new kwarg."""
         refs: dict[str, str] = {}
+        media = {"attachment": attachment} if attachment is not None else {}
         if self.hub is not None:
             try:
                 await self.hub.broadcast(text)
@@ -226,7 +233,7 @@ class SurfaceFanout:
                 log.exception("web chat broadcast failed")
         for connector in self.connectors:
             try:
-                ref = await connector.send_to_user(text)
+                ref = await connector.send_to_user(text, **media)
             except Exception:
                 log.exception("%s send failed — continuing", connector.name)
                 continue
@@ -243,24 +250,38 @@ class SurfaceFanout:
                     log.exception("transcript write failed for %s — continuing", name)
         return refs
 
-    async def present_approval(self, approval_id: int, text: str) -> None:
+    async def present_approval(
+        self, approval_id: int, text: str, *, attachment: Attachment | None = None
+    ) -> None:
         """One plain-language question to every surface — "Send the email
         (to rahul@gmail.com)?" Raw tool names and argument dumps never
-        reach the user; the decision record keeps the exact call."""
+        reach the user; the decision record keeps the exact call. A
+        media-carrying ask shows the media itself, passed only when
+        present."""
+        media = {"attachment": attachment} if attachment is not None else {}
         for connector in self.connectors:
             try:
-                await connector.present_approval(approval_id, text)
+                await connector.present_approval(approval_id, text, **media)
             except Exception:
                 log.exception("%s approval presentation failed", connector.name)
         if not self.connectors and self.hub is None:
             log.warning("approval #%d has no surface to appear on", approval_id)
 
-    async def present_result(self, task_id: int, text: str, options: Sequence[str] = ()) -> None:
+    async def present_result(
+        self,
+        task_id: int,
+        text: str,
+        options: Sequence[str] = (),
+        *,
+        attachment: Attachment | None = None,
+    ) -> None:
         """A finished background task's result, with the one-tap verdicts
         that apply to it. The web chat gets the words like any other
         unprompted note; the chat surfaces get them with the buttons
         attached. The verdicts themselves are decided in the worker, which
-        owns the task row — this fanout only carries them."""
+        owns the task row — this fanout only carries them. Media rides to
+        the chat connectors only, passed only when present."""
+        media = {"attachment": attachment} if attachment is not None else {}
         if self.hub is not None:
             try:
                 await self.hub.broadcast(text)
@@ -268,7 +289,7 @@ class SurfaceFanout:
                 log.exception("web chat broadcast failed")
         for connector in self.connectors:
             try:
-                await connector.present_result(task_id, text, options)
+                await connector.present_result(task_id, text, options, **media)
             except Exception:
                 log.exception("%s result presentation failed", connector.name)
         if not self.connectors and self.hub is None:
@@ -382,6 +403,7 @@ class AgentLoop:
         attachments: AttachmentProcessor | None = None,
         vectors: VectorMemory | None = None,
         mail_filter: MailAllowlist | None = None,
+        media: Any = None,
     ) -> None:
         self._providers = providers
         self._tools = tools
@@ -418,6 +440,10 @@ class AgentLoop:
         # the gmail allowlist, filtering bulk reads the poll path takes
         # straight off the host — bypassing the registry's choke point
         self._mail_filter = mail_filter
+        # the encrypted media store — read-only here: a parked call that
+        # carries a stored media id shows the media itself with the ask,
+        # and a blob that's gone (evicted, purged) degrades to the words
+        self._media = media
         # the guided /config walk in progress, if any — memory only
         self._wizard: ConfigWizard | None = None
         # the guided /apps walk in progress, if any — same rules, memory only
@@ -568,20 +594,30 @@ class AgentLoop:
         loop's own words, so they can never nag around the user's night."""
         return await self._notify(text, urgent=urgent)
 
-    async def present_result(self, task_id: int, text: str, options: Sequence[str] = ()) -> None:
+    async def present_result(
+        self,
+        task_id: int,
+        text: str,
+        options: Sequence[str] = (),
+        *,
+        attachment: Attachment | None = None,
+    ) -> None:
         """A finished background task's result, with its one-tap verdicts
         attached where the surfaces can carry buttons. Rides the same
         interruption budget as every other unprompted word: during quiet
         hours the words are held and batched for the morning (no buttons —
         a verdict tap hours later would hit a world that moved on), and
-        the task stays in the panel for its decision instead."""
+        the task stays in the panel for its decision instead. Media
+        rides only when the words go out — a held result's file is in
+        the store and the panel shows the task."""
         if not text.strip():
             return
         if self._quiet_now():
             self._held.append(text)
             log.info("held for quiet hours: %s", text[:80])
             return
-        await self._surfaces.present_result(task_id, text, options)
+        media = {"attachment": attachment} if attachment is not None else {}
+        await self._surfaces.present_result(task_id, text, options, **media)
 
     # -- the loop ---------------------------------------------------------------
 
@@ -2072,14 +2108,30 @@ class AgentLoop:
             self._note_call(trace, call, result, ruling=ruling, approval_id=existing.id)
             return result
 
-        # REQUIRE_APPROVAL: park it, ask, and let the turn go on
+        # REQUIRE_APPROVAL: park it, ask, and let the turn go on. A call
+        # that carries a stored media id marks the row (the indexed
+        # reference keeps that blob safe from eviction while the question
+        # waits) and shows the media itself with the ask when the bytes
+        # are still there — a gone blob degrades to the words alone
+        media_id = call.arguments.get("media_id") if isinstance(call.arguments, dict) else None
+        if isinstance(media_id, bool) or not isinstance(media_id, int) or media_id < 1:
+            media_id = None
         approval = await self._approvals.create(
             tool_name=call.name,
             params=call.arguments,
             rules_matched=ruling.matched_rule,
             note=ruling.reason,
+            media_id=media_id,
         )
-        await self._surfaces.present_approval(approval.id, describe_ask(call.name, call.arguments))
+        attachment = None
+        if media_id is not None and self._media is not None:
+            record = await self._media.get(media_id)
+            if record is not None:
+                attachment = Attachment.from_record(record)
+        media = {"attachment": attachment} if attachment is not None else {}
+        await self._surfaces.present_approval(
+            approval.id, describe_ask(call.name, call.arguments), **media
+        )
         result = ToolResult(
             tool_call_id=call.id,
             name=call.name,

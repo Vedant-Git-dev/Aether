@@ -28,6 +28,22 @@ class Attachment:
     media_type: str  # best-effort MIME type, "" when the platform doesn't say
     data: bytes
 
+    @classmethod
+    def from_record(cls, record: Any) -> Attachment:
+        """A stored media record as one outbound file. The sniffed type
+        decides the kind and the stored filename the name — the same
+        direction-neutral shape the inbound path builds, so a stored
+        blob can go back out without new plumbing. Duck-typed so the
+        test fakes speak the same shape as MediaRecord."""
+        filename = str(getattr(record, "filename", "") or "") or "file"
+        media_type = str(getattr(record, "media_type", "") or "")
+        return cls(
+            classify_attachment(filename, media_type),
+            filename,
+            media_type,
+            bytes(getattr(record, "data", b"")),
+        )
+
 
 _IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic"})
 _AUDIO_EXTENSIONS = frozenset({".mp3", ".ogg", ".oga", ".opus", ".m4a", ".wav", ".flac", ".aac"})

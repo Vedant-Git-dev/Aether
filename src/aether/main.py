@@ -384,6 +384,7 @@ def create_app(
             attachments=app.state.attachments,
             vectors=vectors,
             mail_filter=mail_filter,
+            media=media_store,
         )
         app.state.agent = agent
         native = register_native_tools(
@@ -439,6 +440,7 @@ def create_app(
             approvals=approvals,
             carry_out=agent.decide,
             present=agent.present_result,
+            media=media_store,
         )
         # the panel's verdict buttons reach the worker's own decide path —
         # the same one the chat surfaces' buttons take

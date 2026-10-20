@@ -55,21 +55,23 @@ class Ruling:
 
 
 # Internal tools read and write Aether's own state only; they never reach an
-# external system under their own power. send_chat_message is included
-# because it talks solely to the owner's own chat surfaces, verify_integrity
-# because it only reads Aether's own audit chain back to the owner, the
-# routine tools because they manage Aether's own stored instructions
-# (delete_routine removes a stored trigger, not anything external), and the
-# workspace tools because they only read/write Aether's own Markdown
-# workspace on disk. edit_video writes only a new row in Aether's own
-# encrypted store from a sandbox job under the media budget — the file
-# goes nowhere until a separate act sends it, and that send parks like
-# any outbound message. Checked before the risky verbs, which is what
-# lets "delete_routine" and "workspace_remove" (if ever added) win over
-# the bare "delete"/"remove".
+# external system under their own power. send_chat_message and share_media
+# are included because they talk solely to the owner's own chat surfaces —
+# sharing a stored file back to the owner is the same trust line as any chat
+# reply, and anything further out (an email, another person) is a different
+# call that parks; verify_integrity because it only reads Aether's own audit
+# chain back to the owner, the routine tools because they manage Aether's
+# own stored instructions (delete_routine removes a stored trigger, not
+# anything external), and the workspace tools because they only read/write
+# Aether's own Markdown workspace on disk. edit_video writes only a new row
+# in Aether's own encrypted store from a sandbox job under the media
+# budget — the file goes nowhere until a separate act sends it. Checked
+# before the risky verbs, which is what lets "delete_routine" and
+# "workspace_remove" (if ever added) win over the bare "delete"/"remove".
 _INTERNAL = re.compile(
     r"^(?!.*__)(memory_\w+|note_entity|schedule_action|request_screen_capture"
-    r"|look_at_media|edit_video|get_pending_approvals|send_chat_message|create_routine|list_routines"
+    r"|look_at_media|share_media|edit_video|get_pending_approvals|send_chat_message"
+    r"|create_routine|list_routines"
     r"|set_routine_enabled|delete_routine|explain_decision|verify_integrity"
     r"|get_config|workspace_\w+)$"
 )

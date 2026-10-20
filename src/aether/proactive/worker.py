@@ -38,6 +38,7 @@ from typing import Any, Protocol
 
 from ..authz.approvals import DENIED
 from ..config import AppConfig
+from ..connectors.base import Attachment
 from ..counters import today
 from ..llm.types import ToolCall
 from .budget import Budget
@@ -58,8 +59,10 @@ Pauser = Callable[[], Awaitable[None]]
 Executor = Callable[[ToolCall], Awaitable[str]]
 # (task id, plain-words result, which one-tap verdicts apply) — the
 # result notification, routed through the loop so it rides the same
-# interruption budget as every other unprompted word
-Presenter = Callable[[int, str, tuple[str, ...]], Awaitable[None]]
+# interruption budget as every other unprompted word. The attachment
+# arrives as a keyword-only argument, and only when the result carries
+# media that is still stored
+Presenter = Callable[..., Awaitable[None]]
 # decide a parked approval and carry the fresh verdict out — the loop's own
 # path, so a carried-out action gets its trace, its audit, and its words
 ApprovalCarrier = Callable[[int, str], Awaitable[Any]]
@@ -158,6 +161,7 @@ class ProactiveWorker:
         present: Presenter | None = None,
         approvals: Any = None,
         carry_out: ApprovalCarrier | None = None,
+        media: Any = None,
     ) -> None:
         self._store = store
         self._budget = budget
@@ -174,6 +178,9 @@ class ProactiveWorker:
         self._present = present
         self._approvals = approvals
         self._carry_out = carry_out
+        # the encrypted media store — read-only here: a result row that
+        # carries a media id sends the file with the words
+        self._media = media
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         # the anomaly monitor's streaks — ephemeral by design: the pause
@@ -348,8 +355,21 @@ class ProactiveWorker:
             if outcome.approval_id is not None
             else ("approve", "discard")
         )
+        # a result that carries a stored file sends the file itself with
+        # the words; a blob that's gone (evicted, purged) means the words
+        # go alone, with a plain note saying so — nothing raises on a
+        # missing blob
+        text = outcome.summary
+        attachment = None
+        if task.media_id is not None and self._media is not None:
+            record = await self._media.get(task.media_id)
+            if record is None:
+                text = f"{outcome.summary}\n\n(the file that went with this is no longer stored)"
+            else:
+                attachment = Attachment.from_record(record)
+        media = {"attachment": attachment} if attachment is not None else {}
         try:
-            await self._present(task.id, outcome.summary, options)
+            await self._present(task.id, text, options, **media)
         except Exception:
             log.exception("result notification for task %d failed", task.id)
 

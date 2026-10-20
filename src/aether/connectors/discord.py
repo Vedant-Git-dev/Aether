@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import logging
 from collections.abc import Sequence
 from typing import Any
@@ -26,6 +27,10 @@ from .base import (
 )
 
 log = logging.getLogger("aether.connectors.discord")
+
+# Discord caps bots at 10 MB per upload — a bigger file is refused
+# honestly rather than bouncing off the API
+UPLOAD_CAP_BYTES = 10 * 1024 * 1024
 
 
 class ApprovalView(discord.ui.View):
@@ -242,34 +247,57 @@ class DiscordConnector(MessagingConnector):
 
     # -- outbound ------------------------------------------------------------------
 
-    async def send_to_user(self, text: str) -> str | None:
+    async def send_to_user(self, text: str, *, attachment: Attachment | None = None) -> str | None:
         """Send, and answer with the platform message id — what links a
         later "why?" reply back to the trace of this send."""
         if self._channel is None:
             log.info("discord: no DM channel yet")
             return None
-        sent = await self._channel.send(text)
+        sent = await self._send(text, None, attachment)
         # getattr so test fakes without an id still send fine
         return str(getattr(sent, "id", "") or "") or None
 
-    async def present_approval(self, approval_id: int, text: str) -> None:
+    async def present_approval(
+        self, approval_id: int, text: str, *, attachment: Attachment | None = None
+    ) -> None:
         """One plain-language question plus one-tap Approve/Deny. The raw
         tool name never reaches the user — the decision record keeps it."""
         if self._channel is None:
             log.info("discord: no DM channel yet — approval visible in the web panel")
             return
-        await self._channel.send(
-            content=text,
-            view=ApprovalView(self._decide_and_explain, approval_id),
-        )
+        await self._send(text, ApprovalView(self._decide_and_explain, approval_id), attachment)
 
-    async def present_result(self, task_id: int, text: str, options: Sequence[str] = ()) -> None:
+    async def present_result(
+        self,
+        task_id: int,
+        text: str,
+        options: Sequence[str] = (),
+        *,
+        attachment: Attachment | None = None,
+    ) -> None:
         """A finished background task's result plus the one-tap verdicts
         that apply to it."""
         if self._channel is None:
             log.info("discord: no DM channel yet — result visible in the web panel")
             return
-        await self._channel.send(
-            content=text,
-            view=ResultView(self._decide_task, task_id, options),
-        )
+        await self._send(text, ResultView(self._decide_task, task_id, options), attachment)
+
+    async def _send(self, text: str, view: Any, attachment: Attachment | None) -> Any:
+        """One message out — the words plus a fresh single-use File when
+        media rides along (a discord.File is consumed by the send, so
+        every send builds its own). A file Discord cannot take is refused
+        honestly: the words still land, with a plain note in place of
+        the file."""
+        if attachment is None:
+            return await self._channel.send(content=text, view=view)
+        if len(attachment.data) > UPLOAD_CAP_BYTES:
+            log.info(
+                "discord: attachment over the upload cap (%d bytes) — not sent",
+                len(attachment.data),
+            )
+            return await self._channel.send(
+                content=f"{text}\n\n(the file is too big for Discord and was not sent)",
+                view=view,
+            )
+        file = discord.File(io.BytesIO(attachment.data), filename=attachment.filename or "file")
+        return await self._channel.send(content=text, view=view, file=file)

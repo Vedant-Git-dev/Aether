@@ -75,20 +75,24 @@ class Approvals:
         actor: str = "agent",
         rules_matched: str = "",
         note: str = "",
+        media_id: int | None = None,
     ) -> Approval:
         """Park a call. The row is written (params encrypted, bound to the
-        row id via AAD) and an audit entry records the hold."""
+        row id via AAD) and an audit entry records the hold. A call that
+        carries a stored media id marks the row — the indexed reference
+        keeps that blob safe from eviction while the question waits."""
         expires_at = datetime.now(UTC) + self._ttl
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "INSERT INTO pending_approvals"
-                " (tool_name, params_enc, status, expires_at, rules_matched, note)"
-                " VALUES ($1, $2, 'pending', $3, $4, $5) RETURNING id, created_at",
+                " (tool_name, params_enc, status, expires_at, rules_matched, note, media_id)"
+                " VALUES ($1, $2, 'pending', $3, $4, $5, $6) RETURNING id, created_at",
                 tool_name,
                 b"",  # placeholder until the id exists; replaced below, same transaction
                 expires_at,
                 rules_matched,
                 note,
+                media_id,
             )
             approval_id = row["id"]
             # encrypt only after the id exists so the AAD can bind to it
@@ -128,8 +132,12 @@ class Approvals:
             raise ValueError(f"decision must be '{APPROVED}' or '{DENIED}', got {decision!r}")
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
+                # the media reference clears here too — hygiene only: the
+                # eviction query filters by pending status, so protection
+                # disengages with the status change even if this clear
+                # were ever missed
                 "UPDATE pending_approvals"
-                " SET status = $1, decided_at = now(), decided_by = $2"
+                " SET status = $1, decided_at = now(), decided_by = $2, media_id = NULL"
                 " WHERE id = $3 AND status = 'pending' AND expires_at > now()"
                 " RETURNING id, tool_name, status, created_at, expires_at,"
                 " decided_at, decided_by, rules_matched, note",

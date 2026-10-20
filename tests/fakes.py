@@ -131,6 +131,9 @@ class FakeApprovals:
     def __init__(self) -> None:
         self.calls: list[tuple[int, str]] = []
         self.created: list[Approval] = []
+        # the media id each parked call carried, parallel to created —
+        # mirrors the real store's pending_approvals.media_id column
+        self.media_ids: list[int | None] = []
         self.executed: list[int] = []
         self.failed: list[int] = []
         self.ttl_updates: list[float] = []
@@ -148,6 +151,7 @@ class FakeApprovals:
         actor: str = "agent",
         rules_matched: str = "",
         note: str = "",
+        media_id: int | None = None,
     ) -> Approval:
         approval = Approval(
             id=len(self.created) + 1,
@@ -162,6 +166,7 @@ class FakeApprovals:
             note=note,
         )
         self.created.append(approval)
+        self.media_ids.append(media_id)
         return approval
 
     async def decide(self, approval_id: int, decision: str, decided_by: str = "user"):

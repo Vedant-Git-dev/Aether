@@ -78,6 +78,9 @@ class ProactiveTask:
     day: str
     created_at: datetime
     updated_at: datetime
+    # the stored-media reference a result carries, when the run produced
+    # a file worth sending — written by the build that owns the column
+    media_id: int | None = None
 
 
 class ProactiveStore:
@@ -327,6 +330,9 @@ class ProactiveStore:
             feedback_note=dec("feedback_note_enc"),
             provider=row["provider"],
             day=row["day"],
+            # the stored-media reference a result carries — None unless
+            # the build that owns the column (I) wrote one
+            media_id=row["media_id"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

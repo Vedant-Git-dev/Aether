@@ -47,6 +47,7 @@ class NativeKit:
         media: object | None = None,
         providers: object | None = None,
         editor: object | None = None,
+        connector: object | None = None,
     ) -> None:
         self.registry = ToolRegistry()
         self.events = events or FakeEventStore()
@@ -56,7 +57,9 @@ class NativeKit:
         self.routines = routines or FakeRoutines()
         self.traces = traces or FakeTraces()
         self.audit = audit or FakeAudit()
-        self.connector = FakeSurfaceConnector()
+        # the fanout's one surface — swap in a media-aware double when a
+        # test needs to see the attachment a send carried
+        self.connector = connector or FakeSurfaceConnector()
         self.box = CaptureRequestBox()
         self.count = register_native_tools(
             registry=self.registry,
@@ -402,6 +405,79 @@ async def test_look_at_media_rejects_a_missing_or_bad_id() -> None:
     kit = NativeKit(media=store, providers=FakeRegistry(FakeProvider([])))
     assert "needs media_id" in await kit.run("look_at_media", {})
     assert "needs media_id" in await kit.run("look_at_media", {"media_id": "one"})
+
+
+# ---------------------------------------------------------------------------
+# share_media — the owner's stored file, back to the owner's own chats
+# ---------------------------------------------------------------------------
+
+
+class RecordingSurfaces:
+    """A media-aware surface double for the fanout: records the text and
+    whatever else a send carried."""
+
+    def __init__(self) -> None:
+        self.name = "recording"
+        self.sends: list[dict] = []
+
+    async def send_to_user(self, text: str, **kwargs) -> str:
+        self.sends.append({"text": text, **kwargs})
+        return "r1"
+
+
+async def test_share_media_registers_when_the_store_is_wired() -> None:
+    store = FakeMediaStore()
+
+    def names(kit: NativeKit) -> set[str]:
+        return {s.name for s in kit.registry.specs()}
+
+    assert "share_media" not in names(NativeKit())
+    assert "share_media" in names(NativeKit(media=store))
+
+
+async def test_share_media_sends_the_stored_file_with_the_note() -> None:
+    store = FakeMediaStore()
+    clip = b"\x00\x00\x00\x18ftypisom" + b"laptop-tour"
+    kept = await store.put(clip, filename="laptop.mp4", origin="telegram")
+    surfaces = RecordingSurfaces()
+    kit = NativeKit(media=store, connector=surfaces)
+
+    out = await kit.run(
+        "share_media", {"media_id": kept.media_id, "text": "here is the laptop video"}
+    )
+
+    assert out == "Sent to the user's chat surfaces."
+    sent = surfaces.sends[-1]
+    assert sent["text"] == "here is the laptop video"
+    attachment = sent["attachment"]
+    assert attachment.kind == "video"
+    assert attachment.filename == "laptop.mp4"
+    assert attachment.data == clip
+    assert attachment.media_type == "video/mp4"
+
+
+async def test_share_media_needs_the_id_and_the_note() -> None:
+    store = FakeMediaStore()
+    kept = await store.put(b"\x89PNG\r\n\x1a\n" + b"fake", filename="cat.png", origin="telegram")
+    surfaces = RecordingSurfaces()
+    kit = NativeKit(media=store, connector=surfaces)
+
+    assert "needs media_id" in await kit.run("share_media", {"text": "here"})
+    assert "needs text" in await kit.run("share_media", {"media_id": kept.media_id})
+    assert surfaces.sends == []  # nothing went out on a bad call
+
+
+async def test_share_media_answers_plainly_when_the_blob_is_gone() -> None:
+    store = FakeMediaStore()
+    kept = await store.put(b"\x89PNG\r\n\x1a\n" + b"fake", filename="gone.png", origin="telegram")
+    store.rows.pop(kept.media_id)  # evicted to make room, say
+    surfaces = RecordingSurfaces()
+    kit = NativeKit(media=store, connector=surfaces)
+
+    out = await kit.run("share_media", {"media_id": kept.media_id, "text": "here"})
+    assert "no longer stored" in out
+    assert "do not claim" in out  # the model is told never to say it sent
+    assert surfaces.sends == []
 
 
 # ---------------------------------------------------------------------------

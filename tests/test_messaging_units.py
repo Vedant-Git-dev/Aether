@@ -16,10 +16,11 @@ from typing import Any
 import discord
 import httpx
 import pytest
-from fakes import FakeApprovals
+from fakes import FakeApprovals, FakeSurfaceConnector
 from telegram import Chat, Message, Update
 from telegram.error import NetworkError
 
+from aether.agent.loop import SurfaceFanout
 from aether.authz.approvals import APPROVED, DENIED
 from aether.config import AppConfig, MessagingConfig, PlatformToggle, Settings
 from aether.connectors import build_messaging_connectors
@@ -34,7 +35,7 @@ from aether.connectors.slack import (
     event_to_inbound,
     result_blocks,
 )
-from aether.connectors.telegram import SEND_ATTEMPTS, TelegramConnector
+from aether.connectors.telegram import CAPTION_CAP_CHARS, SEND_ATTEMPTS, TelegramConnector
 
 # ---------------------------------------------------------------------------
 # shared decide/inbound plumbing (base class)
@@ -134,6 +135,41 @@ class FakeTelegramBot:
     ) -> SimpleNamespace:
         self.sent.append({"chat_id": chat_id, "text": text, "reply_markup": reply_markup, **kwargs})
         # the way telegram answers a send — the id that links a why? back
+        return SimpleNamespace(message_id=100 + len(self.sent))
+
+    async def send_photo(
+        self, chat_id: int, photo: bytes, caption=None, reply_markup=None, **kwargs
+    ) -> SimpleNamespace:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "photo": photo,
+                "caption": caption,
+                "reply_markup": reply_markup,
+                **kwargs,
+            }
+        )
+        return SimpleNamespace(message_id=100 + len(self.sent))
+
+    async def send_document(
+        self,
+        chat_id: int,
+        document: bytes,
+        filename=None,
+        caption=None,
+        reply_markup=None,
+        **kwargs,
+    ) -> SimpleNamespace:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "document": document,
+                "filename": filename,
+                "caption": caption,
+                "reply_markup": reply_markup,
+                **kwargs,
+            }
+        )
         return SimpleNamespace(message_id=100 + len(self.sent))
 
 
@@ -520,8 +556,8 @@ class FakeDiscordChannel:
         self.id = 555
         self.sent: list[dict] = []
 
-    async def send(self, content=None, view=None) -> SimpleNamespace:
-        self.sent.append({"content": content, "view": view})
+    async def send(self, content=None, view=None, file=None) -> SimpleNamespace:
+        self.sent.append({"content": content, "view": view, "file": file})
         # the way discord answers a send — the id that links a why? back
         return SimpleNamespace(id=100 + len(self.sent))
 
@@ -746,6 +782,7 @@ class FakeSlackClient:
     def __init__(self) -> None:
         self.posted: list[dict] = []
         self.updated: list[dict] = []
+        self.uploads: list[dict] = []
 
     async def chat_postMessage(self, channel: str, text: str, blocks=None) -> dict:
         self.posted.append({"channel": channel, "text": text, "blocks": blocks})
@@ -754,6 +791,19 @@ class FakeSlackClient:
 
     async def chat_update(self, channel: str, ts: str, text: str, blocks=None) -> None:
         self.updated.append({"channel": channel, "ts": ts, "text": text, "blocks": blocks})
+
+    async def files_upload_v2(
+        self, channel: str, file: bytes, filename: str, initial_comment: str
+    ) -> dict:
+        self.uploads.append(
+            {
+                "channel": channel,
+                "file": file,
+                "filename": filename,
+                "initial_comment": initial_comment,
+            }
+        )
+        return {"ok": True}
 
 
 class FakeSlackApp:
@@ -1511,3 +1561,292 @@ async def test_slack_an_interrupted_download_is_skipped_and_nothing_partial_kept
         [{"id": "F1", "name": "f", "url_private_download": "https://x/f", "size": 5}]
     )
     assert out == {}
+
+
+# ---------------------------------------------------------------------------
+# media out — the attachment-capable send paths (Build F)
+# ---------------------------------------------------------------------------
+
+_PNG = b"\x89PNG\r\n\x1a\n" + b"p" * 32
+_MP4 = b"\x00\x00\x00\x18ftypisom" + b"v" * 32
+
+
+def _image_attachment() -> Attachment:
+    return Attachment("image", "chart.png", "image/png", _PNG)
+
+
+async def test_telegram_a_small_image_sends_as_a_photo_with_the_buttons_kept() -> None:
+    connector, app = await _started_telegram()
+    await app.handlers[0].callback(_tg_update("hi"), None)  # establish the reply target
+
+    ref = await connector.send_to_user("here is the chart", attachment=_image_attachment())
+
+    sent = app.bot.sent[-1]
+    assert sent["photo"] == _PNG
+    assert sent["caption"] == "here is the chart"
+    assert sent["reply_markup"] is None
+    assert ref == "101"
+    # the one-tap buttons ride the photo itself, so a media-carrying ask
+    # is still one tap to answer
+    await connector.present_approval(
+        7, "send 'the chart' to @friend?", attachment=_image_attachment()
+    )
+    sent = app.bot.sent[-1]
+    assert sent["photo"] == _PNG
+    buttons = [b for row in sent["reply_markup"].inline_keyboard for b in row]
+    assert [b.callback_data for b in buttons] == ["aether:approve:7", "aether:deny:7"]
+
+
+async def test_telegram_an_image_over_the_photo_cap_falls_back_to_a_document(monkeypatch) -> None:
+    monkeypatch.setattr("aether.connectors.telegram.PHOTO_CAP_BYTES", 4)
+    connector, app = await _started_telegram()
+    await app.handlers[0].callback(_tg_update("hi"), None)
+
+    await connector.send_to_user("a big screenshot", attachment=_image_attachment())
+
+    sent = app.bot.sent[-1]
+    assert "photo" not in sent
+    assert sent["document"] == _PNG
+    assert sent["filename"] == "chart.png"  # the stored name survives the trip
+    assert sent["caption"] == "a big screenshot"
+
+
+async def test_telegram_a_video_sends_as_a_document() -> None:
+    connector, app = await _started_telegram()
+    await app.handlers[0].callback(_tg_update("hi"), None)
+
+    clip = Attachment("video", "clip.mp4", "video/mp4", _MP4)
+    await connector.send_to_user("the edited clip", attachment=clip)
+
+    sent = app.bot.sent[-1]
+    assert "photo" not in sent
+    assert sent["document"] == _MP4
+    assert sent["filename"] == "clip.mp4"
+
+
+async def test_telegram_a_file_over_the_document_cap_is_refused_honestly(monkeypatch) -> None:
+    monkeypatch.setattr("aether.connectors.telegram.DOCUMENT_CAP_BYTES", 8)
+    connector, app = await _started_telegram()
+    await app.handlers[0].callback(_tg_update("hi"), None)
+
+    await connector.send_to_user("here it is", attachment=_image_attachment())
+
+    # no file send at all — the words land with a plain note in the file's
+    # place, never a silent drop and never a lie that it was sent
+    sent = app.bot.sent[-1]
+    assert "photo" not in sent and "document" not in sent
+    assert sent["text"] == "here it is\n\n(the file is too big for Telegram and was not sent)"
+    # the buttons survive the refusal — the ask is still answerable
+    await connector.present_result(3, "the digest", ("approve",), attachment=_image_attachment())
+    sent = app.bot.sent[-1]
+    assert "(the file is too big for Telegram and was not sent)" in sent["text"]
+    assert sent["reply_markup"] is not None
+
+
+async def test_telegram_a_text_too_long_for_a_caption_follows_as_its_own_message() -> None:
+    connector, app = await _started_telegram()
+    await app.handlers[0].callback(_tg_update("hi"), None)
+
+    long_text = "x" * (CAPTION_CAP_CHARS + 1)
+    await connector.send_to_user(long_text, attachment=_image_attachment())
+
+    # the file went first, without a caption — no word was silently cut
+    assert app.bot.sent[-2]["photo"] == _PNG
+    assert app.bot.sent[-2]["caption"] is None
+    # the words follow whole, carrying the buttons so the one-tap path
+    # stays on the message the user reads
+    assert app.bot.sent[-1]["text"] == long_text
+    assert app.bot.sent[-1]["reply_markup"] is None
+
+
+async def test_discord_an_attachment_sends_as_a_fresh_file() -> None:
+    connector, bot = await _started_discord()
+    await connector.on_message(_dc_message("hi"))
+
+    ref = await connector.send_to_user("here is the chart", attachment=_image_attachment())
+
+    sent = connector._channel.sent[-1]
+    file = sent["file"]
+    assert isinstance(file, discord.File)
+    assert file.filename == "chart.png"
+    assert file.fp.read() == _PNG
+    assert sent["view"] is None
+    assert ref == "101"
+
+
+async def test_discord_an_approval_keeps_its_view_with_the_file() -> None:
+    connector, bot = await _started_discord()
+    await connector.on_message(_dc_message("hi"))
+
+    await connector.present_approval(7, "send the chart?", attachment=_image_attachment())
+
+    sent = connector._channel.sent[-1]
+    assert isinstance(sent["file"], discord.File)
+    assert isinstance(sent["view"], ApprovalView)
+
+
+async def test_discord_an_upload_over_the_cap_is_refused_honestly(monkeypatch) -> None:
+    monkeypatch.setattr("aether.connectors.discord.UPLOAD_CAP_BYTES", 8)
+    connector, bot = await _started_discord()
+    await connector.on_message(_dc_message("hi"))
+
+    await connector.send_to_user("here it is", attachment=_image_attachment())
+
+    sent = connector._channel.sent[-1]
+    assert sent["file"] is None
+    assert sent["content"] == "here it is\n\n(the file is too big for Discord and was not sent)"
+
+
+async def test_slack_a_file_sends_with_the_words_as_its_initial_comment() -> None:
+    connector, app, _ = await _started_slack()
+    await app.listeners["message"](
+        {"channel_type": "im", "user": "U123", "text": "hi", "channel": "D1"},
+        None,
+        app.client,
+    )
+
+    ref = await connector.send_to_user("here is the chart", attachment=_image_attachment())
+
+    assert app.client.uploads == [
+        {
+            "channel": "D1",
+            "file": _PNG,
+            "filename": "chart.png",
+            "initial_comment": "here is the chart",
+        }
+    ]
+    assert app.client.posted == []  # the words rode the file, no double send
+    # a file share has no ts — the send happened, it just can't be linked
+    assert ref is None
+
+
+async def test_slack_an_approval_file_is_followed_by_the_button_message() -> None:
+    connector, app, _ = await _started_slack()
+    await app.listeners["message"](
+        {"channel_type": "im", "user": "U123", "text": "hi", "channel": "D1"},
+        None,
+        app.client,
+    )
+
+    await connector.present_approval(7, "send the chart?", attachment=_image_attachment())
+
+    # files carry no blocks — the ask rides the file, the one-tap buttons
+    # follow in a plain message so the verdict stays one tap
+    assert app.client.uploads[-1]["initial_comment"] == "send the chart?"
+    posted = app.client.posted[-1]
+    assert posted["text"] == "send the chart?"
+    assert posted["blocks"] == approval_blocks(7, "send the chart?")
+
+
+async def test_slack_a_result_file_is_followed_by_the_verdict_buttons() -> None:
+    connector, app, _ = await _started_slack()
+    await app.listeners["message"](
+        {"channel_type": "im", "user": "U123", "text": "hi", "channel": "D1"},
+        None,
+        app.client,
+    )
+
+    await connector.present_result(
+        3, "the captioned video", ("approve", "discard"), attachment=_image_attachment()
+    )
+
+    assert app.client.uploads[-1]["initial_comment"] == "the captioned video"
+    posted = app.client.posted[-1]
+    assert posted["blocks"] == result_blocks(3, "the captioned video", ("approve", "discard"))
+
+
+# ---------------------------------------------------------------------------
+# the fanout: media rides to the chat connectors only, only when present
+# ---------------------------------------------------------------------------
+
+
+class RecordingConnector:
+    """A media-aware surface double: records every kwarg the fanout hands
+    it, so the tests can see exactly when media rides along."""
+
+    def __init__(self, name: str = "recording") -> None:
+        self.name = name
+        self.sends: list[dict] = []
+        self.approvals: list[dict] = []
+        self.results: list[dict] = []
+
+    async def send_to_user(self, text: str, **kwargs) -> str:
+        self.sends.append({"text": text, **kwargs})
+        return "r1"
+
+    async def present_approval(self, approval_id: int, text: str, **kwargs) -> None:
+        self.approvals.append({"approval_id": approval_id, "text": text, **kwargs})
+
+    async def present_result(self, task_id: int, text: str, options=(), **kwargs) -> None:
+        self.results.append({"task_id": task_id, "text": text, "options": tuple(options), **kwargs})
+
+
+class RecordingHub:
+    def __init__(self) -> None:
+        self.broadcasts: list[str] = []
+
+    async def broadcast(self, text: str, *, persist: bool = True) -> None:
+        self.broadcasts.append(text)
+
+
+async def test_the_fanout_passes_media_only_when_present() -> None:
+    fake = FakeSurfaceConnector()
+    recording = RecordingConnector()
+    fanout = SurfaceFanout([fake, recording])
+
+    # no media: neither surface sees the kwarg at all — the untouched
+    # FakeSurfaceConnector (no attachment param) proves it
+    await fanout.send_to_user("a plain note")
+    assert fake.sent == ["a plain note"]
+    assert recording.sends == [{"text": "a plain note"}]
+
+    # media present: the media-aware surface gets it. A surface that
+    # never learned attachments (only the untouched test double — every
+    # production connector accepts it) fails into the fanout's
+    # per-connector guard, and one dying surface never takes the loop
+    # down with it
+    await fanout.send_to_user("with media", attachment=_image_attachment())
+    assert fake.sent == ["a plain note"]
+    assert recording.sends[-1] == {"text": "with media", "attachment": _image_attachment()}
+
+
+async def test_the_fanout_carries_media_on_approvals_and_results_too() -> None:
+    recording = RecordingConnector()
+    fanout = SurfaceFanout([recording])
+
+    await fanout.present_approval(7, "send the chart?", attachment=_image_attachment())
+    assert recording.approvals == [
+        {"approval_id": 7, "text": "send the chart?", "attachment": _image_attachment()}
+    ]
+
+    await fanout.present_result(3, "the digest", ("approve",), attachment=_image_attachment())
+    assert recording.results == [
+        {
+            "task_id": 3,
+            "text": "the digest",
+            "options": ("approve",),
+            "attachment": _image_attachment(),
+        }
+    ]
+
+
+async def test_the_hub_and_transcript_stay_text_only() -> None:
+    fake = FakeSurfaceConnector()
+    recording = RecordingConnector()
+    hub = RecordingHub()
+    history: list[tuple[str, str, str]] = []
+
+    async def append(name: str, direction: str, text: str) -> None:
+        history.append((name, direction, text))
+
+    fanout = SurfaceFanout([fake, recording], hub=hub, history=SimpleNamespace(append=append))
+
+    refs = await fanout.send_to_user("with media", attachment=_image_attachment())
+
+    # the words (not the bytes) reached the hub broadcast and the
+    # transcript; the media went to the chat connectors alone. The
+    # attachment-less fake surface is absent from both — its failed send
+    # has no ref, so no transcript line, the same as any dying surface
+    assert hub.broadcasts == ["with media"]
+    assert history == [("recording", "out", "with media")]
+    assert refs == {"recording": "r1"}

@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple
 
 from ..authz.audit import verification_text
+from ..connectors.base import Attachment
 from ..connectors.registry import ToolRegistry
 from ..llm.types import ImageBlock, Message, ToolSpec, with_plain_param
 from ..workspace import SecretRejected, WorkspaceWriteError
@@ -113,6 +114,11 @@ _NATIVE_WORDS: dict[str, ActionWords] = {
     ),
     "look_at_media": ActionWords(
         "Look at the image again", "looking at the stored image", "looked at the stored image"
+    ),
+    "share_media": ActionWords(
+        "Share the stored file",
+        "sharing the stored file with you",
+        "shared the stored file with you",
     ),
     "edit_video": ActionWords(
         "Edit the video", "editing the stored video", "edited the stored video"
@@ -552,6 +558,27 @@ def register_native_tools(
             return FAILURE_REPLY
         text = (turn.text or "").strip()
         return text or FAILURE_REPLY
+
+    async def share_media(params: dict[str, Any]) -> str:
+        """The owner's own file, back to the owner's own chats — the same
+        trust line send_chat_message rides. A blob that's gone is said
+        plainly, never claimed as sent; anywhere further out (an email,
+        another person) is a different call that parks for approval."""
+        media_id = _parse_int_param(params, "media_id", 1, minimum=1)
+        if params.get("media_id") in (None, "") or media_id is None:
+            return "share_media needs media_id — the number a shared file carries."
+        text = str(params.get("text", "")).strip()
+        if not text:
+            return "share_media needs text — a short note to send with the file."
+        record = await media.get(media_id)
+        if record is None:
+            return (
+                "That media is no longer stored — it may have been removed "
+                "to make room for newer files. Say so plainly; do not claim "
+                "it was sent."
+            )
+        await surfaces.send_to_user(text, attachment=Attachment.from_record(record))
+        return "Sent to the user's chat surfaces."
 
     async def edit_video(params: dict[str, Any]) -> str:
         media_id = _parse_int_param(params, "media_id", 1, minimum=1)
@@ -1089,6 +1116,37 @@ def register_native_tools(
                 )
             ]
             if media is not None and providers is not None
+            else []
+        ),
+        *(
+            [
+                (
+                    _spec(
+                        "share_media",
+                        "Send one stored file back to the user's own chat "
+                        "surfaces, with a short note — the laptop video they "
+                        "shared earlier, an edited clip, a chart. Pass the "
+                        "media_id the file carries. This reaches only the "
+                        "user's own chats: sending a file anywhere else (an "
+                        "email, another person) is a different call that "
+                        "waits for approval. Never claim a file was sent if "
+                        "this tool says it is no longer stored.",
+                        {
+                            "media_id": {
+                                "type": "integer",
+                                "description": "the media id the stored file carries",
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "a short note sent with the file",
+                            },
+                        },
+                        ["media_id", "text"],
+                    ),
+                    share_media,
+                )
+            ]
+            if media is not None
             else []
         ),
         *(

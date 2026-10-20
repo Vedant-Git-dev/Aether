@@ -38,6 +38,14 @@ _CALLBACK_PREFIX = "aether:"
 # surface; the fanout then logs and carries on to the others.
 SEND_ATTEMPTS = 3
 SEND_BACKOFF_SECONDS = 2.0
+# Telegram caps photos at 10 MB and documents at 50 MB — a bigger image
+# falls back to a document rather than failing the send, and a bigger
+# document is refused honestly instead of bouncing off the API
+PHOTO_CAP_BYTES = 10 * 1024 * 1024
+DOCUMENT_CAP_BYTES = 50 * 1024 * 1024
+# Telegram caps captions at 1024 characters — a text that doesn't fit
+# rides as its own message after the file, so no word is silently cut
+CAPTION_CAP_CHARS = 1000
 
 
 class TelegramConnector(MessagingConnector):
@@ -272,12 +280,14 @@ class TelegramConnector(MessagingConnector):
 
     # -- outbound --------------------------------------------------------------------
 
-    async def send_to_user(self, text: str) -> str | None:
+    async def send_to_user(self, text: str, *, attachment: Attachment | None = None) -> str | None:
         """Send, and answer with the platform message id — what links a
         later "why?" reply back to the trace of this send."""
-        return await self._send(text, reply_markup=None)
+        return await self._send(text, reply_markup=None, attachment=attachment)
 
-    async def present_approval(self, approval_id: int, text: str) -> None:
+    async def present_approval(
+        self, approval_id: int, text: str, *, attachment: Attachment | None = None
+    ) -> None:
         """One plain-language question plus one-tap Approve/Deny. The raw
         tool name never reaches the user — the decision record keeps it."""
         keyboard = InlineKeyboardMarkup(
@@ -292,9 +302,16 @@ class TelegramConnector(MessagingConnector):
                 ]
             ]
         )
-        await self._send(text, reply_markup=keyboard)
+        await self._send(text, reply_markup=keyboard, attachment=attachment)
 
-    async def present_result(self, task_id: int, text: str, options: Sequence[str] = ()) -> None:
+    async def present_result(
+        self,
+        task_id: int,
+        text: str,
+        options: Sequence[str] = (),
+        *,
+        attachment: Attachment | None = None,
+    ) -> None:
         """A finished background task's result plus the one-tap verdicts
         that apply to it. An odd verdict name never reaches the buttons —
         the fixed vocabulary stays fixed."""
@@ -307,9 +324,11 @@ class TelegramConnector(MessagingConnector):
             if verb in options
         ]
         keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
-        await self._send(text, reply_markup=keyboard)
+        await self._send(text, reply_markup=keyboard, attachment=attachment)
 
-    async def _send(self, text: str, reply_markup: Any) -> str | None:
+    async def _send(
+        self, text: str, reply_markup: Any, attachment: Attachment | None = None
+    ) -> str | None:
         app = self._app
         if app is None or self._chat_ref is None:
             log.info("telegram: nowhere to send yet (started=%s)", app is not None)
@@ -328,9 +347,12 @@ class TelegramConnector(MessagingConnector):
                         message_id=self._reply_message_id,
                         allow_sending_without_reply=True,
                     )
-                sent = await app.bot.send_message(
-                    chat_id=int(self._chat_ref), text=text, reply_markup=reply_markup, **kwargs
-                )
+                if attachment is None:
+                    sent = await app.bot.send_message(
+                        chat_id=int(self._chat_ref), text=text, reply_markup=reply_markup, **kwargs
+                    )
+                else:
+                    sent = await self._send_file(app, text, reply_markup, attachment, kwargs)
                 # getattr so test fakes without a message_id still send fine
                 return str(getattr(sent, "message_id", "") or "") or None
             except NetworkError:
@@ -340,3 +362,48 @@ class TelegramConnector(MessagingConnector):
                     "telegram send failed (attempt %d/%d) — retrying", attempt, SEND_ATTEMPTS
                 )
                 await asyncio.sleep(self._send_backoff * attempt)
+
+    async def _send_file(
+        self, app: Any, text: str, reply_markup: Any, attachment: Attachment, kwargs: dict[str, Any]
+    ) -> Any:
+        """One file out through Telegram. Small images ride as photos,
+        everything else as documents — both keep the buttons, and the
+        filename is passed so the stored name survives the trip. A file
+        Telegram cannot take at all is refused honestly: the words still
+        land, with a plain note in place of the file. A text too long
+        for a caption follows as its own message instead of being cut."""
+        chat_id = int(self._chat_ref)
+        size = len(attachment.data)
+        if size > DOCUMENT_CAP_BYTES:
+            log.info("telegram: attachment over the document cap (%d bytes) — not sent", size)
+            return await app.bot.send_message(
+                chat_id=chat_id,
+                text=f"{text}\n\n(the file is too big for Telegram and was not sent)",
+                reply_markup=reply_markup,
+                **kwargs,
+            )
+        caption = text if len(text) <= CAPTION_CAP_CHARS else None
+        if attachment.kind == "image" and size <= PHOTO_CAP_BYTES:
+            sent = await app.bot.send_photo(
+                chat_id=chat_id,
+                photo=attachment.data,
+                caption=caption,
+                reply_markup=reply_markup,
+                **kwargs,
+            )
+        else:
+            sent = await app.bot.send_document(
+                chat_id=chat_id,
+                document=attachment.data,
+                filename=attachment.filename or "file",
+                caption=caption,
+                reply_markup=reply_markup,
+                **kwargs,
+            )
+        if caption is None and text:
+            # the words didn't fit the caption — they follow as their own
+            # message, carrying the buttons so the one-tap path stays
+            return await app.bot.send_message(
+                chat_id=chat_id, text=text, reply_markup=reply_markup, **kwargs
+            )
+        return sent
