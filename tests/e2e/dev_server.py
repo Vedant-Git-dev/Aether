@@ -13,6 +13,7 @@ real routers, the real static files, just a fake persistence layer.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -226,9 +227,98 @@ class FakeAudit:
         return ChainVerification(ok=True, entries=len(self.rows), first_bad_seq=None, problem=None)
 
 
+class FakeMediaStore:
+    """The real media route's double: get() hands back the stored shape
+    (MediaRecord: sniffed type, stored name, decrypted bytes)."""
+
+    # a real 1x1 PNG — the sniffed type is image/png and the browser can
+    # actually render it; the mp4 is the ftyp signature the sniffer reads
+    _PNG = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+        "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    )
+    _MP4 = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 16
+
+    def __init__(self) -> None:
+        self.rows = {
+            1: {
+                "media_id": 1,
+                "media_type": "image/png",
+                "filename": "the-plan.png",
+                "size": len(self._PNG),
+                "data": self._PNG,
+            },
+            2: {
+                "media_id": 2,
+                "media_type": "video/mp4",
+                "filename": "site-tour.mp4",
+                "size": len(self._MP4),
+                "data": self._MP4,
+            },
+        }
+
+    async def get(self, media_id: int):
+        row = self.rows.get(media_id)
+        if row is None:
+            return None
+        from types import SimpleNamespace
+
+        return SimpleNamespace(**row)
+
+
 class FakeEventStore:
     def __init__(self, now: datetime) -> None:
         self.rows = [
+            # stored media, as the real ingest writes it: the sniffed
+            # media_id beside the filename, sender under _sender
+            Event(
+                id=7,
+                source="telegram",
+                kind="shared_image",
+                occurred_at=now - timedelta(seconds=15),
+                payload={
+                    "filename": "the-plan.png",
+                    "description": "a whiteboard sketch of the launch plan",
+                    "media_type": "image/png",
+                    "media_id": 1,
+                    "_sender": {"platform": "telegram", "handle": "@sam"},
+                },
+                salience_score=6.0,
+                memorable=True,
+                meta={},
+            ),
+            Event(
+                id=6,
+                source="telegram",
+                kind="shared_video",
+                occurred_at=now - timedelta(seconds=20),
+                payload={
+                    "filename": "site-tour.mp4",
+                    "description": "a walkthrough of the new landing page",
+                    "media_id": 2,
+                    "_sender": {"platform": "telegram", "handle": "@sam"},
+                },
+                salience_score=5.0,
+                memorable=True,
+                meta={},
+            ),
+            # a voice note whose blob is gone — the plain note in its place,
+            # the same degradation every consumer speaks
+            Event(
+                id=5,
+                source="telegram",
+                kind="shared_audio",
+                occurred_at=now - timedelta(seconds=25),
+                payload={
+                    "filename": "reminder.oga",
+                    "transcript": "call the plumber before friday",
+                    "media_id": 999,
+                    "_sender": {"platform": "telegram", "handle": "@sam"},
+                },
+                salience_score=5.0,
+                memorable=True,
+                meta={},
+            ),
             Event(
                 id=3,
                 source="agent",
@@ -978,6 +1068,7 @@ def build_app() -> FastAPI:
     app.state.config = config
     approvals = FakeApprovals(now)
     app.state.approvals = approvals
+    app.state.media_store = FakeMediaStore()
     app.state.audit = FakeAudit(now)
     app.state.events = FakeEventStore(now)
     app.state.agent = FakeAgent(approvals)

@@ -107,6 +107,16 @@ def test_allowlist_star_rule_matches_bare_handles_across_platforms() -> None:
     assert _seen(contacts, Sender("discord", "@not-vedant")) is False
 
 
+def test_the_owners_own_panel_is_never_filtered() -> None:
+    """The web surface is token-guarded — whoever reached it holds the
+    owner's credential, so no allowlist rule gates it (the screen-capture
+    precedent: the owner's own content is never filtered)."""
+    strict = _contacts("enforce", {"platform": "telegram", "handle": "@sam"})
+    assert is_allowlisted(strict, "web", Sender("web", "user")) is True
+    # every other platform still answers to the list under enforce
+    assert is_allowlisted(strict, "telegram", Sender("telegram", "@stranger")) is False
+
+
 def test_allowlist_phone_rule() -> None:
     contacts = _contacts("enforce", {"platform": "phone", "handle": "+15550101234"})
     assert _seen(contacts, Sender("sms", "5550101234")) is True

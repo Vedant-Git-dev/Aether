@@ -20,3 +20,13 @@ export async function api(path, opts) {
   if (res.status === 204) return null;
   return res.json();
 }
+
+// Stored media bytes — same token-header rule as api(): the token never
+// lands in a media URL the browser (or a proxy) could log. The caller
+// turns the blob into an object URL; what the blob's type says is the
+// sniffed truth from the server, never the declared type the event carried.
+export async function fetchMedia(path) {
+  const res = await fetch(path, { headers: { "x-aether-token": token() } });
+  if (!res.ok) throw new Error(`media request failed (${res.status})`);
+  return res.blob();
+}

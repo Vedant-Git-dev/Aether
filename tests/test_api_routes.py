@@ -53,6 +53,7 @@ class FakeAgent:
         self.decision_result = decision_result
         self.calls: list[tuple[int, str]] = []
         self.notified = 0
+        self.submitted: list = []
         self.watched: list[tuple[str, str]] = []
 
     async def decide(self, approval_id: int, decision: str):
@@ -63,6 +64,9 @@ class FakeAgent:
 
     def notify(self) -> None:
         self.notified += 1
+
+    def submit_message(self, message) -> None:
+        self.submitted.append(message)
 
     def watch_connect(self, toolkit: str, request_id: str) -> None:
         self.watched.append((toolkit, request_id))
@@ -115,6 +119,7 @@ def _app(
     traces: FakeTraces | None = None,
     proactive_store=None,
     proactive_worker=None,
+    media_store=None,
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(router)
@@ -152,6 +157,8 @@ def _app(
         app.state.proactive_store = proactive_store
     if proactive_worker is not None:
         app.state.proactive_worker = proactive_worker
+    if media_store is not None:
+        app.state.media_store = media_store
     return app
 
 
@@ -1749,3 +1756,148 @@ async def test_transfers_not_wired_answers_503() -> None:
         )
     assert get.status_code == 503
     assert post.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# /api/media — stored files served to the panel, uploads from it
+
+
+class FakeMediaRecord:
+    """The MediaRecord shape the real store hands back: sniffed type,
+    stored name, decrypted bytes."""
+
+    def __init__(self, media_id: int, media_type: str, filename: str, data: bytes) -> None:
+        self.media_id = media_id
+        self.media_type = media_type
+        self.filename = filename
+        self.size = len(data)
+        self.data = data
+
+
+class FakeMediaStore:
+    def __init__(self, rows: dict | None = None) -> None:
+        self.rows = rows or {}
+
+    async def get(self, media_id: int):
+        return self.rows.get(media_id)
+
+
+def _png() -> bytes:
+    return b"\x89PNG\r\n\x1a\n" + b"real-png-bytes"
+
+
+async def test_media_serves_an_inline_image_with_hardening_headers() -> None:
+    store = FakeMediaStore({1: FakeMediaRecord(1, "image/png", "plan.png", _png())})
+    async with _client(_app(media_store=store)) as client:
+        response = await client.get("/api/media/1", params={"token": "secret"})
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/png")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["content-security-policy"] == "sandbox; default-src 'none'"
+    assert "content-disposition" not in response.headers
+    assert response.content == _png()
+
+
+async def test_media_forces_a_download_for_anything_not_renderable() -> None:
+    """The declared MIME at ingest was metadata only — the sniffed type
+    decides, and a sniffed-but-unrenderable file is a download, never an
+    inline document. A stored filename is user input: quotes and newlines
+    must never reach the disposition header."""
+    hostile = FakeMediaRecord(2, "application/zip", 'bad"name\n.png', b"PK\x03\x04archived")
+    store = FakeMediaStore({2: hostile})
+    async with _client(_app(media_store=store)) as client:
+        response = await client.get("/api/media/2", params={"token": "secret"})
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/octet-stream")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["content-security-policy"] == "sandbox; default-src 'none'"
+    disposition = response.headers["content-disposition"]
+    assert disposition.startswith("attachment; filename=")
+    # the two format quotes are the header's own — the name inside them
+    # must carry none of the quotes or newlines the stored one had
+    inner = disposition[len('attachment; filename="') : -1]
+    assert inner == "badname.png"
+
+
+async def test_media_serves_inline_video_and_audio_only_when_sniffed() -> None:
+    store = FakeMediaStore(
+        {
+            3: FakeMediaRecord(3, "video/mp4", "tour.mp4", b"\x00\x00\x00\x18ftypisom"),
+            4: FakeMediaRecord(4, "audio/ogg", "note.oga", b"OggS"),
+        }
+    )
+    async with _client(_app(media_store=store)) as client:
+        video = await client.get("/api/media/3", params={"token": "secret"})
+        audio = await client.get("/api/media/4", params={"token": "secret"})
+    assert video.headers["content-type"].startswith("video/mp4")
+    assert "content-disposition" not in video.headers
+    assert audio.headers["content-type"].startswith("audio/ogg")
+    assert "content-disposition" not in audio.headers
+
+
+async def test_media_gone_blob_is_the_plain_404_note() -> None:
+    store = FakeMediaStore({})  # evicted — nothing stored
+    async with _client(_app(media_store=store)) as client:
+        response = await client.get("/api/media/99", params={"token": "secret"})
+    assert response.status_code == 404
+    assert response.json()["detail"] == "that file is no longer stored"
+
+
+async def test_media_requires_the_token_and_a_store() -> None:
+    async with _client(_app()) as client:  # no media_store on state at all
+        unauthorized = await client.get("/api/media/1")
+        assert unauthorized.status_code == 401  # the token gates first
+        missing = await client.get("/api/media/1", params={"token": "secret"})
+    assert missing.status_code == 404  # nothing wired reads as gone, never 500
+
+
+async def test_media_upload_rides_an_inbound_to_the_loop() -> None:
+    agent = FakeAgent()
+    async with _client(_app(agent=agent)) as client:
+        response = await client.post(
+            "/api/media",
+            params={"token": "secret"},
+            files={"file": ("plan.png", _png(), "image/png")},
+            data={"note": "the launch sketch"},
+        )
+    assert response.status_code == 202
+    assert response.json() == {"accepted": True, "kind": "image", "filename": "plan.png"}
+    # the bytes ride an inbound like any chat attachment — the normal
+    # sharing path stores and describes them
+    (message,) = agent.submitted
+    assert message.surface == "web"
+    assert message.text == "the launch sketch"
+    (attachment,) = message.attachments
+    assert attachment.kind == "image"
+    assert attachment.data == _png()
+
+
+async def test_media_upload_guards_the_same_way_screen_capture_does() -> None:
+    async with _client(_app()) as client:  # no agent wired
+        refused = await client.post(
+            "/api/media",
+            params={"token": "secret"},
+            files={"file": ("a.png", b"x", "image/png")},
+        )
+        assert refused.status_code == 503
+    agent = FakeAgent()
+    async with _client(_app(agent=agent)) as client:
+        bad_token = await client.post(
+            "/api/media",
+            params={"token": "wrong"},
+            files={"file": ("a.png", b"x", "image/png")},
+        )
+        assert bad_token.status_code == 401
+        empty = await client.post(
+            "/api/media",
+            params={"token": "secret"},
+            files={"file": ("a.png", b"", "image/png")},
+        )
+        assert empty.status_code == 400
+        too_big = await client.post(
+            "/api/media",
+            params={"token": "secret"},
+            files={"file": ("a.png", b"x" * (20 * 1024 * 1024 + 1), "image/png")},
+        )
+        assert too_big.status_code == 413
+    assert agent.submitted == []

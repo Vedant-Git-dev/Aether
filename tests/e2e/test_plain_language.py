@@ -37,6 +37,10 @@ RAW_PATTERNS = [
     (re.compile(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}"), "raw ISO timestamp"),
     (re.compile(r"\{[^{}]*\"[a-z_]+\"[^{}]*:"), "JSON blob"),
     (re.compile(r"\bsalience\b", re.I), "internal scoring word"),
+    # the fixture's media rows carry real MIME strings and raw media ids —
+    # the renderer must speak plain words, never either
+    (re.compile(r"\b(image|video|audio|application)/[a-z0-9.+-]+\b", re.I), "raw MIME type"),
+    (re.compile(r"\bmedia[ _-]?id\b", re.I), "raw media id"),
 ]
 
 
@@ -118,6 +122,19 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     assert "successful" not in text
     # a legacy agent event without `plain` is backfilled by the real route
     assert "Aether · Sent the message (to @sam)" in text
+    # shared media reads plainly and renders by its sniffed type — an
+    # image, a video player, and a gone blob as the plain note
+    assert "Sam shared an image — the-plan.png" in text
+    assert "Sam shared a video — site-tour.mp4" in text
+    assert "Sam shared a voice note — reminder.oga" in text
+    assert "call the plumber before friday" in text
+    assert page.locator('[data-testid="media-image"]').count() == 1
+    assert page.locator('[data-testid="media-video"]').count() == 1
+    assert page.locator('[data-testid="media-gone"]').count() == 1
+    assert (
+        page.locator('[data-testid="media-gone"]').inner_text().strip()
+        == "(this file is no longer stored)"
+    )
 
     page.goto(f"{live_server}/#/attention")
     page.wait_for_selector('[data-testid="approval-card"]')
