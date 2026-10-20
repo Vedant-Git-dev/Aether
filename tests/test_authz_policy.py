@@ -73,6 +73,21 @@ def test_web_research_tools_are_read_only_allowed() -> None:
         assert ruling.decision is Decision.REQUIRE_APPROVAL, name
 
 
+def test_image_generation_is_allowed_as_a_stored_result() -> None:
+    """The prompt reaches the image provider, but what comes back is a
+    stored file, not an act: allowed like web research, bounded by the
+    caps, and sending the result anywhere still parks. The neighbors
+    stay fail-safe."""
+    policy = Policy([])
+    ruling = policy.classify("generate_image")
+    assert ruling.decision is Decision.ALLOW
+    assert ruling.matched_rule == "builtin:media-generation"
+    # a look-alike never rides the rule — only the exact tool does
+    for name in ("generate_images", "generate_image_and_send", "generateimage"):
+        ruling = policy.classify(name)
+        assert ruling.decision is Decision.REQUIRE_APPROVAL, name
+
+
 def test_internal_prefix_does_not_swallow_mcp_namespaced_tools() -> None:
     """An MCP server literally named 'workspace' or 'memory' must not have
     its tools auto-allowed via the internal-tool carve-out — the flat name

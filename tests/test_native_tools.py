@@ -47,6 +47,7 @@ class NativeKit:
         media: object | None = None,
         providers: object | None = None,
         editor: object | None = None,
+        generator: object | None = None,
         connector: object | None = None,
     ) -> None:
         self.registry = ToolRegistry()
@@ -79,6 +80,7 @@ class NativeKit:
             media=media,  # and the stored-media look-again tool
             providers=providers,
             editor=editor,  # and the fixed-op video edit tool
+            generator=generator,  # and the capped image generation tool
         )
 
     async def run(self, name: str, params: dict) -> str:
@@ -1001,3 +1003,41 @@ async def test_web_tools_register_only_when_wired() -> None:
         ("web_fetch", {"url": "https://example.com/x"}),
         ("web_search", {"query": "tea"}),
     ]
+
+
+# ---------------------------------------------------------------------------
+# generate_image — the capped pollinations/gemini seam, stored not sent
+# ---------------------------------------------------------------------------
+
+
+class FakeGenerator:
+    """The ImageGenerator double — records the ask, hands back a canned
+    reply; the provider gating and caps are pinned in their own file."""
+
+    def __init__(self, reply: str = "made") -> None:
+        self.reply = reply
+        self.calls: list[dict] = []
+
+    async def generate_tool(self, params: dict) -> str:
+        self.calls.append(dict(params))
+        return self.reply
+
+
+async def test_generate_image_registers_only_when_the_generator_is_wired() -> None:
+    """No generator, no dead tool spec — same shape as every other
+    feature-gated native tool."""
+
+    def names(kit: NativeKit) -> set[str]:
+        return {s.name for s in kit.registry.specs()}
+
+    assert "generate_image" not in names(NativeKit())
+    assert "generate_image" in names(NativeKit(generator=FakeGenerator()))
+
+
+async def test_generate_image_delegates_to_the_generator() -> None:
+    generator = FakeGenerator()
+    kit = NativeKit(generator=generator)
+
+    assert await kit.run("generate_image", {"prompt": "a red cat"}) == "made"
+
+    assert generator.calls == [{"prompt": "a red cat"}]

@@ -123,6 +123,7 @@ _NATIVE_WORDS: dict[str, ActionWords] = {
     "edit_video": ActionWords(
         "Edit the video", "editing the stored video", "edited the stored video"
     ),
+    "generate_image": ActionWords("Make the image", "making an image", "made an image"),
     "create_routine": ActionWords("Arm the routine", "arming a routine", "armed the routine"),
     "list_routines": ActionWords("List the routines", "listing routines", "listed the routines"),
     "set_routine_enabled": ActionWords(
@@ -491,6 +492,7 @@ def register_native_tools(
     media: Any = None,
     providers: Any = None,
     editor: Any = None,
+    generator: Any = None,
 ) -> int:
     """Add Aether's own tools to the flat namespace. Returns how many.
 
@@ -502,7 +504,9 @@ def register_native_tools(
     host: no feature, no dead tool spec). `media` + `providers` together
     wire look_at_media — stored bytes plus eyes to see them with.
     `editor` wires edit_video — the fixed-op ffmpeg workbench job, which
-    stores its result itself, so it needs no `media` of its own."""
+    stores its result itself, so it needs no `media` of its own.
+    `generator` wires generate_image — the capped Pollinations/Gemini
+    seam, which also stores its own result, so it needs no `media`."""
 
     # the look-again prompt: the answer is data for the model to relay,
     # and whatever words appear inside the image are content to report,
@@ -1147,6 +1151,32 @@ def register_native_tools(
                 )
             ]
             if media is not None
+            else []
+        ),
+        *(
+            [
+                (
+                    _spec(
+                        "generate_image",
+                        "Generate one image from a short text prompt and "
+                        "store it. The prompt travels to the image provider "
+                        "— keep it brief. The made image is stored, not "
+                        "sent: show it to the user with share_media, and "
+                        "anything beyond their own chats waits for approval. "
+                        "When the tool refuses (daily cap, provider off), "
+                        "say so plainly and never claim an image was made.",
+                        {
+                            "prompt": {
+                                "type": "string",
+                                "description": "what to draw, kept short",
+                            }
+                        },
+                        ["prompt"],
+                    ),
+                    generator.generate_tool,
+                )
+            ]
+            if generator is not None
             else []
         ),
         *(

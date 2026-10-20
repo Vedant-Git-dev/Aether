@@ -16,9 +16,12 @@ before it executes. First match wins:
 3. internal Aether tools (memory, scheduling, capture requests) -> ALLOW
 4. Aether's web research (the hardened fetch, the key-gated search) ->
    ALLOW — read-only by construction, external by destination
-5. risky verbs (send, delete, pay, ...) -> REQUIRE_APPROVAL
-6. read-only verbs (list, search, get, ...) -> ALLOW
-7. anything else -> REQUIRE_APPROVAL
+5. Aether's image generation -> ALLOW — the prompt reaches the image
+   provider (a stated, capped channel), but the result is a stored
+   file; sending it anywhere still waits for approval
+6. risky verbs (send, delete, pay, ...) -> REQUIRE_APPROVAL
+7. read-only verbs (list, search, get, ...) -> ALLOW
+8. anything else -> REQUIRE_APPROVAL
 
 The verb ladders (5 and 6) run against the lowercased tool name: Composio
 names its tools UPPER_SNAKE (composio__GMAIL_SEND_EMAIL), and a verb is a
@@ -50,7 +53,7 @@ class Decision(StrEnum):
 @dataclass(frozen=True)
 class Ruling:
     decision: Decision
-    matched_rule: str  # "user:<pattern>" | "builtin:walk-connect" | "builtin:config-tune" | "builtin:config-security" | "builtin:internal" | "builtin:web-research" | "builtin:risky" | "builtin:read-only" | "default:fail-safe"
+    matched_rule: str  # "user:<pattern>" | "builtin:walk-connect" | "builtin:config-tune" | "builtin:config-security" | "builtin:internal" | "builtin:web-research" | "builtin:media-generation" | "builtin:risky" | "builtin:read-only" | "default:fail-safe"
     reason: str
 
 
@@ -96,6 +99,14 @@ _READONLY = re.compile(r"(^|__)(list|search|get|read|fetch|find|query)([a-z_]|$)
 # action. Explicit rather than riding the verb ladder, because the names
 # start with "web_" and the read-only verb anchor would miss them.
 _WEB_RESEARCH = re.compile(r"^web_(fetch|search)$")
+
+# Aether's image generation. Keyed or keyless, the call is external —
+# the prompt reaches the image provider, a stated and capped channel —
+# but the output is a stored file, not an act: the image goes nowhere
+# until a separate send parks or shares it. Explicit rather than riding
+# the verb ladder because "generate" is neither risky nor read-only,
+# and the fail-safe default would park every attempt.
+_MEDIA_GENERATION = re.compile(r"^generate_image$")
 
 
 # The config vocabulary's two faces, by path root. Personal tuning applies
@@ -172,6 +183,13 @@ class Policy:
                 Decision.ALLOW,
                 "builtin:web-research",
                 "web research — reads a page or search results, nothing is changed",
+            )
+        if _MEDIA_GENERATION.match(tool_name):
+            return Ruling(
+                Decision.ALLOW,
+                "builtin:media-generation",
+                "image generation — the prompt reaches the provider and the "
+                "result is a stored file; sending it anywhere still waits for approval",
             )
         lowered = tool_name.lower()  # Composio's UPPER_SNAKE names classify by the same verbs
         if lowered.startswith("composio__"):

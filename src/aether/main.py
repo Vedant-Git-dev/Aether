@@ -37,6 +37,7 @@ from .llm.registry import ProviderRegistry
 from .logging_setup import configure_logging
 from .media.editing import MediaEditor
 from .media.frames import FrameWatcher
+from .media.generate import ImageGenerator
 from .media.store import MediaStore
 from .media.voice import GroqTranscriber
 from .memory.context import ContextBuilder
@@ -269,6 +270,12 @@ def create_app(
         editor = MediaEditor(_run_job, counters, config.media, media_store, _ffmpeg_capable)
         app.state.media_editor = editor
 
+        # the image-maker's runner — keyless Pollinations by default, the
+        # AI Studio key as the quality rung; every made image is a stored
+        # file, capped per day
+        image_generator = ImageGenerator(env_resolver, counters, config, media_store)
+        app.state.image_generator = image_generator
+
         # --- llm providers (best effort: the agent boots without keys) ----
         try:
             providers = ProviderRegistry.from_config(settings, config.llm)
@@ -405,6 +412,7 @@ def create_app(
             media=media_store,
             providers=providers,
             editor=editor,
+            generator=image_generator,
         )
         log.info("native tools registered: %d", native)
 
