@@ -2108,30 +2108,49 @@ class AgentLoop:
             self._note_call(trace, call, result, ruling=ruling, approval_id=existing.id)
             return result
 
-        # REQUIRE_APPROVAL: park it, ask, and let the turn go on. A call
-        # that carries a stored media id marks the row (the indexed
-        # reference keeps that blob safe from eviction while the question
-        # waits) and shows the media itself with the ask when the bytes
-        # are still there — a gone blob degrades to the words alone
+        # REQUIRE_APPROVAL: park it, ask, and let the turn go on — but a
+        # call that names a stored file never parks. An approval must only
+        # ever be asked for an action that can run exactly as offered: a
+        # missing or unreadable file can't run (there is nothing to
+        # attach), and a present one can't run either — the connected
+        # actions take parameters, not bytes, so the file would silently
+        # stay behind while "sent" got said. Both are refused in plain
+        # words before any row is created; the model relays the reason, or
+        # proposes the action again without the file if the user wants it.
         media_id = call.arguments.get("media_id") if isinstance(call.arguments, dict) else None
         if isinstance(media_id, bool) or not isinstance(media_id, int) or media_id < 1:
             media_id = None
+        if media_id is not None:
+            record = await self._media.get(media_id) if self._media is not None else None
+            if record is None:
+                why = (
+                    f"not proposed: the file it would carry (media id {media_id}) is "
+                    "no longer stored — it may have been removed to make room for "
+                    "newer files, or that id was never a stored file. Tell the user "
+                    "plainly and ask them to send the file again."
+                )
+            else:
+                why = (
+                    "not proposed: stored files can't yet be attached to that "
+                    "action — it would run without the file. If the user still "
+                    "wants the action, propose the call again without media_id "
+                    "and say plainly that the file will stay behind."
+                )
+            result = ToolResult(tool_call_id=call.id, name=call.name, content=why)
+            self._note_call(trace, call, result, ruling=ruling)
+            return result
         approval = await self._approvals.create(
             tool_name=call.name,
             params=call.arguments,
             rules_matched=ruling.matched_rule,
             note=ruling.reason,
-            media_id=media_id,
         )
-        attachment = None
-        if media_id is not None and self._media is not None:
-            record = await self._media.get(media_id)
-            if record is not None:
-                attachment = Attachment.from_record(record)
-        media = {"attachment": attachment} if attachment is not None else {}
-        await self._surfaces.present_approval(
-            approval.id, describe_ask(call.name, call.arguments), **media
-        )
+        # the card says what is asked, the details worth seeing, and why it
+        # needs a tap — the rule's own plain words, never its id
+        ask = describe_ask(call.name, call.arguments)
+        if ruling.reason:
+            ask = f"{ask}\n\n(needs approval — {ruling.reason})"
+        await self._surfaces.present_approval(approval.id, ask)
         result = ToolResult(
             tool_call_id=call.id,
             name=call.name,
@@ -2209,15 +2228,33 @@ class AgentLoop:
                 "The decision record has exactly what happened."
             )
         else:
-            await self._approvals.mark_executed(approval.id)
-            log.info("approval %s executed", approval.id)
-            trace["result"] = result
-            trace["is_error"] = False
-            # plain words only — the exact result stays in the decision
-            # record and the trace; a raw dump never reaches the user
-            trace["chat_refs"] = await self._surfaces.send_to_user(
-                describe_outcome(approval.tool_name, approval.params)
-            )
+            # a flattened "error: ..." answer is a failure wearing a
+            # success's shape — tool errors come back as strings, and this
+            # is the one place that used to read them as confirmation.
+            # "Sent" is only said when the action truly ran.
+            flat = str(result).strip()
+            if flat.startswith("error:"):
+                await self._approvals.mark_failed(approval.id)
+                log.warning(
+                    "approved call %s reported an error: %s", approval.tool_name, flat[:200]
+                )
+                trace["result"] = result
+                trace["is_error"] = True
+                trace["chat_refs"] = await self._surfaces.send_to_user(
+                    "the approved action didn't go through — the service reported "
+                    "an error, so it was not completed. The decision record has "
+                    "exactly what happened."
+                )
+            else:
+                await self._approvals.mark_executed(approval.id)
+                log.info("approval %s executed", approval.id)
+                trace["result"] = result
+                trace["is_error"] = False
+                # plain words only — the exact result stays in the decision
+                # record and the trace; a raw dump never reaches the user
+                trace["chat_refs"] = await self._surfaces.send_to_user(
+                    describe_outcome(approval.tool_name, approval.params)
+                )
         await self._remember_outcome(
             approval,
             "action_failed" if trace["is_error"] else "action_done",

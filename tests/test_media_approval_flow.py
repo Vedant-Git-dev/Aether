@@ -1,10 +1,12 @@
-"""The media-carrying park flow, unit: a parked call that references a
-stored file marks the approval row and shows the file itself with the ask.
+"""The media-carrying park seam, unit: a call that names a stored file is
+refused before any approval row exists — the user is never asked to
+approve an action that cannot run exactly as offered.
 
 test_agent_loop.py owns the loop's general tests (and stays untouched);
-this file only adds the media-out park seam Build F introduced — the
-indexed reference the eviction query needs, and the bytes shown rather
-than described.
+this file only covers the preflight Build F's media-marking park evolved
+into: a missing or unreadable file can't run (nothing to attach), and a
+present one can't run either — the connected actions take parameters,
+not bytes, so "sent" must never be said with the file left behind.
 """
 
 from __future__ import annotations
@@ -13,7 +15,6 @@ from fakes import FakeMediaStore
 from test_agent_loop import LoopKit
 
 from aether.agent.loop import SurfaceFanout
-from aether.connectors.base import Attachment
 from aether.llm.types import ToolCall
 
 _MP4 = b"\x00\x00\x00\x18ftypisom" + b"laptop-tour"
@@ -43,7 +44,10 @@ def _wired(store=None) -> tuple:
     return kit, surface
 
 
-async def test_a_media_carrying_park_marks_the_row_and_shows_the_file() -> None:
+async def test_a_present_file_refuses_the_park_with_a_plain_reason() -> None:
+    """The bytes are there and the action still can't run as offered —
+    the connected tools take parameters, not bytes. No row, no ask, and
+    the reason tells the model exactly what to do instead."""
     store = FakeMediaStore()
     kept = await store.put(_MP4, filename="laptop.mp4", origin="telegram")
     kit, surface = _wired(store)
@@ -56,18 +60,37 @@ async def test_a_media_carrying_park_marks_the_row_and_shows_the_file() -> None:
         )
     )
 
-    assert kit.executed == []  # parked, not run
-    # the row carries the indexed reference — what keeps the blob safe
-    # from eviction while the question waits
-    assert kit.approvals.media_ids == [kept.media_id]
-    # and the ask itself showed the file, not words about it
-    assert surface.approvals[0]["attachment"] == Attachment(
-        "video", "laptop.mp4", "video/mp4", _MP4
+    assert kit.executed == []  # refused before anything ran
+    assert kit.approvals.media_ids == []  # no row was ever parked
+    assert surface.approvals == []  # and the user was never asked
+    assert "can't yet be attached" in result.content
+    assert "media_id" in result.content  # the way out is named
+
+
+async def test_a_missing_file_refuses_the_park_with_a_plain_reason() -> None:
+    """Eviction between arrival and proposal never asks the user to
+    approve a send with nothing attached — the model is told the file is
+    gone and to ask for it again."""
+    store = FakeMediaStore()
+    kept = await store.put(_MP4, filename="laptop.mp4", origin="telegram")
+    store.rows.pop(kept.media_id)
+    kit, surface = _wired(store)
+
+    result = await kit.loop._execute(
+        ToolCall(
+            id="t1",
+            name="mail__send_message",
+            arguments={"to": "a@b.c", "media_id": kept.media_id},
+        )
     )
-    assert "held for approval" in result.content
+
+    assert kit.approvals.media_ids == []
+    assert surface.approvals == []
+    assert "no longer stored" in result.content
+    assert "send the file again" in result.content
 
 
-async def test_a_plain_park_neither_marks_the_row_nor_passes_media() -> None:
+async def test_a_plain_park_neither_refuses_nor_passes_media() -> None:
     kit, surface = _wired(FakeMediaStore())
 
     await kit.loop._execute(
@@ -80,32 +103,27 @@ async def test_a_plain_park_neither_marks_the_row_nor_passes_media() -> None:
     assert set(surface.approvals[0]) == {"approval_id", "text"}
 
 
-async def test_a_parked_call_whose_blob_is_gone_asks_with_words_only() -> None:
-    """Eviction between the ask and the parking never raises — the id is
-    still marked (it is what was asked about), but the words go alone."""
-    store = FakeMediaStore()
-    kept = await store.put(_MP4, filename="laptop.mp4", origin="telegram")
-    store.rows.pop(kept.media_id)
-    kit, surface = _wired(store)
+async def test_a_parked_ask_carries_the_reason_it_needs_a_tap() -> None:
+    """The card shows the rule's own plain words under the question —
+    the user taps knowing why, not just what."""
+    kit, surface = _wired(FakeMediaStore())
 
     await kit.loop._execute(
-        ToolCall(
-            id="t1",
-            name="mail__send_message",
-            arguments={"to": "a@b.c", "media_id": kept.media_id},
-        )
+        ToolCall(id="t1", name="mail__send_message", arguments={"to": "a@b.c", "body": "hi"})
     )
 
-    assert kit.approvals.media_ids == [kept.media_id]
-    assert set(surface.approvals[0]) == {"approval_id", "text"}
+    text = surface.approvals[0]["text"]
+    assert text.startswith("Send the email")
+    assert "(needs approval — " in text
 
 
-async def test_a_junk_media_id_is_ignored_rather_than_marked() -> None:
-    """Only a real integer id marks the row — booleans (a bool is an int
-    in Python), zero, negatives, and strings never reach the store. Each
-    call parks a distinct request, so the loop's own duplicate-pending
-    dedup (False == 0 under Python value equality) stays out of the way."""
-    kit, _ = _wired(FakeMediaStore())
+async def test_a_junk_media_id_is_ignored_rather_than_refused() -> None:
+    """Only a real integer id names a file — booleans (a bool is an int
+    in Python), zero, negatives, and strings never reach the store, so
+    the call parks like any plain one. Each call parks a distinct
+    request, so the loop's own duplicate-pending dedup (False == 0 under
+    Python value equality) stays out of the way."""
+    kit, surface = _wired(FakeMediaStore())
     for bad in (True, False, 0, -1, "3", None):
         await kit.loop._execute(
             ToolCall(
@@ -115,3 +133,4 @@ async def test_a_junk_media_id_is_ignored_rather_than_marked() -> None:
             )
         )
     assert kit.approvals.media_ids == [None] * 6
+    assert len(surface.approvals) == 6

@@ -78,9 +78,10 @@ class Approvals:
         media_id: int | None = None,
     ) -> Approval:
         """Park a call. The row is written (params encrypted, bound to the
-        row id via AAD) and an audit entry records the hold. A call that
-        carries a stored media id marks the row — the indexed reference
-        keeps that blob safe from eviction while the question waits."""
+        row id via AAD) and an audit entry records the hold. `media_id`
+        stays supported for rows parked before media-carrying calls began
+        being refused at the gate — those legacy references keep their
+        blobs safe from eviction while their questions still wait."""
         expires_at = datetime.now(UTC) + self._ttl
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(

@@ -179,6 +179,7 @@ _SALIENT_PARAMS: tuple[tuple[str, str], ...] = (
     ("to", "to"),
     ("recipient", "to"),
     ("recipients", "to"),
+    ("recipient_email", "to"),
     ("email", "to"),
     ("channel", "channel"),
     ("channel_id", "channel"),
@@ -187,6 +188,7 @@ _SALIENT_PARAMS: tuple[tuple[str, str], ...] = (
     ("username", "username"),
     ("title", "title"),
     ("subject", "subject"),
+    ("body", "body"),
     ("label", "label"),
     ("name", "name"),
     ("query", "query"),
@@ -194,6 +196,10 @@ _SALIENT_PARAMS: tuple[tuple[str, str], ...] = (
     ("file_name", "file"),
     ("path", "path"),
 )
+
+# a body is a preview, not a paste: one line, clipped, so the card shows
+# what the message says without becoming the message
+_BODY_PREVIEW_CHARS = 77
 
 
 def _action_words(name: str) -> ActionWords:
@@ -247,6 +253,12 @@ def _salient_context(params: Any) -> str:
         if not isinstance(value, (str, int, float)):
             continue
         text = str(value).strip()
+        if key == "body":
+            # a preview on one line — newlines flatten, long bodies clip,
+            # so the card says what the message says without reciting it
+            text = " ".join(text.split())
+            if len(text) > 80:
+                text = text[:_BODY_PREVIEW_CHARS] + "..."
         if not text or len(text) > 80:
             continue
         shown = f"'{text}'" if " " in text else text
