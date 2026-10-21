@@ -9,6 +9,7 @@ the MessagingConnector base class.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -18,7 +19,7 @@ import httpx
 import pytest
 from fakes import FakeApprovals, FakeSurfaceConnector
 from telegram import Chat, Message, Update
-from telegram.error import NetworkError
+from telegram.error import Conflict, NetworkError
 
 from aether.agent.loop import SurfaceFanout
 from aether.authz.approvals import APPROVED, DENIED
@@ -225,16 +226,42 @@ class FakeTelegramApp:
         self.shutdown = True
 
 
+class FakeProcessedLedger:
+    """The in-memory double of ProcessedUpdates — a set is the whole
+    contract: the first sighting wins, every later delivery is a dup."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.seen: set[tuple[str, int]] = set()
+        self.fail = fail
+
+    async def record(self, source: str, update_id: int) -> bool:
+        if self.fail:
+            raise RuntimeError("ledger down")
+        key = (source, update_id)
+        if key in self.seen:
+            return False
+        self.seen.add(key)
+        return True
+
+
 def _tg_update(
-    text: str, username: str = "vedant", user_id: int = 1, chat_id: int = 42, reply_to=None
+    text: str,
+    username: str = "vedant",
+    user_id: int = 1,
+    chat_id: int = 42,
+    reply_to=None,
+    update_id: int | None = None,
 ):
     return SimpleNamespace(
+        update_id=update_id,
         effective_message=SimpleNamespace(text=text, chat_id=chat_id, reply_to_message=reply_to),
         effective_user=SimpleNamespace(username=username, id=user_id),
     )
 
 
-async def _started_telegram(approvals=None, decisions=None, inbound=None, task_decisions=None):
+async def _started_telegram(
+    approvals=None, decisions=None, inbound=None, task_decisions=None, processed=None
+):
     app = FakeTelegramApp()
     factory_calls: list[str] = []
 
@@ -248,6 +275,7 @@ async def _started_telegram(approvals=None, decisions=None, inbound=None, task_d
         on_decision=decisions,
         on_inbound=inbound,
         on_task_decision=task_decisions,
+        processed=processed,
         app_factory=factory,
     )
     await connector.start()
@@ -530,6 +558,92 @@ async def test_telegram_send_gives_up_after_sustained_failure() -> None:
         await connector.send_to_user("down")
     assert flaky.failures == 99 - SEND_ATTEMPTS  # exactly the bounded attempts
     assert app.bot.sent == []
+
+
+async def test_telegram_a_redelivered_update_is_processed_once() -> None:
+    """Long polling's offset lives only in memory — a restart or a network
+    retry re-delivers the same update id, and without the durable ledger
+    the agent answers twice. The ledger decides, not the offset."""
+    received: list[InboundMessage] = []
+
+    async def inbound(message: InboundMessage) -> None:
+        received.append(message)
+
+    ledger = FakeProcessedLedger()
+    _, app = await _started_telegram(inbound=inbound, processed=ledger)
+    update = _tg_update("send the video back", update_id=5001)
+
+    await app.handlers[0].callback(update, None)
+    await app.handlers[0].callback(update, None)  # the redelivery
+
+    assert [m.text for m in received] == ["send the video back"]
+
+
+async def test_telegram_a_ledger_failure_never_drops_a_message() -> None:
+    """The ledger is an optimization, not the source of truth — when it is
+    down the update is processed anyway, because a dropped real message
+    costs more than the rare duplicate that slips through."""
+    received: list[InboundMessage] = []
+
+    async def inbound(message: InboundMessage) -> None:
+        received.append(message)
+
+    ledger = FakeProcessedLedger(fail=True)
+    _, app = await _started_telegram(inbound=inbound, processed=ledger)
+
+    await app.handlers[0].callback(_tg_update("hi", update_id=7), None)
+
+    assert [m.text for m in received] == ["hi"]
+
+
+async def test_telegram_a_token_conflict_names_the_second_poller(caplog) -> None:
+    """A 409 means another process is polling with the same bot token —
+    the one error that is a diagnosis, not just noise, and it must say
+    so instead of streaming identical failures with no explanation."""
+    connector, _ = await _started_telegram()
+    caplog.set_level(logging.ERROR, logger="aether.connectors.telegram")
+
+    await connector._on_error(
+        None, SimpleNamespace(error=Conflict("terminated by other getUpdates request"))
+    )
+
+    assert "another poller" in caplog.text
+    # and the ordinary failure stays the one clean line it always was
+    await connector._on_error(None, SimpleNamespace(error=NetworkError("blip")))
+    assert "telegram update failed" in caplog.text
+
+
+async def test_telegram_a_button_press_targets_the_chat_it_was_tapped_in() -> None:
+    """The outcome of a tap belongs where the tap happened — a reply
+    target left over from an earlier inbound in another chat must not
+    steal it, and the outcome quotes the card it answers."""
+    approvals = FakeApprovals()
+    connector, app = await _started_telegram(approvals=approvals)
+    await app.handlers[0].callback(_tg_update("hi", chat_id=42), None)  # the stale target
+    parked = await approvals.create(tool_name="mail__send_message", params={"to": "a@b.c"})
+
+    answered: list[str | None] = []
+
+    async def answer(text: str | None = None) -> None:
+        answered.append(text)
+
+    async def edit_message_reply_markup(reply_markup=None) -> None:
+        pass
+
+    update = SimpleNamespace(
+        callback_query=SimpleNamespace(
+            data=f"aether:approve:{parked.id}",
+            answer=answer,
+            edit_message_reply_markup=edit_message_reply_markup,
+            message=SimpleNamespace(chat=SimpleNamespace(id=77), message_id=555),
+        )
+    )
+    await app.handlers[1].callback(update, None)
+
+    await connector.send_to_user("sent the email")
+
+    assert app.bot.sent[-1]["chat_id"] == 77  # the tapping chat, not chat 42
+    assert app.bot.sent[-1]["reply_parameters"].message_id == 555  # quotes the card
 
 
 async def test_telegram_disabled_never_builds_an_app() -> None:

@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyParameters, Update
-from telegram.error import NetworkError
+from telegram.error import Conflict, NetworkError
 from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filters
 
 from ..authz.approvals import APPROVED, DENIED
@@ -28,6 +28,7 @@ from .base import (
     TaskDecisionCallback,
     classify_attachment,
 )
+from .processed import ProcessedUpdates
 
 log = logging.getLogger("aether.connectors.telegram")
 
@@ -60,6 +61,7 @@ class TelegramConnector(MessagingConnector):
         on_decision: DecisionCallback | None = None,
         on_inbound: InboundHandler | None = None,
         on_task_decision: TaskDecisionCallback | None = None,
+        processed: ProcessedUpdates | None = None,
         app_factory: Any = None,
     ) -> None:
         super().__init__(
@@ -70,6 +72,7 @@ class TelegramConnector(MessagingConnector):
             on_task_decision=on_task_decision,
         )
         self._token = token
+        self._processed = processed
         self._app_factory = app_factory or self._default_app_factory
         self._app: Any = None
         self._chat_ref: str | None = None
@@ -117,6 +120,10 @@ class TelegramConnector(MessagingConnector):
     # -- inbound ------------------------------------------------------------------
 
     async def _on_message(self, update: Update, context: Any) -> None:
+        # a retry or a restart re-delivers the same update — the durable
+        # ledger decides "first sighting", never the in-memory offset
+        if not await self._first_sighting(update):
+            return
         message = update.effective_message
         user = update.effective_user
         if message is None or user is None:
@@ -153,6 +160,21 @@ class TelegramConnector(MessagingConnector):
                 message_id=str(message_id) if message_id is not None else "",
             )
         )
+
+    async def _first_sighting(self, update: Any) -> bool:
+        """True when this update was never processed before. The ledger is
+        the durable word on delivery — but a ledger failure is never a
+        reason to lose a real message, so it reads as a first sighting."""
+        if self._processed is None:
+            return True
+        update_id = getattr(update, "update_id", None)
+        if update_id is None:
+            return True
+        try:
+            return await self._processed.record("telegram", int(update_id))
+        except Exception:
+            log.warning("telegram dedup ledger failed — processing anyway", exc_info=True)
+            return True
 
     async def _collect_attachments(self, message: Any) -> list[Attachment]:
         """Photos and files the user sent, downloaded now — the connector is
@@ -239,6 +261,15 @@ class TelegramConnector(MessagingConnector):
         data = query.data or ""
         if not data or not data.startswith(_CALLBACK_PREFIX):
             return
+        # the outcome belongs in the chat where the tap happened, not
+        # wherever the last inbound arrived — and it quotes the card it
+        # answers, so it reads as the answer to the tapped question
+        tapped = getattr(query, "message", None)
+        tapped_chat = getattr(tapped, "chat", None) if tapped is not None else None
+        tapped_chat_id = getattr(tapped_chat, "id", None)
+        if tapped_chat_id is not None:
+            self._chat_ref = str(tapped_chat_id)
+            self._reply_message_id = getattr(tapped, "message_id", None)
         body = data[len(_CALLBACK_PREFIX) :]
         # a task verdict rides its own namespace — "task:<verb>:<task id>"
         # — so it can never collide with an approval's "<verb>:<approval id>"
@@ -276,7 +307,19 @@ class TelegramConnector(MessagingConnector):
     async def _on_error(self, update: object, context: Any) -> None:
         """One clean line — without a registered handler PTB dumps the whole
         'No error handlers are registered' traceback per failed update."""
-        log.error("telegram update failed: %s", getattr(context, "error", "unknown error"))
+        error = getattr(context, "error", None)
+        if isinstance(error, Conflict):
+            # Telegram allows one getUpdates per bot token: a 409 means
+            # another process is polling with the same token (a second
+            # instance, or a leftover webhook). Saying so plainly beats a
+            # stream of identical errors with no diagnosis attached.
+            log.error(
+                "telegram: another poller is using this bot token — Telegram "
+                "allows one getUpdates at a time, so this instance keeps "
+                "losing the race; stop the other process and it recovers"
+            )
+            return
+        log.error("telegram update failed: %s", error or "unknown error")
 
     # -- outbound --------------------------------------------------------------------
 

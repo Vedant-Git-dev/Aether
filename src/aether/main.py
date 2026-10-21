@@ -24,7 +24,7 @@ from .chat.ws import router as chat_router
 from .composio_bridge import ComposioBridge
 from .config import AppConfig, Settings, load_config
 from .config_store import ConfigManager, ConfigOverrides
-from .connectors import build_messaging_connectors
+from .connectors import ProcessedUpdates, build_messaging_connectors
 from .connectors.attachments import AttachmentProcessor
 from .connectors.mail_allowlist import MailAllowlist
 from .connectors.mcp_host import MCPHost
@@ -257,6 +257,11 @@ def create_app(
         media_store = MediaStore(pool, cipher, config.media)
         app.state.media_store = media_store
 
+        # the once-only word on platform updates — long polling's offset
+        # lives only in memory, so the connectors need the durable
+        # ledger to know a redelivery from a fresh message
+        processed_updates = ProcessedUpdates(pool)
+
         # whether any sandbox on the ladder could take an edit job —
         # asked before any bytes travel, because editing has no
         # degraded fallback to fall back to
@@ -461,6 +466,7 @@ def create_app(
             on_decision=agent.execute_decision,
             on_inbound=agent.handle_inbound,
             on_task_decision=proactive_worker.decide_task,
+            processed=processed_updates,
         )
         surfaces.add_connectors(connectors)
         for connector in connectors:
