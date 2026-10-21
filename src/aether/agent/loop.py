@@ -306,19 +306,33 @@ def _settled_key(tool: str, params: Any) -> str:
     return f"{tool}\x00{params_blob(params if isinstance(params, dict) else {})}"
 
 
+# the one answer both sending tools give when words actually went out —
+# every refusal answers with different words, so delivery is detected by
+# the handler's own note, never by the text the model proposed (a refused
+# share_media still carries text in its params; only its result says
+# whether anything left the building)
+_DELIVERY_NOTE = "Sent to the user's chat surfaces."
+
+
 def _delivered_by_tool(calls: list[dict[str, Any]]) -> bool:
     """True when the turn already put words in front of the user through
-    send_chat_message — a send that actually delivered (allowed, no error,
-    non-empty text), not one that was denied, parked, or refused."""
+    a sending tool — send_chat_message or share_media — a send that
+    actually delivered, not one that was denied, parked, or refused."""
     for call in calls:
-        if call.get("name") != "send_chat_message":
+        if call.get("name") not in ("send_chat_message", "share_media"):
             continue
         if call.get("decision") != "allow" or call.get("is_error"):
             continue
-        if not str(call.get("params", {}).get("text", "")).strip():
-            continue  # the handler refuses empty text; nothing went out
-        return True
+        if call.get("result") == _DELIVERY_NOTE:
+            return True
     return False
+
+
+def _parked_this_turn(calls: list[dict[str, Any]]) -> bool:
+    """True when the turn ended with an approval card in front of the
+    user — the card is the turn's one terminal outcome; any final reply
+    beside it reads as filler ("OK.") or as a duplicate of the ask."""
+    return any(call.get("approval_id") is not None for call in calls)
 
 
 # the value sentinel: "not on the line" — distinct from None, which is an
@@ -1684,7 +1698,9 @@ class AgentLoop:
                 max_iterations=self._config.agent.max_tool_iterations,
             )
             reply = final.text.strip()
-            if reply and not _delivered_by_tool(calls):
+            delivered = _delivered_by_tool(calls)
+            parked = _parked_this_turn(calls)
+            if reply and not delivered and not parked:
                 if messages:
                     # the user spoke first — a reply is solicited, it never
                     # waits; record where it landed so a later "why?" can
@@ -1702,11 +1718,17 @@ class AgentLoop:
                     if refs:
                         trace["chat_refs"] = refs
             elif reply:
-                # the model already sent its words this turn via send_chat_message;
-                # delivering the final reply too is what reads as a duplicate —
-                # the same answer twice, differently worded. The reply stays in
-                # the trace, so replay still shows how the turn ended.
-                log.info("reply not sent — send_chat_message already reached the user this turn")
+                # the turn already ended in front of the user — a sending
+                # tool delivered, or an approval card is waiting on a tap;
+                # a final reply beside either reads as the same answer
+                # twice, differently worded, or as filler ("OK.") after
+                # the card. The reply stays in the trace, so replay still
+                # shows how the turn ended.
+                log.info(
+                    "reply not sent — the turn already reached the user (delivered=%s parked=%s)",
+                    delivered,
+                    parked,
+                )
         except Exception as exc:
             trace["error"] = f"{type(exc).__name__}: {exc}"
             if messages:
@@ -2010,6 +2032,27 @@ class AgentLoop:
             return result
 
         if ruling.decision is Decision.ALLOW:
+            # the same allowed call proposed twice in one turn returns the
+            # first result instead of running again — a doubled send is
+            # how one request became two identical replies. The gate still
+            # rules and the repeat is still recorded; only the second
+            # execution is skipped, and failures stay retryable (an
+            # errored first call never satisfies the repeat).
+            if trace:
+                for entry in trace:
+                    if (
+                        entry.get("name") == call.name
+                        and entry.get("params") == call.arguments
+                        and entry.get("decision") == "allow"
+                        and not entry.get("is_error")
+                    ):
+                        result = ToolResult(
+                            tool_call_id=call.id,
+                            name=call.name,
+                            content=str(entry.get("result", "")),
+                        )
+                        self._note_call(trace, call, result, ruling=ruling)
+                        return result
             try:
                 content = await self._tools.execute(call.name, call.arguments)
             except UnknownToolError:
