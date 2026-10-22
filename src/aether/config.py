@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     gemini_api_key: str = ""
     ollama_base_url: str = "http://localhost:11434/v1"
+    nvidia_api_key: str = ""
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
 
     # Messaging connectors
     telegram_bot_token: str = ""
@@ -79,7 +81,7 @@ class Settings(BaseSettings):
 
 
 class LLMConfig(BaseModel):
-    provider: Literal["anthropic", "openai", "gemini", "ollama"] = "anthropic"
+    provider: Literal["anthropic", "openai", "gemini", "ollama", "nvidia"] = "anthropic"
     model: str = "claude-opus-5"
     vision_model: str | None = None
     salience_model: str | None = None
@@ -91,6 +93,9 @@ class LLMConfig(BaseModel):
     # the hosted providers are inherently vision-capable. Setting a
     # vision_model implies this regardless.
     ollama_vision: bool = False
+    # NIM hosts both text-only and vision-capable models under one API —
+    # same ambiguity as Ollama, same fix: a config flag names the choice.
+    nvidia_vision: bool = False
 
 
 class AgentConfig(BaseModel):

@@ -94,6 +94,11 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
                 label="Local vision",
                 hint="Whether the local setup's model can read images.",
             ),
+            FieldSpec(
+                path="llm.nvidia_vision",
+                label="NVIDIA vision",
+                hint="Whether the chosen NVIDIA NIM model can read images.",
+            ),
         ),
     ),
     GroupSpec(
@@ -290,6 +295,11 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
     ),
     CredentialSpec(
         name="GEMINI_API_KEY",
+        label="Provider API key",
+        hint="Needed when the provider is set to the matching one.",
+    ),
+    CredentialSpec(
+        name="NVIDIA_API_KEY",
         label="Provider API key",
         hint="Needed when the provider is set to the matching one.",
     ),

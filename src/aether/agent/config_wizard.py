@@ -141,12 +141,13 @@ _SECTIONS: tuple[_Section, ...] = (
                 "who makes me think",
                 "who should make me think? (currently {cur} — heads-up: "
                 "llm changes restart me, back in a few seconds)\n"
-                "1 — anthropic\n2 — openai\n3 — gemini\n4 — ollama",
+                "1 — anthropic\n2 — openai\n3 — gemini\n4 — ollama\n5 — nvidia",
                 (
                     ("anthropic", "anthropic"),
                     ("openai", "openai"),
                     ("gemini", "gemini"),
                     ("ollama", "ollama"),
+                    ("nvidia", "nvidia"),
                 ),
             ),
             _Setting(
@@ -181,6 +182,12 @@ _SECTIONS: tuple[_Section, ...] = (
                 "ollama_vision",
                 "ollama only: whether my model reads images",
                 "does your ollama model read images — on or off? (currently {cur})",
+            ),
+            _Setting(
+                "llm.nvidia_vision",
+                "nvidia_vision",
+                "nvidia only: whether my model reads images",
+                "does your nvidia model read images — on or off? (currently {cur})",
             ),
             _Setting(
                 "llm.max_tokens",
