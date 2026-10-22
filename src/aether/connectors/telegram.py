@@ -148,6 +148,17 @@ class TelegramConnector(MessagingConnector):
             len(attachments),
         )
         reply_to = getattr(message, "reply_to_message", None)
+        reply_to_text = ""
+        if reply_to is not None:
+            # the answered message's words live in its caption when it
+            # carried a file, and its own filename rides along — so
+            # "send it back" as a reply resolves by metadata instead of
+            # a guessed media id
+            reply_to_text = reply_to.text or getattr(reply_to, "caption", None) or ""
+            name = self._replied_file_name(reply_to)
+            if name is not None:
+                marker = f"(a message that carried the file '{name}')"
+                reply_to_text = f"{reply_to_text} {marker}".strip()
         await self._emit_inbound(
             InboundMessage(
                 surface="telegram",
@@ -155,7 +166,7 @@ class TelegramConnector(MessagingConnector):
                 text=text,
                 chat_ref=chat_ref,
                 reply_to_id=str(reply_to.message_id) if reply_to is not None else "",
-                reply_to_text=(reply_to.text or "") if reply_to is not None else "",
+                reply_to_text=reply_to_text,
                 attachments=tuple(attachments),
                 message_id=str(message_id) if message_id is not None else "",
             )
@@ -175,6 +186,28 @@ class TelegramConnector(MessagingConnector):
         except Exception:
             log.warning("telegram dedup ledger failed — processing anyway", exc_info=True)
             return True
+
+    @staticmethod
+    def _replied_file_name(message: Any) -> str | None:
+        """The name of the file the replied-to message carried, from the
+        platform's own fields — photos and voice notes have none, so
+        they fall back to the same names the shared event uses."""
+        document = getattr(message, "document", None)
+        if document is not None:
+            return getattr(document, "file_name", None) or "file"
+        if getattr(message, "photo", None):
+            return "photo.jpg"
+        for field, fallback in (
+            ("video", "video.mp4"),
+            ("video_note", "video_note.mp4"),
+            ("voice", "voice.ogg"),
+        ):
+            if getattr(message, field, None) is not None:
+                return fallback
+        audio = getattr(message, "audio", None)
+        if audio is not None:
+            return getattr(audio, "file_name", None) or "audio.mp3"
+        return None
 
     async def _collect_attachments(self, message: Any) -> list[Attachment]:
         """Photos and files the user sent, downloaded now — the connector is

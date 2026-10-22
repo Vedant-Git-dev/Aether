@@ -339,6 +339,40 @@ async def test_telegram_a_reply_carries_what_it_answers() -> None:
     ]
 
 
+async def test_telegram_a_reply_to_a_file_message_names_the_file() -> None:
+    """A reply to a file-bearing message used to carry no words at all —
+    the answered message's text was read from .text, which is empty when
+    the words live in the caption, and the file itself was invisible. The
+    reply now carries the caption AND the file's own name, so a later
+    share resolves by metadata instead of a guessed id."""
+    received: list[InboundMessage] = []
+
+    async def inbound(message: InboundMessage) -> None:
+        received.append(message)
+
+    connector, app = await _started_telegram(inbound=inbound)
+    await app.handlers[0].callback(
+        _tg_update(
+            "send it back",
+            reply_to=SimpleNamespace(
+                message_id=101,
+                text=None,
+                caption="the tour",
+                document=SimpleNamespace(file_name="laptop.mp4"),
+            ),
+        ),
+        None,
+    )
+    assert received[0].reply_to_text == "the tour (a message that carried the file 'laptop.mp4')"
+
+    # a photo with no caption still names the file, marker alone
+    await app.handlers[0].callback(
+        _tg_update("that one", reply_to=SimpleNamespace(message_id=102, photo=[{}], text=None)),
+        None,
+    )
+    assert received[1].reply_to_text == "(a message that carried the file 'photo.jpg')"
+
+
 async def test_telegram_send_answers_with_the_message_id() -> None:
     connector, app = await _started_telegram()
     await app.handlers[0].callback(_tg_update("hi"), None)  # establish the reply target

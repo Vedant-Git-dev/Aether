@@ -10,7 +10,7 @@ from typing import Any
 from aether.agent.traces import Trace
 from aether.authz.approvals import PENDING, Approval
 from aether.llm.types import Message, ToolCall, ToolResult, ToolSpec, Turn
-from aether.media.store import MediaRecord, MediaRef, MediaStoreFull, sniff_media_type
+from aether.media.store import MediaRecord, MediaRef, MediaStoreFull, MediaSummary, sniff_media_type
 from aether.memory.context import AgentContext
 from aether.memory.entities import Entity, PersonRef
 from aether.memory.events import Event, IngestResult
@@ -623,6 +623,10 @@ class FakeMediaStore:
         self.rows: dict[int, MediaRecord] = {}
         self.full = False
         self._next = 1
+        # put-time bookkeeping the summaries read: where each blob came
+        # from and when it landed, newest id first in recent()
+        self._origins: dict[int, str] = {}
+        self._times: dict[int, datetime] = {}
 
     async def put(
         self,
@@ -655,6 +659,8 @@ class FakeMediaStore:
             size=len(data),
             data=data,
         )
+        self._origins[media_id] = origin
+        self._times[media_id] = datetime.now(UTC)
         return MediaRef(
             media_id=media_id,
             media_type=sniff_media_type(data),
@@ -664,6 +670,20 @@ class FakeMediaStore:
 
     async def get(self, media_id: int) -> MediaRecord | None:
         return self.rows.get(media_id)
+
+    async def recent(self, limit: int = 8) -> list[MediaSummary]:
+        ids = sorted(self.rows, reverse=True)[:limit]
+        return [
+            MediaSummary(
+                media_id=media_id,
+                filename=self.rows[media_id].filename,
+                media_type=self.rows[media_id].media_type,
+                size=self.rows[media_id].size,
+                origin=self._origins.get(media_id, ""),
+                created_at=self._times[media_id],
+            )
+            for media_id in ids
+        ]
 
     async def total_bytes(self) -> int:
         return sum(record.size for record in self.rows.values())

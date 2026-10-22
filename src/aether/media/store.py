@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from ..config import MediaConfig
@@ -87,6 +88,20 @@ class MediaRecord:
     media_type: str
     size: int
     data: bytes
+
+
+@dataclass(frozen=True)
+class MediaSummary:
+    """One stored blob's outside — metadata only, the bytes stay sealed.
+    What a resolver needs to match a file by fact: id, sniffed kind,
+    stored name, size, where it came from, and when."""
+
+    media_id: int
+    filename: str
+    media_type: str
+    size: int
+    origin: str
+    created_at: datetime
 
 
 class MediaStoreFull(Exception):
@@ -211,6 +226,29 @@ class MediaStore:
             size=int(row["size"]),
             data=data,
         )
+
+    async def recent(self, limit: int = 8) -> list[MediaSummary]:
+        """The newest stored blobs, metadata only — bytes stay sealed and
+        no last-use is bumped, so listing never reshuffles eviction. The
+        resolver's eyes: which files exist, what each sniffed as, and
+        how new it is, so a "the video I sent" resolves by fact and
+        never by a guessed id."""
+        rows = await self._pool.fetch(
+            "SELECT id, filename, media_type, size, origin, created_at"
+            " FROM media_blobs ORDER BY created_at DESC, id DESC LIMIT $1",
+            limit,
+        )
+        return [
+            MediaSummary(
+                media_id=int(row["id"]),
+                filename=str(row["filename"]),
+                media_type=str(row["media_type"]),
+                size=int(row["size"]),
+                origin=str(row["origin"] or ""),
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
 
     async def total_bytes(self) -> int:
         """Everything currently kept — the quota's other side."""

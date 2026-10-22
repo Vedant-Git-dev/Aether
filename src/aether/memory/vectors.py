@@ -415,12 +415,21 @@ def _chunk_text(source: str, kind: str, payload: dict[str, Any]) -> list[tuple[s
     if kind == "chat_message" and p.get("text"):
         return [("", str(p["text"]))]
     if kind == "shared_image":
-        bits = [
-            str(p.get("description") or ""),
-            str(p.get("caption") or ""),
-            "people: " + ", ".join(p["people"]) if p.get("people") else "",
-            "visible text: " + " | ".join(p["text_visible"]) if p.get("text_visible") else "",
-        ]
+        bits = []
+        # the file's own facts lead the chunk — a later "send it back"
+        # resolves by the id and name, never by a guess
+        if p.get("media_id") is not None:
+            bits.append(
+                f"shared file: {p.get('filename') or 'image'} (media id {p.get('media_id')})"
+            )
+        bits.extend(
+            [
+                str(p.get("description") or ""),
+                str(p.get("caption") or ""),
+                "people: " + ", ".join(p["people"]) if p.get("people") else "",
+                "visible text: " + " | ".join(p["text_visible"]) if p.get("text_visible") else "",
+            ]
+        )
         text = "; ".join(b for b in bits if b)
         return [("", text)] if text else []
     from .events import event_text  # local: events imports vectors' protocol
