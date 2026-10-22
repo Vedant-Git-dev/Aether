@@ -41,12 +41,15 @@ import httpx
 from .base import (
     BACKGROUND,
     ORDINARY,
+    SAFE_NAME,
     TASK_ID,
     JobResult,
     JobSpec,
     KeyResolver,
     WorkbenchError,
+    clip,
     script_digest,
+    validate_names,
 )
 from .minutes import MeterState
 from .transfers import BUNDLE, RESULT, TransferTicket
@@ -57,9 +60,6 @@ _TOKEN = "GITHUB_ACTIONS_TOKEN"
 # the transfer URLs outlive the job's own clock by the slack, so a slow
 # runner still finds them live right after being stopped at the limit
 _TTL_SLACK = 1800
-# a flat file name — the workflow file and every job file must be boring:
-# no paths, no metacharacters, nothing that could climb anywhere
-_SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 
 
@@ -72,24 +72,6 @@ def _parse_iso(value: str) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
-
-
-def _clip(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[:limit] + "…"
-
-
-def _validate(spec: JobSpec) -> None:
-    """Names a spec may carry: flat, plain, and boring — the same rule the
-    sandbox adapters hold, so one spec is safe to hand to any provider."""
-    if not _SAFE_NAME.fullmatch(spec.script_name):
-        raise WorkbenchError(
-            f"the job's script name ({spec.script_name!r}) isn't a plain file name — not run."
-        )
-    if spec.script_name not in spec.files:
-        raise WorkbenchError("the job's script wasn't among its files — not run.")
-    for name in spec.files:
-        if not _SAFE_NAME.fullmatch(name):
-            raise WorkbenchError(f"a job file ({name!r}) isn't a plain file name — not run.")
 
 
 class _Refused(Exception):
@@ -166,15 +148,19 @@ class GitHubActionsWorkbench:
         if self._owns_client:
             await self._client.aclose()
 
+    async def __aenter__(self) -> GitHubActionsWorkbench:
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.aclose()
+
     async def available(self) -> bool:
         if not await self._resolver.resolve(_TOKEN):
             return False
         if self._minutes is None:
             return False
         if not (
-            self._public_url
-            and _REPO.fullmatch(self._repo)
-            and _SAFE_NAME.fullmatch(self._workflow)
+            self._public_url and _REPO.fullmatch(self._repo) and SAFE_NAME.fullmatch(self._workflow)
         ):
             return False
         try:
@@ -200,9 +186,7 @@ class GitHubActionsWorkbench:
                 "the batch queue key isn't set — it can be pasted on the settings page."
             )
         if not (
-            self._public_url
-            and _REPO.fullmatch(self._repo)
-            and _SAFE_NAME.fullmatch(self._workflow)
+            self._public_url and _REPO.fullmatch(self._repo) and SAFE_NAME.fullmatch(self._workflow)
         ):
             raise WorkbenchError(
                 "the batch queue isn't configured — a public address, a repository, "
@@ -212,7 +196,7 @@ class GitHubActionsWorkbench:
             raise WorkbenchError(
                 "the batch queue has no minute meter — its jobs aren't run unmetered."
             )
-        _validate(spec)
+        validate_names(spec)
         started = self._clock()
         try:
             state = await self._minutes.check(self._cap)
@@ -293,8 +277,8 @@ class GitHubActionsWorkbench:
             exit_code = 1
         return JobResult(
             exit_ok=exit_code == 0,
-            stdout=_clip(str(posted.get("stdout") or ""), spec.limits.max_output_bytes),
-            stderr=_clip(str(posted.get("stderr") or ""), spec.limits.max_output_bytes),
+            stdout=clip(str(posted.get("stdout") or ""), spec.limits.max_output_bytes),
+            stderr=clip(str(posted.get("stderr") or ""), spec.limits.max_output_bytes),
             artifacts={},  # batch jobs carry no files back — the report is the result
             duration=duration,
             provider=self.name,

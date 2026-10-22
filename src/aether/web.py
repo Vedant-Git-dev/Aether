@@ -71,7 +71,7 @@ _TOOL_TEXT_LIMIT = 6000
 _SNIPPET_LIMIT = 400
 _MAX_RESULTS = 10
 
-_NOT_CONNECTED = (
+NOT_CONNECTED = (
     "web search isn't connected right now — no search key is set. "
     "One can be pasted on the settings page."
 )
@@ -356,6 +356,19 @@ async def tavily_search(
     ]
 
 
+def build_client() -> httpx.AsyncClient:
+    """One long-lived client with the house timeouts and user-agent, for
+    main.py to build once and hand to WebTools — every web_fetch/web_search
+    call then reuses its connection pool instead of paying a fresh TCP+TLS
+    handshake per call. Redirects stay off: fetch_page follows them by
+    hand, hop by hand, so the address rules can't be skipped."""
+    return httpx.AsyncClient(
+        follow_redirects=False,
+        headers={"user-agent": _USER_AGENT},
+        timeout=httpx.Timeout(_TOTAL_TIMEOUT, connect=_CONNECT_TIMEOUT, read=_READ_TIMEOUT),
+    )
+
+
 def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
@@ -384,8 +397,10 @@ class WebTools:
         self._resolver = resolver
         self._counters = counters
         self._config = config
-        # an optional shared client — production leaves it per call, tests
-        # hand in a mock transport so no test ever touches the network
+        # main.py hands in one long-lived client (build_client()) so every
+        # call reuses its connection pool; tests hand in a mock transport so
+        # no test ever touches the network; None still works per call-site
+        # default in fetch_page/tavily_search for anything constructed bare
         self._client = client
 
     async def _search_key(self) -> str | None:
@@ -423,7 +438,7 @@ class WebTools:
         max_results = _int_param(params, "max_results", 5, _MAX_RESULTS)
         key = await self._search_key()
         if not key:
-            return _NOT_CONNECTED
+            return NOT_CONNECTED
         cap = self._config.agent.max_searches_per_day
         day = today()
         if await self._counters.value(day, "searches") >= cap:

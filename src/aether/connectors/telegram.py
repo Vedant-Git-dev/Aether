@@ -19,6 +19,8 @@ from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filt
 from ..authz.approvals import APPROVED, DENIED
 from .attachments import MAX_ATTACHMENT_BYTES, actual_size_exceeds_cap, reported_size_exceeds_cap
 from .base import (
+    TASK_VERDICT_LABELS,
+    TASK_VERDICTS,
     ApprovalDecider,
     Attachment,
     DecisionCallback,
@@ -196,7 +198,7 @@ class TelegramConnector(MessagingConnector):
         # — so it can never collide with an approval's "<verb>:<approval id>"
         if body.startswith("task:"):
             verb, _, id_part = body[len("task:") :].partition(":")
-            if verb not in ("approve", "revise", "discard") or not id_part.isdigit():
+            if verb not in TASK_VERDICTS or not id_part.isdigit():
                 log.warning("odd telegram callback data: %r", data)
                 with contextlib.suppress(Exception):
                     await query.answer()
@@ -258,12 +260,11 @@ class TelegramConnector(MessagingConnector):
         """A finished background task's result plus the one-tap verdicts
         that apply to it. An odd verdict name never reaches the buttons —
         the fixed vocabulary stays fixed."""
-        labels = {"approve": "Approve", "revise": "Revise", "discard": "Discard"}
         buttons = [
             InlineKeyboardButton(
-                labels[verb], callback_data=f"{_CALLBACK_PREFIX}task:{verb}:{task_id}"
+                TASK_VERDICT_LABELS[verb], callback_data=f"{_CALLBACK_PREFIX}task:{verb}:{task_id}"
             )
-            for verb in ("approve", "revise", "discard")
+            for verb in TASK_VERDICTS
             if verb in options
         ]
         keyboard = InlineKeyboardMarkup([buttons]) if buttons else None

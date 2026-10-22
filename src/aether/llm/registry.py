@@ -13,6 +13,7 @@ from ..config import LLMConfig, Settings
 from .anthropic_provider import AnthropicProvider
 from .base import Provider, ProviderError
 from .gemini_provider import GeminiProvider
+from .nvidia_provider import NvidiaProvider
 from .ollama_provider import OllamaProvider
 from .openai_provider import OpenAIProvider
 
@@ -29,6 +30,14 @@ def _build(settings: Settings, llm: LLMConfig, model: str, vision_capable: bool)
     if llm.provider == "ollama":
         return OllamaProvider.build(
             settings.ollama_base_url, model, llm.max_tokens, supports_vision=vision_capable
+        )
+    if llm.provider == "nvidia":
+        return NvidiaProvider.build(
+            settings.nvidia_api_key,
+            model,
+            llm.max_tokens,
+            supports_vision=vision_capable,
+            base_url=settings.nvidia_base_url,
         )
     raise ProviderError(f"unknown llm.provider: {llm.provider!r}")
 
@@ -47,9 +56,14 @@ class ProviderRegistry:
     @classmethod
     def from_config(cls, settings: Settings, llm: LLMConfig) -> ProviderRegistry:
         # Whether the default instance can see images. For hosted providers
-        # that's inherent; for Ollama it depends entirely on the model the
-        # user pulled, so it's an explicit config flag.
-        default_vision = llm.ollama_vision if llm.provider == "ollama" else True
+        # that's inherent; for Ollama and NVIDIA NIM it depends entirely on
+        # which model was chosen, so it's an explicit config flag for both.
+        if llm.provider == "ollama":
+            default_vision = llm.ollama_vision
+        elif llm.provider == "nvidia":
+            default_vision = llm.nvidia_vision
+        else:
+            default_vision = True
         default = _build(settings, llm, llm.model, default_vision)
 
         providers: dict[str, Provider | None] = {

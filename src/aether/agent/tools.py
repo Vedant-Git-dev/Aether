@@ -1148,7 +1148,7 @@ def register_native_tools(
                         "agent.quiet_urgent_salience, salience.threshold, "
                         "salience.rate_cap_per_hour, llm.provider, llm.model, "
                         "llm.vision_model, llm.salience_model, llm.max_tokens, "
-                        "llm.ollama_vision, messaging.<platform>.enabled, "
+                        "llm.ollama_vision, llm.nvidia_vision, messaging.<platform>.enabled, "
                         "contacts.mode, contacts.allowlist, authz.rules, "
                         "authz.approval_ttl_hours, mcp_servers, "
                         "mcp_servers.<name>.enabled. Tuning (agent.*, "

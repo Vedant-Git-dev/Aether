@@ -65,7 +65,7 @@ _APPLY_NOTES = {
 }
 
 
-def _apply_note(path: str) -> str:
+def apply_note(path: str) -> str:
     """The note for one canonical path — the table first, then the per-app
     contacts paths, which share one note (the enforcement reads the config
     on every message and every read)."""
@@ -241,6 +241,7 @@ class ConfigManager:
         self._host: Any = None
         self._approvals: Any = None
         self._resolver: Any = None
+        self._on_task_decision: Any = None
 
     def wire(
         self,
@@ -251,6 +252,7 @@ class ConfigManager:
         host: Any = None,
         approvals: Any = None,
         resolver: Any = None,
+        on_task_decision: Any = None,
     ) -> None:
         """The live actors the apply hooks talk to. Called once after the
         connectors are up; anything left None logs later and the change
@@ -261,6 +263,7 @@ class ConfigManager:
         self._host = host
         self._approvals = approvals
         self._resolver = resolver
+        self._on_task_decision = on_task_decision
 
     # -- boot -------------------------------------------------------------------
 
@@ -373,7 +376,7 @@ class ConfigManager:
             # names that left the list take their item rows with them
             await self._forget_gone_mcp_rows(old_entries, validated)
         self._mutate(resolved, validated)
-        note = await self._hooks(resolved) or _apply_note(resolved.canonical)
+        note = await self._hooks(resolved) or apply_note(resolved.canonical)
         log.info("config %s set from %s", resolved.canonical, source)
         return self._confirm_set(resolved, validated) + note
 
@@ -401,7 +404,7 @@ class ConfigManager:
             base_value = getattr(resolved.base_container, resolved.field)
             setattr(resolved.container, resolved.field, base_value)
             body = f"{path} reset to config.yaml ({_plain_value(base_value)})."
-        note = await self._hooks(resolved) or _apply_note(path)
+        note = await self._hooks(resolved) or apply_note(path)
         return body + note
 
     async def _mutate_list(self, resolved: _Resolved, op: str, value: Any) -> str:
@@ -429,7 +432,7 @@ class ConfigManager:
         if resolved.root == "mcp_servers":
             await self._forget_gone_mcp_rows(current, new_entries)
         getattr(resolved.container, resolved.field)[:] = new_entries
-        note = await self._hooks(resolved) or _apply_note(resolved.canonical)
+        note = await self._hooks(resolved) or apply_note(resolved.canonical)
         base_count = len(getattr(resolved.base_container, resolved.field))
         return (
             f"{resolved.canonical} updated — {len(new_entries)} entries now "
@@ -682,6 +685,7 @@ class ConfigManager:
             approvals=self._approvals,
             on_decision=self._loop.execute_decision,
             on_inbound=self._loop.handle_inbound,
+            on_task_decision=self._on_task_decision,
         )
         desired = {c.name: c for c in fresh}
         current = {c.name: c for c in self._surfaces.connectors}

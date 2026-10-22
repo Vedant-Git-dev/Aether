@@ -212,6 +212,7 @@ def test_set_config_tuning_paths_are_allowed() -> None:
         "llm.salience_model",
         "llm.max_tokens",
         "llm.ollama_vision",
+        "llm.nvidia_vision",
         "agent.tick_seconds",
         "agent.max_tool_iterations",
         "agent.daily_surface_cap",

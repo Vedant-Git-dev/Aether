@@ -1482,7 +1482,7 @@ async def test_settings_feed_carries_groups_kinds_and_apply_notes() -> None:
     # kind and choices come from the model's own annotations
     provider = by_path["llm.provider"]
     assert provider["kind"] == "choice"
-    assert provider["choices"] == ["anthropic", "openai", "gemini", "ollama"]
+    assert provider["choices"] == ["anthropic", "openai", "gemini", "ollama", "nvidia"]
     assert by_path["llm.max_tokens"]["kind"] == "number"
     assert by_path["llm.ollama_vision"]["kind"] == "toggle"
     assert by_path["agent.quiet_hours"]["kind"] == "text"
@@ -1501,6 +1501,7 @@ async def test_settings_feed_carries_groups_kinds_and_apply_notes() -> None:
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "GEMINI_API_KEY",
+        "NVIDIA_API_KEY",
         "TELEGRAM_BOT_TOKEN",
         "DISCORD_BOT_TOKEN",
         "SLACK_BOT_TOKEN",
