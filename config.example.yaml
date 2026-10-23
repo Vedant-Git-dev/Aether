@@ -41,6 +41,7 @@ llm:
 agent:
   tick_seconds: 30               # agent loop cadence
   max_tool_iterations: 12         # tool-call turns per activation before forcing a summary
+  turn_timeout_seconds: 600      # one reply's hard ceiling; past it the turn stops with a plain message
   daily_surface_cap: 20           # max high-salience items surfaced per day
   max_searches_per_day: 25       # web searches per day (chat + background share it); needs TAVILY_API_KEY
 

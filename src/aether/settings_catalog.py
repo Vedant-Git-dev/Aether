@@ -128,6 +128,12 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
                 note="applies from the next turn",
             ),
             FieldSpec(
+                path="agent.turn_timeout_seconds",
+                label="Reply time limit",
+                hint="How many seconds one reply may take before Aether stops it and tells you.",
+                note="applies from the next turn",
+            ),
+            FieldSpec(
                 path="agent.daily_surface_cap",
                 label="Daily message cap",
                 hint="The most unprompted messages Aether sends in one day.",

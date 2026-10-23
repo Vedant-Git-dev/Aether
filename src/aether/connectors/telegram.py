@@ -217,26 +217,26 @@ class TelegramConnector(MessagingConnector):
         out: list[Attachment] = []
         photos = list(getattr(message, "photo", None) or [])
         if photos:  # sizes ascending — the last is the largest
-            data = await self._download(photos[-1], "photo.jpg")
+            data = await self._download(photos[-1])
             if data is not None:
                 out.append(Attachment("image", "photo.jpg", "image/jpeg", data))
         document = getattr(message, "document", None)
         if document is not None:
             name = getattr(document, "file_name", None) or "file"
             media = getattr(document, "mime_type", None) or ""
-            data = await self._download(document, name)
+            data = await self._download(document)
             if data is not None:
                 out.append(Attachment(classify_attachment(name, media), name, media, data))
         # voice notes and video notes have their own fields — without these
         # they arrived as empty messages and were silently dropped
         voice = getattr(message, "voice", None)
         if voice is not None:
-            data = await self._download(voice, "voice.ogg")
+            data = await self._download(voice)
             if data is not None:
                 out.append(Attachment("audio", "voice.ogg", "audio/ogg", data))
         video_note = getattr(message, "video_note", None)
         if video_note is not None:
-            data = await self._download(video_note, "video_note.mp4")
+            data = await self._download(video_note)
             if data is not None:
                 out.append(Attachment("video", "video_note.mp4", "video/mp4", data))
         # a video sent as a video (not a note) and a music file ride their
@@ -244,23 +244,26 @@ class TelegramConnector(MessagingConnector):
         # a captioned video was answered text-only, as if unsent
         video = getattr(message, "video", None)
         if video is not None:
-            data = await self._download(video, "video.mp4")
+            data = await self._download(video)
             if data is not None:
                 out.append(Attachment("video", "video.mp4", "video/mp4", data))
         audio = getattr(message, "audio", None)
         if audio is not None:
             name = getattr(audio, "file_name", None) or "audio.mp3"
             media = getattr(audio, "mime_type", None) or "audio/mpeg"
-            data = await self._download(audio, name)
+            data = await self._download(audio)
             if data is not None:
                 out.append(Attachment("audio", name, media, data))
         return out
 
-    async def _download(self, telegram_file: Any, filename: str) -> bytes | None:
+    async def _download(self, telegram_file: Any) -> bytes | None:
+        # the log lines below never carry the filename — a file the user
+        # sent is sensitive data, and "which file was too big" is a count,
+        # never a name
         if reported_size_exceeds_cap(
             getattr(telegram_file, "file_size", None), MAX_ATTACHMENT_BYTES
         ):
-            log.warning("telegram file %s is over the size cap — skipped", filename)
+            log.warning("telegram file over the size cap — skipped")
             return None
         try:
             file = await telegram_file.get_file()
@@ -268,20 +271,17 @@ class TelegramConnector(MessagingConnector):
             # on the file now that a file_path exists — still just a hint
             # (also Optional per the Bot API), never trusted on its own
             if reported_size_exceeds_cap(getattr(file, "file_size", None), MAX_ATTACHMENT_BYTES):
-                log.warning("telegram file %s is over the size cap — skipped", filename)
+                log.warning("telegram file over the size cap — skipped")
                 return None
             data = bytes(await file.download_as_bytearray())
         except Exception:
-            log.warning(
-                "telegram file %s couldn't be downloaded — continuing", filename, exc_info=True
-            )
+            log.warning("telegram file couldn't be downloaded — continuing", exc_info=True)
             return None
         # the one check that can't be lied to: whatever either size claimed,
         # a file that's actually too big is never kept in memory
         if actual_size_exceeds_cap(data, MAX_ATTACHMENT_BYTES):
             log.warning(
-                "telegram file %s exceeded the size cap after download (%d bytes) — discarded",
-                filename,
+                "telegram file exceeded the size cap after download (%d bytes) — discarded",
                 len(data),
             )
             return None
@@ -355,6 +355,16 @@ class TelegramConnector(MessagingConnector):
         log.error("telegram update failed: %s", error or "unknown error")
 
     # -- outbound --------------------------------------------------------------------
+
+    async def show_typing(self) -> None:
+        """Telegram's own "typing…" marker — the surface saying work is
+        happening instead of silence. Cosmetic: nothing here may fail the
+        turn, and no chat known yet is a no-op, not an error."""
+        app = self._app
+        if app is None or self._chat_ref is None:
+            return
+        with contextlib.suppress(Exception):
+            await app.bot.send_chat_action(chat_id=int(self._chat_ref), action="typing")
 
     async def send_to_user(self, text: str, *, attachment: Attachment | None = None) -> str | None:
         """Send, and answer with the platform message id — what links a

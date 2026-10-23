@@ -229,22 +229,24 @@ class SlackConnector(MessagingConnector):
         out: dict[str, bytes] = {}
         for f in files:
             url = f.get("url_private_download") or ""
-            name = f.get("name")
             if not url:
                 continue
+            # the log lines below never carry the filename — a file the
+            # user sent is sensitive data, and "which file was too big" is
+            # a count, never a name
             if reported_size_exceeds_cap(f.get("size"), MAX_ATTACHMENT_BYTES):
-                log.warning("slack file %s is over the size cap — skipped", name)
+                log.warning("slack file over the size cap — skipped")
                 continue
             try:
-                data = await self._stream_download(url, name)
+                data = await self._stream_download(url)
             except Exception:
-                log.warning("slack file %s download failed — continuing", name, exc_info=True)
+                log.warning("slack file download failed — continuing", exc_info=True)
                 continue
             if data is not None:
                 out[str(f.get("id"))] = data
         return out
 
-    async def _stream_download(self, url: str, name: str) -> bytes | None:
+    async def _stream_download(self, url: str) -> bytes | None:
         """Downloaded in chunks, stopping the instant the running total
         passes the cap — a reported size (missing, zero, or just wrong)
         never gets the last word on how much we actually pull into memory."""
@@ -258,9 +260,7 @@ class SlackConnector(MessagingConnector):
             async for chunk in response.aiter_bytes():
                 chunks += chunk
                 if len(chunks) > MAX_ATTACHMENT_BYTES:
-                    log.warning(
-                        "slack file %s exceeded the size cap mid-download — discarded", name
-                    )
+                    log.warning("slack file exceeded the size cap mid-download — discarded")
                     return None
         return bytes(chunks)
 

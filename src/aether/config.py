@@ -104,6 +104,11 @@ class AgentConfig(BaseModel):
     tick_seconds: float = 30.0
     max_tool_iterations: int = 12
     daily_surface_cap: int = 20
+    # one reply's hard ceiling: a hung provider or a runaway tool loop
+    # ends with a plain message to the user instead of open-ended
+    # silence. Long enough that a legitimate long tool (a sandbox job
+    # runs up to workbench.job_timeout_minutes) never trips it.
+    turn_timeout_seconds: float = 600.0
     # the web search tool's own brake — shared by chat and the background
     # worker, counted per day, so the free search allowance can't be
     # burned in one afternoon

@@ -130,6 +130,10 @@ def test_factory_with_everything_off_builds_nothing() -> None:
 class FakeTelegramBot:
     def __init__(self) -> None:
         self.sent: list[dict] = []
+        self.actions: list[dict] = []  # chat actions (the typing indicator)
+
+    async def send_chat_action(self, chat_id: int, action: str) -> None:
+        self.actions.append({"chat_id": chat_id, "action": action})
 
     async def send_message(
         self, chat_id: int, text: str, reply_markup=None, **kwargs
@@ -1490,6 +1494,46 @@ async def test_telegram_download_cap_is_exact_at_the_boundary(monkeypatch) -> No
 
     await app.handlers[0].callback(_tg_file_update(b"x" * 11, caption="over cap", size=11), None)
     assert received[-1].attachments == ()
+
+
+async def test_an_oversize_file_never_logs_its_name(caplog) -> None:
+    """Never logging attachment names is a standing constraint — the
+    skip itself is still said, as a fact with no name attached."""
+    connector, app = await _started_telegram()
+    with caplog.at_level(logging.WARNING, logger="aether.connectors.telegram"):
+        await app.handlers[0].callback(
+            _tg_file_update(
+                b"x" * 5,
+                caption="too big",
+                name="salary-negotiation.docx",
+                size=MAX_ATTACHMENT_BYTES + 1,
+            ),
+            None,
+        )
+    assert app.bot.sent == []  # the file never went anywhere
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "size cap" in logged
+    assert "salary-negotiation" not in logged
+
+
+async def test_the_typing_indicator_fires_only_where_a_chat_is_known() -> None:
+    """The "typing…" marker — Telegram's own way of saying work is
+    happening: a no-op before any chat is known, pointed at the chat that
+    last spoke, and suppressed when the platform hiccups, because an
+    indicator is never allowed to fail a turn."""
+    connector, app = await _started_telegram()
+    await connector.show_typing()  # nowhere to point it yet — a no-op
+    assert app.bot.actions == []
+
+    connector._chat_ref = "42"
+    await connector.show_typing()
+    assert app.bot.actions == [{"chat_id": 42, "action": "typing"}]
+
+    async def hiccup(**kwargs):
+        raise RuntimeError("platform hiccup")
+
+    app.bot.send_chat_action = hiccup
+    await connector.show_typing()  # cosmetic: a failure never raises
 
 
 class FakeDiscordAttachment:

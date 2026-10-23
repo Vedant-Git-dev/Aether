@@ -261,7 +261,9 @@ class AttachmentProcessor:
                 attachment.data, filename=attachment.filename, origin=surface
             )
         except MediaStoreFull:
-            log.warning("media store full — the file %s is kept as text only", attachment.filename)
+            # the filename never rides the log — a file the user sent is
+            # sensitive data, and the store's own event carries the name
+            log.warning("media store full — the file is kept as text only")
             return None
 
     async def _image(self, attachment: Attachment, message: InboundMessage) -> AttachmentResult:
@@ -578,11 +580,9 @@ class AttachmentProcessor:
                     ),
                 )
             except Exception:
-                log.warning(
-                    "document indexing failed for %s — backfill will retry",
-                    attachment.filename,
-                    exc_info=True,
-                )
+                # the filename stays out of the log — sensitive data, and
+                # the event's payload already records the name
+                log.warning("document indexing failed — backfill will retry", exc_info=True)
         return AttachmentResult(ingested=ingested)
 
 
@@ -650,21 +650,22 @@ def extract_doc_text(filename: str, media_type: str, data: bytes) -> str:
             return data.decode("utf-8", errors="replace")
         return ""
     except _ZipBombSuspected as exc:
-        log.warning("text extraction for %s refused — %s", filename, exc)
+        log.warning("text extraction refused — %s", exc)
         return ""
     except _DependencyMissing as exc:
         # loud and actionable: this is an out-of-sync environment, not a bad
         # file — every PDF would otherwise silently "extract" to nothing
         # with no clue why, indistinguishable from a corrupt upload
         log.error(
-            "text extraction for %s needs a dependency that isn't installed "
+            "text extraction needs a dependency that isn't installed "
             "(%s) — the environment is out of sync with pyproject.toml",
-            filename,
             exc,
         )
         return ""
     except Exception:
-        log.warning("text extraction failed for %s — continuing", filename, exc_info=True)
+        # the filename never rides the log — a file the user sent is
+        # sensitive data, and the event's payload already records the name
+        log.warning("text extraction failed — continuing", exc_info=True)
         return ""
 
 
@@ -692,7 +693,7 @@ def extract_doc_parts(filename: str, media_type: str, data: bytes) -> list[tuple
         text = extract_doc_text(filename, media_type, data)
         return [("", text)] if text else []
     except Exception:
-        log.warning("structured extraction failed for %s — continuing", filename, exc_info=True)
+        log.warning("structured extraction failed — continuing", exc_info=True)
         return []
 
 

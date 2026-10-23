@@ -27,6 +27,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import secrets
 import time
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -72,6 +73,7 @@ from .prompts import SYSTEM_PROMPT
 from .settings import AgentSettings
 from .tools import (
     FAILURE_REPLY,
+    TIMEOUT_REPLY,
     describe_ask,
     describe_call,
     describe_dismissed,
@@ -109,6 +111,11 @@ _MAX_HISTORY_CHARS = 12_000
 # is offered to each turn as conversation memory. The window above trims it
 # oldest-first under pressure — events and the fresh inbound always survive.
 _TRANSCRIPT_MESSAGES = 20
+
+# Telegram's own "typing…" marker fades after ~5 seconds, so a turn that
+# runs longer refreshes it at this cadence — one fire at turn start would
+# go dark while the work is still honest.
+TYPING_REFRESH_SECONDS = 4.5
 
 
 def _window_history(messages: list[Message], keep_head: int = 1) -> list[Message]:
@@ -294,6 +301,20 @@ class SurfaceFanout:
                 log.exception("%s result presentation failed", connector.name)
         if not self.connectors and self.hub is None:
             log.warning("task #%d result has no surface to appear on", task_id)
+
+    async def show_typing(self) -> None:
+        """The "typing…" marker on every surface that has one — the
+        platform's own way of saying work is happening instead of silence.
+        Cosmetic: a surface without the method is skipped, a failing one is
+        a warning, and nothing here is allowed to cost the turn."""
+        for connector in self.connectors:
+            show = getattr(connector, "show_typing", None)
+            if show is None:
+                continue
+            try:
+                await show()
+            except Exception:
+                log.warning("%s typing indicator failed — continuing", connector.name)
 
 
 def _settled_key(tool: str, params: Any) -> str:
@@ -597,7 +618,9 @@ class AgentLoop:
             return None
         if self._quiet_now() and urgent < self._config.agent.quiet_urgent_salience:
             self._held.append(text)
-            log.info("held for quiet hours: %s", text[:80])
+            # the words never ride the log — held text is the message
+            # itself, and it ships whole when the window ends
+            log.info("held for quiet hours (%d chars)", len(text))
             return None
         return await self._surfaces.send_to_user(text)
 
@@ -628,7 +651,8 @@ class AgentLoop:
             return
         if self._quiet_now():
             self._held.append(text)
-            log.info("held for quiet hours: %s", text[:80])
+            # same rule as _notify: the words stay out of the log
+            log.info("held for quiet hours (%d chars)", len(text))
             return
         media = {"attachment": attachment} if attachment is not None else {}
         await self._surfaces.present_result(task_id, text, options, **media)
@@ -1552,6 +1576,17 @@ class AgentLoop:
             f"above:\n{personality}"
         )
 
+    async def _typing_pulse(self) -> None:
+        """The "typing…" indicator, refreshed until the turn that started
+        this pulse ends — Telegram's own marker fades after ~5 seconds, so
+        one fire at turn start would go dark while the work is still
+        honest. Cancelled by the turn's finally; failures inside the
+        fanout are swallowed there, so this loop only ever ends here or by
+        cancellation."""
+        while True:
+            await self._surfaces.show_typing()
+            await asyncio.sleep(TYPING_REFRESH_SECONDS)
+
     async def _turn(self, messages: list[InboundMessage], observations: list[Event]) -> None:
         provider = self._providers.for_role("reasoning") if self._providers else None
         if provider is None:
@@ -1607,7 +1642,13 @@ class AgentLoop:
         history = _window_history(history, keep_head=1 if context_block else 0)
 
         calls: list[dict[str, Any]] = []  # filled by _execute as the turn runs
+        # a short ref this turn owns: the log lines below carry it, the
+        # trace keeps it, so "why did you say that?" and the server log
+        # meet on one searchable token — the panel renders named keys
+        # only, so the ref never reaches a screen
+        turn_ref = secrets.token_hex(3)
         trace: dict[str, Any] = {
+            "turn": turn_ref,
             "trigger": {
                 "messages": [
                     {
@@ -1688,14 +1729,28 @@ class AgentLoop:
                 )
             return result
 
+        # "typing…" for as long as a solicited turn runs — the surface says
+        # work is happening instead of minutes of silence, and the pulse
+        # dies with the turn (the finally below) so a parked card is never
+        # followed by a ghost indicator. Unprompted ticks never pulse:
+        # nobody is waiting on an answer.
+        typing: asyncio.Task[None] | None = None
+        if messages:
+            typing = asyncio.create_task(self._typing_pulse())
         try:
-            final, full_history = await run_tool_loop(
-                provider,
-                await self._system_prompt(),
-                history,
-                _gate,
-                _execute_unlocking,
-                max_iterations=self._config.agent.max_tool_iterations,
+            # one turn's hard ceiling: a hung provider or a runaway tool
+            # loop ends here (the wait cancels whatever was stuck) instead
+            # of open-ended silence
+            final, full_history = await asyncio.wait_for(
+                run_tool_loop(
+                    provider,
+                    await self._system_prompt(),
+                    history,
+                    _gate,
+                    _execute_unlocking,
+                    max_iterations=self._config.agent.max_tool_iterations,
+                ),
+                timeout=self._config.agent.turn_timeout_seconds,
             )
             reply = final.text.strip()
             delivered = _delivered_by_tool(calls)
@@ -1725,10 +1780,24 @@ class AgentLoop:
                 # the card. The reply stays in the trace, so replay still
                 # shows how the turn ended.
                 log.info(
-                    "reply not sent — the turn already reached the user (delivered=%s parked=%s)",
+                    "reply not sent — the turn already reached the user "
+                    "(turn %s, delivered=%s parked=%s)",
+                    turn_ref,
                     delivered,
                     parked,
                 )
+        except TimeoutError:
+            # the ceiling bit: a handled outcome, not a crash — the trace
+            # keeps the fact, the user gets plain words, and the tick
+            # goes on. No re-raise: nothing is left worth flagging.
+            trace["error"] = f"turn timed out after {self._config.agent.turn_timeout_seconds:.0f}s"
+            log.warning(
+                "turn %s timed out after %.0fs",
+                turn_ref,
+                self._config.agent.turn_timeout_seconds,
+            )
+            if messages:
+                await self._surfaces.send_to_user(TIMEOUT_REPLY)
         except Exception as exc:
             trace["error"] = f"{type(exc).__name__}: {exc}"
             if messages:
@@ -1740,6 +1809,13 @@ class AgentLoop:
                 await self._surfaces.send_to_user(FAILURE_REPLY)
             raise
         finally:
+            # the pulse dies with the turn, whatever ended it — awaited so
+            # the cancelled task never outlives the turn as a dangling
+            # pending warning at loop close
+            if typing is not None:
+                typing.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await typing
             # persist even when the turn died mid-flight: the calls that did
             # run are already in `calls` (filled by reference), so a partial
             # record still answers "what were you doing?"

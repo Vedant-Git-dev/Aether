@@ -224,20 +224,22 @@ class DiscordConnector(MessagingConnector):
         out: list[Attachment] = []
         for attachment in list(getattr(message, "attachments", None) or []):
             name = getattr(attachment, "filename", None) or "file"
+            # the log lines below never carry the filename — a file the
+            # user sent is sensitive data, and "which file was too big" is
+            # a count, never a name
             if reported_size_exceeds_cap(getattr(attachment, "size", None), MAX_ATTACHMENT_BYTES):
-                log.warning("discord file %s is over the size cap — skipped", name)
+                log.warning("discord file over the size cap — skipped")
                 continue
             try:
                 data = await attachment.read()
             except Exception:
-                log.warning("discord file %s download failed — continuing", name, exc_info=True)
+                log.warning("discord file download failed — continuing", exc_info=True)
                 continue
             # the one check that can't be lied to: whatever the reported
             # size claimed, a file that's actually too big is never kept
             if actual_size_exceeds_cap(data, MAX_ATTACHMENT_BYTES):
                 log.warning(
-                    "discord file %s exceeded the size cap after download (%d bytes) — discarded",
-                    name,
+                    "discord file exceeded the size cap after download (%d bytes) — discarded",
                     len(data),
                 )
                 continue

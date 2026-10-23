@@ -56,6 +56,7 @@ _AAD = "config_overrides:value_enc:"
 _APPLY_NOTES = {
     "agent.tick_seconds": " — applies from the next tick",
     "agent.max_tool_iterations": " — applies from the next turn",
+    "agent.turn_timeout_seconds": " — applies from the next turn",
     "agent.quiet_hours": " — the quiet window is live right away",
     "agent.max_searches_per_day": " — applies to the next search",
     "salience.threshold": " — applies to the next scored event",
@@ -1054,7 +1055,8 @@ class ConfigManager:
             a = live.agent
             return (
                 f"agent: tick {_plain_value(a.tick_seconds)}s · up to {a.max_tool_iterations} "
-                f"tool calls a turn · daily cap {a.daily_surface_cap} · "
+                f"tool calls a turn · turns capped at {_plain_value(a.turn_timeout_seconds)}s · "
+                f"daily cap {a.daily_surface_cap} · "
                 f"{a.max_searches_per_day} web searches a day · quiet hours "
                 f"{a.quiet_hours or 'off'} (urgent at {_plain_value(a.quiet_urgent_salience)})"
             )

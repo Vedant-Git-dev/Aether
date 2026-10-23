@@ -119,6 +119,13 @@ FAILURE_REPLY = (
     "Something went wrong on my side — I couldn't finish that just now. Nothing else is affected."
 )
 
+# the plain reply when one turn runs past its ceiling (agent.turn_timeout_seconds):
+# honest about being stopped, and never claiming half-work finished or sent
+TIMEOUT_REPLY = (
+    "That one ran longer than I allow, so I stopped it — nothing was "
+    "half-finished or half-sent. Ask me again and I'll take a fresh run."
+)
+
 
 # how a tool call is said in plain words at each moment it reaches the
 # user: the question when it's held for approval, the words when it's
