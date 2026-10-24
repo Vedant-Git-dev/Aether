@@ -194,9 +194,11 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     assert "warm and a little informal" in text
 
     # the editable surface renders from the backend's feed: the model
-    # group says it restarts, and every control carries its effective value
+    # group says it restarts, and every control carries its effective value;
+    # the provider field itself is gone — every model name now carries its
+    # own service in front
     assert "Saving one of these restarts Aether itself" in text
-    assert page.locator('[data-testid="settings-field-llm.provider"]').input_value() == "anthropic"
+    assert page.locator('[data-testid="settings-field-llm.provider"]').count() == 0
     assert page.locator('[data-testid="settings-field-agent.tick_seconds"]').input_value() == "30"
 
     # a number edit round-trips through the config manager and earns the
@@ -303,7 +305,8 @@ def test_model_fields_are_pickers_over_the_live_catalog(page, live_server, token
     page.wait_for_selector('[data-testid="settings-field-llm.model"]')
 
     # every model field is the picker's trigger button — the old free-text
-    # inputs are gone, while llm.provider stays the plain select it was
+    # inputs are gone, and so is the provider field: every model name now
+    # carries its own service in front
     for path in (
         "llm.model",
         "llm.image_model",
@@ -314,7 +317,7 @@ def test_model_fields_are_pickers_over_the_live_catalog(page, live_server, token
     ):
         trigger = page.locator(f'[data-testid="settings-field-{path}"]')
         assert trigger.evaluate("el => el.tagName") == "BUTTON"
-    assert page.locator('[data-testid="settings-field-llm.provider"]').input_value() == "anthropic"
+    assert page.locator('[data-testid="settings-field-llm.provider"]').count() == 0
 
     # unset fields show their meaning, not a blank: a medium with nothing
     # picked is "None (off)", an unset first-pass skim is "Use default"
@@ -379,6 +382,20 @@ def test_model_fields_are_pickers_over_the_live_catalog(page, live_server, token
         model_list.locator('[data-testid="settings-model-option-gemini/gemini-2.5-flash"]').count()
         == 1
     )
+    # and it forgives the way people say a name: spaced and dotted finds
+    # the dashed id — no exact typing anywhere
+    page.fill('[data-testid="settings-model-search-llm.model"]', "gemini 3.1 flash")
+    page.wait_for_timeout(200)
+    assert (
+        model_list.locator(
+            '[data-testid="settings-model-option-gemini/gemini-3.1-flash-lite"]'
+        ).count()
+        == 1
+    )
+    assert (
+        model_list.locator('[data-testid="settings-model-option-anthropic/claude-opus-5"]').count()
+        == 0
+    )
     page.fill('[data-testid="settings-model-search-llm.model"]', "")
 
     # the refresh button refetches the catalog — the fake's held-back model
@@ -440,12 +457,13 @@ def test_model_fields_are_pickers_over_the_live_catalog(page, live_server, token
     )
 
     # each field offers only the meanings it can really take: the
-    # first-pass skim has no off, memory search has no default
+    # first-pass skim has both its meanings, memory search is a forced
+    # choice — no off, no default, only real models
     page.click('[data-testid="settings-field-llm.salience_model"]')
     page.wait_for_selector('[data-testid="settings-model-list-llm.salience_model"]')
     salience_list = page.locator('[data-testid="settings-model-list-llm.salience_model"]')
     assert salience_list.locator('[data-testid="settings-model-option-default"]').count() == 1
-    assert salience_list.locator('[data-testid="settings-model-option-off"]').count() == 0
+    assert salience_list.locator('[data-testid="settings-model-option-off"]').count() == 1
     # close the open dropdown (its trigger toggles) and clear the sticky
     # header before the next one — the open list overlays the row below
     page.click('[data-testid="settings-field-llm.salience_model"]')
@@ -456,8 +474,14 @@ def test_model_fields_are_pickers_over_the_live_catalog(page, live_server, token
     page.click('[data-testid="settings-field-llm.embedding_model"]')
     page.wait_for_selector('[data-testid="settings-model-list-llm.embedding_model"]')
     embedding_list = page.locator('[data-testid="settings-model-list-llm.embedding_model"]')
-    assert embedding_list.locator('[data-testid="settings-model-option-off"]').count() == 1
+    assert embedding_list.locator('[data-testid="settings-model-option-off"]').count() == 0
     assert embedding_list.locator('[data-testid="settings-model-option-default"]').count() == 0
+    assert (
+        embedding_list.locator(
+            '[data-testid="settings-model-option-gemini/gemini-embedding-001"]'
+        ).count()
+        == 1
+    )
 
     # and the open dropdown speaks the same plain language as the rest
     _scan(page.locator("body").inner_text(), "settings (model picker open)")

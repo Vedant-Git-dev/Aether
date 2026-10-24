@@ -337,7 +337,13 @@ def create_app(
         )
 
         judge_provider = providers.for_role("salience") if providers else None
-        entities = Entities(pool, cipher, audit, LLMSamePersonJudge(judge_provider))
+        # turning the first pass off must not also stop person-merging:
+        # the same-person judge falls back to the main model, so only the
+        # skim goes dark
+        identity_provider = judge_provider or (
+            providers.for_role("reasoning") if providers else None
+        )
+        entities = Entities(pool, cipher, audit, LLMSamePersonJudge(identity_provider))
         salience = Salience(events, LLMJudge(judge_provider), config.salience)
         context = ContextBuilder(events, entities, approvals, config.agent)
         scheduler = Scheduler(pool, cipher, audit)

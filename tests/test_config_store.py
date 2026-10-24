@@ -893,6 +893,17 @@ async def test_the_new_model_words_render_as_meaning_too() -> None:
     )
 
 
+async def test_the_first_pass_off_renders_as_the_skim_stopping() -> None:
+    # the first pass's "off" is not its empty: empty means the main model
+    # skims, off means the skim stops and nothing is brought up on its own
+    live = AppConfig()
+    live.llm.salience_model = "off"
+    manager, _, _ = _manager(live=live)
+    assert await manager.show("llm.salience_model") == (
+        "llm.salience_model = off — nothing is brought up on its own"
+    )
+
+
 async def test_the_dropdowns_stored_forms_round_trip() -> None:
     # what the pickers store — "off", "default", and provider-prefixed ids
     # — are plain strings to the manager: they validate, persist, and come

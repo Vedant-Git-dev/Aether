@@ -69,6 +69,17 @@ def test_salience_role_defaults_to_reasoning_provider() -> None:
     assert registry.for_role("salience") is registry.for_role("reasoning")
 
 
+def test_salience_role_off_means_no_first_pass() -> None:
+    # "off" is the honest stop: no model skims at all — not the main
+    # model either — while the main model keeps thinking
+    registry = ProviderRegistry.from_config(
+        _settings(anthropic_api_key="k"),
+        LLMConfig(provider="anthropic", model="claude-opus-5", salience_model="off"),
+    )
+    assert registry.for_role("salience") is None
+    assert registry.for_role("reasoning") is not None
+
+
 def test_perception_roles_are_off_by_default() -> None:
     # The tri-state knobs default to None — every medium is off until the
     # user turns one on, whatever the provider can do.

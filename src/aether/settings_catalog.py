@@ -52,17 +52,18 @@ class GroupSpec:
 
 
 # The sentinel choices each model field offers, in order — the first is
-# also what an empty value behaves as (the honest off for the senses and
-# memory search, the main model for the first pass). The main model itself
-# has no sentinels: something has to think. "base" is the legacy spelling
+# also what an empty value behaves as (the honest off for the senses,
+# the main model for the first pass). The main model itself has no
+# sentinels — something has to think — and neither does memory search:
+# it is a forced choice of a real model. "base" is the legacy spelling
 # of "default" and renders as it.
 _MODEL_SENTINELS: dict[str, tuple[str, ...]] = {
     "llm.model": (),
     "llm.image_model": (MODEL_OFF, MODEL_DEFAULT),
     "llm.audio_model": (MODEL_OFF, MODEL_DEFAULT),
     "llm.video_model": (MODEL_OFF, MODEL_DEFAULT),
-    "llm.salience_model": (MODEL_DEFAULT,),
-    "llm.embedding_model": (MODEL_OFF,),
+    "llm.salience_model": (MODEL_DEFAULT, MODEL_OFF),
+    "llm.embedding_model": (),
 }
 
 # the plain words the sentinels read as on the page
@@ -78,12 +79,6 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
         note="Saving one of these restarts Aether itself — it is back in a few seconds.",
         restart=True,
         fields=(
-            FieldSpec(
-                path="llm.provider",
-                label="Provider",
-                hint="Which AI service Aether thinks with — also the one behind "
-                "model names typed without their service in front.",
-            ),
             FieldSpec(
                 path="llm.model",
                 label="Model",
@@ -118,7 +113,8 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
                 path="llm.salience_model",
                 label="First-pass model",
                 hint="A cheaper model that skims what happened and picks what is "
-                "worth mentioning — or use default for the main model.",
+                "worth mentioning — use default for the main model, or none "
+                "to stop the skim and bring nothing up on its own.",
                 none_ok=True,
                 model=True,
             ),
@@ -126,8 +122,7 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
                 path="llm.embedding_model",
                 label="Memory search model",
                 hint="The model that makes memory searchable by meaning, on your "
-                "Gemini key — none (off) turns that search off.",
-                none_ok=True,
+                "Gemini key — a real model is always picked here.",
                 model=True,
             ),
             FieldSpec(

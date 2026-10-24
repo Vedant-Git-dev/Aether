@@ -1486,10 +1486,10 @@ async def test_settings_feed_carries_groups_kinds_and_apply_notes() -> None:
     assert groups["llm"]["note"]
     assert all(not g["restart"] for k, g in groups.items() if k != "llm")
     by_path = {f["path"]: f for g in data["groups"] for f in g["fields"]}
-    # kind and choices come from the model's own annotations
-    provider = by_path["llm.provider"]
-    assert provider["kind"] == "choice"
-    assert provider["choices"] == ["anthropic", "openai", "gemini", "ollama"]
+    # kind and choices come from the model's own annotations; the provider
+    # field is gone from the page — every model name carries its own
+    # service in front now, and the key itself stays for chat's bare ids
+    assert "llm.provider" not in by_path
     assert by_path["llm.max_tokens"]["kind"] == "number"
     assert by_path["llm.ollama_vision"]["kind"] == "toggle"
     assert by_path["agent.quiet_hours"]["kind"] == "text"
@@ -1545,8 +1545,8 @@ async def test_model_fields_render_as_pickers_with_their_sentinels() -> None:
         assert by_path[path]["kind"] == "model", path
         assert by_path[path]["choices"] == []
     # the main model has no sentinel — something has to think; the senses
-    # offer the honest off and the main model; the first pass only the
-    # main model; memory search only the off
+    # offer the honest off and the main model; the first pass both; and
+    # memory search is a forced choice of a real model, so none at all
     assert by_path["llm.model"]["sentinels"] == []
     assert by_path["llm.image_model"]["sentinels"] == [
         {"value": "off", "label": "None (off)"},
@@ -1554,11 +1554,14 @@ async def test_model_fields_render_as_pickers_with_their_sentinels() -> None:
     ]
     assert by_path["llm.audio_model"]["sentinels"] == by_path["llm.video_model"]["sentinels"]
     assert by_path["llm.salience_model"]["sentinels"] == [
-        {"value": "default", "label": "Use default"}
+        {"value": "default", "label": "Use default"},
+        {"value": "off", "label": "None (off)"},
     ]
-    assert by_path["llm.embedding_model"]["sentinels"] == [{"value": "off", "label": "None (off)"}]
+    assert by_path["llm.embedding_model"]["sentinels"] == []
+    # the provider field is gone from the page feed; the key itself
+    # stays for chat's bare ids
+    assert "llm.provider" not in by_path
     # everything else keeps its annotation-derived kind
-    assert by_path["llm.provider"]["kind"] == "choice"
     assert by_path["llm.max_tokens"]["kind"] == "number"
 
 

@@ -14,9 +14,11 @@ sentinel words ("off", "default", "base") name meanings, never models.
 
 Perception is per-medium: image, audio, and video are separate roles,
 each set by a knob — off (default), "default"/"base" (the main model
-takes it), or a specific model. The knob is the routing truth; what the
-chosen model truly accepts is discovered at call time, and the caller's
-ladder degrades honestly on a refusal.
+takes it), or a specific model. The first-pass role has its own off too:
+"off" leaves it with no model at all, so the skim genuinely stops. The
+knob is the routing truth; what the chosen model truly accepts is
+discovered at call time, and the caller's ladder degrades honestly on
+a refusal.
 """
 
 from __future__ import annotations
@@ -113,7 +115,12 @@ class ProviderRegistry:
             "audio": _medium(settings, llm, default, llm.audio_model),
             "video": _medium(settings, llm, default, llm.video_model),
         }
-        if (
+        if llm.salience_model == OFF:
+            # the honest off: no first pass at all — the event judge reads
+            # as not-worth-mentioning by default and the free heuristic
+            # gate still runs; person-merging falls back to the main model
+            providers["salience"] = None
+        elif (
             llm.salience_model
             and llm.salience_model not in (BASE, DEFAULT)
             and llm.salience_model != llm.model

@@ -135,6 +135,12 @@ _KNOB_BASE_TEXT = {
     "video_model": "the main model watches video",
     "salience_model": "the main model skims what matters first",
 }
+# what an explicit 'off' means where it differs from empty — only the
+# first pass has one: empty means the main model skims, off means the
+# skim stops and nothing is brought up on its own
+_KNOB_OFF_TEXT = {
+    "salience_model": "nothing is brought up on its own",
+}
 
 
 def _llm_knob_text(field: str, value: Any, main_model: str) -> str:
@@ -148,7 +154,8 @@ def _llm_knob_text(field: str, value: Any, main_model: str) -> str:
         return f"{value} — {_KNOB_EMPTY_TEXT[field]}"
     if not value or value == MODEL_OFF:
         word = "empty" if not value else "off"
-        return f"{word} — {_KNOB_EMPTY_TEXT[field]}"
+        text = _KNOB_OFF_TEXT.get(field, _KNOB_EMPTY_TEXT[field])
+        return f"{word} — {text}"
     return _plain_value(value)
 
 

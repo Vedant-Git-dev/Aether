@@ -74,8 +74,20 @@ export default function ModelPicker({
     setFilter("");
   };
 
-  const needle = filter.trim().toLowerCase();
-  const matches = (label) => !needle || label.toLowerCase().includes(needle);
+  // the filter forgives spelling the way people say it: "gemini 3.1 flash"
+  // finds "gemini/gemini-3.1-flash-lite". Two passes — the whole query
+  // with every non-alphanumeric dropped (seams and punctuation vanish),
+  // then every word of it appearing somewhere in the label's own words.
+  const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const words = (s) => s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const needle = filter.trim();
+  const wanted = words(needle);
+  const matches = (label) => {
+    if (!needle) return true;
+    if (norm(label).includes(norm(needle))) return true;
+    const have = words(label);
+    return wanted.length > 0 && wanted.every((w) => have.includes(w));
+  };
   const sentinelHits = sentinels.filter((s) => matches(s.label));
   const modelHits = allModels.filter((m) => matches(m.full));
 
