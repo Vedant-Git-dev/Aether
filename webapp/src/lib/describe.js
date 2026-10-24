@@ -495,3 +495,111 @@ export const BUILTIN_PLAIN = {
   "builtin:oauth-consent": ["Connecting an app by signing in", "The sign-in you completed on the provider's own screen serves as your approval."],
   "default:fail-safe": ["Unrecognized actions", "An action Aether does not recognize is held for your approval before it runs."],
 };
+
+// --- the approval card: rendered from the request's own shape -------------
+//
+// Nothing in this section knows any particular kind of request. Labels
+// come from the request's own keys, formats from what the content itself
+// is, and the summary from the request's own fields — a request shape
+// nobody has seen yet renders the same way, with no code change.
+
+// the request's own key, read as a label — underscores become spaces and
+// the first letter comes up. Whatever a future request calls its fields,
+// they label themselves; there is no mapping to keep in sync.
+export function fieldLabel(key) {
+  const words = String(key).replace(/_+/g, " ").trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : "(empty)";
+}
+
+// a timestamp-shaped string reads as the date it names — a raw ISO value
+// never reaches the screen (the same shape friendlyValue transcribes)
+export function readableDate(text) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(String(text))) return "";
+  const when = new Date(text);
+  return Number.isNaN(when.getTime())
+    ? ""
+    : when.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+// one scalar as the card reads it: booleans as yes/no, a timestamp as its
+// date, everything else as itself — never clipped
+export function scalarText(value) {
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  const text = String(value);
+  return readableDate(text) || text;
+}
+
+// a string that is itself a serialized object or list unpacks into one —
+// raw JSON never reaches the screen, but nothing is dropped either
+export function structuredValue(value) {
+  if (typeof value !== "string") return null;
+  const s = value.trim();
+  if (!(s.startsWith("{") || s.startsWith("["))) return null;
+  try {
+    const parsed = JSON.parse(s);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// ```-fenced spans split a text into code and prose; the language tag on
+// the opening fence is dropped. An unclosed fence makes the rest code —
+// the text is never swallowed by a missing marker.
+export function splitFences(text) {
+  const segments = [];
+  let rest = String(text);
+  while (rest) {
+    const open = rest.indexOf("```");
+    if (open === -1) {
+      segments.push({ code: false, text: rest });
+      break;
+    }
+    if (open > 0) segments.push({ code: false, text: rest.slice(0, open) });
+    const after = rest.slice(open + 3);
+    const close = after.indexOf("```");
+    const block = close === -1 ? after : after.slice(0, close);
+    const nl = block.indexOf("\n");
+    // the block's first line is the info string ("bash") when it spans
+    // lines — drop it; a single-line block is the code itself
+    segments.push({ code: true, text: nl === -1 ? block : block.slice(nl + 1) });
+    if (close === -1) break;
+    rest = after.slice(close + 3);
+  }
+  return segments.filter((s) => s.text !== "");
+}
+
+// whole-value shape detectors — a value's display comes from what the
+// value itself is, never from the field that carried it
+export function isUrl(text) {
+  return /^https?:\/\/\S+$/i.test(String(text));
+}
+
+export function isPath(text) {
+  const s = String(text);
+  if (!s || /\s/.test(s)) return false;
+  if (/^[A-Za-z]:[\\/]/.test(s)) return true;
+  if (s.startsWith("/") || s.startsWith("~/") || /^\.{1,2}\//.test(s)) return true;
+  return s.includes("/") && !s.includes("://") && !/[?#]/.test(s);
+}
+
+export function isDiff(text) {
+  const s = String(text);
+  return s.startsWith("diff --git ") || (/^--- /m.test(s) && /^\+\+\+ /m.test(s));
+}
+
+// the one-line summary at the top of a card: the action in plain words,
+// then the request's own short single-line fields in the order it
+// carries them — no phrase list, no per-type template
+export function approvalSummary(toolName, params) {
+  const bits = [describeTool(toolName)];
+  for (const [key, value] of Object.entries(params || {})) {
+    if (bits.length >= 4) break;
+    if (key.startsWith("_") || value === null || value === undefined) continue;
+    if (typeof value === "object") continue;
+    const text = scalarText(value);
+    if (!text || text.includes("\n") || text.length > 80) continue;
+    bits.push(`${fieldLabel(key)}: ${text}`);
+  }
+  return bits.join(" · ");
+}

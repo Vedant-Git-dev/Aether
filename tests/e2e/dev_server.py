@@ -92,6 +92,100 @@ class FakeApprovals:
                 rules_matched="user:telegram__send_message",
                 note="one-tap sends",
             ),
+            # a request with a long body: paragraphs, a numbered list and a
+            # fenced code block — long enough to need the scroll box, and
+            # rich enough to prove the card reads what it carries
+            3: Approval(
+                id=3,
+                tool_name="github__create_issue",
+                params={
+                    "title": "Deploy script fails on the nightly build",
+                    "body": (
+                        "The nightly build has failed three nights in a row, always at "
+                        "the same step.\n"
+                        "\n"
+                        "Steps to reproduce:\n"
+                        "\n"
+                        "1. Wait for the 2am nightly run\n"
+                        "2. Open the deploy log for that run\n"
+                        "3. Watch it stop right after the backup step\n"
+                        "\n"
+                        "The last run printed:\n"
+                        "\n"
+                        "```bash\n"
+                        "deploy: backing up /var/app to /backup\n"
+                        "deploy: ERROR 28: no space left on device\n"
+                        "deploy: rollback aborted, the disk is still full\n"
+                        "```\n"
+                        "\n"
+                        "The backup step keeps every run forever instead of keeping the "
+                        "last seven, so the disk fills in about a week. The retention fix "
+                        "should cap backups at seven nights and delete anything older "
+                        "before the new backup is written. Please assign this to whoever "
+                        "owns the deploy scripts, and link the run history from the "
+                        "alerting page so on-call can tell at a glance whether it "
+                        "happened again."
+                    ),
+                    "labels": ["bug", "infra"],
+                    "assignees": [],
+                },
+                status=PENDING,
+                created_at=now - timedelta(minutes=4),
+                expires_at=now + timedelta(hours=24),
+                decided_at=None,
+                decided_by=None,
+                rules_matched="builtin:risky",
+                note="reaches an external system or is hard to undo",
+            ),
+            # nested structure: attendees list their own labelled fields,
+            # a raw timestamp param, and an empty location
+            4: Approval(
+                id=4,
+                tool_name="calendar__create_event",
+                params={
+                    "title": "Dentist",
+                    "start": "2026-10-28T09:00:00",
+                    "attendees": [
+                        {"name": "Sam Rivera", "email": "sam@example.com"},
+                        {"name": "Priya Nair", "email": "priya@example.com"},
+                    ],
+                    "location": "",
+                    "description": "Bring the referral letter.\nAsk whether the insurance covers the cleaning.",
+                },
+                status=PENDING,
+                created_at=now - timedelta(minutes=1),
+                expires_at=now + timedelta(hours=24),
+                decided_at=None,
+                decided_by=None,
+                rules_matched="builtin:risky",
+                note="reaches an external system or is hard to undo",
+            ),
+            # an unrecognized tool held by the fail-safe, carrying the
+            # shapes the card must read on its own: a path, a link, a diff
+            5: Approval(
+                id=5,
+                tool_name="patch__apply_patch",
+                params={
+                    "path": "scripts/deploy.sh",
+                    "reference": "https://example.com/deploys/rollback-plan",
+                    "patch": (
+                        "diff --git a/scripts/deploy.sh b/scripts/deploy.sh\n"
+                        "--- a/scripts/deploy.sh\n"
+                        "+++ b/scripts/deploy.sh\n"
+                        "@@ -12,4 +12,4 @@\n"
+                        " context line\n"
+                        "-echo deploying the nightly release\n"
+                        "+echo deploying the tagged release\n"
+                    ),
+                },
+                status=PENDING,
+                created_at=now - timedelta(seconds=45),
+                expires_at=now + timedelta(hours=24),
+                decided_at=None,
+                decided_by=None,
+                rules_matched="default:fail-safe",
+                note="unknown tool — held for a human decision",
+            ),
         }
 
     async def list_pending(self) -> list[Approval]:

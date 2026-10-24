@@ -295,6 +295,84 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     assert page.locator('[data-testid="contact-row"]').count() == 1
 
 
+def test_approval_cards_show_the_full_ask(page, live_server, token) -> None:
+    # The pending card renders everything the request carries, from its
+    # own shape: labels come from the request's own keys, the format from
+    # the content itself, long text scrolls and expands instead of
+    # cutting, and a decision applies to exactly what is on screen.
+    page.add_init_script(f"localStorage.setItem('aether_token', '{token}')")
+    page.goto(f"{live_server}/#/attention")
+    page.wait_for_selector('[data-testid="approval-card"]')
+    page.wait_for_timeout(500)
+    cards = page.locator('[data-testid="approval-card"]')
+    assert cards.count() == 5
+
+    # every card opens with a one-line summary built from the request's
+    # own fields, in the order it carries them
+    text = page.locator("body").inner_text()
+    assert "Sending messages on Email · To: sam@example.com" in text
+    assert "Creating issues on GitHub · Title: Deploy script fails on the nightly build" in text
+    assert "Creating events on Calendar · Title: Dentist" in text
+    assert "Apply patch in Patch · Path: scripts/deploy.sh" in text
+
+    # the long issue body is never cut: its end is in the text, the box
+    # says its size out loud, and one click reaches all of it
+    issue = cards.nth(2)
+    issue_text = issue.inner_text()
+    assert "no space left on device" in issue_text
+    assert "whether it happened again" in issue_text
+    expand = issue.locator('[data-testid="approval-expand"]')
+    assert expand.inner_text().strip() == "Expand"
+    assert (
+        issue.locator('[data-testid="approval-text-size"]')
+        .inner_text()
+        .strip()
+        .endswith("characters")
+    )
+    expand.click()
+    page.wait_for_timeout(100)
+    assert issue.locator('[data-testid="approval-expand"]').inner_text().strip() == "Show less"
+    expand.click()
+    page.wait_for_timeout(100)
+    assert issue.locator('[data-testid="approval-expand"]').inner_text().strip() == "Expand"
+
+    # fenced code renders as a code block with the fence markers gone, a
+    # list of items numbers itself, and an empty field says so
+    assert "```" not in issue_text
+    assert issue.locator('[data-testid="approval-code"]').count() == 1
+    assert issue.locator('[data-testid="approval-items"]').count() == 1
+    assert "(empty)" in issue_text
+
+    # the calendar row: a timestamp reads as a date, attendees number
+    # their own labelled fields, an empty string says so
+    event = cards.nth(3)
+    event_text = event.inner_text()
+    assert "Oct 28, 2026" in event_text
+    assert "2026-10-28T09:00:00" not in event_text
+    assert "Sam Rivera" in event_text and "priya@example.com" in event_text
+    assert "(empty)" in event_text
+
+    # the unrecognized tool: a path reads in monospace, a link stays a
+    # link, a diff keeps its shape with both sides readable, and the
+    # fail-safe ruling stands out in its own words
+    patch = cards.nth(4)
+    patch_text = patch.inner_text()
+    assert patch.locator('[data-testid="approval-path"]').count() == 1
+    assert patch.locator("a").count() == 1
+    assert patch.locator("a").get_attribute("href") == "https://example.com/deploys/rollback-plan"
+    assert patch.locator('[data-testid="approval-diff"]').count() == 1
+    assert "deploying the nightly release" in patch_text
+    assert "deploying the tagged release" in patch_text
+    assert "Unrecognized action — held for your decision" in patch_text
+
+    # the decision buttons ride below the capped content, always in view
+    assert patch.locator('[data-testid="approve"]').count() == 1
+    assert patch.locator('[data-testid="deny"]').count() == 1
+
+    # and the whole page still speaks plainly
+    _scan(page.locator("body").inner_text(), "attention (full asks)")
+
+
 def test_model_fields_are_pickers_over_the_live_catalog(page, live_server, token) -> None:
     # the six model knobs are dropdowns over the fetched catalog: no
     # free-text entry remains, both configured providers list in one
