@@ -22,10 +22,14 @@ from telegram import Chat, Message, Update
 from telegram.error import Conflict, NetworkError
 
 from aether.agent.loop import SurfaceFanout
+from aether.agent.tools import describe_full
 from aether.authz.approvals import APPROVED, DENIED
 from aether.config import AppConfig, MessagingConfig, PlatformToggle, Settings
 from aether.connectors import build_messaging_connectors
-from aether.connectors.base import InboundMessage, MessagingConnector
+from aether.connectors.base import InboundMessage, MessagingConnector, split_message
+from aether.connectors.discord import (
+    MESSAGE_CAP_CHARS as DISCORD_MESSAGE_CAP_CHARS,
+)
 from aether.connectors.discord import ApprovalView, DiscordConnector
 from aether.connectors.slack import (
     APPROVE_ACTION,
@@ -36,7 +40,14 @@ from aether.connectors.slack import (
     event_to_inbound,
     result_blocks,
 )
-from aether.connectors.telegram import CAPTION_CAP_CHARS, SEND_ATTEMPTS, TelegramConnector
+from aether.connectors.telegram import (
+    CAPTION_CAP_CHARS,
+    SEND_ATTEMPTS,
+    TelegramConnector,
+)
+from aether.connectors.telegram import (
+    MESSAGE_CAP_CHARS as TELEGRAM_MESSAGE_CAP_CHARS,
+)
 
 # ---------------------------------------------------------------------------
 # shared decide/inbound plumbing (base class)
@@ -120,6 +131,34 @@ def test_factory_builds_each_surface_when_fully_configured() -> None:
 def test_factory_with_everything_off_builds_nothing() -> None:
     settings = _settings(telegram_bot_token="tg")
     assert build_messaging_connectors(settings, _config()) == []
+
+
+def test_factory_wires_the_full_text_reader_only_where_it_belongs() -> None:
+    # the "read the full text" button exists only where its renderer is
+    # wired — telegram and discord. Slack is on its way out as a chat app
+    # and must not change: no renderer, no button, nothing.
+    settings = _settings(
+        telegram_bot_token="tg",
+        discord_bot_token="dc",
+        slack_bot_token="xoxb-",
+        slack_app_token="xoxp-",
+    )
+    built = build_messaging_connectors(
+        settings, _config(telegram=True, discord_=True, slack=True), render_full=describe_full
+    )
+    by_name = {connector.name: connector for connector in built}
+    assert by_name["telegram"]._render_full is describe_full
+    assert by_name["discord"]._render_full is describe_full
+    assert getattr(by_name["slack"], "_render_full", None) is None
+
+
+def test_split_message_breaks_on_lines_and_loses_nothing() -> None:
+    # whole lines stay whole when they fit, a line too long for any
+    # message is hard-cut, and no character is lost either way
+    assert split_message("short", 20) == ["short"]
+    assert split_message("x" * 50, 20) == ["x" * 20, "x" * 20, "x" * 10]
+    three_lines = "a" * 10 + "\n" + "b" * 10 + "\n" + "c" * 30
+    assert split_message(three_lines, 20) == ["a" * 10, "b" * 10, "c" * 20, "c" * 10]
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +303,12 @@ def _tg_update(
 
 
 async def _started_telegram(
-    approvals=None, decisions=None, inbound=None, task_decisions=None, processed=None
+    approvals=None,
+    decisions=None,
+    inbound=None,
+    task_decisions=None,
+    processed=None,
+    render_full=None,
 ):
     app = FakeTelegramApp()
     factory_calls: list[str] = []
@@ -279,6 +323,7 @@ async def _started_telegram(
         on_decision=decisions,
         on_inbound=inbound,
         on_task_decision=task_decisions,
+        render_full=render_full,
         processed=processed,
         app_factory=factory,
     )
@@ -510,6 +555,122 @@ async def test_telegram_button_press_on_an_unknown_approval_says_so() -> None:
     assert answered == ["that request could not be found."]
 
 
+async def test_telegram_the_read_button_sends_the_whole_ask() -> None:
+    """The preview in the question hints; the full text is one tap away.
+    Reading never decides anything — the Approve/Deny buttons stay on the
+    message, and everything the request carried lands in the chat where
+    the tap happened."""
+    approvals = FakeApprovals()
+    connector, app = await _started_telegram(approvals=approvals, render_full=describe_full)
+    await app.handlers[0].callback(_tg_update("hi"), None)  # establish the reply target
+    parked = await approvals.create(
+        tool_name="mail__send_message",
+        params={"to": "a@b.c", "body": "the whole message body"},
+        note="reaches an external system",
+    )
+    await connector.present_approval(parked.id, "send it?")
+    keyboard = app.bot.sent[-1]["reply_markup"].inline_keyboard
+    assert [b.callback_data for row in keyboard for b in row] == [
+        f"aether:approve:{parked.id}",
+        f"aether:deny:{parked.id}",
+        f"aether:read:{parked.id}",
+    ]
+
+    answered: list[str | None] = []
+    cleared: list[bool] = []
+
+    async def answer(text: str | None = None) -> None:
+        answered.append(text)
+
+    async def edit_message_reply_markup(reply_markup=None) -> None:
+        cleared.append(reply_markup is None)
+
+    button_handler = app.handlers[1].callback
+    update = SimpleNamespace(
+        callback_query=SimpleNamespace(
+            data=f"aether:read:{parked.id}",
+            answer=answer,
+            edit_message_reply_markup=edit_message_reply_markup,
+        )
+    )
+    await button_handler(update, None)
+
+    # a read is not a decision: the tap answers silently and the buttons
+    # on the question are never retired
+    assert answered == [None]
+    assert cleared == []
+    text = app.bot.sent[-1]["text"]
+    assert text.startswith("Send the email — the full ask:")
+    assert "(needs approval — reaches an external system)" in text
+    assert "To: a@b.c" in text
+    assert "Body: the whole message body" in text
+    assert app.bot.sent[-1]["reply_markup"] is None
+
+
+async def test_telegram_a_long_full_text_arrives_in_whole_messages() -> None:
+    # a full ask can outgrow Telegram's message cap — it arrives in as
+    # many messages as its length needs, each within the cap, and no
+    # line is lost to the cutting
+    approvals = FakeApprovals()
+    connector, app = await _started_telegram(approvals=approvals, render_full=describe_full)
+    await app.handlers[0].callback(_tg_update("hi"), None)
+    lines = [f"line {i:02d} " + "y" * 110 for i in range(40)]
+    parked = await approvals.create(
+        tool_name="mail__send_message", params={"to": "a@b.c", "body": "\n".join(lines)}
+    )
+    await connector.present_approval(parked.id, "send it?")
+
+    async def answer(text: str | None = None) -> None:
+        pass
+
+    async def edit_message_reply_markup(reply_markup=None) -> None:
+        pass
+
+    button_handler = app.handlers[1].callback
+    update = SimpleNamespace(
+        callback_query=SimpleNamespace(
+            data=f"aether:read:{parked.id}",
+            answer=answer,
+            edit_message_reply_markup=edit_message_reply_markup,
+        )
+    )
+    await button_handler(update, None)
+
+    sent_after_the_ask = app.bot.sent[1:]  # [0] is the question itself
+    assert len(sent_after_the_ask) > 1  # the length needed more than one
+    assert all(len(m["text"]) <= TELEGRAM_MESSAGE_CAP_CHARS for m in sent_after_the_ask)
+    carried = "\n".join(m["text"] for m in sent_after_the_ask)
+    assert all(line in carried for line in lines)  # every line arrived
+
+
+async def test_telegram_a_stale_read_gets_the_same_words_as_a_stale_decide() -> None:
+    approvals = FakeApprovals()
+    connector, app = await _started_telegram(approvals=approvals, render_full=describe_full)
+    await app.handlers[0].callback(_tg_update("hi"), None)
+
+    answered: list[str | None] = []
+    cleared: list[bool] = []
+
+    async def answer(text: str | None = None) -> None:
+        answered.append(text)
+
+    async def edit_message_reply_markup(reply_markup=None) -> None:
+        cleared.append(reply_markup is None)
+
+    button_handler = app.handlers[1].callback
+    update = SimpleNamespace(
+        callback_query=SimpleNamespace(
+            data="aether:read:999",
+            answer=answer,
+            edit_message_reply_markup=edit_message_reply_markup,
+        )
+    )
+    await button_handler(update, None)
+    assert answered == ["that request could not be found."]
+    assert cleared == []  # the buttons on the message are still there
+    assert app.bot.sent == []  # nothing was sent — there is nothing to read
+
+
 def _tg_button_update(data: str, answered: list, cleared: list | None = None):
     async def answer(text: str | None = None) -> None:
         answered.append(text)
@@ -731,7 +892,9 @@ def _dc_message(text: str, *, dm: bool = True, bot: bool = False, reply_to=None)
     )
 
 
-async def _started_discord(approvals=None, decisions=None, inbound=None, task_decisions=None):
+async def _started_discord(
+    approvals=None, decisions=None, inbound=None, task_decisions=None, render_full=None
+):
     bot = SimpleNamespace(
         events={},
         started_with=None,
@@ -758,6 +921,7 @@ async def _started_discord(approvals=None, decisions=None, inbound=None, task_de
         on_decision=decisions,
         on_inbound=inbound,
         on_task_decision=task_decisions,
+        render_full=render_full,
         bot_factory=lambda: bot,
     )
     await connector.start()
@@ -862,6 +1026,90 @@ async def test_discord_approval_view_gives_feedback_on_a_stale_or_expired_tap() 
     expired_view = connector._channel.sent[-1]["view"]
     await expired_view._finish(interaction, APPROVED)
     assert edits[-1]["content"] == "that approval has expired."
+
+
+class FakeInteraction:
+    """A tapped button's interaction: the first message goes out through
+    the response, anything after it through the followup — the shapes the
+    read button sends the full text with."""
+
+    def __init__(self) -> None:
+        self.sent: list[str | None] = []
+
+        async def send_message(content=None, **kwargs) -> None:
+            self.sent.append(content)
+
+        async def followup_send(content=None, **kwargs) -> None:
+            self.sent.append(content)
+
+        self.response = SimpleNamespace(send_message=send_message)
+        self.followup = SimpleNamespace(send=followup_send)
+
+
+async def test_discord_the_read_button_sends_the_whole_ask() -> None:
+    """The preview in the question hints; the full text is one tap away,
+    as its own message — and a read never retires the decision buttons."""
+    approvals = FakeApprovals()
+    connector, _ = await _started_discord(approvals=approvals, render_full=describe_full)
+    await connector.on_message(_dc_message("hi"))
+    parked = await approvals.create(
+        tool_name="mail__send_message",
+        params={"to": "a@b.c", "body": "the whole message body"},
+        note="reaches an external system",
+    )
+    await connector.present_approval(parked.id, "send it?")
+    view = connector._channel.sent[-1]["view"]
+    assert isinstance(view, ApprovalView)
+    assert len(view.children) == 3
+    read_button = view.children[-1]
+    assert read_button.label == "Read the full text"
+
+    interaction = FakeInteraction()
+    await read_button.callback(interaction)
+
+    assert len(interaction.sent) == 1  # a short ask fits one message
+    text = interaction.sent[0]
+    assert text.startswith("Send the email — the full ask:")
+    assert "(needs approval — reaches an external system)" in text
+    assert "To: a@b.c" in text
+    assert "Body: the whole message body" in text
+    # reading never disables anything — Approve and Deny stay one tap away
+    assert all(not getattr(child, "disabled", False) for child in view.children)
+
+
+async def test_discord_a_long_full_text_arrives_in_whole_messages() -> None:
+    approvals = FakeApprovals()
+    connector, _ = await _started_discord(approvals=approvals, render_full=describe_full)
+    await connector.on_message(_dc_message("hi"))
+    lines = [f"line {i:02d} " + "y" * 110 for i in range(40)]
+    parked = await approvals.create(
+        tool_name="mail__send_message", params={"to": "a@b.c", "body": "\n".join(lines)}
+    )
+    await connector.present_approval(parked.id, "send it?")
+    view = connector._channel.sent[-1]["view"]
+    read_button = view.children[-1]
+
+    interaction = FakeInteraction()
+    await read_button.callback(interaction)
+
+    assert len(interaction.sent) > 1  # Discord's cap needed more than one
+    assert all(len(text) <= DISCORD_MESSAGE_CAP_CHARS for text in interaction.sent)
+    carried = "\n".join(interaction.sent)
+    assert all(line in carried for line in lines)  # every line arrived
+
+
+async def test_discord_a_stale_read_gets_a_note_not_silence() -> None:
+    approvals = FakeApprovals()
+    connector, _ = await _started_discord(approvals=approvals, render_full=describe_full)
+    await connector.on_message(_dc_message("hi"))
+    await connector.present_approval(999, "send it?")  # no such row anywhere
+    view = connector._channel.sent[-1]["view"]
+    read_button = view.children[-1]
+
+    interaction = FakeInteraction()
+    await read_button.callback(interaction)
+
+    assert interaction.sent == ["that request could not be found."]
 
 
 async def test_discord_disabled_never_builds_a_bot() -> None:

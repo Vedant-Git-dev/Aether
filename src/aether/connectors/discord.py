@@ -19,11 +19,13 @@ from .base import (
     ApprovalDecider,
     Attachment,
     DecisionCallback,
+    FullAskRenderer,
     InboundHandler,
     InboundMessage,
     MessagingConnector,
     TaskDecisionCallback,
     classify_attachment,
+    split_message,
 )
 
 log = logging.getLogger("aether.connectors.discord")
@@ -31,16 +33,32 @@ log = logging.getLogger("aether.connectors.discord")
 # Discord caps bots at 10 MB per upload — a bigger file is refused
 # honestly rather than bouncing off the API
 UPLOAD_CAP_BYTES = 10 * 1024 * 1024
+# Discord caps one message at 2000 characters — the full text of an ask
+# can outgrow that, so the read button sends it in whole lines rather
+# than letting the platform cut it
+MESSAGE_CAP_CHARS = 2000
 
 
 class ApprovalView(discord.ui.View):
     """In-memory approve/deny buttons; they live exactly as long as the bot
-    process. Approvals that outlive a restart surface in the web panel."""
+    process. Approvals that outlive a restart surface in the web panel.
 
-    def __init__(self, decide_and_explain: Any, approval_id: int) -> None:
+    With a read callback wired, a third button shows the whole ask — a
+    read never retires the decision buttons, so looking closer never
+    costs the one-tap path."""
+
+    def __init__(self, decide_and_explain: Any, approval_id: int, read_full: Any = None) -> None:
         super().__init__(timeout=None)
         self._decide_and_explain = decide_and_explain
         self._approval_id = approval_id
+        if read_full is not None:
+            # built at runtime like the result view's verdict buttons — the
+            # button exists only where the full-text renderer is wired
+            button = discord.ui.Button(
+                label="Read the full text", style=discord.ButtonStyle.secondary, row=1
+            )
+            button.callback = self._read_tap(read_full)
+            self.add_item(button)
 
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.green)
     async def approve(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
@@ -49,6 +67,23 @@ class ApprovalView(discord.ui.View):
     @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
     async def deny(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         await self._finish(interaction, DENIED)
+
+    def _read_tap(self, read_full: Any) -> Any:
+        async def tap(interaction: discord.Interaction) -> None:
+            text = await read_full(self._approval_id)
+            if text is None:
+                # the same plain words a stale decide tap gets — a tap that
+                # applies to nothing must never land silently
+                await interaction.response.send_message("that request could not be found.")
+                return
+            # the first chunk is the interaction's own reply; the rest
+            # follow, whole lines at a time, so a long ask loses nothing
+            chunks = split_message(text, MESSAGE_CAP_CHARS)
+            await interaction.response.send_message(content=chunks[0])
+            for chunk in chunks[1:]:
+                await interaction.followup.send(content=chunk)
+
+        return tap
 
     async def _finish(self, interaction: Any, decision: str) -> None:
         note = await self._decide_and_explain(self._approval_id, decision)
@@ -128,6 +163,7 @@ class DiscordConnector(MessagingConnector):
         on_decision: DecisionCallback | None = None,
         on_inbound: InboundHandler | None = None,
         on_task_decision: TaskDecisionCallback | None = None,
+        render_full: FullAskRenderer | None = None,
         bot_factory: Any = None,
     ) -> None:
         super().__init__(
@@ -136,6 +172,7 @@ class DiscordConnector(MessagingConnector):
             on_decision=on_decision,
             on_inbound=on_inbound,
             on_task_decision=on_task_decision,
+            render_full=render_full,
         )
         self._token = token
         self._bot_factory = bot_factory or self._default_bot_factory
@@ -267,7 +304,15 @@ class DiscordConnector(MessagingConnector):
         if self._channel is None:
             log.info("discord: no DM channel yet — approval visible in the web panel")
             return
-        await self._send(text, ApprovalView(self._decide_and_explain, approval_id), attachment)
+        await self._send(
+            text,
+            ApprovalView(
+                self._decide_and_explain,
+                approval_id,
+                read_full=self._read_full_text if self._render_full is not None else None,
+            ),
+            attachment,
+        )
 
     async def present_result(
         self,

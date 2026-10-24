@@ -22,11 +22,13 @@ from .base import (
     ApprovalDecider,
     Attachment,
     DecisionCallback,
+    FullAskRenderer,
     InboundHandler,
     InboundMessage,
     MessagingConnector,
     TaskDecisionCallback,
     classify_attachment,
+    split_message,
 )
 from .processed import ProcessedUpdates
 
@@ -47,6 +49,10 @@ DOCUMENT_CAP_BYTES = 50 * 1024 * 1024
 # Telegram caps captions at 1024 characters — a text that doesn't fit
 # rides as its own message after the file, so no word is silently cut
 CAPTION_CAP_CHARS = 1000
+# Telegram caps one message at 4096 characters — the full text of an ask
+# can outgrow that, so the read button sends it in whole lines rather
+# than letting the platform cut it
+MESSAGE_CAP_CHARS = 4000
 
 
 class TelegramConnector(MessagingConnector):
@@ -61,6 +67,7 @@ class TelegramConnector(MessagingConnector):
         on_decision: DecisionCallback | None = None,
         on_inbound: InboundHandler | None = None,
         on_task_decision: TaskDecisionCallback | None = None,
+        render_full: FullAskRenderer | None = None,
         processed: ProcessedUpdates | None = None,
         app_factory: Any = None,
     ) -> None:
@@ -70,6 +77,7 @@ class TelegramConnector(MessagingConnector):
             on_decision=on_decision,
             on_inbound=on_inbound,
             on_task_decision=on_task_decision,
+            render_full=render_full,
         )
         self._token = token
         self._processed = processed
@@ -320,10 +328,22 @@ class TelegramConnector(MessagingConnector):
                 await query.edit_message_reply_markup(reply_markup=None)
             return
         action, _, id_part = body.partition(":")
-        if not id_part.isdigit() or action not in ("approve", "deny"):
+        if not id_part.isdigit() or action not in ("approve", "deny", "read"):
             log.warning("odd telegram callback data: %r", data)
             with contextlib.suppress(Exception):
                 await query.answer()
+            return
+        if action == "read":
+            # reading never decides — the question and its buttons stay on
+            # the message, and the whole ask lands in the chat where the
+            # tap happened, in as many messages as its length needs
+            text = await self._read_full_text(int(id_part))
+            note = None if text is not None else "that request could not be found."
+            with contextlib.suppress(Exception):
+                await query.answer(text=note) if note else await query.answer()
+            if text is not None:
+                for part in split_message(text, MESSAGE_CAP_CHARS):
+                    await self._send(part, None)  # the chunks carry no buttons of their own
             return
         decision = APPROVED if action == "approve" else DENIED
         note = await self._decide_and_explain(int(id_part), decision)
@@ -374,21 +394,28 @@ class TelegramConnector(MessagingConnector):
     async def present_approval(
         self, approval_id: int, text: str, *, attachment: Attachment | None = None
     ) -> None:
-        """One plain-language question plus one-tap Approve/Deny. The raw
-        tool name never reaches the user — the decision record keeps it."""
-        keyboard = InlineKeyboardMarkup(
+        """One plain-language question plus one-tap Approve/Deny — and, when
+        the full-text renderer is wired, one more tap that shows everything
+        the ask carries without deciding anything. The raw tool name never
+        reaches the user — the decision record keeps it."""
+        rows = [
             [
+                InlineKeyboardButton(
+                    "Approve", callback_data=f"{_CALLBACK_PREFIX}approve:{approval_id}"
+                ),
+                InlineKeyboardButton("Deny", callback_data=f"{_CALLBACK_PREFIX}deny:{approval_id}"),
+            ]
+        ]
+        if self._render_full is not None:
+            rows.append(
                 [
                     InlineKeyboardButton(
-                        "Approve", callback_data=f"{_CALLBACK_PREFIX}approve:{approval_id}"
-                    ),
-                    InlineKeyboardButton(
-                        "Deny", callback_data=f"{_CALLBACK_PREFIX}deny:{approval_id}"
-                    ),
+                        "Read the full text",
+                        callback_data=f"{_CALLBACK_PREFIX}read:{approval_id}",
+                    )
                 ]
-            ]
-        )
-        await self._send(text, reply_markup=keyboard, attachment=attachment)
+            )
+        await self._send(text, reply_markup=InlineKeyboardMarkup(rows), attachment=attachment)
 
     async def present_result(
         self,

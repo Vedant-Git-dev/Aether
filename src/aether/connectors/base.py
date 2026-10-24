@@ -70,6 +70,25 @@ def classify_attachment(filename: str, media_type: str = "") -> str:
     return "doc"
 
 
+def split_message(text: str, limit: int) -> list[str]:
+    """Text cut into platform-sized messages on line boundaries — the full
+    text of an ask can outgrow one message, and no line may be lost to the
+    cutting. A single line longer than the limit is hard-cut; every
+    character still arrives."""
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    while len(text) > limit:
+        cut = text.rfind("\n", 0, limit)
+        if cut <= 0:
+            cut = limit  # no line boundary in reach — a hard cut, not a loss
+        chunks.append(text[:cut].rstrip("\n"))
+        text = text[cut:].lstrip("\n")
+    if text:
+        chunks.append(text)
+    return chunks
+
+
 @dataclass(frozen=True)
 class InboundMessage:
     """One message from the user on some surface.
@@ -104,6 +123,10 @@ DecisionCallback = Callable[[int, str], Awaitable[None]]
 # when the tap didn't apply (stale, double-pressed), None when it did —
 # the proactive worker's decide_task owns the freshness
 TaskDecisionCallback = Callable[[int, str], Awaitable[str | None]]
+# (tool name, params, why-it-parked note) -> the ask's complete plain text,
+# the renderer behind a chat surface's "read the full text" button — wired
+# only where a surface shows that button, so the rest never see it
+FullAskRenderer = Callable[[str, Any, str], str]
 
 
 class ApprovalDecider(Protocol):
@@ -132,12 +155,14 @@ class MessagingConnector:
         on_decision: DecisionCallback | None = None,
         on_inbound: InboundHandler | None = None,
         on_task_decision: TaskDecisionCallback | None = None,
+        render_full: FullAskRenderer | None = None,
     ) -> None:
         self._enabled = enabled
         self._approvals = approvals
         self._on_decision = on_decision
         self._on_inbound = on_inbound
         self._on_task_decision = on_task_decision
+        self._render_full = render_full
 
     @property
     def enabled(self) -> bool:
@@ -178,6 +203,18 @@ class MessagingConnector:
             # button rendering and this tap
             return "that approval has expired."
         return "that request was already decided."
+
+    async def _read_full_text(self, approval_id: int) -> str | None:
+        """The complete text behind a surface's read button, or None when
+        the request is no longer stored — a stale read gets the same plain
+        words a stale decide does. Reading never decides anything: the
+        buttons on the ask stay live."""
+        if self._approvals is None or self._render_full is None:
+            return None
+        approval = await self._approvals.get(approval_id)
+        if approval is None:
+            return None
+        return self._render_full(approval.tool_name, approval.params, approval.note)
 
     async def _decide_task(self, task_id: int, decision: str) -> str | None:
         """The shared path behind a result's one-tap verdicts. The worker

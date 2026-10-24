@@ -12,6 +12,7 @@ from .base import (
     Attachment,
     ConnectorUnavailableError,
     DecisionCallback,
+    FullAskRenderer,
     InboundHandler,
     InboundMessage,
     MessagingConnector,
@@ -31,6 +32,7 @@ __all__ = [
     "AttachmentProcessor",
     "ConnectorUnavailableError",
     "DecisionCallback",
+    "FullAskRenderer",
     "InboundHandler",
     "InboundMessage",
     "MCPHost",
@@ -52,12 +54,17 @@ def build_messaging_connectors(
     on_decision: DecisionCallback | None = None,
     on_inbound: InboundHandler | None = None,
     on_task_decision: TaskDecisionCallback | None = None,
+    render_full: FullAskRenderer | None = None,
     processed: ProcessedUpdates | None = None,
 ) -> list[MessagingConnector]:
     """The enabled chat surfaces: toggle on AND the needed tokens present.
 
     Anything half-configured logs why it's skipped — a personal agent boots
     with whatever it has and the web chat always works.
+
+    `render_full` wires the "read the full text" button's renderer on the
+    surfaces that show that button — telegram and discord. Slack stays
+    without it: no button, no renderer, nothing changes there.
     """
     built: list[MessagingConnector] = []
 
@@ -72,6 +79,7 @@ def build_messaging_connectors(
                     on_decision=on_decision,
                     on_inbound=on_inbound,
                     on_task_decision=on_task_decision,
+                    render_full=render_full,
                     processed=processed,
                 )
             )
@@ -91,6 +99,7 @@ def build_messaging_connectors(
                     on_decision=on_decision,
                     on_inbound=on_inbound,
                     on_task_decision=on_task_decision,
+                    render_full=render_full,
                 )
             )
         else:

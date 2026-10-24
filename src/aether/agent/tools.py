@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple
@@ -370,6 +371,128 @@ def describe_call(name: str, params: Any = None) -> str:
     ctx = _salient_context(params)
     text = f"{doing} ({ctx})" if ctx else doing
     return text[0].upper() + text[1:]
+
+
+# a value reads as a date in words only when it carries this shape —
+# anything else is shown exactly as the tool sent it
+_ISO_DATETIME = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
+
+
+def _readable_datetime(text: str) -> str:
+    """A datetime-shaped value in plain words — "Oct 28, 2026, 9:00 AM" —
+    with the offset kept when the value carried one, so an instant never
+    changes meaning in translation. A shape Python can't parse returns
+    untouched; a value is never mangled on its way to the user."""
+    if not _ISO_DATETIME.match(text):
+        return text
+    try:
+        when = datetime.fromisoformat(text)
+    except ValueError:
+        return text
+    hour = when.strftime("%I").lstrip("0") or "12"
+    stamp = f"{when:%b} {when.day}, {when.year}, {hour}:{when:%M} {when:%p}"
+    offset = when.utcoffset()
+    if offset is None:
+        return stamp
+    if not offset:
+        return f"{stamp} (UTC)"
+    minutes = abs(int(offset.total_seconds()) // 60)
+    sign = "+" if offset.total_seconds() >= 0 else "-"
+    return f"{stamp} (UTC{sign}{minutes // 60:02d}:{minutes % 60:02d})"
+
+
+def _full_label(key: str) -> str:
+    """A key as its field's own plain name — underscores read as spaces and
+    the first letter stands up, the same words the panel's card uses."""
+    plain = key.replace("_", " ")
+    return plain[:1].upper() + plain[1:]
+
+
+def _full_scalar_lines(value: Any) -> list[str]:
+    """A leaf value as its own lines: a date in plain words, yes/no for a
+    flag, "(empty)" for a blank, everything else as it is."""
+    if isinstance(value, bool):
+        return ["yes" if value else "no"]
+    if value is None:
+        return ["(empty)"]
+    text = _readable_datetime(value) if isinstance(value, str) else str(value)
+    return text.splitlines() or ["(empty)"]
+
+
+def _full_value(value: Any, indent: str) -> list[str]:
+    """A value alone as plain lines, wherever it sits: a dict labels its
+    own fields, a list numbers its items, and an empty one says so."""
+    if isinstance(value, dict):
+        entries = [(k, v) for k, v in value.items() if not k.startswith("_")]
+        if not entries:
+            return [f"{indent}(empty)"]
+        out: list[str] = []
+        for k, v in entries:
+            out += _full_field(k, v, indent)
+        return out
+    if isinstance(value, (list, tuple)):
+        if not len(value):
+            return [f"{indent}(empty)"]
+        out: list[str] = []
+        for i, item in enumerate(value, 1):
+            marker = f"{i}. "
+            pad = " " * len(marker)
+            if isinstance(item, dict):
+                entries = [(k, v) for k, v in item.items() if not k.startswith("_")]
+                if not entries:
+                    out.append(f"{indent}{marker}(empty)")
+                    continue
+                for j, (k, v) in enumerate(entries):
+                    lines = _full_field(k, v, "")
+                    out.append(f"{indent}{marker if j == 0 else pad}{lines[0]}")
+                    out += [f"{indent}{pad}{line}" for line in lines[1:]]
+            elif isinstance(item, (list, tuple)):
+                out.append(f"{indent}{marker}")
+                out += _full_value(item, indent + "    ")
+            else:
+                lines = _full_scalar_lines(item)
+                out.append(f"{indent}{marker}{lines[0]}")
+                out += [f"{indent}{pad}{line}" for line in lines[1:]]
+        return out
+    return [f"{indent}{_full_scalar_lines(value)[0]}"]
+
+
+def _full_field(key: str, value: Any, indent: str) -> list[str]:
+    """One field as plain lines: the label in its own words, then everything
+    the field carried. A scalar rides the label's line; a value with lines
+    of its own keeps them raw, so a body or a patch copies clean; anything
+    bigger indents beneath. Nothing clips, nothing drops."""
+    head = f"{indent}{_full_label(key)}: "
+    if isinstance(value, (dict, list, tuple)):
+        if not len(value):
+            return [head + "(empty)"]  # an empty collection is a "nothing", like a blank
+        return [head.rstrip(), *_full_value(value, indent + "  ")]
+    lines = _full_scalar_lines(value)
+    if len(lines) == 1:
+        return [head + lines[0]]
+    return [head.rstrip(), *lines]
+
+
+def describe_full(name: str, params: Any = None, note: str = "") -> str:
+    """The whole ask, exactly as a decision applies to it: every field the
+    request carried, in the request's own order, in plain words — nothing
+    clipped, no JSON anywhere. The one-line preview in the chat question
+    hints at the ask; this is what the "read the full text" tap hands
+    over, so the decision can be made on the complete request."""
+    lines = [f"{_action_words(name).ask} — the full ask:"]
+    if note:
+        lines += ["", f"(needs approval — {note})"]
+    if isinstance(params, dict):
+        entries = [(k, v) for k, v in params.items() if not k.startswith("_")]
+    else:
+        entries = []  # no fields at all — a "nothing" the text says plainly
+    if entries:
+        lines.append("")
+        for k, v in entries:
+            lines += _full_field(k, v, "")
+    else:
+        lines += ["", "(empty)"]
+    return "\n".join(lines)
 
 
 def plain_outcome(name: str, params: Any, kind: str) -> str:

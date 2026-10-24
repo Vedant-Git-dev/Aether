@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from . import restart
 from .agent import AgentLoop, CaptureRequestBox, SurfaceFanout, register_native_tools
 from .agent.settings import AgentSettings
+from .agent.tools import describe_full
 from .agent.traces import Traces
 from .api import router as api_router
 from .authz.approvals import Approvals
@@ -497,6 +498,7 @@ def create_app(
             on_decision=agent.execute_decision,
             on_inbound=agent.handle_inbound,
             on_task_decision=proactive_worker.decide_task,
+            render_full=describe_full,
             processed=processed_updates,
         )
         surfaces.add_connectors(connectors)
