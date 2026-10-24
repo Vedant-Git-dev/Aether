@@ -870,6 +870,52 @@ async def test_the_perception_knobs_render_as_meaning_not_raw_words() -> None:
     assert "video_model = custom-vision" in section
 
 
+async def test_the_new_model_words_render_as_meaning_too() -> None:
+    # the dropdown's own words — "off" beside the legacy empty, "default"
+    # beside the legacy "base" — render the same way: as what they mean,
+    # never as a raw knob word that reads as "nothing is set"
+    live = AppConfig()
+    live.llm.image_model = "off"
+    live.llm.audio_model = "default"
+    live.llm.salience_model = "default"
+    live.llm.embedding_model = "off"
+    manager, _, _ = _manager(live=live)
+
+    assert await manager.show("llm.image_model") == ("llm.image_model = off — images stay unseen")
+    assert await manager.show("llm.audio_model") == (
+        "llm.audio_model = default — the main model listens to audio (model claude-opus-5)"
+    )
+    assert await manager.show("llm.salience_model") == (
+        "llm.salience_model = default — the main model skims what matters first (model claude-opus-5)"
+    )
+    assert await manager.show("llm.embedding_model") == (
+        "llm.embedding_model = off — memory search is off"
+    )
+
+
+async def test_the_dropdowns_stored_forms_round_trip() -> None:
+    # what the pickers store — "off", "default", and provider-prefixed ids
+    # — are plain strings to the manager: they validate, persist, and come
+    # back exactly as saved, whatever the live provider is
+    manager, store, live = _manager()
+    await manager.set(op="set", path="llm.image_model", value="off")
+    await manager.set(op="set", path="llm.salience_model", value="default")
+    await manager.set(op="set", path="llm.model", value="gemini/gemini-2.5-flash")
+
+    assert live.llm.image_model == "off"
+    assert live.llm.salience_model == "default"
+    assert live.llm.model == "gemini/gemini-2.5-flash"
+    assert store.rows["llm.image_model"] == "off"
+    assert store.rows["llm.salience_model"] == "default"
+    assert store.rows["llm.model"] == "gemini/gemini-2.5-flash"
+
+    # the overview resolves "default" to the model it means — a knob word
+    # that could read as nothing is never what the summary shows
+    overview = await manager.show(None)
+    assert "images off" in overview
+    assert "salience gemini/gemini-2.5-flash" in overview
+
+
 async def test_ollama_vision_is_hidden_under_other_providers() -> None:
     # the flag governs Ollama alone — under Gemini its raw copy reads as
     # a real setting and fed the bot's wrong self-diagnosis, so it isn't

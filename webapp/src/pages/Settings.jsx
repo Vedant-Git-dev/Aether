@@ -5,6 +5,7 @@
 // from /api/settings/fields; this page hardcodes no setting of its own.
 import { useEffect, useState } from "react";
 import PageHead from "../components/PageHead.jsx";
+import ModelPicker from "../components/ModelPicker.jsx";
 import { Card, Field, Select, Toggle, Button } from "../components/ui.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import { useToast } from "../components/Toasts.jsx";
@@ -19,9 +20,20 @@ export default function SettingsPage() {
   const [personalityStatus, setPersonalityStatus] = useState({ text: "", bad: false });
   const [feed, setFeed] = useState(null);
   const [feedError, setFeedError] = useState("");
+  const [models, setModels] = useState(null); // the live model catalog for the pickers
   const [overrides, setOverrides] = useState([]);
   const [drafts, setDrafts] = useState({}); // path -> unsaved input text
   const [errors, setErrors] = useState({}); // path -> the backend's plain refusal
+
+  // The model catalog behind every picker — cached server-side by key, so
+  // this is one light read per page load. A failed read degrades to a note
+  // inside the picker, never a broken page.
+  const loadModels = (force = false) =>
+    api(`/api/settings/models${force ? "?refresh=1" : ""}`)
+      .then(setModels)
+      .catch((err) =>
+        setModels({ configured: false, providers: [], error: err.message })
+      );
 
   useEffect(() => {
     if (!hasToken()) return;
@@ -31,6 +43,7 @@ export default function SettingsPage() {
     api("/api/settings/fields")
       .then(setFeed)
       .catch((err) => setFeedError(err.message));
+    loadModels();
     api("/api/config")
       .then((d) => setOverrides(d.overrides || []))
       .catch(() => setOverrides([])); // the ledger is a nicety, not a gate
@@ -119,6 +132,9 @@ export default function SettingsPage() {
         body: JSON.stringify({ value }),
       });
       setFeed(d);
+      // a pasted provider key changes what the model pickers can list —
+      // the server's key-keyed cache decides whether to refetch
+      loadModels();
       toast(`${cred.label} stored encrypted — it is never shown back.`);
     } catch (err) {
       toast(err.message, "err");
@@ -133,6 +149,18 @@ export default function SettingsPage() {
           checked={Boolean(f.value)}
           disabled={!hasToken()}
           onChange={(e) => flipToggle(f, e.target.checked)}
+        />
+      );
+    }
+    if (f.kind === "model") {
+      return (
+        <ModelPicker
+          field={f}
+          draft={draftOf(f)}
+          models={models}
+          disabled={!hasToken()}
+          onDraft={(value) => setDrafts((dr) => ({ ...dr, [f.path]: value }))}
+          onRefresh={() => loadModels(true)}
         />
       );
     }

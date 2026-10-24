@@ -640,6 +640,25 @@ async def reset_setting(path: str, request: Request, token: str | None = None) -
     return {"reply": reply, "feed": feed}
 
 
+@router.get("/api/settings/models")
+async def settings_models(
+    request: Request, token: str | None = None, refresh: bool = False
+) -> dict:
+    """The models each configured key can reach, grouped by provider —
+    what the Settings page's model dropdowns render. Fetched live from
+    the providers' own model lists (cached by key until the key changes
+    or a refresh is asked for); one provider that doesn't answer is an
+    inline note on its group, never a broken whole. A key's value never
+    rides anywhere: the feed carries provider names, model ids, and
+    plain-words errors only."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    catalog = getattr(request.app.state, "model_catalog", None)
+    if catalog is None:
+        raise HTTPException(status_code=503, detail="the model catalog is not wired")
+    return await catalog.feed(refresh=refresh)
+
+
 @router.put("/api/settings/credentials/{name}")
 async def set_credential(
     name: str, body: CredentialBody, request: Request, token: str | None = None

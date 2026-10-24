@@ -8,7 +8,10 @@ be pasted (by name only — values never travel back). Kind and choices
 are derived from the config models' own annotations, so the catalog
 cannot drift from what ConfigManager will actually accept: a field the
 model types as a Literal renders as a dropdown with exactly its options,
-a bool renders as a toggle, a number as a number.
+a bool renders as a toggle, a number as a number. A field the catalog
+declares a model field renders as the model picker, with the sentinel
+choices that apply to it — the models themselves are fetched live from
+the configured keys, never hardcoded here.
 
 Everything editable here flows through ConfigManager — the same
 validation, persistence, live-apply and audit chat's /config uses — and
@@ -23,7 +26,7 @@ from typing import Any, Literal, get_args, get_origin
 
 from pydantic import BaseModel
 
-from .config import AppConfig
+from .config import MODEL_DEFAULT, MODEL_OFF, AppConfig
 from .config_store import _apply_note
 
 
@@ -34,6 +37,7 @@ class FieldSpec:
     hint: str  # one plain sentence: what the setting does
     note: str = ""  # when it bites, when _apply_note has nothing
     none_ok: bool = False  # text fields where empty means "not set"
+    model: bool = False  # a model picker: the feed names its sentinel choices
 
 
 @dataclass(frozen=True)
@@ -47,6 +51,26 @@ class GroupSpec:
     toggle_hint: str = ""
 
 
+# The sentinel choices each model field offers, in order — the first is
+# also what an empty value behaves as (the honest off for the senses and
+# memory search, the main model for the first pass). The main model itself
+# has no sentinels: something has to think. "base" is the legacy spelling
+# of "default" and renders as it.
+_MODEL_SENTINELS: dict[str, tuple[str, ...]] = {
+    "llm.model": (),
+    "llm.image_model": (MODEL_OFF, MODEL_DEFAULT),
+    "llm.audio_model": (MODEL_OFF, MODEL_DEFAULT),
+    "llm.video_model": (MODEL_OFF, MODEL_DEFAULT),
+    "llm.salience_model": (MODEL_DEFAULT,),
+    "llm.embedding_model": (MODEL_OFF,),
+}
+
+# the plain words the sentinels read as on the page
+_SENTINEL_LABELS = {
+    MODEL_OFF: "None (off)",
+    MODEL_DEFAULT: "Use default",
+}
+
 SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
     GroupSpec(
         key="llm",
@@ -57,47 +81,54 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
             FieldSpec(
                 path="llm.provider",
                 label="Provider",
-                hint="Which AI service Aether thinks with.",
+                hint="Which AI service Aether thinks with — also the one behind "
+                "model names typed without their service in front.",
             ),
             FieldSpec(
                 path="llm.model",
                 label="Model",
-                hint="The model name the provider answers to.",
+                hint="The model Aether thinks with, picked from the ones your keys can reach.",
+                model=True,
             ),
             FieldSpec(
                 path="llm.image_model",
                 label="Image model",
-                hint="The model that reads images — a model name, or base to "
-                "use the main model. Empty means images stay unseen.",
+                hint="The model that reads images — none (off) leaves them "
+                "unseen, or use default for the main model.",
                 none_ok=True,
+                model=True,
             ),
             FieldSpec(
                 path="llm.audio_model",
                 label="Audio model",
-                hint="The model that listens to audio — a model name, or base "
-                "to use the main model. Empty leaves only transcription.",
+                hint="The model that listens to audio — none (off) leaves only "
+                "transcription, or use default for the main model.",
                 none_ok=True,
+                model=True,
             ),
             FieldSpec(
                 path="llm.video_model",
                 label="Video model",
-                hint="The model that watches video — a model name, or base to "
-                "use the main model. Empty falls back to frames.",
+                hint="The model that watches video — none (off) falls back to "
+                "frames, or use default for the main model.",
                 none_ok=True,
+                model=True,
             ),
             FieldSpec(
                 path="llm.salience_model",
                 label="First-pass model",
                 hint="A cheaper model that skims what happened and picks what is "
-                "worth mentioning. Empty uses the main model.",
+                "worth mentioning — or use default for the main model.",
                 none_ok=True,
+                model=True,
             ),
             FieldSpec(
                 path="llm.embedding_model",
                 label="Memory search model",
-                hint="The model that makes memory searchable by meaning. "
-                "Empty turns that search off.",
+                hint="The model that makes memory searchable by meaning, on your "
+                "Gemini key — none (off) turns that search off.",
                 none_ok=True,
+                model=True,
             ),
             FieldSpec(
                 path="llm.max_tokens",
@@ -468,6 +499,16 @@ def _field_type(model: type[BaseModel], field: str) -> tuple[str, list[str]]:
 def _field_feed(config: AppConfig, spec: FieldSpec, changed: set[str]) -> dict:
     model, field, value = _walk(config, spec.path)
     kind, choices = _field_type(model, field)
+    # a model field is declared, not derived: the value stays a plain
+    # string (any id validates), but the page renders the picker with the
+    # sentinel choices that apply to it
+    sentinels: list[dict] = []
+    if spec.model:
+        kind = "model"
+        choices = []
+        sentinels = [
+            {"value": word, "label": _SENTINEL_LABELS[word]} for word in _MODEL_SENTINELS[spec.path]
+        ]
     note = spec.note or _apply_note(spec.path).removeprefix(" — ")
     return {
         "path": spec.path,
@@ -479,6 +520,7 @@ def _field_feed(config: AppConfig, spec: FieldSpec, changed: set[str]) -> dict:
         "value": value,
         "none_ok": spec.none_ok,
         "changed": spec.path in changed,
+        "sentinels": sentinels,
     }
 
 
@@ -506,6 +548,7 @@ def _toggle_feed(config: AppConfig, group: GroupSpec, changed: set[str]) -> list
             ),
             "none_ok": False,
             "changed": f"{group.toggles}.{key}.enabled" in changed,
+            "sentinels": [],
         }
         for key, label in items
     ]

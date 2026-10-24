@@ -291,3 +291,173 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     rows.nth(1).locator('[data-testid="contact-remove"]').click()
     page.wait_for_timeout(500)
     assert page.locator('[data-testid="contact-row"]').count() == 1
+
+
+def test_model_fields_are_pickers_over_the_live_catalog(page, live_server, token) -> None:
+    # the six model knobs are dropdowns over the fetched catalog: no
+    # free-text entry remains, both configured providers list in one
+    # dropdown in the provider-prefixed form, and the sentinel words read
+    # as what they mean — never as raw knob values on the screen
+    page.add_init_script(f"localStorage.setItem('aether_token', '{token}')")
+    page.goto(f"{live_server}/#/settings")
+    page.wait_for_selector('[data-testid="settings-field-llm.model"]')
+
+    # every model field is the picker's trigger button — the old free-text
+    # inputs are gone, while llm.provider stays the plain select it was
+    for path in (
+        "llm.model",
+        "llm.image_model",
+        "llm.audio_model",
+        "llm.video_model",
+        "llm.salience_model",
+        "llm.embedding_model",
+    ):
+        trigger = page.locator(f'[data-testid="settings-field-{path}"]')
+        assert trigger.evaluate("el => el.tagName") == "BUTTON"
+    assert page.locator('[data-testid="settings-field-llm.provider"]').input_value() == "anthropic"
+
+    # unset fields show their meaning, not a blank: a medium with nothing
+    # picked is "None (off)", an unset first-pass skim is "Use default"
+    assert (
+        page.locator('[data-testid="settings-field-llm.image_model"]').inner_text().strip()
+        == "None (off)"
+    )
+    assert (
+        page.locator('[data-testid="settings-field-llm.salience_model"]').inner_text().strip()
+        == "Use default"
+    )
+
+    # the fixture's main model was typed before the dropdown existed — it
+    # is kept as saved and said so plainly, never reset to a listed one;
+    # the embedding default, a legacy bare id the catalog still serves,
+    # reads as itself with no such note
+    page.wait_for_selector('[data-testid="settings-model-unknown-llm.model"]')
+    assert (
+        page.locator('[data-testid="settings-field-llm.model"]').inner_text().strip()
+        == "claude-sonnet-5"
+    )
+    assert (
+        "not in the available models — kept as saved"
+        in page.locator('[data-testid="settings-model-unknown-llm.model"]').inner_text()
+    )
+    assert (
+        page.locator('[data-testid="settings-field-llm.embedding_model"]').inner_text().strip()
+        == "gemini-embedding-001"
+    )
+    assert page.locator('[data-testid="settings-model-unknown-llm.embedding_model"]').count() == 0
+
+    # opening the main model's picker: both providers' models in one
+    # dropdown, grouped under their provider, in the stored display form
+    page.click('[data-testid="settings-field-llm.model"]')
+    page.wait_for_selector('[data-testid="settings-model-list-llm.model"]')
+    model_list = page.locator('[data-testid="settings-model-list-llm.model"]')
+    assert "ANTHROPIC" in model_list.inner_text()
+    assert "GEMINI" in model_list.inner_text()
+    assert (
+        model_list.locator('[data-testid="settings-model-option-anthropic/claude-opus-5"]')
+        .inner_text()
+        .strip()
+        == "anthropic/claude-opus-5"
+    )
+    assert (
+        model_list.locator('[data-testid="settings-model-option-gemini/gemini-2.5-flash"]').count()
+        == 1
+    )
+    # the typed value rides in the list too — kept selectable, never dropped
+    assert (
+        model_list.locator('[data-testid="settings-model-option-unknown-llm.model"]').count() == 1
+    )
+
+    # the filter narrows to what matches
+    page.fill('[data-testid="settings-model-search-llm.model"]', "gemini-2.5")
+    page.wait_for_timeout(200)
+    assert (
+        model_list.locator('[data-testid="settings-model-option-anthropic/claude-opus-5"]').count()
+        == 0
+    )
+    assert (
+        model_list.locator('[data-testid="settings-model-option-gemini/gemini-2.5-flash"]').count()
+        == 1
+    )
+    page.fill('[data-testid="settings-model-search-llm.model"]', "")
+
+    # the refresh button refetches the catalog — the fake's held-back model
+    # appears, proving the round trip rides all the way to the provider
+    page.click('[data-testid="settings-models-refresh-llm.model"]')
+    page.wait_for_selector(
+        '[data-testid="settings-model-list-llm.model"] '
+        '[data-testid="settings-model-option-anthropic/claude-opus-4-1"]'
+    )
+
+    # picking a model stores the full prefixed form and saves it — the
+    # trigger keeps reading it, the change is marked, the note is gone
+    page.click('[data-testid="settings-model-option-gemini/gemini-2.5-flash"]')
+    assert (
+        page.locator('[data-testid="settings-field-llm.model"]').inner_text().strip()
+        == "gemini/gemini-2.5-flash"
+    )
+    page.click('[data-testid="settings-save-llm.model"]')
+    page.wait_for_timeout(500)
+    assert (
+        page.locator('[data-testid="settings-field-llm.model"]').inner_text().strip()
+        == "gemini/gemini-2.5-flash"
+    )
+    assert page.locator('[data-testid="settings-reset-llm.model"]').count() == 1
+    assert page.locator('[data-testid="settings-model-unknown-llm.model"]').count() == 0
+
+    # a perception knob offers both its meanings, and picking one stores
+    # the word behind it — "Use default" for the main model's own eyes
+    page.click('[data-testid="settings-field-llm.image_model"]')
+    page.wait_for_selector('[data-testid="settings-model-list-llm.image_model"]')
+    image_list = page.locator('[data-testid="settings-model-list-llm.image_model"]')
+    assert (
+        image_list.locator('[data-testid="settings-model-option-off"]').inner_text().strip()
+        == "None (off)"
+    )
+    assert (
+        image_list.locator('[data-testid="settings-model-option-default"]').inner_text().strip()
+        == "Use default"
+    )
+    page.click('[data-testid="settings-model-option-default"]')
+    page.click('[data-testid="settings-save-llm.image_model"]')
+    page.wait_for_timeout(500)
+    assert (
+        page.locator('[data-testid="settings-field-llm.image_model"]').inner_text().strip()
+        == "Use default"
+    )
+
+    # "None (off)" is pickable the same way and disables the medium
+    page.click('[data-testid="settings-field-llm.audio_model"]')
+    page.wait_for_selector('[data-testid="settings-model-list-llm.audio_model"]')
+    page.click(
+        '[data-testid="settings-model-list-llm.audio_model"] [data-testid="settings-model-option-off"]'
+    )
+    page.click('[data-testid="settings-save-llm.audio_model"]')
+    page.wait_for_timeout(500)
+    assert (
+        page.locator('[data-testid="settings-field-llm.audio_model"]').inner_text().strip()
+        == "None (off)"
+    )
+
+    # each field offers only the meanings it can really take: the
+    # first-pass skim has no off, memory search has no default
+    page.click('[data-testid="settings-field-llm.salience_model"]')
+    page.wait_for_selector('[data-testid="settings-model-list-llm.salience_model"]')
+    salience_list = page.locator('[data-testid="settings-model-list-llm.salience_model"]')
+    assert salience_list.locator('[data-testid="settings-model-option-default"]').count() == 1
+    assert salience_list.locator('[data-testid="settings-model-option-off"]').count() == 0
+    # close the open dropdown (its trigger toggles) and clear the sticky
+    # header before the next one — the open list overlays the row below
+    page.click('[data-testid="settings-field-llm.salience_model"]')
+    page.wait_for_selector(
+        '[data-testid="settings-model-list-llm.salience_model"]', state="detached"
+    )
+    page.mouse.wheel(0, 120)
+    page.click('[data-testid="settings-field-llm.embedding_model"]')
+    page.wait_for_selector('[data-testid="settings-model-list-llm.embedding_model"]')
+    embedding_list = page.locator('[data-testid="settings-model-list-llm.embedding_model"]')
+    assert embedding_list.locator('[data-testid="settings-model-option-off"]').count() == 1
+    assert embedding_list.locator('[data-testid="settings-model-option-default"]').count() == 0
+
+    # and the open dropdown speaks the same plain language as the rest
+    _scan(page.locator("body").inner_text(), "settings (model picker open)")

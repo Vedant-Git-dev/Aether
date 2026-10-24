@@ -77,21 +77,36 @@ class Settings(BaseSettings):
 # config.yaml structure models
 # --------------------------------------------------------------------------
 
+# The stored sentinel words for the model fields. A choice made from the
+# models dropdown always carries a "/" (provider/model), so a bare word can
+# never collide with a real model id. "base" is the legacy spelling of
+# "default"; both keep working, and both resolve to the main model when
+# providers are built — never at save time.
+MODEL_BASE = "base"
+MODEL_DEFAULT = "default"
+MODEL_OFF = "off"
+
 
 class LLMConfig(BaseModel):
     provider: Literal["anthropic", "openai", "gemini", "ollama"] = "anthropic"
+    # a model value is either a sentinel word (off / default / base) or a
+    # model id. An id may carry its own provider: "provider/model", split on
+    # the first slash — the rest of the string is the id that provider's
+    # API answers to, so an id may itself contain slashes. A bare id still
+    # routes through the global provider below (the legacy spelling).
     model: str = "claude-opus-5"
     # each medium's perception, tri-state: None (default) = that medium is
-    # off, "base" = the main model takes it, or a specific model id. The
-    # knob is the routing truth — whether the chosen model truly accepts
-    # the medium is discovered at call time, and the perception ladder
-    # degrades honestly on a refusal.
+    # off, "default"/"base" = the main model takes it, or a specific model
+    # id. The knob is the routing truth — whether the chosen model truly
+    # accepts the medium is discovered at call time, and the perception
+    # ladder degrades honestly on a refusal.
     image_model: str | None = None
     audio_model: str | None = None
     video_model: str | None = None
     salience_model: str | None = None
-    # the free embedding model that makes memory semantically searchable;
-    # none (or a missing Gemini key) leaves memory search unavailable
+    # the free embedding model that makes memory semantically searchable —
+    # the Gemini key's own family; none (or a missing Gemini key) leaves
+    # memory search unavailable
     embedding_model: str | None = "gemini-embedding-001"
     max_tokens: int = 16000
     # Ollama's vision ability depends entirely on which model was pulled;

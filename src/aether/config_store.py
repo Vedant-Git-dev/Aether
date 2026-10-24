@@ -37,6 +37,9 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from . import restart
 from .authz.policy import Policy, PolicyError
 from .config import (
+    MODEL_BASE,
+    MODEL_DEFAULT,
+    MODEL_OFF,
     AppConfig,
     AppContacts,
     AuthzRule,
@@ -114,29 +117,38 @@ def _plain_value(value: Any) -> str:
     return str(value)
 
 
-# what an empty perception knob means, by field — the honest off, not a
-# raw blank that reads as "maybe something is set"
+# what an empty or "off" model knob means, by field — the honest off, not
+# a raw blank that reads as "maybe something is set"
 _KNOB_EMPTY_TEXT = {
-    "image_model": "empty — images stay unseen",
-    "audio_model": "empty — only voice transcription, when connected",
-    "video_model": "empty — no video model (frames through the image model, when one is set)",
+    "image_model": "images stay unseen",
+    "audio_model": "only voice transcription, when connected",
+    "video_model": "no video model (frames through the image model, when one is set)",
+    "salience_model": "the main model skims what matters first",
+    "embedding_model": "memory search is off",
 }
-# what 'base' means, by field — the main model doing that sense itself
+# what 'default' (and its legacy spelling 'base') means, by field — the
+# main model doing that job itself. The embedding seam has no such rung:
+# the main model can't embed, so the "main model" word means off there.
 _KNOB_BASE_TEXT = {
-    "image_model": "base — the main model reads images",
-    "audio_model": "base — the main model listens to audio",
-    "video_model": "base — the main model watches video",
+    "image_model": "the main model reads images",
+    "audio_model": "the main model listens to audio",
+    "video_model": "the main model watches video",
+    "salience_model": "the main model skims what matters first",
 }
 
 
 def _llm_knob_text(field: str, value: Any, main_model: str) -> str:
-    """The llm perception knobs rendered as what they mean, never as raw
-    knob words — 'base' is the main model, empty is the honest off, so
-    config text can't be misread as 'nothing is set' when something is."""
-    if value == "base":
-        return f"{_KNOB_BASE_TEXT[field]} (model {main_model})"
-    if not value:
-        return _KNOB_EMPTY_TEXT[field]
+    """The llm model knobs rendered as what they mean, never as raw knob
+    words — 'default'/'base' is the main model, 'off'/empty is the honest
+    off, so config text can't be misread as 'nothing is set' when
+    something is (or vice versa)."""
+    if value in (MODEL_BASE, MODEL_DEFAULT):
+        if field in _KNOB_BASE_TEXT:
+            return f"{value} — {_KNOB_BASE_TEXT[field]} (model {main_model})"
+        return f"{value} — {_KNOB_EMPTY_TEXT[field]}"
+    if not value or value == MODEL_OFF:
+        word = "empty" if not value else "off"
+        return f"{word} — {_KNOB_EMPTY_TEXT[field]}"
     return _plain_value(value)
 
 
@@ -1044,10 +1056,11 @@ class ConfigManager:
                 ("salience", llm.salience_model),
             ):
                 if knob:
-                    # 'base' reads as the main model it resolves to — the
-                    # overview shows the truth the running process serves
-                    # with, never a knob word that looks like nothing
-                    resolved = llm.model if knob == "base" else knob
+                    # 'default' and its legacy spelling 'base' read as the
+                    # main model they resolve to — the overview shows the
+                    # truth the running process serves with, never a knob
+                    # word that looks like nothing
+                    resolved = llm.model if knob in (MODEL_BASE, MODEL_DEFAULT) else knob
                     text += f" · {label} {resolved}"
             text += f" · max {_plain_value(llm.max_tokens)} tokens"
             return text

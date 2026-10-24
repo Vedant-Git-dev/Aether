@@ -22,7 +22,14 @@ from .authz.policy import Policy, PolicyError
 from .chat import ChatHistory, ChatHub
 from .chat.ws import router as chat_router
 from .composio_bridge import ComposioBridge
-from .config import AppConfig, Settings, load_config
+from .config import (
+    MODEL_BASE,
+    MODEL_DEFAULT,
+    MODEL_OFF,
+    AppConfig,
+    Settings,
+    load_config,
+)
 from .config_store import ConfigManager, ConfigOverrides
 from .connectors import ProcessedUpdates, build_messaging_connectors
 from .connectors.attachments import AttachmentProcessor
@@ -33,6 +40,7 @@ from .connectors.screenvision import ScreenVision
 from .counters import DailyCounters
 from .llm.base import ProviderError
 from .llm.embeddings import GeminiEmbedder
+from .llm.model_list import ModelCatalog, is_sentinel
 from .llm.registry import ProviderRegistry
 from .logging_setup import configure_logging
 from .media.editing import MediaEditor
@@ -126,6 +134,10 @@ def create_app(
         env_resolver = EnvResolver(secrets=secret_store)
         app.state.secrets = secret_store
         app.state.resolver = env_resolver
+        # the Settings page's model dropdowns ask this for the models each
+        # configured key can reach — fetched live per provider, cached by
+        # key, so a pasted key lists its models without a restart
+        app.state.model_catalog = ModelCatalog(env_resolver)
         composio = ComposioBridge(env_resolver, secret_store)
         app.state.composio = composio
         try:
@@ -212,17 +224,30 @@ def create_app(
 
         # --- vector memory: free embeddings make recall semantic ----------
         # best effort, same as the providers — without a key the layer is a
-        # quiet no-op and memory search reports the failure plainly
+        # quiet no-op and memory search reports the failure plainly. The
+        # seam speaks Gemini only: a value pointing at another provider
+        # says so and leaves the layer off rather than guessing.
         embedder = None
-        if config.llm.embedding_model and settings.gemini_api_key:
-            try:
-                embedder = GeminiEmbedder.build(settings.gemini_api_key, config.llm.embedding_model)
-            except ProviderError as exc:
+        knob = config.llm.embedding_model
+        if knob and knob not in (MODEL_BASE, MODEL_DEFAULT, MODEL_OFF):
+            provider, sep, embed_model = knob.partition("/")
+            if not sep:  # a bare id — the embedding seam has only ever spoken Gemini
+                provider, embed_model = "gemini", knob
+            if provider != "gemini":
                 log.warning(
-                    "embedding model unavailable (%s) — memory search is "
-                    "unavailable until the key is set",
-                    exc,
+                    "embedding model set to a %s model — memory search needs "
+                    "Gemini, so it stays off",
+                    provider,
                 )
+            elif settings.gemini_api_key:
+                try:
+                    embedder = GeminiEmbedder.build(settings.gemini_api_key, embed_model)
+                except ProviderError as exc:
+                    log.warning(
+                        "embedding model unavailable (%s) — memory search is "
+                        "unavailable until the key is set",
+                        exc,
+                    )
         vectors = VectorMemory(pool, cipher, embedder)
         app.state.vectors = vectors
 
@@ -531,11 +556,12 @@ def create_app(
         the only error line in an otherwise clean log. Model ids are not
         secrets — the same reasoning that leaves /health unguarded."""
         llm = config.llm
-        # "base" means the main model by another word — it's already listed
+        # the sentinel words name meanings, never models — "default" is the
+        # main model, which is already listed
         ids = {llm.model} | {
             m
             for m in (llm.image_model, llm.audio_model, llm.video_model, llm.salience_model)
-            if m and m != "base"
+            if m and not is_sentinel(m)
         }
         return {
             "object": "list",

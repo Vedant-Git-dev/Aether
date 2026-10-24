@@ -1527,6 +1527,85 @@ async def test_settings_feed_carries_groups_kinds_and_apply_notes() -> None:
     assert all(set(c) == {"name", "label", "hint", "set"} for c in data["credentials"])
 
 
+async def test_model_fields_render_as_pickers_with_their_sentinels() -> None:
+    app = _app(None, config=AppConfig(), config_manager=FakeConfigManager())
+    app.state.resolver = _Resolver()
+    async with _client(app) as client:
+        response = await client.get("/api/settings/fields", params={"token": "secret"})
+    by_path = {f["path"]: f for g in response.json()["groups"] for f in g["fields"]}
+    # every model field is a picker, not a text box — the free-text era ends
+    for path in (
+        "llm.model",
+        "llm.image_model",
+        "llm.audio_model",
+        "llm.video_model",
+        "llm.salience_model",
+        "llm.embedding_model",
+    ):
+        assert by_path[path]["kind"] == "model", path
+        assert by_path[path]["choices"] == []
+    # the main model has no sentinel — something has to think; the senses
+    # offer the honest off and the main model; the first pass only the
+    # main model; memory search only the off
+    assert by_path["llm.model"]["sentinels"] == []
+    assert by_path["llm.image_model"]["sentinels"] == [
+        {"value": "off", "label": "None (off)"},
+        {"value": "default", "label": "Use default"},
+    ]
+    assert by_path["llm.audio_model"]["sentinels"] == by_path["llm.video_model"]["sentinels"]
+    assert by_path["llm.salience_model"]["sentinels"] == [
+        {"value": "default", "label": "Use default"}
+    ]
+    assert by_path["llm.embedding_model"]["sentinels"] == [{"value": "off", "label": "None (off)"}]
+    # everything else keeps its annotation-derived kind
+    assert by_path["llm.provider"]["kind"] == "choice"
+    assert by_path["llm.max_tokens"]["kind"] == "number"
+
+
+class _ModelCatalog:
+    """Catalog double: a canned feed that records the refresh flag."""
+
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.refreshed: list[bool] = []
+
+    async def feed(self, *, refresh: bool = False) -> dict:
+        self.refreshed.append(refresh)
+        return self.payload
+
+
+async def test_the_models_endpoint_lists_configured_providers() -> None:
+    catalog = _ModelCatalog(
+        {
+            "configured": True,
+            "providers": [
+                {"provider": "anthropic", "models": ["claude-opus-5"], "error": ""},
+                {"provider": "gemini", "models": ["gemini-2.5-flash"], "error": ""},
+            ],
+        }
+    )
+    app = _app(None)
+    app.state.model_catalog = catalog
+    async with _client(app) as client:
+        denied = await client.get("/api/settings/models")
+        assert denied.status_code == 401
+        response = await client.get("/api/settings/models", params={"token": "secret"})
+        refreshed = await client.get(
+            "/api/settings/models", params={"token": "secret", "refresh": "1"}
+        )
+    data = response.json()
+    assert data["configured"] is True
+    assert [g["provider"] for g in data["providers"]] == ["anthropic", "gemini"]
+    assert refreshed.json() == data
+    assert catalog.refreshed == [False, True]  # the manual refresh rides through
+
+
+async def test_the_models_endpoint_is_503_without_a_catalog_wired() -> None:
+    async with _client(_app(None)) as client:
+        response = await client.get("/api/settings/models", params={"token": "secret"})
+    assert response.status_code == 503
+
+
 async def test_setting_write_round_trips_and_audits() -> None:
     manager = FakeConfigManager(set_reply="agent.tick_seconds set to 15")
     audit = FakeAudit()

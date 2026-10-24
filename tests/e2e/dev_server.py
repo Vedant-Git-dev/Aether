@@ -36,6 +36,7 @@ from aether.config import (
     AuthzRule,
     ContactRule,
     ContactsConfig,
+    LLMConfig,
     MCPServerConfig,
     MessagingConfig,
     PlatformToggle,
@@ -984,6 +985,40 @@ class FakeResolver:
         return {"TELEGRAM_BOT_TOKEN"} | await self._store.names()
 
 
+class FakeModelCatalog:
+    """The live model list's double: models from two providers so the
+    Settings pickers render real grouped choices, and one model that
+    appears only after a refresh is asked for — the refresh button's
+    visible effect. The fixture's saved main model sits on no list (the
+    kept-as-saved note's e2e case) while its embedding model does (a
+    legacy bare id that is still served — no note, kept as typed)."""
+
+    def __init__(self) -> None:
+        self._refreshed = False
+
+    async def feed(self, *, refresh: bool = False) -> dict:
+        if refresh:
+            self._refreshed = True
+        anthropic = ["claude-haiku-4-5-20251001", "claude-opus-5"]
+        if self._refreshed:
+            anthropic.append("claude-opus-4-1")
+        return {
+            "configured": True,
+            "providers": [
+                {"provider": "anthropic", "models": sorted(anthropic), "error": ""},
+                {
+                    "provider": "gemini",
+                    "models": [
+                        "gemini-2.5-flash",
+                        "gemini-3.1-flash-lite",
+                        "gemini-embedding-001",
+                    ],
+                    "error": "",
+                },
+            ],
+        }
+
+
 class FakeHubBridge:
     """The Composio bridge double: one connected account and a small live
     catalog, so the apps page shows the hub section, the search, and the
@@ -1037,6 +1072,11 @@ def build_app() -> FastAPI:
     # .env is deliberately not read: a real one may sit next to this fixture
     app.state.settings = Settings.without_env_file(api_token=API_TOKEN)
     config = AppConfig(
+        # the saved main model pretends chat typed it before the dropdown
+        # existed — a bare id no key's list carries, so the picker's
+        # kept-as-saved note has its e2e case (and the embedding default,
+        # which the fake catalog does serve, has the no-note one)
+        llm=LLMConfig(provider="anthropic", model="claude-sonnet-5"),
         authz=AuthzConfig(
             rules=[
                 AuthzRule(
@@ -1088,6 +1128,7 @@ def build_app() -> FastAPI:
     secret_store = FakeSecretStore()
     app.state.secrets = secret_store
     app.state.resolver = FakeResolver(secret_store)
+    app.state.model_catalog = FakeModelCatalog()
     app.state.composio = FakeHubBridge()
 
     @app.get("/")
