@@ -11,6 +11,7 @@ authz check, approvals, and audit before handing it here.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 
@@ -41,7 +42,10 @@ async def run_tool_loop(
 
     `execute` runs each proposed ToolCall (the caller interposes the authz
     gate there) and returns a ToolResult. Tool errors are fed back to the
-    model as error results instead of crashing the loop.
+    model as error results instead of crashing the loop. The calls in one
+    proposal run concurrently — they are independent asks; an exact repeat
+    inside the same proposal waits out its first and then runs too, so
+    per-call guards in `execute` answer every call individually.
 
     `tools` may be a plain list (static) or a ToolGate: called with the
     names already in play before every completion, returning that call's
@@ -65,19 +69,51 @@ async def run_tool_loop(
         # Record the proposal, then execute every call and feed results back.
         history.append(Message.assistant(turn.text, turn.tool_calls, turn.provider_extra))
         active.update(c.name for c in turn.tool_calls)  # called tools stay offered
-        results: list[ToolResult] = []
-        for call in turn.tool_calls:
+
+        # one proposal's calls are independent asks — they run side by
+        # side, so a slow one delays nothing else. Exact repeats inside
+        # the batch are held back: each runs only after its first
+        # finished, so per-call guards in the executor (dedup, repeat
+        # refusals) answer it exactly as a later iteration's repeat
+        first_of: list[int] = []
+        distinct: list[int] = []
+        for pos, call in enumerate(turn.tool_calls):
+            repeat = next(
+                (
+                    q
+                    for q in distinct
+                    if turn.tool_calls[q].name == call.name
+                    and turn.tool_calls[q].arguments == call.arguments
+                ),
+                None,
+            )
+            first_of.append(pos if repeat is None else repeat)
+            if repeat is None:
+                distinct.append(pos)
+
+        async def _guarded(call: ToolCall) -> ToolResult:
             try:
-                result = await execute(call)
+                return await execute(call)
             except Exception:
                 log.exception("tool %s raised during execution", call.name)
-                result = ToolResult(
+                return ToolResult(
                     tool_call_id=call.id,
                     name=call.name,
                     content="internal error: the tool raised during execution",
                     is_error=True,
                 )
-            results.append(result)
+
+        batch = await asyncio.gather(*(_guarded(turn.tool_calls[p]) for p in distinct))
+        by_pos = dict(zip(distinct, batch, strict=True))
+        results: list[ToolResult] = []
+        for pos, call in enumerate(turn.tool_calls):
+            if first_of[pos] == pos:
+                results.append(by_pos[pos])
+            else:
+                # the repeat of a call this batch already ran — executed
+                # now, in order, so its own result and the executor's
+                # record of it are real
+                results.append(await _guarded(call))
         history.append(Message.tool_results(results))
 
     # Iteration budget exhausted with the model still proposing tools: force

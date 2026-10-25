@@ -4,6 +4,7 @@ test_screenvision.py.)"""
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import zipfile
@@ -116,6 +117,23 @@ class FakeFrameWatcher:
     async def watch(self, video: bytes, media_type: str, label: str) -> WatchOutcome:
         self.calls.append((video, media_type, label))
         return self.outcome
+
+
+class OverlapProbeProvider(FakeProvider):
+    """Counts how many attachment turns were in flight at once — each turn
+    yields once so a sibling can enter beside it."""
+
+    def __init__(self, turns: list[Turn]) -> None:
+        super().__init__(turns)
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    async def complete(self, system, messages, tools) -> Turn:
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        await asyncio.sleep(0)
+        self.in_flight -= 1
+        return await super().complete(system, messages, tools)
 
 
 def _zip(parts: dict[str, bytes]) -> bytes:
@@ -579,6 +597,30 @@ class TestVideo:
         # no canned chat note — the agent says it from the payload
         assert results[0].note == ""
         assert attachments_note(results) == ""
+
+
+class TestBursts:
+    """Several files in one message climb their ladders at the same time —
+    the burst must not queue behind its slowest member."""
+
+    async def test_attachments_in_one_message_run_side_by_side(self) -> None:
+        provider = OverlapProbeProvider(
+            [Turn(text='{"description": "one"}'), Turn(text='{"description": "two"}')]
+        )
+        processor = AttachmentProcessor(FakeRegistry(provider), FakeEventStore())
+        first = Attachment("image", "a.png", "image/png", b"\x89PNG\r\n\x1a\none")
+        second = Attachment("image", "b.png", "image/png", b"\x89PNG\r\n\x1a\ntwo")
+
+        results = await processor.process(_message(first, second, text="both at once"))
+
+        assert provider.max_in_flight == 2  # truly side by side, not queued
+        assert [r.blind for r in results] == [False, False]
+        # the results (and the memory they wrote) keep the message's own
+        # order, whatever finished first
+        assert [row["payload"]["description"] for row in processor._events.ingested] == [
+            "one",
+            "two",
+        ]
 
 
 class TestExtraction:

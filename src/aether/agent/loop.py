@@ -496,6 +496,10 @@ class AgentLoop:
         # in-flight Connect Link waits — tracked so a completed task is
         # never garbage-collected mid-flight
         self._connect_waits: set[asyncio.Task[None]] = set()
+        # salience scorers moved off the reply path — same tracking (a
+        # completed task is never garbage-collected mid-flight), and this
+        # set is what stop() waits out
+        self._scoring_tasks: set[asyncio.Task[None]] = set()
         # hub watchdog state: when the composio connection first went
         # unready (monotonic), when a session reset last ran, and how many
         # this boot — see _watch_hub
@@ -543,6 +547,12 @@ class AgentLoop:
         if task is not None:
             with contextlib.suppress(TimeoutError, asyncio.CancelledError):
                 await asyncio.wait_for(task, timeout=10)
+        # scorers a recent tick spawned get the same bounded grace — a tick
+        # that ingested an event owes it a score, and nothing retries
+        # salience, so they are waited out rather than cancelled
+        if self._scoring_tasks:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait(set(self._scoring_tasks), timeout=10)
 
     async def _backfill_loop(self) -> None:
         """Index the events that predate vector memory (or lost a race with
@@ -677,11 +687,34 @@ class AgentLoop:
                 await asyncio.wait_for(self._woken.wait(), timeout=self._config.agent.tick_seconds)
             self._woken.clear()
 
+    def _spawn_scoring(self, event_id: int) -> None:
+        """Score one event on a background task — the salience judge is a
+        whole LLM turn, and words a user is waiting on must never queue
+        behind it. A failure is logged, never raised into the tick."""
+
+        async def _score() -> None:
+            try:
+                await self._salience.score_event(event_id)
+            except Exception:
+                log.exception("background salience scoring failed for event %s", event_id)
+
+        task = asyncio.create_task(_score(), name=f"salience-score-{event_id}")
+        self._scoring_tasks.add(task)
+        task.add_done_callback(self._scoring_tasks.discard)
+
     async def _tick(self) -> None:
         anchor = self._last_event_id
 
-        # (a) due source polls first, so their results are observed this tick
-        await self._run_due_polls()
+        # (a) due source polls first, so their results are observed this
+        # tick — unless someone is waiting on a reply: a message never
+        # queues behind the feeds. When one is queued the polls defer to
+        # this tick's tail (past the turn, or the quiet return below);
+        # their own notify() wakes the next tick to observe what they
+        # found
+        polled = False
+        if self._queue.empty():
+            await self._run_due_polls()
+            polled = True
 
         # (a2) a server that answered late joins the namespace here —
         # keeping the "the moment it's up" promise is the tick's own job
@@ -730,7 +763,9 @@ class AgentLoop:
                 sender=Sender(platform=message.surface, handle=message.handle),
             )
             if result.stored and result.event_id is not None:
-                await self._salience.score_event(result.event_id)
+                # the judge leaves the reply path here — scored beside the
+                # turn instead of in front of it
+                self._spawn_scoring(result.event_id)
                 self._last_event_id = max(self._last_event_id, result.event_id)
             if result.reason == "filtered:contacts":
                 log.info(
@@ -775,7 +810,18 @@ class AgentLoop:
         observations = await self._events.list_since(anchor, limit=_MAX_OBSERVATIONS)
         for event in observations:
             self._last_event_id = max(self._last_event_id, event.id)
-            await self._salience.score_event(event.id)
+        if messages:
+            # a reply is waiting — the scoring spawns beside the turn; the
+            # verdicts land moments later and the next reader (recall,
+            # later turns) sees them
+            for event in observations:
+                self._spawn_scoring(event.id)
+        else:
+            # nobody spoke, so the turn ahead is unprompted and its
+            # interruption budget reads these very scores — they stay
+            # inline, fresh when urgent is computed
+            for event in observations:
+                await self._salience.score_event(event.id)
 
         # (c2) standing triggers the user taught — deterministic matching
         # over the same observations, before any LLM is involved
@@ -790,9 +836,23 @@ class AgentLoop:
             await self._surfaces.send_to_user("While it was quiet:\n\n" + "\n\n".join(held))
 
         if not messages and not observations:
-            return  # a quiet tick: no LLM turn, no tokens spent
+            # a quiet tick: no LLM turn, no tokens spent — but the polls a
+            # queued message deferred still run before the tick closes
+            if not polled:
+                await self._run_due_polls()
+            return
 
         await self._turn(messages, observations)
+
+        # the polls the waiting message deferred — after the reply, never
+        # before it
+        if not polled:
+            await self._run_due_polls()
+
+        # a tick that never suspended (a provider-less turn, say) still
+        # lets the scorers it spawned take their first step here, so none
+        # is left pending at loop close
+        await asyncio.sleep(0)
 
     # -- the deterministic chat vocabulary ---------------------------------------
 
