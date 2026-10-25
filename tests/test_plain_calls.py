@@ -65,6 +65,19 @@ class TestDescribeCall:
             "Sending a message (to @sam)"
         )
 
+    def test_a_raw_id_is_never_salient_context(self) -> None:
+        # "chat 8977329495" and "channel C03AB" tell a user nothing — a
+        # numeric or token id is an internal reference, so the preview
+        # carries no context at all rather than an opaque number
+        assert (
+            describe_call("telegram__send_message", {"chat_id": 8977329495, "text": "hi"})
+            == "Sending a message"
+        )
+        assert (
+            describe_call("slack__send_message", {"channel_id": "C03ABCDEF", "text": "hi"})
+            == "Sending a message"
+        )
+
     def test_native_tool_words(self) -> None:
         assert describe_call("memory_search", {"query": "sam"}) == "Searching my memory (query sam)"
 
@@ -170,7 +183,8 @@ class TestDescribeFull:
     """The whole ask behind the chat surfaces' "read the full text" button:
     everything the request carried, in its own order, in plain words — the
     preview in the question hints; this is the complete text a decision
-    actually applies to."""
+    actually applies to. An internal reference points at the decision
+    record's exact copy rather than printing its token."""
 
     def test_every_field_in_the_request_own_order(self) -> None:
         text = describe_full(
@@ -252,3 +266,40 @@ class TestDescribeFull:
         text = describe_full("mail__send_message", {"to": "a@b.c", "flags": {"dry_run": True}})
         assert "{" not in text and "}" not in text
         assert "Dry run: yes" in text
+
+    def test_an_internal_reference_never_prints_its_token(self) -> None:
+        # the real gmail reply ask: the thread is an opaque token naming a
+        # conversation — the full text says where the exact value lives,
+        # and the words a decision is made from stay words
+        text = describe_full(
+            "composio__GMAIL_REPLY_TO_THREAD",
+            {"thread_id": "19c2e6fe0b2f1a34", "message": "Sounds good — Thursday works."},
+        )
+        assert "Thread id: (kept in the decision record)" in text
+        assert "19c2e6fe0b2f1a34" not in text
+        assert "Message: Sounds good — Thursday works." in text
+
+    def test_numeric_ids_and_a_bare_id_read_the_same(self) -> None:
+        # an Aether id is as internal as a connected app's — the treatment
+        # comes from the key, never from what the token looks like
+        text = describe_full("share_media", {"media_id": 42, "to": "@sam"})
+        assert "Media id: (kept in the decision record)" in text
+        assert "42" not in text
+        text = describe_full("calendar__get_event", {"id": "evt_19", "title": "Dentist"})
+        assert "Id: (kept in the decision record)" in text
+        assert "evt_19" not in text
+        assert "Title: Dentist" in text
+
+    def test_a_reference_inside_a_nested_structure_is_covered_too(self) -> None:
+        text = describe_full(
+            "mail__send_message",
+            {"reactions": [{"user_id": "u_77", "emoji": "wave"}]},
+        )
+        assert "User id: (kept in the decision record)" in text
+        assert "u_77" not in text
+        assert "Emoji: wave" in text
+
+    def test_an_empty_reference_is_still_just_empty(self) -> None:
+        # no token, nothing kept — a blank id reads like any other blank
+        text = describe_full("composio__GMAIL_REPLY_TO_THREAD", {"thread_id": None})
+        assert "Thread id: (empty)" in text

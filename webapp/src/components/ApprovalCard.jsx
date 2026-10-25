@@ -1,8 +1,10 @@
 // One pending request, rendered from the request's own shape: labels come
 // from its own keys, formats from what the content itself is, long text
-// scrolls and expands instead of cutting, and an empty field says so.
-// What you read here is exactly what a decision applies to. No badge — the
-// page title already says these are awaiting your approval.
+// scrolls and expands instead of cutting, an empty field says so, and an
+// internal reference points at the decision record's exact copy instead
+// of printing its token. What you read here is exactly what a decision
+// applies to. No badge — the page title already says these are awaiting
+// your approval.
 import { useState } from "react";
 import Icon from "./Icon.jsx";
 import { Button } from "./ui.jsx";
@@ -13,7 +15,10 @@ import {
   describeRule,
   describeTool,
   fieldLabel,
+  hasContent,
+  ID_REFERRAL,
   isDiff,
+  isIdKey,
   isPath,
   isUrl,
   readableDate,
@@ -157,7 +162,13 @@ function Value({ value }) {
           <div key={k} className="contents">
             <dt className="whitespace-nowrap text-ink-3">{fieldLabel(k)}</dt>
             <dd className="min-w-0">
-              <Value value={v} />
+              {isIdKey(k) && hasContent(v) ? (
+                <span data-testid="approval-reference" className="text-ink-3">
+                  {ID_REFERRAL}
+                </span>
+              ) : (
+                <Value value={v} />
+              )}
             </dd>
           </div>
         ))}
@@ -204,7 +215,13 @@ export default function ApprovalCard({ a, ui, onDecide }) {
               <div key={k} className="contents">
                 <dt className="whitespace-nowrap text-ink-3">{fieldLabel(k)}</dt>
                 <dd className="min-w-0">
-                  <Value value={v} />
+                  {isIdKey(k) && hasContent(v) ? (
+                    <span data-testid="approval-reference" className="text-ink-3">
+                      {ID_REFERRAL}
+                    </span>
+                  ) : (
+                    <Value value={v} />
+                  )}
                 </dd>
               </div>
             ))}

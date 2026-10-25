@@ -186,6 +186,25 @@ class FakeApprovals:
                 rules_matched="default:fail-safe",
                 note="unknown tool — held for a human decision",
             ),
+            # the gmail reply ask from 2026-10-25, byte-faithful to the one
+            # a user actually approved: composio's thread reference is an
+            # opaque token — the card must point at the decision record's
+            # exact copy, never print it
+            6: Approval(
+                id=6,
+                tool_name="composio__GMAIL_REPLY_TO_THREAD",
+                params={
+                    "thread_id": "19c2e6fe0b2f1a34",
+                    "message": "Sounds good — Thursday works.",
+                },
+                status=PENDING,
+                created_at=now - timedelta(seconds=30),
+                expires_at=now + timedelta(hours=24),
+                decided_at=None,
+                decided_by=None,
+                rules_matched="builtin:risky",
+                note="reaches an external system or is hard to undo",
+            ),
         }
 
     async def list_pending(self) -> list[Approval]:

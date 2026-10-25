@@ -588,6 +588,27 @@ export function isDiff(text) {
   return s.startsWith("diff --git ") || (/^--- /m.test(s) && /^\+\+\+ /m.test(s));
 }
 
+// a field whose key names an internal reference — "thread_id", "media_id",
+// a plain "id" — carries a token that points at a record elsewhere, not
+// words a decision can be made from. This is the one value rule keyed to
+// the field rather than the content: an opaque token is indistinguishable
+// from any other string until its key names it. The card points at the
+// decision record's exact copy instead of printing the token.
+export function isIdKey(key) {
+  const k = String(key);
+  return k === "id" || k.endsWith("_id");
+}
+
+// true when a value carries anything — an empty id is still just "(empty)"
+export function hasContent(value) {
+  if (value === null || value === undefined || value === "") return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return true;
+}
+
+export const ID_REFERRAL = "(kept in the decision record)";
+
 // the one-line summary at the top of a card: the action in plain words,
 // then the request's own short single-line fields in the order it
 // carries them — no phrase list, no per-type template
@@ -595,7 +616,9 @@ export function approvalSummary(toolName, params) {
   const bits = [describeTool(toolName)];
   for (const [key, value] of Object.entries(params || {})) {
     if (bits.length >= 4) break;
-    if (key.startsWith("_") || value === null || value === undefined) continue;
+    // an internal reference is not a detail — it stays a pointer in the
+    // details and out of the summary entirely
+    if (key.startsWith("_") || isIdKey(key) || value === null || value === undefined) continue;
     if (typeof value === "object") continue;
     const text = scalarText(value);
     if (!text || text.includes("\n") || text.length > 80) continue;

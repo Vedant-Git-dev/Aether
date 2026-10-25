@@ -49,7 +49,7 @@ def test_approve_reaches_the_fake_backend_and_the_card_disappears(page, live_ser
     _set_token(page, token)
     page.goto(f"{live_server}/#/attention")
     page.wait_for_selector('[data-testid="approval-card"]')
-    assert page.locator('[data-testid="approval-card"]').count() == 5
+    assert page.locator('[data-testid="approval-card"]').count() == 6
 
     first_tool = page.locator('[data-testid="approval-tool"]').first.inner_text()
     page.locator('[data-testid="approval-card"]').first.locator('[data-testid="approve"]').click()
@@ -60,7 +60,7 @@ def test_approve_reaches_the_fake_backend_and_the_card_disappears(page, live_ser
 
     remaining = page.locator('[data-testid="approval-tool"]').all_inner_texts()
     assert first_tool not in remaining
-    assert len(remaining) == 4
+    assert len(remaining) == 5
 
 
 def test_activity_source_filter_actually_filters(page, live_server, token) -> None:

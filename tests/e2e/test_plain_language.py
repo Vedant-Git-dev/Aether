@@ -305,7 +305,7 @@ def test_approval_cards_show_the_full_ask(page, live_server, token) -> None:
     page.wait_for_selector('[data-testid="approval-card"]')
     page.wait_for_timeout(500)
     cards = page.locator('[data-testid="approval-card"]')
-    assert cards.count() == 5
+    assert cards.count() == 6
 
     # every card opens with a one-line summary built from the request's
     # own fields, in the order it carries them
@@ -364,6 +364,17 @@ def test_approval_cards_show_the_full_ask(page, live_server, token) -> None:
     assert "deploying the nightly release" in patch_text
     assert "deploying the tagged release" in patch_text
     assert "Unrecognized action — held for your decision" in patch_text
+
+    # the gmail reply: the thread it answers is an internal reference —
+    # the summary stays words, the details point at the decision record's
+    # exact copy, and the raw token never reaches the screen anywhere
+    reply = cards.nth(5)
+    reply_text = reply.inner_text()
+    assert "Replying to email · Message: Sounds good — Thursday works." in reply_text
+    assert "Thread id" in reply_text
+    assert "(kept in the decision record)" in reply_text
+    assert reply.locator('[data-testid="approval-reference"]').count() == 1
+    assert "19c2e6fe0b2f1a34" not in page.locator("body").inner_text()
 
     # the decision buttons ride below the capped content, always in view
     assert patch.locator('[data-testid="approve"]').count() == 1

@@ -235,7 +235,10 @@ _NATIVE_WORDS: dict[str, ActionWords] = {
 }
 
 # the few parameters worth putting in front of the user, keyed to the
-# label they read under — everything else stays in the decision record
+# label they read under — everything else stays in the decision record.
+# An internal id is never one of these: "chat 8977329495" tells a user
+# nothing, so a handle a person reads (chat_ref) carries the preview and
+# the id stays a reference
 _SALIENT_PARAMS: tuple[tuple[str, str], ...] = (
     ("to", "to"),
     ("recipient", "to"),
@@ -243,8 +246,6 @@ _SALIENT_PARAMS: tuple[tuple[str, str], ...] = (
     ("recipient_email", "to"),
     ("email", "to"),
     ("channel", "channel"),
-    ("channel_id", "channel"),
-    ("chat_id", "chat"),
     ("chat_ref", "to"),
     ("username", "username"),
     ("title", "title"),
@@ -457,12 +458,32 @@ def _full_value(value: Any, indent: str) -> list[str]:
     return [f"{indent}{_full_scalar_lines(value)[0]}"]
 
 
+# what a field that names an internal reference reads as — the token
+# points at a record somewhere else (a gmail thread, a stored file), and
+# words a decision is made from never include it
+_REFERENCE_NOTE = "(kept in the decision record)"
+
+
+def _is_reference(key: str, value: Any) -> bool:
+    """True when a field's key names an internal reference — "thread_id",
+    "media_id", a plain "id" — and it carries something. The token is
+    meaningless to a human decision, so the full text points at the
+    decision record's exact copy instead of printing it; an empty one is a
+    blank like any other and still reads "(empty)"."""
+    if key != "id" and not key.endswith("_id"):
+        return False
+    return value not in (None, "", [], {})
+
+
 def _full_field(key: str, value: Any, indent: str) -> list[str]:
     """One field as plain lines: the label in its own words, then everything
     the field carried. A scalar rides the label's line; a value with lines
     of its own keeps them raw, so a body or a patch copies clean; anything
-    bigger indents beneath. Nothing clips, nothing drops."""
+    bigger indents beneath. An internal reference reads as where its exact
+    value lives, never as its token. Nothing clips, nothing drops."""
     head = f"{indent}{_full_label(key)}: "
+    if _is_reference(key, value):
+        return [head + _REFERENCE_NOTE]
     if isinstance(value, (dict, list, tuple)):
         if not len(value):
             return [head + "(empty)"]  # an empty collection is a "nothing", like a blank
@@ -475,10 +496,11 @@ def _full_field(key: str, value: Any, indent: str) -> list[str]:
 
 def describe_full(name: str, params: Any = None, note: str = "") -> str:
     """The whole ask, exactly as a decision applies to it: every field the
-    request carried, in the request's own order, in plain words — nothing
-    clipped, no JSON anywhere. The one-line preview in the chat question
-    hints at the ask; this is what the "read the full text" tap hands
-    over, so the decision can be made on the complete request."""
+    request carried, in the request's own order, in plain words — an
+    internal reference reads as where its exact value lives, never as its
+    token; nothing clipped, no JSON anywhere. The one-line preview in the
+    chat question hints at the ask; this is what the "read the full text"
+    tap hands over, so the decision can be made on the complete request."""
     lines = [f"{_action_words(name).ask} — the full ask:"]
     if note:
         lines += ["", f"(needs approval — {note})"]
