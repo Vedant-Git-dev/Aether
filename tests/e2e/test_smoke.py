@@ -45,6 +45,20 @@ def test_every_nav_route_loads(page, live_server, token) -> None:
     assert page.locator('[data-testid="toast"]').count() == 0  # no error toasts along the way
 
 
+def test_screen_vision_and_contact_allowlist_keep_their_own_icons(page, live_server, token) -> None:
+    _set_token(page, token)
+    page.goto(f"{live_server}/#/apps")
+    page.wait_for_selector('[data-testid="integration-screen-vision"]')
+    page.wait_for_selector('[data-testid="integration-contacts"]')
+
+    # vision is the monitor with an eye; contacts is the handset — the two
+    # faces were once exchanged, and a swapped pair reads as the wrong app
+    screen = page.locator('[data-testid="integration-screen-vision"] img')
+    assert "icon-monitor.png" in (screen.get_attribute("src") or "")
+    contacts = page.locator('[data-testid="integration-contacts"] img')
+    assert "icon-phone.png" in (contacts.get_attribute("src") or "")
+
+
 def test_approve_reaches_the_fake_backend_and_the_card_disappears(page, live_server, token) -> None:
     _set_token(page, token)
     page.goto(f"{live_server}/#/attention")

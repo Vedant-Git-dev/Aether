@@ -153,7 +153,7 @@ export default function AppsPage() {
   });
   cards.push({
     key: "screen-vision",
-    logo: <BrandLogo imgSrc={icon("icon-phone.png")} />,
+    logo: <BrandLogo imgSrc={icon("icon-monitor.png")} />,
     name: "Screen vision",
     subtitle: "OCR, perception only",
     permission: "Screenshots become memory, never actions",
@@ -163,7 +163,7 @@ export default function AppsPage() {
   });
   cards.push({
     key: "contacts",
-    logo: <BrandLogo imgSrc={icon("icon-monitor.png")} />,
+    logo: <BrandLogo imgSrc={icon("icon-phone.png")} />,
     name: "Contact allowlist",
     subtitle: "Ingestion filter",
     permission: "Filters senders before they reach memory",
@@ -201,7 +201,9 @@ export default function AppsPage() {
         <span className="ml-2 font-normal normal-case text-ink-3">{cards.length} configured</span>
       </SectionLabel>
       <div className="mb-6 grid gap-3 sm:grid-cols-2">
-        {cards.map((c) => <IntegrationCard key={c.key} {...c} />)}
+        {cards.map((c) => (
+          <IntegrationCard key={c.key} data-testid={`integration-${c.key}`} {...c} />
+        ))}
       </div>
 
       <SectionLabel className="mb-2">

@@ -35,11 +35,11 @@ function Switch({ on, title, onClick }) {
   );
 }
 
-export default function IntegrationCard({ logo, name, subtitle, enabled, permission, statusText, statusTone }) {
+export default function IntegrationCard({ logo, name, subtitle, enabled, permission, statusText, statusTone, ...rest }) {
   const toast = useToast();
 
   return (
-    <Card className="flex flex-col gap-3 p-4">
+    <Card className="flex flex-col gap-3 p-4" {...rest}>
       <div className="flex items-center gap-3">
         {logo}
         <div className="min-w-0">
