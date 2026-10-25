@@ -187,7 +187,7 @@ class MessagingConnector:
 
     async def _decide_and_explain(self, approval_id: int, decision: str) -> str | None:
         """Runs the shared decide path; returns None on a fresh decision (no
-        feedback needed — the carry-out message is the acknowledgment), or
+        feedback needed — the model's reply is the acknowledgment), or
         a short, platform-neutral phrase when the tap didn't apply, so a
         stale or double tap is never met with silence."""
         if await self._decide(approval_id, decision) is not None:

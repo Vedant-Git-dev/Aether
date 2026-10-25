@@ -103,18 +103,17 @@ async def test_a_plain_park_neither_refuses_nor_passes_media() -> None:
     assert set(surface.approvals[0]) == {"approval_id", "text"}
 
 
-async def test_a_parked_ask_carries_the_reason_it_needs_a_tap() -> None:
-    """The card shows the rule's own plain words under the question —
-    the user taps knowing why, not just what."""
+async def test_a_parked_ask_shows_the_action_own_fields() -> None:
+    """The card is the ask itself: the action as a question, then the
+    request's own fields in their own order — the gate's reason is wiring
+    the user never reads."""
     kit, surface = _wired(FakeMediaStore())
 
     await kit.loop._execute(
         ToolCall(id="t1", name="mail__send_message", arguments={"to": "a@b.c", "body": "hi"})
     )
 
-    text = surface.approvals[0]["text"]
-    assert text.startswith("Send the email")
-    assert "(needs approval — " in text
+    assert surface.approvals[0]["text"] == "Send the email?\n\nTo: a@b.c\nBody: hi"
 
 
 async def test_a_junk_media_id_is_ignored_rather_than_refused() -> None:

@@ -1776,7 +1776,7 @@ async def test_a_why_reply_to_an_unrecorded_message_reaches_the_model() -> None:
     assert kit.connector.sent == ["I'm not sure what you mean"]
 
 
-async def test_a_carried_out_approval_records_where_the_news_landed() -> None:
+async def test_a_carried_out_approval_speaks_after_the_record_is_complete() -> None:
     kit = LoopKit(None)
     kit.add_tool("mail__send_message", result="sent")
     await kit.loop._execute(
@@ -1787,8 +1787,12 @@ async def test_a_carried_out_approval_records_where_the_news_landed() -> None:
 
     await kit.loop.execute_decision(approval.id, APPROVED)
 
+    # the record closes before anyone speaks, and the acknowledgment is a
+    # fresh message (model-written when a provider is wired), so it links
+    # no chat ref back to this trace
     payload = kit.traces.created[-1]["payload"]
-    assert payload["chat_refs"] == {"fake": "m1"}
+    assert "chat_refs" not in payload
+    assert kit.connector.sent[-1].startswith("Sent the email (to a@b.c")
 
 
 async def test_a_routine_fire_records_where_its_ping_landed() -> None:
@@ -1892,12 +1896,11 @@ async def test_config_set_security_parks_for_one_tap() -> None:
     # the card went to the surfaces as one plain question
     presented = kit.connector.approvals_presented[-1]
     assert presented[0] == approval.id
-    # the card shows the question and the rule's own plain words for why
-    # it needs a tap — the spec from the honesty fixes
+    # the card is the ask itself: the question, then the request's own
+    # fields in their own order — never the rule's wording
     assert (
-        presented[1] == "Change my configuration (path messaging.telegram.enabled)?"
-        "\n\n(needs approval — changes who Aether listens to, what it may do, or "
-        "what it's connected to — the user decides that with one tap)"
+        presented[1] == "Change my configuration?"
+        "\n\nOp: set\nPath: messaging.telegram.enabled\nValue: yes"
     )
     # the reply is in the user's own words, never the model-directed wording
     note = kit.connector.sent[-1]
@@ -2016,12 +2019,11 @@ async def test_a_guided_security_walk_parks_for_one_tap() -> None:
     assert approval.params == {"op": "set", "path": "messaging.telegram.enabled", "value": True}
     presented = kit.connector.approvals_presented[-1]
     assert presented[0] == approval.id
-    # the card shows the question and the rule's own plain words for why
-    # it needs a tap — the spec from the honesty fixes
+    # the card is the ask itself: the question, then the request's own
+    # fields in their own order — never the rule's wording
     assert (
-        presented[1] == "Change my configuration (path messaging.telegram.enabled)?"
-        "\n\n(needs approval — changes who Aether listens to, what it may do, or "
-        "what it's connected to — the user decides that with one tap)"
+        presented[1] == "Change my configuration?"
+        "\n\nOp: set\nPath: messaging.telegram.enabled\nValue: yes"
     )
     # the walk relays the park card, then offers the menu again
     note = kit.connector.sent[-1]

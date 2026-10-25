@@ -328,19 +328,11 @@ def _salient_context(params: Any) -> str:
     return ", ".join(bits)
 
 
-def describe_ask(name: str, params: Any = None) -> str:
-    """The approval question exactly as the user reads it — "Send the
-    email (to rahul@gmail.com, subject hello)?" Never the raw tool name,
-    never a JSON dump; the decision record keeps the exact call."""
-    ask = _action_words(name).ask
-    ctx = _salient_context(params)
-    return f"{ask} ({ctx})?" if ctx else f"{ask}?"
-
-
 def describe_outcome(name: str, params: Any = None) -> str:
-    """The after-run chat message — "Sent the email (to rahul@gmail.com)."
-    The result stated plainly, with no status ceremony around it; the exact
-    tool output stays in the decision record."""
+    """The plain done sentence — "Sent the email (to rahul@gmail.com)."
+    The activity record's `plain` line for a completed act, and the
+    fallback chat line when no reasoning provider is wired; with one, the
+    model's own reply is what the user hears."""
     done = _action_words(name).done
     ctx = _salient_context(params)
     text = f"{done} ({ctx})" if ctx else done
@@ -357,8 +349,9 @@ def describe_denied(name: str, params: Any = None) -> str:
 
 
 def describe_dismissed(name: str, params: Any = None) -> str:
-    """The chat acknowledgment when the user taps Deny — "Okay — not
-    sending an email (to rahul@gmail.com)." A plain okay, not a report."""
+    """The fallback chat line when a denial arrives with no reasoning
+    provider wired — "Okay — not sending an email (to rahul@gmail.com)."
+    With one, the model's own reply acknowledges the denial instead."""
     doing = _action_words(name).doing
     ctx = _salient_context(params)
     return f"Okay — not {doing} ({ctx})." if ctx else f"Okay — not {doing}."
@@ -409,18 +402,48 @@ def _full_label(key: str) -> str:
     return plain[:1].upper() + plain[1:]
 
 
-def _full_scalar_lines(value: Any) -> list[str]:
+# where the ask's preview of a long text stops: whole leading lines while
+# both budgets hold, then a clean stop at the line edge. No ellipsis
+# character anywhere — the preview reads as the text's own opening, and
+# the complete version is one tap away
+_PREVIEW_CHARS = 240
+_PREVIEW_LINES = 8
+
+
+def _preview_lines(lines: list[str]) -> list[str]:
+    if len(lines) <= _PREVIEW_LINES and sum(len(line) for line in lines) <= _PREVIEW_CHARS:
+        return lines
+    kept: list[str] = []
+    total = 0
+    for line in lines:
+        if len(kept) >= _PREVIEW_LINES or total + len(line) > _PREVIEW_CHARS:
+            break
+        kept.append(line)
+        total += len(line)
+    if kept:
+        return kept
+    # one line longer than the whole budget: the leading words that fit,
+    # stopping at the last space so nothing reads cut mid-word
+    head = lines[0][:_PREVIEW_CHARS]
+    cut = head.rfind(" ")
+    return [head[:cut] if cut > 0 else head]
+
+
+def _full_scalar_lines(value: Any, *, complete: bool = True) -> list[str]:
     """A leaf value as its own lines: a date in plain words, yes/no for a
-    flag, "(empty)" for a blank, everything else as it is."""
+    flag, "(empty)" for a blank, everything else as it is. In the ask a
+    long text previews its leading lines instead of reciting; the complete
+    lines are what the full text and the record carry."""
     if isinstance(value, bool):
         return ["yes" if value else "no"]
     if value is None:
         return ["(empty)"]
     text = _readable_datetime(value) if isinstance(value, str) else str(value)
-    return text.splitlines() or ["(empty)"]
+    lines = text.splitlines() or ["(empty)"]
+    return lines if complete else _preview_lines(lines)
 
 
-def _full_value(value: Any, indent: str) -> list[str]:
+def _full_value(value: Any, indent: str, *, complete: bool = True) -> list[str]:
     """A value alone as plain lines, wherever it sits: a dict labels its
     own fields, a list numbers its items, and an empty one says so."""
     if isinstance(value, dict):
@@ -429,7 +452,7 @@ def _full_value(value: Any, indent: str) -> list[str]:
             return [f"{indent}(empty)"]
         out: list[str] = []
         for k, v in entries:
-            out += _full_field(k, v, indent)
+            out += _full_field(k, v, indent, complete=complete)
         return out
     if isinstance(value, (list, tuple)):
         if not len(value):
@@ -444,18 +467,18 @@ def _full_value(value: Any, indent: str) -> list[str]:
                     out.append(f"{indent}{marker}(empty)")
                     continue
                 for j, (k, v) in enumerate(entries):
-                    lines = _full_field(k, v, "")
+                    lines = _full_field(k, v, "", complete=complete)
                     out.append(f"{indent}{marker if j == 0 else pad}{lines[0]}")
                     out += [f"{indent}{pad}{line}" for line in lines[1:]]
             elif isinstance(item, (list, tuple)):
                 out.append(f"{indent}{marker}")
-                out += _full_value(item, indent + "    ")
+                out += _full_value(item, indent + "    ", complete=complete)
             else:
-                lines = _full_scalar_lines(item)
+                lines = _full_scalar_lines(item, complete=complete)
                 out.append(f"{indent}{marker}{lines[0]}")
                 out += [f"{indent}{pad}{line}" for line in lines[1:]]
         return out
-    return [f"{indent}{_full_scalar_lines(value)[0]}"]
+    return [f"{indent}{_full_scalar_lines(value, complete=complete)[0]}"]
 
 
 # what a field that names an internal reference reads as — the token
@@ -475,7 +498,7 @@ def _is_reference(key: str, value: Any) -> bool:
     return value not in (None, "", [], {})
 
 
-def _full_field(key: str, value: Any, indent: str) -> list[str]:
+def _full_field(key: str, value: Any, indent: str, *, complete: bool = True) -> list[str]:
     """One field as plain lines: the label in its own words, then everything
     the field carried. A scalar rides the label's line; a value with lines
     of its own keeps them raw, so a body or a patch copies clean; anything
@@ -487,34 +510,49 @@ def _full_field(key: str, value: Any, indent: str) -> list[str]:
     if isinstance(value, (dict, list, tuple)):
         if not len(value):
             return [head + "(empty)"]  # an empty collection is a "nothing", like a blank
-        return [head.rstrip(), *_full_value(value, indent + "  ")]
-    lines = _full_scalar_lines(value)
+        return [head.rstrip(), *_full_value(value, indent + "  ", complete=complete)]
+    lines = _full_scalar_lines(value, complete=complete)
     if len(lines) == 1:
         return [head + lines[0]]
     return [head.rstrip(), *lines]
 
 
-def describe_full(name: str, params: Any = None, note: str = "") -> str:
-    """The whole ask, exactly as a decision applies to it: every field the
-    request carried, in the request's own order, in plain words — an
-    internal reference reads as where its exact value lives, never as its
-    token; nothing clipped, no JSON anywhere. The one-line preview in the
-    chat question hints at the ask; this is what the "read the full text"
-    tap hands over, so the decision can be made on the complete request."""
-    lines = [f"{_action_words(name).ask} — the full ask:"]
-    if note:
-        lines += ["", f"(needs approval — {note})"]
+def _compose_ask(name: str, params: Any, *, complete: bool) -> str:
+    """The ask as its own fields: the action as a question, then every
+    field the request carried in the request's own order, each under its
+    own plain label. One layout behind both faces of a decision — the
+    question previews long text so the chat stays short, the full text
+    carries everything, so the "read the full text" tap never switches to
+    a different view of what was decided on."""
+    lines = [f"{_action_words(name).ask}?"]
     if isinstance(params, dict):
         entries = [(k, v) for k, v in params.items() if not k.startswith("_")]
     else:
         entries = []  # no fields at all — a "nothing" the text says plainly
-    if entries:
-        lines.append("")
-        for k, v in entries:
-            lines += _full_field(k, v, "")
-    else:
-        lines += ["", "(empty)"]
+    if not entries:
+        return "\n".join([*lines, "", "(empty)"])
+    lines.append("")
+    for k, v in entries:
+        lines += _full_field(k, v, "", complete=complete)
     return "\n".join(lines)
+
+
+def describe_ask(name: str, params: Any = None) -> str:
+    """The approval question exactly as the user reads it: the action as a
+    question, then the request's own fields in their own order — a long
+    text previews its leading lines and the complete version is one tap
+    away. Never the raw tool name, never a JSON dump; the decision record
+    keeps the exact call."""
+    return _compose_ask(name, params, complete=False)
+
+
+def describe_full(name: str, params: Any = None, note: str = "") -> str:
+    """The whole ask behind the "read the full text" tap: the same title,
+    the same labels, the same order as the approval question, with every
+    field complete — a decision is made on the whole request, never on a
+    technical view of it. The gate's `note` is wiring, not part of what
+    the user reads."""
+    return _compose_ask(name, params, complete=True)
 
 
 def plain_outcome(name: str, params: Any, kind: str) -> str:

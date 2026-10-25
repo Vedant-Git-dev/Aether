@@ -599,11 +599,10 @@ async def test_telegram_the_read_button_sends_the_whole_ask() -> None:
     # on the question are never retired
     assert answered == [None]
     assert cleared == []
+    # the complete ask in the same shape as the question — every field
+    # once, and no gate reason riding along
     text = app.bot.sent[-1]["text"]
-    assert text.startswith("Send the email — the full ask:")
-    assert "(needs approval — reaches an external system)" in text
-    assert "To: a@b.c" in text
-    assert "Body: the whole message body" in text
+    assert text == "Send the email?\n\nTo: a@b.c\nBody: the whole message body"
     assert app.bot.sent[-1]["reply_markup"] is None
 
 
@@ -1068,11 +1067,9 @@ async def test_discord_the_read_button_sends_the_whole_ask() -> None:
     await read_button.callback(interaction)
 
     assert len(interaction.sent) == 1  # a short ask fits one message
-    text = interaction.sent[0]
-    assert text.startswith("Send the email — the full ask:")
-    assert "(needs approval — reaches an external system)" in text
-    assert "To: a@b.c" in text
-    assert "Body: the whole message body" in text
+    # the complete ask in the same shape as the question — every field
+    # once, and no gate reason riding along
+    assert interaction.sent[0] == "Send the email?\n\nTo: a@b.c\nBody: the whole message body"
     # reading never disables anything — Approve and Deny stay one tap away
     assert all(not getattr(child, "disabled", False) for child in view.children)
 

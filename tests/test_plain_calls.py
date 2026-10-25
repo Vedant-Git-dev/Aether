@@ -6,6 +6,7 @@ rests on these sentences."""
 from __future__ import annotations
 
 from aether.agent.tools import (
+    describe_ask,
     describe_call,
     describe_dismissed,
     describe_full,
@@ -88,8 +89,10 @@ class TestDescribeCall:
 
 
 class TestDescribeOutcome:
-    """The chat message after an approved call runs — the result stated
-    plainly, with no "Done — tool executed" ceremony."""
+    """The fallback chat line when an approved call succeeds with no
+    reasoning provider wired — the result stated plainly, with no
+    "Done — tool executed" ceremony. With a provider, the model's own
+    reply is what the user hears."""
 
     def test_success_is_the_plain_done_sentence(self) -> None:
         assert (
@@ -102,7 +105,9 @@ class TestDescribeOutcome:
 
 
 class TestDescribeDismissed:
-    """The chat acknowledgment when the user taps Deny — a plain okay."""
+    """The fallback chat acknowledgment when a denial arrives with no
+    reasoning provider wired — a plain okay. With a provider, the
+    model's own reply acknowledges the denial instead."""
 
     def test_denial_acknowledgment(self) -> None:
         assert (
@@ -179,26 +184,83 @@ class TestWithPlainEvent:
         assert with_plain_event({"text": "hi"}, kind="chat_message") == {"text": "hi"}
 
 
+class TestDescribeAsk:
+    """The approval question a chat surface carries: the action as a
+    question, then the request's own fields in their own order — never
+    the tool name, never a JSON dump, never the gate's reason. Long text
+    previews its leading lines; "read the full text" is the same layout
+    with everything complete."""
+
+    def test_the_question_then_the_fields_in_the_request_own_order(self) -> None:
+        assert (
+            describe_ask(
+                "mail__send_message",
+                {"to": "sam@example.com", "subject": "hi", "body": "quick note"},
+            )
+            == "Send the email?\n\nTo: sam@example.com\nSubject: hi\nBody: quick note"
+        )
+
+    def test_an_ask_with_no_fields_says_so(self) -> None:
+        assert describe_ask("mail__send_message") == "Send the email?\n\n(empty)"
+
+    def test_a_long_value_previews_leading_lines_with_no_ellipsis(self) -> None:
+        # the question carries the request's opening, not its end — and
+        # never a "…" that could pass for content; the read button says
+        # there is more, so the preview never has to
+        body = "\n".join(f"line {i:02d} " + "y" * 30 for i in range(20))
+        text = describe_ask("mail__send_message", {"to": "a@b.c", "body": body})
+        assert "Body:" in text
+        assert "line 00" in text
+        assert "line 05" in text
+        assert "line 06" not in text
+        assert "…" not in text and "..." not in text
+
+    def test_a_single_line_past_the_budget_cuts_at_a_word(self) -> None:
+        # no line boundary to stop at — the cut lands at one, so the
+        # preview still reads as words
+        body = "one two " + "x" * 400
+        text = describe_ask("mail__send_message", {"to": "a@b.c", "body": body})
+        assert "Body: one two" in text
+        assert "xxx" not in text
+
+    def test_the_full_text_is_the_same_ask_with_everything_complete(self) -> None:
+        # one composer, one layout: reading the full text only adds the
+        # rest of the content, never a different presentation
+        params = {"to": "a@b.c", "body": "\n".join(f"line {i:02d}" for i in range(20))}
+        full = describe_full("mail__send_message", params)
+        assert full.startswith(describe_ask("mail__send_message", params))
+        assert "line 19" in full
+
+    def test_internal_references_stay_pointers(self) -> None:
+        text = describe_ask(
+            "composio__GMAIL_REPLY_TO_THREAD",
+            {"thread_id": "19c2e6fe0b2f1a34", "message": "Sounds good."},
+        )
+        assert "Thread id: (kept in the decision record)" in text
+        assert "19c2e6fe0b2f1a34" not in text
+
+
 class TestDescribeFull:
     """The whole ask behind the chat surfaces' "read the full text" button:
-    everything the request carried, in its own order, in plain words — the
-    preview in the question hints; this is the complete text a decision
-    actually applies to. An internal reference points at the decision
-    record's exact copy rather than printing its token."""
+    the same title, labels and order as the approval question, with every
+    field complete — the exact text a decision applies to. An internal
+    reference points at the decision record's exact copy rather than
+    printing its token."""
 
     def test_every_field_in_the_request_own_order(self) -> None:
         text = describe_full(
             "mail__send_message",
             {"to": "sam@example.com", "subject": "hi", "body": "quick note"},
         )
-        assert text == (
-            "Send the email — the full ask:\n\nTo: sam@example.com\nSubject: hi\nBody: quick note"
-        )
+        assert text == "Send the email?\n\nTo: sam@example.com\nSubject: hi\nBody: quick note"
 
-    def test_the_reason_rides_between_the_header_and_the_fields(self) -> None:
+    def test_the_gate_reason_never_reaches_the_text(self) -> None:
+        # the note is wiring — why the request parked is not part of what
+        # a decision applies to, so it never renders
         text = describe_full("mail__send_message", {"to": "a@b.c"}, note="hard to undo")
-        assert "(needs approval — hard to undo)" in text
-        assert text.index("(needs approval") < text.index("To:")
+        assert text == "Send the email?\n\nTo: a@b.c"
+        assert "needs approval" not in text
+        assert "hard to undo" not in text
 
     def test_nothing_clips(self) -> None:
         # the preview cuts a long body to a hint; the full text carries it
@@ -230,7 +292,7 @@ class TestDescribeFull:
         assert "Headers: (empty)" in text
 
     def test_an_ask_with_no_fields_says_so(self) -> None:
-        assert describe_full("mail__send_message") == "Send the email — the full ask:\n\n(empty)"
+        assert describe_full("mail__send_message") == "Send the email?\n\n(empty)"
 
     def test_a_date_shaped_value_reads_as_a_date(self) -> None:
         # the same words the panel's card uses — never the raw ISO string

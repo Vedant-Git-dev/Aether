@@ -521,14 +521,6 @@ export function readableDate(text) {
     : when.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
-// one scalar as the card reads it: booleans as yes/no, a timestamp as its
-// date, everything else as itself — never clipped
-export function scalarText(value) {
-  if (typeof value === "boolean") return value ? "yes" : "no";
-  const text = String(value);
-  return readableDate(text) || text;
-}
-
 // a string that is itself a serialized object or list unpacks into one —
 // raw JSON never reaches the screen, but nothing is dropped either
 export function structuredValue(value) {
@@ -608,21 +600,3 @@ export function hasContent(value) {
 }
 
 export const ID_REFERRAL = "(kept in the decision record)";
-
-// the one-line summary at the top of a card: the action in plain words,
-// then the request's own short single-line fields in the order it
-// carries them — no phrase list, no per-type template
-export function approvalSummary(toolName, params) {
-  const bits = [describeTool(toolName)];
-  for (const [key, value] of Object.entries(params || {})) {
-    if (bits.length >= 4) break;
-    // an internal reference is not a detail — it stays a pointer in the
-    // details and out of the summary entirely
-    if (key.startsWith("_") || isIdKey(key) || value === null || value === undefined) continue;
-    if (typeof value === "object") continue;
-    const text = scalarText(value);
-    if (!text || text.includes("\n") || text.length > 80) continue;
-    bits.push(`${fieldLabel(key)}: ${text}`);
-  }
-  return bits.join(" · ");
-}

@@ -53,6 +53,7 @@ from ..connectors.mail_allowlist import MailAllowlist
 from ..connectors.mcp_host import MCPHost
 from ..connectors.registry import ToolRegistry
 from ..llm.agent import run_tool_loop
+from ..llm.base import Provider
 from ..llm.registry import ProviderRegistry
 from ..llm.types import PLAIN_PARAM, Message, ToolCall, ToolResult, ToolSpec
 from ..memory.context import ContextBuilder
@@ -116,6 +117,22 @@ _TRANSCRIPT_MESSAGES = 20
 # runs longer refreshes it at this cadence — one fire at turn start would
 # go dark while the work is still honest.
 TYPING_REFRESH_SECONDS = 4.5
+
+
+# the instruction behind the one reply a decision gets: a single exchange
+# with no tools, so the answer can only ever be words — the model cannot
+# turn an acknowledgment into a retry or a new proposal. The ask rides
+# exactly as the user read it on the card, so the reply speaks about the
+# same request they decided on.
+def _decision_ack_instruction(ask: str, outcome: str) -> str:
+    return (
+        "The user just decided on an action you proposed. Send one short "
+        "plain reply in your own voice — it is the only message you send "
+        "about this, and you cannot run or propose anything now, so never "
+        "promise a further step.\n\n"
+        f"The request, exactly as the user read it:\n\n{ask}\n\n"
+        f"What happened:\n{outcome}"
+    )
 
 
 def _window_history(messages: list[Message], keep_head: int = 1) -> list[Message]:
@@ -441,6 +458,9 @@ class AgentLoop:
         media: Any = None,
     ) -> None:
         self._providers = providers
+        # the in-flight reply to a decision, if the model is writing one —
+        # tests await it; a live loop just lets it land
+        self._decision_reply: asyncio.Task[None] | None = None
         self._tools = tools
         self._policy = policy
         self._approvals = approvals
@@ -2324,11 +2344,10 @@ class AgentLoop:
             rules_matched=ruling.matched_rule,
             note=ruling.reason,
         )
-        # the card says what is asked, the details worth seeing, and why it
-        # needs a tap — the rule's own plain words, never its id
+        # the card is the ask itself — the action as a question, then the
+        # request's own fields in their own order; the gate's reason is
+        # wiring the user never reads
         ask = describe_ask(call.name, call.arguments)
-        if ruling.reason:
-            ask = f"{ask}\n\n(needs approval — {ruling.reason})"
         await self._surfaces.present_approval(approval.id, ask)
         result = ToolResult(
             tool_call_id=call.id,
@@ -2364,11 +2383,16 @@ class AgentLoop:
 
     async def _carry_out(self, approval: Approval) -> None:
         if approval.status == DENIED:
-            await self._surfaces.send_to_user(
-                describe_dismissed(approval.tool_name, approval.params)
-            )
             log.info("approval %s denied — nothing ran", approval.id)
             await self._remember_outcome(approval, "action_denied", "denied by the user")
+            await self._acknowledge_decision(
+                approval,
+                outcome=(
+                    "The user denied it — nothing ran. Acknowledge the denial in "
+                    "your own words; do not argue the case for the action."
+                ),
+                fallback=describe_dismissed(approval.tool_name, approval.params),
+            )
             return
         trace: dict[str, Any] = {
             "approval_id": approval.id,
@@ -2386,7 +2410,12 @@ class AgentLoop:
             await self._approvals.mark_failed(approval.id)
             trace["result"] = str(exc)
             trace["is_error"] = True
-            trace["chat_refs"] = await self._surfaces.send_to_user(
+            outcome = (
+                "The user approved it, but it could not run — "
+                f"{self._plain_unavailable(approval.tool_name)}. Tell them plainly "
+                "it did not happen."
+            )
+            fallback = (
                 f"the approved action couldn't run — {self._plain_unavailable(approval.tool_name)}"
             )
         except ConnectorUnavailableError as exc:
@@ -2394,7 +2423,12 @@ class AgentLoop:
             await self._approvals.mark_failed(approval.id)
             trace["result"] = str(exc)
             trace["is_error"] = True
-            trace["chat_refs"] = await self._surfaces.send_to_user(
+            outcome = (
+                "The user approved it, but it could not run — "
+                f"{self._plain_unresponsive(approval.tool_name)}. Tell them plainly "
+                "it did not happen."
+            )
+            fallback = (
                 f"the approved action couldn't run — {self._plain_unresponsive(approval.tool_name)}"
             )
         except Exception as exc:
@@ -2402,7 +2436,12 @@ class AgentLoop:
             await self._approvals.mark_failed(approval.id)
             trace["result"] = str(exc)
             trace["is_error"] = True
-            trace["chat_refs"] = await self._surfaces.send_to_user(
+            outcome = (
+                "The user approved it, but it failed unexpectedly — say so plainly "
+                "and give the reason in your own words. The error that came back: "
+                f"{exc}"
+            )
+            fallback = (
                 "the approved action couldn't run — it failed unexpectedly. "
                 "The decision record has exactly what happened."
             )
@@ -2419,7 +2458,12 @@ class AgentLoop:
                 )
                 trace["result"] = result
                 trace["is_error"] = True
-                trace["chat_refs"] = await self._surfaces.send_to_user(
+                outcome = (
+                    "The user approved it, but the service reported an error, so it "
+                    "was not completed — say so plainly and give the reason in your "
+                    f"own words. The service's error: {flat}"
+                )
+                fallback = (
                     "the approved action didn't go through — the service reported "
                     "an error, so it was not completed. The decision record has "
                     "exactly what happened."
@@ -2429,11 +2473,10 @@ class AgentLoop:
                 log.info("approval %s executed", approval.id)
                 trace["result"] = result
                 trace["is_error"] = False
+                outcome = f"The user approved it and it ran. The action's own report: {result}"
                 # plain words only — the exact result stays in the decision
                 # record and the trace; a raw dump never reaches the user
-                trace["chat_refs"] = await self._surfaces.send_to_user(
-                    describe_outcome(approval.tool_name, approval.params)
-                )
+                fallback = describe_outcome(approval.tool_name, approval.params)
         await self._remember_outcome(
             approval,
             "action_failed" if trace["is_error"] else "action_done",
@@ -2444,6 +2487,47 @@ class AgentLoop:
             label=f"approval #{approval.id} — {approval.tool_name}",
             payload=trace,
         )
+        # the record is complete — only now does anyone speak
+        await self._acknowledge_decision(approval, outcome=outcome, fallback=fallback)
+
+    async def _acknowledge_decision(self, approval: Approval, outcome: str, fallback: str) -> None:
+        """One reply about the decision the user just made. With a
+        reasoning provider it is the model's own line — what ran, what
+        failed with its real reason, or the denial — and the call is
+        spawned rather than inline, so the tap that decided returns as
+        fast as it always did. Without a provider, or when the turn dies
+        or comes back empty, the plain fallback line lands instead: a
+        user who just acted never gets silence."""
+        provider = self._providers.for_role("reasoning") if self._providers else None
+        if provider is None:
+            await self._surfaces.send_to_user(fallback)
+            return
+        self._decision_reply = asyncio.create_task(
+            self._model_acknowledgment(provider, approval, outcome, fallback)
+        )
+
+    async def _model_acknowledgment(
+        self, provider: Provider, approval: Approval, outcome: str, fallback: str
+    ) -> None:
+        """The spawned exchange behind _acknowledge_decision: one
+        complete() under the turn ceiling, no tools, then the reply
+        straight to the user's chat surfaces — the same direct path the
+        turn's own replies take, so quiet hours never swallow it."""
+        ask = describe_ask(approval.tool_name, approval.params)
+        try:
+            turn = await asyncio.wait_for(
+                provider.complete(
+                    await self._system_prompt(),
+                    [Message.user(_decision_ack_instruction(ask, outcome))],
+                    [],
+                ),
+                timeout=self._config.agent.turn_timeout_seconds,
+            )
+            text = (turn.text or "").strip()
+        except Exception:
+            log.exception("the reply to a decision failed — falling back to plain words")
+            text = ""
+        await self._surfaces.send_to_user(text or fallback)
 
     async def _remember_outcome(self, approval: Approval, kind: str, detail: str) -> None:
         """Close the loop in memory. The model's only picture of past turns

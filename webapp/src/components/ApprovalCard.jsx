@@ -1,18 +1,16 @@
 // One pending request, rendered from the request's own shape: labels come
 // from its own keys, formats from what the content itself is, long text
-// scrolls and expands instead of cutting, an empty field says so, and an
-// internal reference points at the decision record's exact copy instead
-// of printing its token. What you read here is exactly what a decision
-// applies to. No badge — the page title already says these are awaiting
-// your approval.
+// previews and expands to the whole thing in the same layout, an empty
+// field says so, and an internal reference points at the decision
+// record's exact copy instead of printing its token. What you read here
+// is exactly what a decision applies to — nothing above or around it
+// repeats the fields or explains the gate. No badge — the page title
+// already says these are awaiting your approval.
 import { useState } from "react";
 import Icon from "./Icon.jsx";
 import { Button } from "./ui.jsx";
 import { fmtTime } from "../lib/format.js";
 import {
-  approvalSummary,
-  describeOutcome,
-  describeRule,
   describeTool,
   fieldLabel,
   hasContent,
@@ -26,21 +24,39 @@ import {
   structuredValue,
 } from "../lib/describe.js";
 
-// a value only becomes a scroll box past these — under them it renders in
-// full with no controls in the way
-const LONG_CHARS = 600;
-const LONG_LINES = 12;
+// where a long value's preview stops — the same leading-lines cut the chat
+// question uses, so both faces of a decision preview alike
+const PREVIEW_CHARS = 240;
+const PREVIEW_LINES = 8;
 
-// long content: capped to a scroll box that says its size out loud, one
-// click to all of it — plain text throughout, so it stays copyable
-function ScrollableValue({ text, children }) {
-  const [expanded, setExpanded] = useState(false);
-  if (text.length <= LONG_CHARS && text.split("\n").length <= LONG_LINES) {
-    return <div className="break-words text-ink-2">{children}</div>;
+// whole leading lines while both budgets hold, never a word cut in half —
+// and no ellipsis character: the preview reads as the text's own opening,
+// and the complete version is one tap away
+function previewText(text) {
+  const lines = String(text).split("\n");
+  const kept = [];
+  let total = 0;
+  for (const line of lines) {
+    if (kept.length >= PREVIEW_LINES || total + line.length > PREVIEW_CHARS) break;
+    kept.push(line);
+    total += line.length;
   }
+  if (kept.length) return kept.join("\n");
+  const head = String(text).slice(0, PREVIEW_CHARS);
+  const cut = head.lastIndexOf(" ");
+  return cut > 0 ? head.slice(0, cut) : head;
+}
+
+// long content: the leading lines in the same shapes as the whole thing,
+// the size said out loud, one tap to all of it in place — plain text
+// throughout, so it stays copyable
+function PreviewValue({ text, render }) {
+  const [expanded, setExpanded] = useState(false);
   return (
     <div data-testid="approval-longtext">
-      <div className={`overflow-y-auto ${expanded ? "" : "max-h-64"}`}>{children}</div>
+      <div className="break-words text-ink-2">
+        {expanded ? render(text) : render(previewText(text))}
+      </div>
       <div className="mt-1 flex items-center justify-between gap-2 text-xs text-ink-3">
         <span data-testid="approval-text-size">{text.length.toLocaleString()} characters</span>
         <button
@@ -49,7 +65,7 @@ function ScrollableValue({ text, children }) {
           className="text-accent hover:underline"
           onClick={() => setExpanded(!expanded)}
         >
-          {expanded ? "Show less" : "Expand"}
+          {expanded ? "Show less" : "Read full text"}
         </button>
       </div>
     </div>
@@ -86,8 +102,8 @@ function DiffBlock({ text }) {
 }
 
 // a text value: its own shape decides how it reads — a date, a link, a
-// path, a diff, fenced code beside prose — and anything unrecognized falls
-// back to plain readable text, never dropped or cut
+// path, a diff, fenced code beside prose — and a long value previews its
+// leading lines and unfolds to the whole thing in the same shapes
 function TextValue({ text }) {
   const when = readableDate(text);
   if (when) return <span className="break-words text-ink-2">{when}</span>;
@@ -106,15 +122,13 @@ function TextValue({ text }) {
         {text}
       </code>
     );
-  if (isDiff(text))
-    return (
-      <ScrollableValue text={text}>
-        <DiffBlock text={text} />
-      </ScrollableValue>
-    );
-  return (
-    <ScrollableValue text={text}>
-      {splitFences(text).map((seg, i) =>
+  // the whole text decides its shape; the shown part is what flows through
+  // it — the preview and the full read never differ in form
+  const render = (shown) =>
+    isDiff(text) ? (
+      <DiffBlock text={shown} />
+    ) : (
+      splitFences(shown).map((seg, i) =>
         seg.code ? (
           <pre
             key={i}
@@ -128,9 +142,11 @@ function TextValue({ text }) {
             {seg.text}
           </div>
         ),
-      )}
-    </ScrollableValue>
-  );
+      )
+    );
+  if (text.length > PREVIEW_CHARS || text.split("\n").length > PREVIEW_LINES)
+    return <PreviewValue text={text} render={render} />;
+  return <div className="break-words text-ink-2">{render(text)}</div>;
 }
 
 // any value whatsoever, by what it is: a serialized structure unpacks,
@@ -181,9 +197,6 @@ function Value({ value }) {
 }
 
 export default function ApprovalCard({ a, ui, onDecide }) {
-  // why the gate parked this one — the ruling's own reason, in plain words
-  const why = describeOutcome(a.note) || describeRule(a.rules_matched);
-  const summary = approvalSummary(a.tool_name, a.params);
   const entries = Object.entries(a.params || {}).filter(([k]) => !k.startsWith("_"));
 
   return (
@@ -194,20 +207,10 @@ export default function ApprovalCard({ a, ui, onDecide }) {
         </span>
         <Icon name="attention" className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
       </div>
-      <div data-testid="approval-summary" className="mt-2 text-sm text-ink-2">
-        {summary}
-      </div>
-      {why ? (
-        <div data-testid="approval-why" className="mt-2 text-sm text-warning">
-          {why}
-        </div>
-      ) : null}
-      <div className="mt-1 text-xs text-ink-3">
-        Requested {fmtTime(a.created_at)} · expires {fmtTime(a.expires_at)}
-      </div>
-      {/* the ask itself, capped so the decision buttons never leave the
-          screen — anything taller scrolls inside, and long values carry
-          their own size indicator and expand control */}
+      <div className="mt-2 text-xs text-ink-3">Expires {fmtTime(a.expires_at)}</div>
+      {/* the ask itself — its own fields in their own order, a long value
+          previewing with its size said and the full read one tap away; the
+          height cap keeps the decision buttons on screen even unfolded */}
       <div data-testid="approval-details" className="mt-3 max-h-96 overflow-y-auto">
         {entries.length ? (
           <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-2 text-sm">

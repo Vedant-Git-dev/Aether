@@ -25,6 +25,19 @@ def test_json_roundtrip(cipher: Cipher) -> None:
     assert cipher.decrypt_json(blob, aad="scheduled_actions:payload_enc:7") == obj
 
 
+def test_json_roundtrip_keeps_key_order(cipher: Cipher) -> None:
+    # an approval's fields read in the order the request carried them — a
+    # sealed dict must not come back alphabetized, or every card would
+    # show body before recipient before subject
+    obj = {"body": "the whole message body", "subject": "Re: Thursday", "to": "sam@example.com"}
+    blob = cipher.encrypt_json(obj, aad="pending_approvals:params_enc:9")
+    assert list(cipher.decrypt_json(blob, aad="pending_approvals:params_enc:9")) == [
+        "body",
+        "subject",
+        "to",
+    ]
+
+
 def test_non_deterministic_nonce(cipher: Cipher) -> None:
     a = cipher.encrypt_text("same text", aad="t:c:1")
     b = cipher.encrypt_text("same text", aad="t:c:1")
