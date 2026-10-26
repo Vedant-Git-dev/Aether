@@ -77,19 +77,41 @@ class Settings(BaseSettings):
 # config.yaml structure models
 # --------------------------------------------------------------------------
 
+# The stored sentinel words for the model fields. A choice made from the
+# models dropdown always carries a "/" (provider/model), so a bare word can
+# never collide with a real model id. "base" is the legacy spelling of
+# "default"; both keep working, and both resolve to the main model when
+# providers are built — never at save time.
+MODEL_BASE = "base"
+MODEL_DEFAULT = "default"
+MODEL_OFF = "off"
+
 
 class LLMConfig(BaseModel):
     provider: Literal["anthropic", "openai", "gemini", "ollama"] = "anthropic"
+    # a model value is either a sentinel word (off / default / base) or a
+    # model id. An id may carry its own provider: "provider/model", split on
+    # the first slash — the rest of the string is the id that provider's
+    # API answers to, so an id may itself contain slashes. A bare id still
+    # routes through the global provider below (the legacy spelling).
     model: str = "claude-opus-5"
-    vision_model: str | None = None
+    # each medium's perception, tri-state: None (default) = that medium is
+    # off, "default"/"base" = the main model takes it, or a specific model
+    # id. The knob is the routing truth — whether the chosen model truly
+    # accepts the medium is discovered at call time, and the perception
+    # ladder degrades honestly on a refusal.
+    image_model: str | None = None
+    audio_model: str | None = None
+    video_model: str | None = None
     salience_model: str | None = None
-    # the free embedding model that makes memory semantically searchable;
-    # none (or a missing Gemini key) leaves memory search unavailable
+    # the free embedding model that makes memory semantically searchable —
+    # the Gemini key's own family; none (or a missing Gemini key) leaves
+    # memory search unavailable
     embedding_model: str | None = "gemini-embedding-001"
     max_tokens: int = 16000
     # Ollama's vision ability depends entirely on which model was pulled;
-    # the hosted providers are inherently vision-capable. Setting a
-    # vision_model implies this regardless.
+    # the hosted providers are inherently vision-capable. Setting an
+    # image_model implies this regardless.
     ollama_vision: bool = False
 
 
@@ -97,6 +119,11 @@ class AgentConfig(BaseModel):
     tick_seconds: float = 30.0
     max_tool_iterations: int = 12
     daily_surface_cap: int = 20
+    # one reply's hard ceiling: a hung provider or a runaway tool loop
+    # ends with a plain message to the user instead of open-ended
+    # silence. Long enough that a legitimate long tool (a sandbox job
+    # runs up to workbench.job_timeout_minutes) never trips it.
+    turn_timeout_seconds: float = 600.0
     # the web search tool's own brake — shared by chat and the background
     # worker, counted per day, so the free search allowance can't be
     # burned in one afternoon
@@ -257,6 +284,26 @@ class WorkbenchConfig(BaseModel):
     actions_ref: str = "main"
 
 
+class MediaConfig(BaseModel):
+    """Shared and generated media — how much is kept, and how much is
+    made. The store reads this live, so a quota change applies to the
+    next stored item without a restart."""
+
+    # how much encrypted media may sit in Postgres before the oldest
+    # unreferenced items are evicted; a put with nothing left to evict
+    # is refused in plain words
+    storage_quota_mb: int = 200
+    # who draws images: pollinations is keyless and free (no SLA),
+    # gemini rides the existing AI Studio key, none turns generation off
+    image_provider: Literal["pollinations", "gemini", "none"] = "pollinations"
+    # the daily brakes: images made, and sandbox jobs that read or
+    # edit media (frame extraction, video edits)
+    max_images_per_day: int = 10
+    max_sandbox_jobs_per_day: int = 20
+    # image prompts travel to the image service — short by design
+    max_prompt_chars: int = 500
+
+
 class AppConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
@@ -268,6 +315,7 @@ class AppConfig(BaseModel):
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     proactive: ProactiveConfig = Field(default_factory=ProactiveConfig)
     workbench: WorkbenchConfig = Field(default_factory=WorkbenchConfig)
+    media: MediaConfig = Field(default_factory=MediaConfig)
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:

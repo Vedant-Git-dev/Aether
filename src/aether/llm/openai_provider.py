@@ -11,7 +11,17 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from .base import ProviderError
-from .types import ImageBlock, Message, TextBlock, ToolCall, ToolResult, ToolSpec, Turn
+from .types import (
+    AudioBlock,
+    ImageBlock,
+    Message,
+    TextBlock,
+    ToolCall,
+    ToolResult,
+    ToolSpec,
+    Turn,
+    VideoBlock,
+)
 
 
 def messages_to_openai(system: str, messages: list[Message]) -> list[dict[str, Any]]:
@@ -29,6 +39,13 @@ def messages_to_openai(system: str, messages: list[Message]) -> list[dict[str, A
                             "type": "image_url",
                             "image_url": {"url": f"data:{b.media_type};base64,{b.data_b64}"},
                         }
+                    )
+                elif isinstance(b, (VideoBlock, AudioBlock)):
+                    # this wire carries text and images only — reaching here
+                    # means a role was admitted that shouldn't have been
+                    raise ProviderError(
+                        f"{type(b).__name__} cannot travel on the openai wire — "
+                        "user media is never silently dropped"
                     )
             if parts:
                 # Plain text-only messages keep the simple string form —

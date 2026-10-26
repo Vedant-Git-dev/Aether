@@ -10,6 +10,7 @@ from typing import Any
 from aether.agent.traces import Trace
 from aether.authz.approvals import PENDING, Approval
 from aether.llm.types import Message, ToolCall, ToolResult, ToolSpec, Turn
+from aether.media.store import MediaRecord, MediaRef, MediaStoreFull, MediaSummary, sniff_media_type
 from aether.memory.context import AgentContext
 from aether.memory.entities import Entity, PersonRef
 from aether.memory.events import Event, IngestResult
@@ -130,6 +131,9 @@ class FakeApprovals:
     def __init__(self) -> None:
         self.calls: list[tuple[int, str]] = []
         self.created: list[Approval] = []
+        # the media id each parked call carried, parallel to created —
+        # mirrors the real store's pending_approvals.media_id column
+        self.media_ids: list[int | None] = []
         self.executed: list[int] = []
         self.failed: list[int] = []
         self.ttl_updates: list[float] = []
@@ -147,6 +151,7 @@ class FakeApprovals:
         actor: str = "agent",
         rules_matched: str = "",
         note: str = "",
+        media_id: int | None = None,
     ) -> Approval:
         approval = Approval(
             id=len(self.created) + 1,
@@ -161,6 +166,7 @@ class FakeApprovals:
             note=note,
         )
         self.created.append(approval)
+        self.media_ids.append(media_id)
         return approval
 
     async def decide(self, approval_id: int, decision: str, decided_by: str = "user"):
@@ -224,6 +230,13 @@ class FakeApprovals:
         # waiting, even before expire_overdue has flipped them
         now = datetime.now(UTC)
         return [a for a in self.created if a.status == PENDING and a.expires_at > now]
+
+    async def find_pending(self, tool_name: str, params: dict) -> Approval | None:
+        # mirrors the store: the still-pending row for this exact call
+        for approval in await self.list_pending():
+            if approval.tool_name == tool_name and approval.params == params:
+                return approval
+        return None
 
     async def expire_overdue(self) -> int:
         flipped = 0
@@ -598,6 +611,82 @@ class FakeEventStore:
         self.updates.append(
             (event_id, score, memorable, {"category": category, "actionability": actionability})
         )
+
+
+class FakeMediaStore:
+    """MediaStore double: same MediaRef/MediaRecord shapes and the same
+    sniffed-type truth, in memory. `full = True` makes every put refuse
+    like the real quota does; tests drop keys from `rows` (or clear it) to
+    simulate eviction."""
+
+    def __init__(self) -> None:
+        self.rows: dict[int, MediaRecord] = {}
+        self.full = False
+        self._next = 1
+        # put-time bookkeeping the summaries read: where each blob came
+        # from and when it landed, newest id first in recent()
+        self._origins: dict[int, str] = {}
+        self._times: dict[int, datetime] = {}
+
+    async def put(
+        self,
+        data: bytes,
+        *,
+        filename: str = "",
+        origin: str = "",
+        width: int | None = None,
+        height: int | None = None,
+        duration_s: float | None = None,
+    ) -> MediaRef:
+        if not data:
+            raise ValueError("the media store refuses empty bytes")
+        if self.full:
+            raise MediaStoreFull("media storage is full — test double")
+        for media_id, record in self.rows.items():
+            if record.data == data:  # dedup: same bytes, same row
+                return MediaRef(
+                    media_id=media_id,
+                    media_type=record.media_type,
+                    filename=record.filename,
+                    size=record.size,
+                )
+        media_id = self._next
+        self._next += 1
+        self.rows[media_id] = MediaRecord(
+            media_id=media_id,
+            filename=filename,
+            media_type=sniff_media_type(data),
+            size=len(data),
+            data=data,
+        )
+        self._origins[media_id] = origin
+        self._times[media_id] = datetime.now(UTC)
+        return MediaRef(
+            media_id=media_id,
+            media_type=sniff_media_type(data),
+            filename=filename,
+            size=len(data),
+        )
+
+    async def get(self, media_id: int) -> MediaRecord | None:
+        return self.rows.get(media_id)
+
+    async def recent(self, limit: int = 8) -> list[MediaSummary]:
+        ids = sorted(self.rows, reverse=True)[:limit]
+        return [
+            MediaSummary(
+                media_id=media_id,
+                filename=self.rows[media_id].filename,
+                media_type=self.rows[media_id].media_type,
+                size=self.rows[media_id].size,
+                origin=self._origins.get(media_id, ""),
+                created_at=self._times[media_id],
+            )
+            for media_id in ids
+        ]
+
+    async def total_bytes(self) -> int:
+        return sum(record.size for record in self.rows.values())
 
 
 class FakeEmbedder:

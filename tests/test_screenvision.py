@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fakes import FakeEventStore, FakeProvider, FakeRegistry
+from fakes import FakeEventStore, FakeMediaStore, FakeProvider, FakeRegistry
 
 from aether.connectors.screenvision import ScreenVision
 from aether.llm.types import Turn
@@ -55,3 +55,32 @@ async def test_non_json_vision_turns_still_store_something() -> None:
     payload = sv._events.ingested[0]["payload"]
     assert payload["summary"].startswith("The screen shows")
     assert payload["user_note"] == "look at this"
+
+
+async def test_the_capture_bytes_are_kept_beside_the_event() -> None:
+    media = FakeMediaStore()
+    sv = ScreenVision(
+        FakeRegistry(FakeProvider([Turn(text='{"app": "git", "summary": "a diff"}')])),
+        FakeEventStore(),
+        media=media,
+    )
+    png = b"\x89PNG\r\n\x1a\n" + b"fake-capture"
+    await sv.record(png)
+
+    payload = sv._events.ingested[0]["payload"]
+    kept = await media.get(payload["media_id"])
+    assert kept is not None and kept.data == png
+    assert kept.media_type == "image/png"
+
+
+async def test_a_full_store_still_describes_the_screen() -> None:
+    media = FakeMediaStore()
+    media.full = True
+    sv = ScreenVision(
+        FakeRegistry(FakeProvider([Turn(text='{"app": "git", "summary": "a diff"}')])),
+        FakeEventStore(),
+        media=media,
+    )
+    result = await sv.record(b"\x89PNG\r\n\x1a\n" + b"fake-capture")
+    assert result is not None and result.stored is True
+    assert "media_id" not in sv._events.ingested[0]["payload"]  # text only, no crash

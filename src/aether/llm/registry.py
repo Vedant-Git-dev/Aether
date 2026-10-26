@@ -1,40 +1,93 @@
 """Resolve configuration into Provider instances, one per role.
 
 A single provider backs the agent, with optional per-role model overrides
-(`salience_model`, `vision_model`) that build extra instances of the same
-provider class with a different model id — one provider choice governs
-everything, while each job can run on a smaller/cheaper model where it
-makes sense.
+that build extra instances with a different model id — one provider
+choice governs everything, while each job can run on a smaller/cheaper
+model where it makes sense.
+
+A model value carries its own provider when it has one: "provider/model",
+split on the first slash — the rest of the string is the id that
+provider's API answers to, so an id may itself contain slashes
+("openai/gpt/gpt-5.6" is OpenAI with the id "gpt/gpt-5.6"). A bare id
+routes through the global llm.provider, the legacy spelling; the
+sentinel words ("off", "default", "base") name meanings, never models.
+
+Perception is per-medium: image, audio, and video are separate roles,
+each set by a knob — off (default), "default"/"base" (the main model
+takes it), or a specific model. The first-pass role has its own off too:
+"off" leaves it with no model at all, so the skim genuinely stops. The
+knob is the routing truth; what the chosen model truly accepts is
+discovered at call time, and the caller's ladder degrades honestly on
+a refusal.
 """
 
 from __future__ import annotations
 
-from ..config import LLMConfig, Settings
+from ..config import (
+    MODEL_BASE,
+    MODEL_DEFAULT,
+    MODEL_OFF,
+    LLMConfig,
+    Settings,
+)
 from .anthropic_provider import AnthropicProvider
 from .base import Provider, ProviderError
 from .gemini_provider import GeminiProvider
 from .ollama_provider import OllamaProvider
 from .openai_provider import OpenAIProvider
 
-ROLES = ("reasoning", "salience", "vision")
+ROLES = ("reasoning", "salience", "image", "audio", "video")
+
+# the knob's words for "the main model takes this" — "base" is the legacy
+# spelling of "default"; both mean the same thing and both keep working
+BASE = MODEL_BASE
+DEFAULT = MODEL_DEFAULT
+OFF = MODEL_OFF
+
+
+def _split(model: str) -> tuple[str, str]:
+    """(provider, model id) from a stored model value — the first slash is
+    the seam. A bare id names no provider of its own and answers through
+    the global llm.provider instead, so it resolves here as a plain id."""
+    provider, sep, rest = model.partition("/")
+    if not sep:
+        return "", model
+    if not provider or not rest:
+        raise ProviderError(
+            f"odd model name: {model!r} — expected provider/model, like gemini/gemini-2.5-flash"
+        )
+    return provider, rest
+
+
+def resolve_provider(model: str, fallback: str) -> str:
+    """The provider a stored model value routes through — its own prefix,
+    or the global one for a bare legacy id."""
+    provider, _ = _split(model)
+    return provider or fallback
 
 
 def _build(settings: Settings, llm: LLMConfig, model: str, vision_capable: bool) -> Provider:
-    if llm.provider == "anthropic":
-        return AnthropicProvider.build(settings.anthropic_api_key, model, llm.max_tokens)
-    if llm.provider == "openai":
-        return OpenAIProvider.build(settings.openai_api_key, model, llm.max_tokens)
-    if llm.provider == "gemini":
-        return GeminiProvider.build(settings.gemini_api_key, model, llm.max_tokens)
-    if llm.provider == "ollama":
+    provider, model_id = _split(model)
+    if not provider:
+        provider = llm.provider
+    if provider == "anthropic":
+        return AnthropicProvider.build(settings.anthropic_api_key, model_id, llm.max_tokens)
+    if provider == "openai":
+        return OpenAIProvider.build(settings.openai_api_key, model_id, llm.max_tokens)
+    if provider == "gemini":
+        return GeminiProvider.build(settings.gemini_api_key, model_id, llm.max_tokens)
+    if provider == "ollama":
         return OllamaProvider.build(
-            settings.ollama_base_url, model, llm.max_tokens, supports_vision=vision_capable
+            settings.ollama_base_url, model_id, llm.max_tokens, supports_vision=vision_capable
         )
-    raise ProviderError(f"unknown llm.provider: {llm.provider!r}")
+    raise ProviderError(
+        f"unknown provider in model name: {provider!r} — expected one of "
+        "anthropic, openai, gemini, ollama"
+    )
 
 
 class ProviderRegistry:
-    """The resolved provider for each role; `vision` may be None."""
+    """The resolved provider for each role; perception roles may be None."""
 
     def __init__(self, providers: dict[str, Provider | None]) -> None:
         self._providers = providers
@@ -48,20 +101,48 @@ class ProviderRegistry:
     def from_config(cls, settings: Settings, llm: LLMConfig) -> ProviderRegistry:
         # Whether the default instance can see images. For hosted providers
         # that's inherent; for Ollama it depends entirely on the model the
-        # user pulled, so it's an explicit config flag.
-        default_vision = llm.ollama_vision if llm.provider == "ollama" else True
+        # user pulled, so it's an explicit config flag — keyed off the
+        # provider the main model actually routes through, prefix or not.
+        default_vision = (
+            llm.ollama_vision if resolve_provider(llm.model, llm.provider) == "ollama" else True
+        )
         default = _build(settings, llm, llm.model, default_vision)
 
         providers: dict[str, Provider | None] = {
             "reasoning": default,
             "salience": default,
-            "vision": default if default.supports_vision else None,
+            "image": _medium(settings, llm, default, llm.image_model),
+            "audio": _medium(settings, llm, default, llm.audio_model),
+            "video": _medium(settings, llm, default, llm.video_model),
         }
-        if llm.salience_model and llm.salience_model != llm.model:
+        if llm.salience_model == OFF:
+            # the honest off: no first pass at all — the event judge reads
+            # as not-worth-mentioning by default and the free heuristic
+            # gate still runs; person-merging falls back to the main model
+            providers["salience"] = None
+        elif (
+            llm.salience_model
+            and llm.salience_model not in (BASE, DEFAULT)
+            and llm.salience_model != llm.model
+        ):
             providers["salience"] = _build(settings, llm, llm.salience_model, default_vision)
-        if llm.vision_model and llm.vision_model != llm.model:
-            # An explicit vision_model is a deliberate choice — trust that
-            # it accepts images even though a local Ollama can't be probed.
-            vision = _build(settings, llm, llm.vision_model, vision_capable=True)
-            providers["vision"] = vision if vision.supports_vision else None
         return cls(providers)
+
+
+def _medium(
+    settings: Settings,
+    llm: LLMConfig,
+    base: Provider,
+    knob: str | None,
+) -> Provider | None:
+    """One perception role from its knob: "off" or empty -> None (the
+    default), "default"/"base" -> the main model, or a specific model (a
+    deliberate choice — its own provider when the value carries one).
+    Whether the chosen model truly accepts the medium is discovered at
+    call time — a refusal falls to the caller's ladder, which degrades
+    honestly."""
+    if not knob or knob == OFF:
+        return None
+    if knob in (BASE, DEFAULT):
+        return base
+    return _build(settings, llm, knob, vision_capable=True)

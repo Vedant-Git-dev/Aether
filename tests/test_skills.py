@@ -140,6 +140,7 @@ def test_the_read_vocabulary_is_the_research_and_memory_pair() -> None:
         "workspace_search",
         "web_fetch",
         "web_search",
+        "look_at_media",
     } == READ_TOOLS
 
 

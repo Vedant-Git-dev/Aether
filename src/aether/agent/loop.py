@@ -27,6 +27,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import secrets
 import time
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -42,6 +43,7 @@ from ..config_store import ConfigManager
 from ..config_store import actions_word as _actions_word
 from ..connectors.attachments import AttachmentProcessor, attachments_note
 from ..connectors.base import (
+    Attachment,
     ConnectorUnavailableError,
     InboundMessage,
     MessagingConnector,
@@ -58,6 +60,7 @@ from ..memory.entities import Sender
 from ..memory.events import Event, EventStore
 from ..memory.salience import Salience
 from ..memory.vectors import MemoryHit, VectorMemory
+from ..restart import pending as restart_pending
 from ..routines import Routines, trigger_matches
 from ..scheduler.jobs import ScheduledAction, Scheduler
 from ..secret_env import EnvResolver
@@ -70,6 +73,7 @@ from .prompts import SYSTEM_PROMPT
 from .settings import AgentSettings
 from .tools import (
     FAILURE_REPLY,
+    TIMEOUT_REPLY,
     describe_ask,
     describe_call,
     describe_dismissed,
@@ -107,6 +111,11 @@ _MAX_HISTORY_CHARS = 12_000
 # is offered to each turn as conversation memory. The window above trims it
 # oldest-first under pressure — events and the fresh inbound always survive.
 _TRANSCRIPT_MESSAGES = 20
+
+# Telegram's own "typing…" marker fades after ~5 seconds, so a turn that
+# runs longer refreshes it at this cadence — one fire at turn start would
+# go dark while the work is still honest.
+TYPING_REFRESH_SECONDS = 4.5
 
 
 def _window_history(messages: list[Message], keep_head: int = 1) -> list[Message]:
@@ -211,13 +220,19 @@ class SurfaceFanout:
                 return connector
         return None
 
-    async def send_to_user(self, text: str) -> dict[str, str]:
+    async def send_to_user(
+        self, text: str, *, attachment: Attachment | None = None
+    ) -> dict[str, str]:
         """Fan out to every enabled surface, collecting where the words
         landed: {connector name: platform message id}. Those ids are what
         link a user's later "why?" back to the trace of this send. The hub
         has no id, and a dying surface never takes the loop down — its
-        slot is just missing from the map."""
+        slot is just missing from the map. Media rides to the chat
+        connectors only — the hub and the transcript stay text-only; the
+        attachment is passed only when one is present, so connectors and
+        test doubles that never send files see no new kwarg."""
         refs: dict[str, str] = {}
+        media = {"attachment": attachment} if attachment is not None else {}
         if self.hub is not None:
             try:
                 await self.hub.broadcast(text)
@@ -225,7 +240,7 @@ class SurfaceFanout:
                 log.exception("web chat broadcast failed")
         for connector in self.connectors:
             try:
-                ref = await connector.send_to_user(text)
+                ref = await connector.send_to_user(text, **media)
             except Exception:
                 log.exception("%s send failed — continuing", connector.name)
                 continue
@@ -242,24 +257,38 @@ class SurfaceFanout:
                     log.exception("transcript write failed for %s — continuing", name)
         return refs
 
-    async def present_approval(self, approval_id: int, text: str) -> None:
+    async def present_approval(
+        self, approval_id: int, text: str, *, attachment: Attachment | None = None
+    ) -> None:
         """One plain-language question to every surface — "Send the email
         (to rahul@gmail.com)?" Raw tool names and argument dumps never
-        reach the user; the decision record keeps the exact call."""
+        reach the user; the decision record keeps the exact call. A
+        media-carrying ask shows the media itself, passed only when
+        present."""
+        media = {"attachment": attachment} if attachment is not None else {}
         for connector in self.connectors:
             try:
-                await connector.present_approval(approval_id, text)
+                await connector.present_approval(approval_id, text, **media)
             except Exception:
                 log.exception("%s approval presentation failed", connector.name)
         if not self.connectors and self.hub is None:
             log.warning("approval #%d has no surface to appear on", approval_id)
 
-    async def present_result(self, task_id: int, text: str, options: Sequence[str] = ()) -> None:
+    async def present_result(
+        self,
+        task_id: int,
+        text: str,
+        options: Sequence[str] = (),
+        *,
+        attachment: Attachment | None = None,
+    ) -> None:
         """A finished background task's result, with the one-tap verdicts
         that apply to it. The web chat gets the words like any other
         unprompted note; the chat surfaces get them with the buttons
         attached. The verdicts themselves are decided in the worker, which
-        owns the task row — this fanout only carries them."""
+        owns the task row — this fanout only carries them. Media rides to
+        the chat connectors only, passed only when present."""
+        media = {"attachment": attachment} if attachment is not None else {}
         if self.hub is not None:
             try:
                 await self.hub.broadcast(text)
@@ -267,11 +296,25 @@ class SurfaceFanout:
                 log.exception("web chat broadcast failed")
         for connector in self.connectors:
             try:
-                await connector.present_result(task_id, text, options)
+                await connector.present_result(task_id, text, options, **media)
             except Exception:
                 log.exception("%s result presentation failed", connector.name)
         if not self.connectors and self.hub is None:
             log.warning("task #%d result has no surface to appear on", task_id)
+
+    async def show_typing(self) -> None:
+        """The "typing…" marker on every surface that has one — the
+        platform's own way of saying work is happening instead of silence.
+        Cosmetic: a surface without the method is skipped, a failing one is
+        a warning, and nothing here is allowed to cost the turn."""
+        for connector in self.connectors:
+            show = getattr(connector, "show_typing", None)
+            if show is None:
+                continue
+            try:
+                await show()
+            except Exception:
+                log.warning("%s typing indicator failed — continuing", connector.name)
 
 
 def _settled_key(tool: str, params: Any) -> str:
@@ -284,19 +327,33 @@ def _settled_key(tool: str, params: Any) -> str:
     return f"{tool}\x00{params_blob(params if isinstance(params, dict) else {})}"
 
 
+# the one answer both sending tools give when words actually went out —
+# every refusal answers with different words, so delivery is detected by
+# the handler's own note, never by the text the model proposed (a refused
+# share_media still carries text in its params; only its result says
+# whether anything left the building)
+_DELIVERY_NOTE = "Sent to the user's chat surfaces."
+
+
 def _delivered_by_tool(calls: list[dict[str, Any]]) -> bool:
     """True when the turn already put words in front of the user through
-    send_chat_message — a send that actually delivered (allowed, no error,
-    non-empty text), not one that was denied, parked, or refused."""
+    a sending tool — send_chat_message or share_media — a send that
+    actually delivered, not one that was denied, parked, or refused."""
     for call in calls:
-        if call.get("name") != "send_chat_message":
+        if call.get("name") not in ("send_chat_message", "share_media"):
             continue
         if call.get("decision") != "allow" or call.get("is_error"):
             continue
-        if not str(call.get("params", {}).get("text", "")).strip():
-            continue  # the handler refuses empty text; nothing went out
-        return True
+        if call.get("result") == _DELIVERY_NOTE:
+            return True
     return False
+
+
+def _parked_this_turn(calls: list[dict[str, Any]]) -> bool:
+    """True when the turn ended with an approval card in front of the
+    user — the card is the turn's one terminal outcome; any final reply
+    beside it reads as filler ("OK.") or as a duplicate of the ask."""
+    return any(call.get("approval_id") is not None for call in calls)
 
 
 # the value sentinel: "not on the line" — distinct from None, which is an
@@ -381,6 +438,7 @@ class AgentLoop:
         attachments: AttachmentProcessor | None = None,
         vectors: VectorMemory | None = None,
         mail_filter: MailAllowlist | None = None,
+        media: Any = None,
     ) -> None:
         self._providers = providers
         self._tools = tools
@@ -417,6 +475,10 @@ class AgentLoop:
         # the gmail allowlist, filtering bulk reads the poll path takes
         # straight off the host — bypassing the registry's choke point
         self._mail_filter = mail_filter
+        # the encrypted media store — read-only here: a parked call that
+        # carries a stored media id shows the media itself with the ask,
+        # and a blob that's gone (evicted, purged) degrades to the words
+        self._media = media
         # the guided /config walk in progress, if any — memory only
         self._wizard: ConfigWizard | None = None
         # the guided /apps walk in progress, if any — same rules, memory only
@@ -556,7 +618,9 @@ class AgentLoop:
             return None
         if self._quiet_now() and urgent < self._config.agent.quiet_urgent_salience:
             self._held.append(text)
-            log.info("held for quiet hours: %s", text[:80])
+            # the words never ride the log — held text is the message
+            # itself, and it ships whole when the window ends
+            log.info("held for quiet hours (%d chars)", len(text))
             return None
         return await self._surfaces.send_to_user(text)
 
@@ -567,20 +631,31 @@ class AgentLoop:
         loop's own words, so they can never nag around the user's night."""
         return await self._notify(text, urgent=urgent)
 
-    async def present_result(self, task_id: int, text: str, options: Sequence[str] = ()) -> None:
+    async def present_result(
+        self,
+        task_id: int,
+        text: str,
+        options: Sequence[str] = (),
+        *,
+        attachment: Attachment | None = None,
+    ) -> None:
         """A finished background task's result, with its one-tap verdicts
         attached where the surfaces can carry buttons. Rides the same
         interruption budget as every other unprompted word: during quiet
         hours the words are held and batched for the morning (no buttons —
         a verdict tap hours later would hit a world that moved on), and
-        the task stays in the panel for its decision instead."""
+        the task stays in the panel for its decision instead. Media
+        rides only when the words go out — a held result's file is in
+        the store and the panel shows the task."""
         if not text.strip():
             return
         if self._quiet_now():
             self._held.append(text)
-            log.info("held for quiet hours: %s", text[:80])
+            # same rule as _notify: the words stay out of the log
+            log.info("held for quiet hours (%d chars)", len(text))
             return
-        await self._surfaces.present_result(task_id, text, options)
+        media = {"attachment": attachment} if attachment is not None else {}
+        await self._surfaces.present_result(task_id, text, options, **media)
 
     # -- the loop ---------------------------------------------------------------
 
@@ -632,6 +707,14 @@ class AgentLoop:
             drained.append(self._queue.get_nowait())
         messages: list[InboundMessage] = []
         for message in drained:
+            log.info(
+                "drained inbound: surface=%s chat=%s message=%s text_chars=%d attachments=%d",
+                message.surface,
+                message.chat_ref,
+                message.message_id or "?",
+                len(message.text),
+                len(message.attachments),
+            )
             # the deterministic vocabulary answers here, before anything is
             # ingested or any model is woken: a /verify badge and a why?
             # replay cost no tokens and store no memory — they are reads,
@@ -812,6 +895,11 @@ class AgentLoop:
             self._apps_walk = None
             await self._surfaces.send_to_user(await self._pause_resume_command(first))
             return True
+        if text.lower() == "/status":
+            self._wizard = None
+            self._apps_walk = None
+            await self._surfaces.send_to_user(await self._status_command())
+            return True
         if text.lower() != "/verify":
             return False
         try:
@@ -835,6 +923,48 @@ class AgentLoop:
         # quiet hours
         await self._surfaces.send_to_user(text)
         return True
+
+    async def _status_command(self) -> str:
+        """The plain state of the senses and the queues — resolved models,
+        not raw config knobs, so a "what can you actually see?" question is
+        answered from the truth the running process serves with."""
+        lines: list[str] = []
+
+        def resolved(role: str, doing: str) -> str:
+            provider = self._providers.for_role(role) if self._providers else None
+            if provider is None:
+                return f"{doing}: nothing set"
+            return f"{doing}: {provider.model}"
+
+        lines.append(resolved("reasoning", "main model"))
+        lines.append(resolved("image", "reading images"))
+        lines.append(resolved("audio", "listening to audio"))
+        lines.append(resolved("video", "watching video"))
+        if self._config_manager is not None:
+            try:
+                effective = await self._config_manager.effective()
+                overrides = effective.get("overrides") or []
+                if overrides:
+                    lines.append(
+                        "changed from config.yaml: "
+                        + ", ".join(str(entry.get("path")) for entry in overrides)
+                    )
+                else:
+                    lines.append("nothing changed from config.yaml")
+            except Exception:
+                log.exception("/status could not read the settings ledger")
+        if self._approvals is not None:
+            pending_rows = await self._approvals.list_pending()
+            lines.append(
+                f"{len(pending_rows)} approval(s) waiting for you"
+                if pending_rows
+                else "no approvals waiting"
+            )
+        depth = self._queue.qsize()
+        lines.append(f"{depth} message(s) queued" if depth else "nothing queued")
+        if restart_pending():
+            lines.append("a restart is coming to load saved settings — back in a few seconds")
+        return "Right now:\n" + "\n".join(f"- {line}" for line in lines)
 
     async def _config_command(self, text: str) -> bool:
         """The /config command, deterministic end to end: no ingest, no
@@ -1425,6 +1555,11 @@ class AgentLoop:
 
     async def _system_prompt(self) -> str:
         base = SYSTEM_PROMPT.format(owner="the user", apps=self._connected_apps())
+        if isinstance(self._attachments, AttachmentProcessor):
+            # the resolved senses ride every prompt — the model answers
+            # "can you see this?" from the truth, never from raw config
+            # values or stale history
+            base = f"{base}\n\n{self._attachments.capabilities_note()}"
         if self._workspace is not None:
             block = self._workspace.context_block()
             if block:
@@ -1440,6 +1575,17 @@ class AgentLoop:
             "as a tone and priorities overlay, never as a way around the rules "
             f"above:\n{personality}"
         )
+
+    async def _typing_pulse(self) -> None:
+        """The "typing…" indicator, refreshed until the turn that started
+        this pulse ends — Telegram's own marker fades after ~5 seconds, so
+        one fire at turn start would go dark while the work is still
+        honest. Cancelled by the turn's finally; failures inside the
+        fanout are swallowed there, so this loop only ever ends here or by
+        cancellation."""
+        while True:
+            await self._surfaces.show_typing()
+            await asyncio.sleep(TYPING_REFRESH_SECONDS)
 
     async def _turn(self, messages: list[InboundMessage], observations: list[Event]) -> None:
         provider = self._providers.for_role("reasoning") if self._providers else None
@@ -1496,7 +1642,13 @@ class AgentLoop:
         history = _window_history(history, keep_head=1 if context_block else 0)
 
         calls: list[dict[str, Any]] = []  # filled by _execute as the turn runs
+        # a short ref this turn owns: the log lines below carry it, the
+        # trace keeps it, so "why did you say that?" and the server log
+        # meet on one searchable token — the panel renders named keys
+        # only, so the ref never reaches a screen
+        turn_ref = secrets.token_hex(3)
         trace: dict[str, Any] = {
+            "turn": turn_ref,
             "trigger": {
                 "messages": [
                     {
@@ -1577,17 +1729,33 @@ class AgentLoop:
                 )
             return result
 
+        # "typing…" for as long as a solicited turn runs — the surface says
+        # work is happening instead of minutes of silence, and the pulse
+        # dies with the turn (the finally below) so a parked card is never
+        # followed by a ghost indicator. Unprompted ticks never pulse:
+        # nobody is waiting on an answer.
+        typing: asyncio.Task[None] | None = None
+        if messages:
+            typing = asyncio.create_task(self._typing_pulse())
         try:
-            final, full_history = await run_tool_loop(
-                provider,
-                await self._system_prompt(),
-                history,
-                _gate,
-                _execute_unlocking,
-                max_iterations=self._config.agent.max_tool_iterations,
+            # one turn's hard ceiling: a hung provider or a runaway tool
+            # loop ends here (the wait cancels whatever was stuck) instead
+            # of open-ended silence
+            final, full_history = await asyncio.wait_for(
+                run_tool_loop(
+                    provider,
+                    await self._system_prompt(),
+                    history,
+                    _gate,
+                    _execute_unlocking,
+                    max_iterations=self._config.agent.max_tool_iterations,
+                ),
+                timeout=self._config.agent.turn_timeout_seconds,
             )
             reply = final.text.strip()
-            if reply and not _delivered_by_tool(calls):
+            delivered = _delivered_by_tool(calls)
+            parked = _parked_this_turn(calls)
+            if reply and not delivered and not parked:
                 if messages:
                     # the user spoke first — a reply is solicited, it never
                     # waits; record where it landed so a later "why?" can
@@ -1605,11 +1773,31 @@ class AgentLoop:
                     if refs:
                         trace["chat_refs"] = refs
             elif reply:
-                # the model already sent its words this turn via send_chat_message;
-                # delivering the final reply too is what reads as a duplicate —
-                # the same answer twice, differently worded. The reply stays in
-                # the trace, so replay still shows how the turn ended.
-                log.info("reply not sent — send_chat_message already reached the user this turn")
+                # the turn already ended in front of the user — a sending
+                # tool delivered, or an approval card is waiting on a tap;
+                # a final reply beside either reads as the same answer
+                # twice, differently worded, or as filler ("OK.") after
+                # the card. The reply stays in the trace, so replay still
+                # shows how the turn ended.
+                log.info(
+                    "reply not sent — the turn already reached the user "
+                    "(turn %s, delivered=%s parked=%s)",
+                    turn_ref,
+                    delivered,
+                    parked,
+                )
+        except TimeoutError:
+            # the ceiling bit: a handled outcome, not a crash — the trace
+            # keeps the fact, the user gets plain words, and the tick
+            # goes on. No re-raise: nothing is left worth flagging.
+            trace["error"] = f"turn timed out after {self._config.agent.turn_timeout_seconds:.0f}s"
+            log.warning(
+                "turn %s timed out after %.0fs",
+                turn_ref,
+                self._config.agent.turn_timeout_seconds,
+            )
+            if messages:
+                await self._surfaces.send_to_user(TIMEOUT_REPLY)
         except Exception as exc:
             trace["error"] = f"{type(exc).__name__}: {exc}"
             if messages:
@@ -1621,6 +1809,13 @@ class AgentLoop:
                 await self._surfaces.send_to_user(FAILURE_REPLY)
             raise
         finally:
+            # the pulse dies with the turn, whatever ended it — awaited so
+            # the cancelled task never outlives the turn as a dangling
+            # pending warning at loop close
+            if typing is not None:
+                typing.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await typing
             # persist even when the turn died mid-flight: the calls that did
             # run are already in `calls` (filled by reference), so a partial
             # record still answers "what were you doing?"
@@ -1780,7 +1975,12 @@ class AgentLoop:
             who = note.payload.get("handle") or "someone"
             lines.append(f"- note on {who}: {note.payload.get('note', '')}")
         if ctx.pending_approvals:
-            lines.append(f"- {len(ctx.pending_approvals)} approval(s) still waiting for the user")
+            lines.append(
+                f"- {len(ctx.pending_approvals)} approval(s) already presented to "
+                "the user with one-tap buttons — do not ask, remind, or bring "
+                "them up again; they run (or quietly don't) the moment the "
+                "user decides"
+            )
         if ctx.today_memorable:
             lines.append(f"- {ctx.today_memorable} memorable event(s) so far today")
         return "\n".join(lines)
@@ -1908,6 +2108,27 @@ class AgentLoop:
             return result
 
         if ruling.decision is Decision.ALLOW:
+            # the same allowed call proposed twice in one turn returns the
+            # first result instead of running again — a doubled send is
+            # how one request became two identical replies. The gate still
+            # rules and the repeat is still recorded; only the second
+            # execution is skipped, and failures stay retryable (an
+            # errored first call never satisfies the repeat).
+            if trace:
+                for entry in trace:
+                    if (
+                        entry.get("name") == call.name
+                        and entry.get("params") == call.arguments
+                        and entry.get("decision") == "allow"
+                        and not entry.get("is_error")
+                    ):
+                        result = ToolResult(
+                            tool_call_id=call.id,
+                            name=call.name,
+                            content=str(entry.get("result", "")),
+                        )
+                        self._note_call(trace, call, result, ruling=ruling)
+                        return result
             try:
                 content = await self._tools.execute(call.name, call.arguments)
             except UnknownToolError:
@@ -1989,14 +2210,66 @@ class AgentLoop:
                     self._note_call(trace, call, result, ruling=ruling)
                     return result
 
-        # REQUIRE_APPROVAL: park it, ask, and let the turn go on
+        # the same call already parked and still waiting: one request means
+        # one question in front of the user — a second row for the same
+        # ask is how one approved send later becomes two
+        existing = await self._approvals.find_pending(call.name, call.arguments)
+        if existing is not None:
+            result = ToolResult(
+                tool_call_id=call.id,
+                name=call.name,
+                content=(
+                    f"already waiting for the user (#{existing.id}) — the same "
+                    "request is in front of them with one-tap buttons. Do not "
+                    "propose it again."
+                ),
+            )
+            self._note_call(trace, call, result, ruling=ruling, approval_id=existing.id)
+            return result
+
+        # REQUIRE_APPROVAL: park it, ask, and let the turn go on — but a
+        # call that names a stored file never parks. An approval must only
+        # ever be asked for an action that can run exactly as offered: a
+        # missing or unreadable file can't run (there is nothing to
+        # attach), and a present one can't run either — the connected
+        # actions take parameters, not bytes, so the file would silently
+        # stay behind while "sent" got said. Both are refused in plain
+        # words before any row is created; the model relays the reason, or
+        # proposes the action again without the file if the user wants it.
+        media_id = call.arguments.get("media_id") if isinstance(call.arguments, dict) else None
+        if isinstance(media_id, bool) or not isinstance(media_id, int) or media_id < 1:
+            media_id = None
+        if media_id is not None:
+            record = await self._media.get(media_id) if self._media is not None else None
+            if record is None:
+                why = (
+                    f"not proposed: the file it would carry (media id {media_id}) is "
+                    "no longer stored — it may have been removed to make room for "
+                    "newer files, or that id was never a stored file. Tell the user "
+                    "plainly and ask them to send the file again."
+                )
+            else:
+                why = (
+                    "not proposed: stored files can't yet be attached to that "
+                    "action — it would run without the file. If the user still "
+                    "wants the action, propose the call again without media_id "
+                    "and say plainly that the file will stay behind."
+                )
+            result = ToolResult(tool_call_id=call.id, name=call.name, content=why)
+            self._note_call(trace, call, result, ruling=ruling)
+            return result
         approval = await self._approvals.create(
             tool_name=call.name,
             params=call.arguments,
             rules_matched=ruling.matched_rule,
             note=ruling.reason,
         )
-        await self._surfaces.present_approval(approval.id, describe_ask(call.name, call.arguments))
+        # the card says what is asked, the details worth seeing, and why it
+        # needs a tap — the rule's own plain words, never its id
+        ask = describe_ask(call.name, call.arguments)
+        if ruling.reason:
+            ask = f"{ask}\n\n(needs approval — {ruling.reason})"
+        await self._surfaces.present_approval(approval.id, ask)
         result = ToolResult(
             tool_call_id=call.id,
             name=call.name,
@@ -2034,6 +2307,7 @@ class AgentLoop:
             await self._surfaces.send_to_user(
                 describe_dismissed(approval.tool_name, approval.params)
             )
+            log.info("approval %s denied — nothing ran", approval.id)
             await self._remember_outcome(approval, "action_denied", "denied by the user")
             return
         trace: dict[str, Any] = {
@@ -2073,14 +2347,33 @@ class AgentLoop:
                 "The decision record has exactly what happened."
             )
         else:
-            await self._approvals.mark_executed(approval.id)
-            trace["result"] = result
-            trace["is_error"] = False
-            # plain words only — the exact result stays in the decision
-            # record and the trace; a raw dump never reaches the user
-            trace["chat_refs"] = await self._surfaces.send_to_user(
-                describe_outcome(approval.tool_name, approval.params)
-            )
+            # a flattened "error: ..." answer is a failure wearing a
+            # success's shape — tool errors come back as strings, and this
+            # is the one place that used to read them as confirmation.
+            # "Sent" is only said when the action truly ran.
+            flat = str(result).strip()
+            if flat.startswith("error:"):
+                await self._approvals.mark_failed(approval.id)
+                log.warning(
+                    "approved call %s reported an error: %s", approval.tool_name, flat[:200]
+                )
+                trace["result"] = result
+                trace["is_error"] = True
+                trace["chat_refs"] = await self._surfaces.send_to_user(
+                    "the approved action didn't go through — the service reported "
+                    "an error, so it was not completed. The decision record has "
+                    "exactly what happened."
+                )
+            else:
+                await self._approvals.mark_executed(approval.id)
+                log.info("approval %s executed", approval.id)
+                trace["result"] = result
+                trace["is_error"] = False
+                # plain words only — the exact result stays in the decision
+                # record and the trace; a raw dump never reaches the user
+                trace["chat_refs"] = await self._surfaces.send_to_user(
+                    describe_outcome(approval.tool_name, approval.params)
+                )
         await self._remember_outcome(
             approval,
             "action_failed" if trace["is_error"] else "action_done",

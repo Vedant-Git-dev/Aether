@@ -23,21 +23,51 @@ class Attachment:
     the platform credentials downloads the bytes before emitting; the loop's
     attachment processor turns them into memory."""
 
-    kind: str  # "image" | "doc"
+    kind: str  # "image" | "audio" | "video" | "doc"
     filename: str
     media_type: str  # best-effort MIME type, "" when the platform doesn't say
     data: bytes
 
+    @classmethod
+    def from_record(cls, record: Any) -> Attachment:
+        """A stored media record as one outbound file. The sniffed type
+        decides the kind and the stored filename the name — the same
+        direction-neutral shape the inbound path builds, so a stored
+        blob can go back out without new plumbing. Duck-typed so the
+        test fakes speak the same shape as MediaRecord."""
+        filename = str(getattr(record, "filename", "") or "") or "file"
+        media_type = str(getattr(record, "media_type", "") or "")
+        return cls(
+            classify_attachment(filename, media_type),
+            filename,
+            media_type,
+            bytes(getattr(record, "data", b"")),
+        )
+
 
 _IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic"})
+_AUDIO_EXTENSIONS = frozenset({".mp3", ".ogg", ".oga", ".opus", ".m4a", ".wav", ".flac", ".aac"})
+_VIDEO_EXTENSIONS = frozenset({".mp4", ".m4v", ".webm", ".mov", ".mkv", ".avi"})
 
 
 def classify_attachment(filename: str, media_type: str = "") -> str:
-    """ "image" when the platform or the filename says so, "doc" otherwise."""
-    if (media_type or "").startswith("image/"):
+    """ "image", "audio", or "video" when the platform or the filename says
+    so, "doc" otherwise."""
+    mime = media_type or ""
+    if mime.startswith("image/"):
         return "image"
+    if mime.startswith("audio/"):
+        return "audio"
+    if mime.startswith("video/"):
+        return "video"
     name = (filename or "").lower()
-    return "image" if any(name.endswith(ext) for ext in _IMAGE_EXTENSIONS) else "doc"
+    if any(name.endswith(ext) for ext in _IMAGE_EXTENSIONS):
+        return "image"
+    if any(name.endswith(ext) for ext in _AUDIO_EXTENSIONS):
+        return "audio"
+    if any(name.endswith(ext) for ext in _VIDEO_EXTENSIONS):
+        return "video"
+    return "doc"
 
 
 @dataclass(frozen=True)
@@ -52,7 +82,9 @@ class InboundMessage:
     of the message it's about.
 
     `attachments` are the files the message carried, bytes already
-    downloaded by the connector.
+    downloaded by the connector. `message_id` is the platform's own id for
+    this message, when it gives one — structured logs correlate a turn
+    with the exact inbound that started it.
     """
 
     surface: str  # "telegram" | "discord" | "slack" | "web"
@@ -62,6 +94,7 @@ class InboundMessage:
     reply_to_id: str = ""  # platform id of the message this one answers, if any
     reply_to_text: str = ""  # its text, when the platform hands it over
     attachments: tuple[Attachment, ...] = ()
+    message_id: str = ""  # this message's own platform id, when there is one
 
 
 InboundHandler = Callable[[InboundMessage], Awaitable[None]]

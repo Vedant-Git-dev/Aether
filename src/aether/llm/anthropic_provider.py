@@ -7,7 +7,17 @@ from typing import Any
 from anthropic import AsyncAnthropic
 
 from .base import ProviderError
-from .types import ImageBlock, Message, TextBlock, ToolCall, ToolResult, ToolSpec, Turn
+from .types import (
+    AudioBlock,
+    ImageBlock,
+    Message,
+    TextBlock,
+    ToolCall,
+    ToolResult,
+    ToolSpec,
+    Turn,
+    VideoBlock,
+)
 
 # Adaptive thinking: the model decides per request whether to think and how
 # much. Tool results can then reference earlier thinking blocks automatically.
@@ -33,6 +43,13 @@ def messages_to_anthropic(messages: list[Message]) -> list[dict[str, Any]]:
                                 "data": b.data_b64,
                             },
                         }
+                    )
+                elif isinstance(b, (VideoBlock, AudioBlock)):
+                    # this wire carries text and images only — reaching here
+                    # means a role was admitted that shouldn't have been
+                    raise ProviderError(
+                        f"{type(b).__name__} cannot travel on the anthropic wire — "
+                        "user media is never silently dropped"
                     )
             if blocks:
                 out.append({"role": "user", "content": blocks})

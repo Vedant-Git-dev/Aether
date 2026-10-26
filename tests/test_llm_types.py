@@ -26,11 +26,13 @@ from aether.llm.openai_provider import (
     turn_from_openai,
 )
 from aether.llm.types import (
+    AudioBlock,
     ImageBlock,
     Message,
     ToolCall,
     ToolResult,
     ToolSpec,
+    VideoBlock,
 )
 
 # ---------------------------------------------------------------------------
@@ -53,6 +55,17 @@ def test_anthropic_user_text_and_image() -> None:
             ],
         }
     ]
+
+
+def test_anthropic_refuses_video_and_audio_loudly() -> None:
+    # the wire carries text and images only — a block it can't carry raises
+    # here, before any network call, so user media is never silently dropped
+    video = Message.user("watch", videos=[VideoBlock(data_b64="abc", media_type="video/mp4")])
+    with pytest.raises(ProviderError, match="anthropic wire"):
+        messages_to_anthropic([video])
+    audio = Message.user("listen", audio=[AudioBlock(data_b64="abc", media_type="audio/ogg")])
+    with pytest.raises(ProviderError, match="anthropic wire"):
+        messages_to_anthropic([audio])
 
 
 def test_anthropic_assistant_tool_use_round_trips_thinking() -> None:
@@ -160,6 +173,18 @@ def test_openai_image_becomes_data_url() -> None:
     ]
 
 
+def test_openai_refuses_video_and_audio_loudly() -> None:
+    # the OpenAI-style wire (and Ollama, which rides the same mapper)
+    # carries text and images only — a block it can't carry raises here,
+    # before any network call, so user media is never silently dropped
+    video = Message.user("watch", videos=[VideoBlock(data_b64="abc", media_type="video/mp4")])
+    with pytest.raises(ProviderError, match="openai wire"):
+        messages_to_openai("sys", [video])
+    audio = Message.user("listen", audio=[AudioBlock(data_b64="abc", media_type="audio/ogg")])
+    with pytest.raises(ProviderError, match="openai wire"):
+        messages_to_openai("sys", [audio])
+
+
 def test_openai_assistant_tool_calls_serialize_arguments() -> None:
     msg = Message.assistant(tool_calls=[ToolCall(id="c1", name="f", arguments={"a": 1})])
     out = messages_to_openai("sys", [msg])
@@ -225,6 +250,16 @@ def test_gemini_user_text_and_image() -> None:
             ],
         }
     ]
+
+
+def test_gemini_carries_video_and_audio_inline() -> None:
+    # gemini's wire carries video and audio in the same inline shape as
+    # images — so those media travel to it directly, no frames needed
+    video = Message.user("watch", videos=[VideoBlock(data_b64="abc", media_type="video/mp4")])
+    audio = Message.user("listen", audio=[AudioBlock(data_b64="xyz", media_type="audio/ogg")])
+    out = messages_to_gemini([video, audio])
+    assert out[0]["parts"][1]["inline_data"] == {"mime_type": "video/mp4", "data": "abc"}
+    assert out[1]["parts"][1]["inline_data"] == {"mime_type": "audio/ogg", "data": "xyz"}
 
 
 def test_gemini_assistant_function_call() -> None:

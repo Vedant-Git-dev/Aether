@@ -2,8 +2,10 @@
 holds only what the user's Gmail list (and the cross-app bucket) allow —
 allowlisted senders, mail the user sent an allowlisted person, and
 self-addressed mail. Everything else is removed before the agent sees it,
-and the only trace is one audit row naming the count — a sender address
-never reaches the log."""
+and the result itself says so in the same plain words every turn (so the
+model can tell the user their mail is filtered, instead of presenting a
+trimmed inbox as the whole truth). The audit row names the count — a
+sender address never reaches the log."""
 
 from __future__ import annotations
 
@@ -172,3 +174,61 @@ async def test_unknown_message_shapes_are_never_destroyed() -> None:
     contacts = ContactsConfig(mode="enforce")
     raw = _envelope({"unexpected": ["shape"]})
     assert await _filter(contacts).filter_result("composio__GMAIL_FETCH_EMAILS", raw) == raw
+
+
+async def test_filtered_results_say_so_in_the_same_words_every_turn() -> None:
+    # the note rides the envelope itself, so the model can tell the user
+    # their mail is filtered — identical wording whether mail was dropped
+    # or every sender happened to be on the list
+    contacts = ContactsConfig(
+        mode="enforce", gmail=AppContacts(allowlist=[ContactRule(handle="friend@example.com")])
+    )
+    f = _filter(contacts)
+
+    with_drops = json.loads(
+        await f.filter_result(
+            "composio__GMAIL_FETCH_EMAILS",
+            _envelope(
+                _msg("friend@example.com", subject="kept"),
+                _msg("stranger@elsewhere.net", subject="dropped"),
+            ),
+        )
+    )
+    assert with_drops["data"]["allowlist_note"] == (
+        "these results are filtered by the Gmail allowlist — 1 message not on it were left out"
+    )
+
+    all_kept = json.loads(
+        await f.filter_result(
+            "composio__GMAIL_FETCH_EMAILS",
+            _envelope(_msg("friend@example.com", subject="kept")),
+        )
+    )
+    assert all_kept["data"]["allowlist_note"] == (
+        "these results are filtered by the Gmail allowlist"
+    )
+
+
+async def test_plural_drops_read_plurally() -> None:
+    contacts = ContactsConfig(mode="enforce")
+    out = json.loads(
+        await _filter(contacts).filter_result(
+            "composio__GMAIL_FETCH_EMAILS",
+            _envelope(
+                _msg("a@b.c", subject="one"),
+                _msg("x@y.z", subject="two"),
+                _msg("w@v.u", subject="three"),
+            ),
+        )
+    )
+    assert out["data"]["allowlist_note"].endswith(" — 3 messages not on it were left out")
+
+
+async def test_an_off_allowlist_never_claims_its_results_are_filtered() -> None:
+    # claiming a filtering that isn't happening would be its own kind of
+    # lie — the inbox really is the whole truth when the switch is off
+    contacts = ContactsConfig(mode="enforce", gmail=AppContacts(mode="off"))
+    out = await _filter(contacts).filter_result(
+        "composio__GMAIL_FETCH_EMAILS", _envelope(_msg("stranger@elsewhere.net"))
+    )
+    assert "allowlist_note" not in out

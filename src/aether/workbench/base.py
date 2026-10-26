@@ -56,13 +56,15 @@ class JobLimits:
 
 @dataclass(frozen=True)
 class JobSpec:
-    """One job — a named script plus the files it needs. The dict of
-    files is the job's whole world; the meta carries who asked for it
-    (task_id, label) and what class of work it is (sensitivity,
-    latency_class)."""
+    """One job — a named script plus the files it needs. The dicts of
+    text and binary files are the job's whole world (binary files carry
+    what can't be text: a video to watch, audio to read); the meta
+    carries who asked for it (task_id, label) and what class of work it
+    is (sensitivity, latency_class)."""
 
     script_name: str
     files: dict[str, str] = field(default_factory=dict)
+    binary_files: dict[str, bytes] = field(default_factory=dict)
     limits: JobLimits = field(default_factory=JobLimits)
     meta: dict[str, Any] = field(default_factory=dict)
 
@@ -115,6 +117,13 @@ class Workbench(Protocol):
     # instance attribute satisfies a property member just as well
     @property
     def name(self) -> str: ...
+
+    # whether ffmpeg is baked into this adapter's sandbox image. Editing
+    # has no degraded fallback (understanding degrades to a text
+    # description; an edit either happens or it doesn't), so the editor
+    # asks this up front and refuses before any bytes travel.
+    @property
+    def has_ffmpeg(self) -> bool: ...
 
     async def available(self) -> bool: ...
 

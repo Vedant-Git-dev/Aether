@@ -22,9 +22,16 @@ from .authz.policy import Policy, PolicyError
 from .chat import ChatHistory, ChatHub
 from .chat.ws import router as chat_router
 from .composio_bridge import ComposioBridge
-from .config import AppConfig, Settings, load_config
+from .config import (
+    MODEL_BASE,
+    MODEL_DEFAULT,
+    MODEL_OFF,
+    AppConfig,
+    Settings,
+    load_config,
+)
 from .config_store import ConfigManager, ConfigOverrides
-from .connectors import build_messaging_connectors
+from .connectors import ProcessedUpdates, build_messaging_connectors
 from .connectors.attachments import AttachmentProcessor
 from .connectors.mail_allowlist import MailAllowlist
 from .connectors.mcp_host import MCPHost
@@ -33,8 +40,14 @@ from .connectors.screenvision import ScreenVision
 from .counters import DailyCounters
 from .llm.base import ProviderError
 from .llm.embeddings import GeminiEmbedder
+from .llm.model_list import ModelCatalog, is_sentinel
 from .llm.registry import ProviderRegistry
 from .logging_setup import configure_logging
+from .media.editing import MediaEditor
+from .media.frames import FrameWatcher
+from .media.generate import ImageGenerator
+from .media.store import MediaStore
+from .media.voice import GroqTranscriber
 from .memory.context import ContextBuilder
 from .memory.crypto import Cipher, CryptoError, generate_key_b64
 from .memory.db import create_pool, run_migrations
@@ -121,6 +134,10 @@ def create_app(
         env_resolver = EnvResolver(secrets=secret_store)
         app.state.secrets = secret_store
         app.state.resolver = env_resolver
+        # the Settings page's model dropdowns ask this for the models each
+        # configured key can reach — fetched live per provider, cached by
+        # key, so a pasted key lists its models without a restart
+        app.state.model_catalog = ModelCatalog(env_resolver)
         composio = ComposioBridge(env_resolver, secret_store)
         app.state.composio = composio
         try:
@@ -201,19 +218,36 @@ def create_app(
             )
             return await run_workbench(replace(spec, limits=limits), ladder)
 
+        # the perception ladder's frames rung — the same job ladder every
+        # other sandbox job travels, under the media job budget
+        frame_watcher = FrameWatcher(_run_job, counters, config.media)
+
         # --- vector memory: free embeddings make recall semantic ----------
         # best effort, same as the providers — without a key the layer is a
-        # quiet no-op and memory search reports the failure plainly
+        # quiet no-op and memory search reports the failure plainly. The
+        # seam speaks Gemini only: a value pointing at another provider
+        # says so and leaves the layer off rather than guessing.
         embedder = None
-        if config.llm.embedding_model and settings.gemini_api_key:
-            try:
-                embedder = GeminiEmbedder.build(settings.gemini_api_key, config.llm.embedding_model)
-            except ProviderError as exc:
+        knob = config.llm.embedding_model
+        if knob and knob not in (MODEL_BASE, MODEL_DEFAULT, MODEL_OFF):
+            provider, sep, embed_model = knob.partition("/")
+            if not sep:  # a bare id — the embedding seam has only ever spoken Gemini
+                provider, embed_model = "gemini", knob
+            if provider != "gemini":
                 log.warning(
-                    "embedding model unavailable (%s) — memory search is "
-                    "unavailable until the key is set",
-                    exc,
+                    "embedding model set to a %s model — memory search needs "
+                    "Gemini, so it stays off",
+                    provider,
                 )
+            elif settings.gemini_api_key:
+                try:
+                    embedder = GeminiEmbedder.build(settings.gemini_api_key, embed_model)
+                except ProviderError as exc:
+                    log.warning(
+                        "embedding model unavailable (%s) — memory search is "
+                        "unavailable until the key is set",
+                        exc,
+                    )
         vectors = VectorMemory(pool, cipher, embedder)
         app.state.vectors = vectors
 
@@ -239,6 +273,39 @@ def create_app(
         log.info("mcp tools in the namespace: %d", tools.sync_mcp_tools())
         app.state.tools = tools
 
+        # --- encrypted media storage ----------------------------------------
+        # shared files, screen captures, and later generated images become
+        # AES-GCM blobs bound to their row, kept under a quota with
+        # least-recently-use eviction; references from pending approvals
+        # and undelivered results survive the broom. Wired here because
+        # the perception layers below store into it.
+        media_store = MediaStore(pool, cipher, config.media)
+        app.state.media_store = media_store
+
+        # the once-only word on platform updates — long polling's offset
+        # lives only in memory, so the connectors need the durable
+        # ledger to know a redelivery from a fresh message
+        processed_updates = ProcessedUpdates(pool)
+
+        # whether any sandbox on the ladder could take an edit job —
+        # asked before any bytes travel, because editing has no
+        # degraded fallback to fall back to
+        async def _ffmpeg_capable() -> bool:
+            for sandbox in ladder:
+                if await sandbox.available() and sandbox.has_ffmpeg:
+                    return True
+            return False
+
+        # the edit job's runner — same ladder, same media job budget
+        editor = MediaEditor(_run_job, counters, config.media, media_store, _ffmpeg_capable)
+        app.state.media_editor = editor
+
+        # the image-maker's runner — keyless Pollinations by default, the
+        # AI Studio key as the quality rung; every made image is a stored
+        # file, capped per day
+        image_generator = ImageGenerator(env_resolver, counters, config, media_store)
+        app.state.image_generator = image_generator
+
         # --- llm providers (best effort: the agent boots without keys) ----
         try:
             providers = ProviderRegistry.from_config(settings, config.llm)
@@ -250,14 +317,33 @@ def create_app(
                 exc,
             )
         app.state.providers = providers
-        app.state.screen_vision = ScreenVision(providers, events) if providers else None
+        app.state.screen_vision = (
+            ScreenVision(providers, events, media=media_store) if providers else None
+        )
         # shared chat files ride the same rails — the loop's drain calls it
+        # (the transcriber resolves GROQ_API_KEY fresh per note, so a paste
+        # applies without a restart and an unset key just leaves notes kept)
         app.state.attachments = (
-            AttachmentProcessor(providers, events, indexer=vectors) if providers else None
+            AttachmentProcessor(
+                providers,
+                events,
+                indexer=vectors,
+                media=media_store,
+                voice=GroqTranscriber(env_resolver),
+                frames=frame_watcher,
+            )
+            if providers
+            else None
         )
 
         judge_provider = providers.for_role("salience") if providers else None
-        entities = Entities(pool, cipher, audit, LLMSamePersonJudge(judge_provider))
+        # turning the first pass off must not also stop person-merging:
+        # the same-person judge falls back to the main model, so only the
+        # skim goes dark
+        identity_provider = judge_provider or (
+            providers.for_role("reasoning") if providers else None
+        )
+        entities = Entities(pool, cipher, audit, LLMSamePersonJudge(identity_provider))
         salience = Salience(events, LLMJudge(judge_provider), config.salience)
         context = ContextBuilder(events, entities, approvals, config.agent)
         scheduler = Scheduler(pool, cipher, audit)
@@ -341,6 +427,7 @@ def create_app(
             attachments=app.state.attachments,
             vectors=vectors,
             mail_filter=mail_filter,
+            media=media_store,
         )
         app.state.agent = agent
         native = register_native_tools(
@@ -358,6 +445,10 @@ def create_app(
             workspace=workspace,
             vectors=vectors,
             web=web_tools,
+            media=media_store,
+            providers=providers,
+            editor=editor,
+            generator=image_generator,
         )
         log.info("native tools registered: %d", native)
 
@@ -393,6 +484,7 @@ def create_app(
             approvals=approvals,
             carry_out=agent.decide,
             present=agent.present_result,
+            media=media_store,
         )
         # the panel's verdict buttons reach the worker's own decide path —
         # the same one the chat surfaces' buttons take
@@ -405,6 +497,7 @@ def create_app(
             on_decision=agent.execute_decision,
             on_inbound=agent.handle_inbound,
             on_task_decision=proactive_worker.decide_task,
+            processed=processed_updates,
         )
         surfaces.add_connectors(connectors)
         for connector in connectors:
@@ -469,7 +562,13 @@ def create_app(
         the only error line in an otherwise clean log. Model ids are not
         secrets — the same reasoning that leaves /health unguarded."""
         llm = config.llm
-        ids = {llm.model} | {m for m in (llm.vision_model, llm.salience_model) if m}
+        # the sentinel words name meanings, never models — "default" is the
+        # main model, which is already listed
+        ids = {llm.model} | {
+            m
+            for m in (llm.image_model, llm.audio_model, llm.video_model, llm.salience_model)
+            if m and not is_sentinel(m)
+        }
         return {
             "object": "list",
             "data": [

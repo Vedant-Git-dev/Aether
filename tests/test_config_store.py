@@ -175,14 +175,14 @@ async def test_set_then_reset_roundtrips_through_the_store() -> None:
 
 async def test_set_explicit_none_clears_the_setting() -> None:
     manager, store, live = _manager()
-    live.llm.vision_model = "qwen-vision"  # some earlier value, not from chat
+    live.llm.image_model = "qwen-vision"  # some earlier value, not from chat
 
-    reply = await manager.set(op="set", path="llm.vision_model", value=None)
-    assert "llm.vision_model set to none" in reply
+    reply = await manager.set(op="set", path="llm.image_model", value=None)
+    assert "llm.image_model set to none" in reply
     # no server is registered in tests, so the self-restart degrades honestly
     assert reply.endswith(" — it loads on the next boot")
-    assert store.rows == {"llm.vision_model": None}
-    assert live.llm.vision_model is None
+    assert store.rows == {"llm.image_model": None}
+    assert live.llm.image_model is None
 
 
 async def test_set_refuses_bad_values_and_persists_nothing() -> None:
@@ -844,3 +844,100 @@ async def test_a_set_survives_a_fresh_boot() -> None:
     assert await manager2.bootstrap() == 2
     assert fresh.agent.tick_seconds == 10.0
     assert fresh.contacts.allowlist == [ContactRule(platform="telegram", handle="@friend")]
+
+
+async def test_the_perception_knobs_render_as_meaning_not_raw_words() -> None:
+    # "base" and empty are the two words the model kept misreading as
+    # "no vision model is set" — the show paths say what each means, so
+    # a copy of the config can never say nothing is set when something is
+    live = AppConfig()
+    live.llm.image_model = "base"
+    live.llm.audio_model = None
+    live.llm.video_model = "custom-vision"
+    manager, _, _ = _manager(live=live)
+
+    assert await manager.show("llm.image_model") == (
+        "llm.image_model = base — the main model reads images (model claude-opus-5)"
+    )
+    assert await manager.show("llm.audio_model") == (
+        "llm.audio_model = empty — only voice transcription, when connected"
+    )
+    assert await manager.show("llm.video_model") == ("llm.video_model = custom-vision")
+
+    section = await manager.show("llm")
+    assert "image_model = base — the main model reads images (model claude-opus-5)" in section
+    assert "audio_model = empty — only voice transcription, when connected" in section
+    assert "video_model = custom-vision" in section
+
+
+async def test_the_new_model_words_render_as_meaning_too() -> None:
+    # the dropdown's own words — "off" beside the legacy empty, "default"
+    # beside the legacy "base" — render the same way: as what they mean,
+    # never as a raw knob word that reads as "nothing is set"
+    live = AppConfig()
+    live.llm.image_model = "off"
+    live.llm.audio_model = "default"
+    live.llm.salience_model = "default"
+    live.llm.embedding_model = "off"
+    manager, _, _ = _manager(live=live)
+
+    assert await manager.show("llm.image_model") == ("llm.image_model = off — images stay unseen")
+    assert await manager.show("llm.audio_model") == (
+        "llm.audio_model = default — the main model listens to audio (model claude-opus-5)"
+    )
+    assert await manager.show("llm.salience_model") == (
+        "llm.salience_model = default — the main model skims what matters first (model claude-opus-5)"
+    )
+    assert await manager.show("llm.embedding_model") == (
+        "llm.embedding_model = off — memory search is off"
+    )
+
+
+async def test_the_first_pass_off_renders_as_the_skim_stopping() -> None:
+    # the first pass's "off" is not its empty: empty means the main model
+    # skims, off means the skim stops and nothing is brought up on its own
+    live = AppConfig()
+    live.llm.salience_model = "off"
+    manager, _, _ = _manager(live=live)
+    assert await manager.show("llm.salience_model") == (
+        "llm.salience_model = off — nothing is brought up on its own"
+    )
+
+
+async def test_the_dropdowns_stored_forms_round_trip() -> None:
+    # what the pickers store — "off", "default", and provider-prefixed ids
+    # — are plain strings to the manager: they validate, persist, and come
+    # back exactly as saved, whatever the live provider is
+    manager, store, live = _manager()
+    await manager.set(op="set", path="llm.image_model", value="off")
+    await manager.set(op="set", path="llm.salience_model", value="default")
+    await manager.set(op="set", path="llm.model", value="gemini/gemini-2.5-flash")
+
+    assert live.llm.image_model == "off"
+    assert live.llm.salience_model == "default"
+    assert live.llm.model == "gemini/gemini-2.5-flash"
+    assert store.rows["llm.image_model"] == "off"
+    assert store.rows["llm.salience_model"] == "default"
+    assert store.rows["llm.model"] == "gemini/gemini-2.5-flash"
+
+    # the overview resolves "default" to the model it means — a knob word
+    # that could read as nothing is never what the summary shows
+    overview = await manager.show(None)
+    assert "images off" in overview
+    assert "salience gemini/gemini-2.5-flash" in overview
+
+
+async def test_ollama_vision_is_hidden_under_other_providers() -> None:
+    # the flag governs Ollama alone — under Gemini its raw copy reads as
+    # a real setting and fed the bot's wrong self-diagnosis, so it isn't
+    # shown at all when the provider isn't Ollama
+    live = AppConfig()
+    live.llm.provider = "gemini"
+    manager, _, _ = _manager(live=live)
+
+    section = await manager.show("llm")
+    assert "ollama_vision" not in section
+    # under Ollama it stays — a real setting the user actually owns
+    live.llm.provider = "ollama"
+    manager, _, _ = _manager(live=live)
+    assert "ollama_vision" in await manager.show("llm")

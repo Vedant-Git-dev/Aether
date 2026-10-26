@@ -93,6 +93,7 @@ class FakeFs:
     def __init__(self, sandbox: FakeSandbox) -> None:
         self._sandbox = sandbox
         self.write_text = FakeCall(self._write_text)
+        self.write_bytes = FakeCall(self._write_bytes)
         self.read_bytes = FakeCall(self._read_bytes)
         self.list_files = FakeCall(self._list_files)
 
@@ -100,6 +101,13 @@ class FakeFs:
         if self._sandbox._write_raises is not None:
             raise self._sandbox._write_raises
         self._sandbox.written[remote_path] = data
+
+    async def _write_bytes(self, data: bytes, remote_path: str) -> None:
+        # modal's write_bytes takes (data, path) — the reversed order the
+        # SDK itself uses
+        if self._sandbox._write_raises is not None:
+            raise self._sandbox._write_raises
+        self._sandbox.written_bytes[remote_path] = data
 
     async def _read_bytes(self, remote_path: str) -> bytes:
         self._sandbox.reads.append(remote_path)
@@ -120,6 +128,7 @@ class FakeSandbox:
         write_raises: Exception | None = None,
     ) -> None:
         self.written: dict[str, str] = {}
+        self.written_bytes: dict[str, bytes] = {}
         self.exec_log: list[dict] = []
         self.reads: list[str] = []
         self.terminated = 0
@@ -193,6 +202,12 @@ def bench(
 # -- the gate and the claim ------------------------------------------------------
 
 
+def test_ffmpeg_is_baked_into_the_image() -> None:
+    # the capability the editor asks before any bytes travel
+    wb = ModalWorkbench(resolver=FakeResolver("id", "secret"))
+    assert wb.has_ffmpeg is True
+
+
 async def test_inert_without_the_key_pair() -> None:
     for resolver in (
         FakeResolver(None, None),
@@ -247,6 +262,48 @@ async def test_a_job_writes_only_its_files_and_runs_only_its_script() -> None:
     assert result.provider == "modal"
     assert result.stdout == "all good"
     assert sandbox.terminated == 1  # the sandbox died with the job
+
+
+async def test_binary_files_ride_along_as_bytes() -> None:
+    # a video or voice note can't be text — binary_files carries it in
+    sandbox = FakeSandbox(proc=FakeProc(code=0, stdout="watched", stderr=""))
+    wb, _ = bench(FakeResolver("id", "secret"), sandbox)
+    s = JobSpec(
+        script_name="job.py",
+        files={"job.py": "print('hi')"},
+        binary_files={"clip.mp4": b"\x00\x00\x00\x18ftypisom"},
+        meta={"sensitivity": "ordinary"},
+    )
+    result = await wb.run_job(s)
+    assert result.exit_ok
+    assert sandbox.written_bytes == {"/root/clip.mp4": b"\x00\x00\x00\x18ftypisom"}
+    # the bytes are the same bytes — nothing recoded or truncated on the way
+    assert sandbox.written == {"/root/job.py": "print('hi')"}
+
+
+async def test_a_name_claimed_by_both_text_and_binary_is_refused() -> None:
+    wb, _ = bench(FakeResolver("id", "secret"), FakeSandbox())
+    s = JobSpec(
+        script_name="job.py",
+        files={"job.py": "print('hi')"},
+        binary_files={"job.py": b"bytes"},
+        meta={"sensitivity": "ordinary"},
+    )
+    with pytest.raises(WorkbenchError, match="both claim"):
+        await wb.run_job(s)
+
+
+async def test_an_unsafe_binary_name_is_refused() -> None:
+    wb, _ = bench(FakeResolver("id", "secret"), FakeSandbox())
+    for bad in ("../escape.mp4", "a/b.mp4", "-flag.mp4"):
+        s = JobSpec(
+            script_name="job.py",
+            files={"job.py": "print('hi')"},
+            binary_files={bad: b"bytes"},
+            meta={"sensitivity": "ordinary"},
+        )
+        with pytest.raises(WorkbenchError, match="plain file name"):
+            await wb.run_job(s)
 
 
 async def test_a_failed_script_is_a_real_result() -> None:

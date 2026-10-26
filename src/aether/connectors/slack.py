@@ -229,22 +229,24 @@ class SlackConnector(MessagingConnector):
         out: dict[str, bytes] = {}
         for f in files:
             url = f.get("url_private_download") or ""
-            name = f.get("name")
             if not url:
                 continue
+            # the log lines below never carry the filename — a file the
+            # user sent is sensitive data, and "which file was too big" is
+            # a count, never a name
             if reported_size_exceeds_cap(f.get("size"), MAX_ATTACHMENT_BYTES):
-                log.warning("slack file %s is over the size cap — skipped", name)
+                log.warning("slack file over the size cap — skipped")
                 continue
             try:
-                data = await self._stream_download(url, name)
+                data = await self._stream_download(url)
             except Exception:
-                log.warning("slack file %s download failed — continuing", name, exc_info=True)
+                log.warning("slack file download failed — continuing", exc_info=True)
                 continue
             if data is not None:
                 out[str(f.get("id"))] = data
         return out
 
-    async def _stream_download(self, url: str, name: str) -> bytes | None:
+    async def _stream_download(self, url: str) -> bytes | None:
         """Downloaded in chunks, stopping the instant the running total
         passes the cap — a reported size (missing, zero, or just wrong)
         never gets the last word on how much we actually pull into memory."""
@@ -258,9 +260,7 @@ class SlackConnector(MessagingConnector):
             async for chunk in response.aiter_bytes():
                 chunks += chunk
                 if len(chunks) > MAX_ATTACHMENT_BYTES:
-                    log.warning(
-                        "slack file %s exceeded the size cap mid-download — discarded", name
-                    )
+                    log.warning("slack file exceeded the size cap mid-download — discarded")
                     return None
         return bytes(chunks)
 
@@ -332,11 +332,21 @@ class SlackConnector(MessagingConnector):
 
     # -- outbound ------------------------------------------------------------------
 
-    async def send_to_user(self, text: str) -> str | None:
+    async def send_to_user(self, text: str, *, attachment: Attachment | None = None) -> str | None:
         """Send, and answer with the message ts — what links a later "why?"
         thread reply back to the trace of this send."""
         if self._app is None or not self._chat_ref:
             log.info("slack: nowhere to send yet")
+            return None
+        if attachment is not None:
+            await self._app.client.files_upload_v2(
+                channel=self._chat_ref,
+                file=attachment.data,
+                filename=attachment.filename or "file",
+                initial_comment=text,
+            )
+            # a file share has no ts the way a message does — the send
+            # happened, it just can't be linked back to
             return None
         response = await self._app.client.chat_postMessage(channel=self._chat_ref, text=text)
         try:
@@ -346,11 +356,29 @@ class SlackConnector(MessagingConnector):
             # linked back to
             return None
 
-    async def present_approval(self, approval_id: int, text: str) -> None:
+    async def present_approval(
+        self, approval_id: int, text: str, *, attachment: Attachment | None = None
+    ) -> None:
         """One plain-language question plus one-tap Approve/Deny. The raw
         tool name never reaches the user — the decision record keeps it."""
         if self._app is None or not self._chat_ref:
             log.info("slack: nowhere to send yet — approval visible in the web panel")
+            return
+        if attachment is not None:
+            # files carry no blocks — the ask rides the file as its initial
+            # comment, and the one-tap buttons follow in a plain message so
+            # the verdict stays one tap
+            await self._app.client.files_upload_v2(
+                channel=self._chat_ref,
+                file=attachment.data,
+                filename=attachment.filename or "file",
+                initial_comment=text,
+            )
+            await self._app.client.chat_postMessage(
+                channel=self._chat_ref,
+                text=text,
+                blocks=approval_blocks(approval_id, text),
+            )
             return
         await self._app.client.chat_postMessage(
             channel=self._chat_ref,
@@ -358,11 +386,33 @@ class SlackConnector(MessagingConnector):
             blocks=approval_blocks(approval_id, text),
         )
 
-    async def present_result(self, task_id: int, text: str, options: Sequence[str] = ()) -> None:
+    async def present_result(
+        self,
+        task_id: int,
+        text: str,
+        options: Sequence[str] = (),
+        *,
+        attachment: Attachment | None = None,
+    ) -> None:
         """A finished background task's result plus the one-tap verdicts
         that apply to it."""
         if self._app is None or not self._chat_ref:
             log.info("slack: nowhere to send yet — result visible in the web panel")
+            return
+        if attachment is not None:
+            # same shape as approvals: the file carries the words as its
+            # initial comment, the buttons follow in a plain message
+            await self._app.client.files_upload_v2(
+                channel=self._chat_ref,
+                file=attachment.data,
+                filename=attachment.filename or "file",
+                initial_comment=text,
+            )
+            await self._app.client.chat_postMessage(
+                channel=self._chat_ref,
+                text=text,
+                blocks=result_blocks(task_id, text, options),
+            )
             return
         await self._app.client.chat_postMessage(
             channel=self._chat_ref,

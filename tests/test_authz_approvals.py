@@ -97,6 +97,28 @@ async def test_list_pending_returns_only_pending(db) -> None:
 
 
 @pytest.mark.integration
+async def test_find_pending_matches_the_exact_call_once(db) -> None:
+    # the park path's once-per-request guard: the same tool and params find
+    # their waiting row; a decided row, an expired one, and a different
+    # params run all miss
+    approvals = await _make_approvals(db)
+    stale = await approvals.create(tool_name="t__mail", params={"to": "a@b.c"})
+    await approvals.create(tool_name="t__mail", params={"to": "x@y.z"})
+    decided = await approvals.create(tool_name="t__mail", params={"to": "q@r.s"})
+    await approvals.decide(decided.id, APPROVED)
+    await db.execute(
+        "UPDATE pending_approvals SET expires_at = now() - interval '1 hour' WHERE id = $1",
+        stale.id,
+    )
+
+    hit = await approvals.find_pending("t__mail", {"to": "x@y.z"})
+    assert hit is not None and hit.tool_name == "t__mail"
+    assert await approvals.find_pending("t__mail", {"to": "a@b.c"}) is None  # expired
+    assert await approvals.find_pending("t__mail", {"to": "q@r.s"}) is None  # decided
+    assert await approvals.find_pending("t__other", {"to": "x@y.z"}) is None  # other tool
+
+
+@pytest.mark.integration
 async def test_expire_overdue_flips_and_audits(db) -> None:
     approvals = await _make_approvals(db, ttl_hours=0.0)  # expires immediately
     stale = await approvals.create(tool_name="t__stale", params={"x": 1})
@@ -175,3 +197,38 @@ async def test_every_step_is_audited(db) -> None:
     verification = await AuditLog(db).verify_chain()
     assert verification.ok is True
     assert verification.entries == 3
+
+
+@pytest.mark.integration
+async def test_create_marks_the_row_with_its_media_id(db) -> None:
+    """A media-carrying park writes the indexed reference — the column the
+    eviction-time protected-set query reads. None stays None: a plain park
+    never writes a bogus reference."""
+    approvals = await _make_approvals(db)
+    with_media = await approvals.create(
+        tool_name="mail__send_message", params={"to": "a@b.c", "media_id": 7}, media_id=7
+    )
+    without = await approvals.create(tool_name="mail__send_message", params={"to": "x@y.z"})
+
+    assert (
+        await db.fetchval("SELECT media_id FROM pending_approvals WHERE id = $1", with_media.id)
+    ) == 7
+    assert (
+        await db.fetchval("SELECT media_id FROM pending_approvals WHERE id = $1", without.id)
+    ) is None
+
+
+@pytest.mark.integration
+async def test_decide_clears_the_media_reference(db) -> None:
+    """Hygiene, not correctness — the eviction query filters by pending
+    status regardless — but a decided row must not carry a stale reference."""
+    approvals = await _make_approvals(db)
+    parked = await approvals.create(
+        tool_name="mail__send_message", params={"to": "a@b.c", "media_id": 7}, media_id=7
+    )
+
+    await approvals.decide(parked.id, APPROVED)
+
+    assert (
+        await db.fetchval("SELECT media_id FROM pending_approvals WHERE id = $1", parked.id)
+    ) is None

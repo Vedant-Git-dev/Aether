@@ -24,7 +24,15 @@ llm:
   # OpenAI:  provider: openai,  model: gpt-5.1
   # Gemini:  provider: gemini,  model: gemini-2.5-pro
   # Ollama:  provider: ollama,  model: llama3.3   (needs OLLAMA_BASE_URL in .env)
-  vision_model:                  # optional separate vision-capable model
+  # perception models, one per medium — tri-state: empty (default) means
+  # that medium is off, "base" means the main model takes it, or a model
+  # name routes that medium to its own model. What the chosen model truly
+  # accepts is discovered at call time: video falls back to frames pulled
+  # by a cloud sandbox and read by the image model, audio falls back to
+  # transcription, and the agent says plainly when nothing is set.
+  image_model:                   # reads images; empty leaves images unseen
+  audio_model:                   # listens to audio; empty leaves transcription only
+  video_model:                   # watches video; empty falls back to frames
   salience_model:                # optional cheaper model for the salience judge
   embedding_model: gemini-embedding-001  # free on the Gemini API key; none = no semantic search
   ollama_vision: false            # ollama only: true if the pulled model accepts images
@@ -33,6 +41,7 @@ llm:
 agent:
   tick_seconds: 30               # agent loop cadence
   max_tool_iterations: 12         # tool-call turns per activation before forcing a summary
+  turn_timeout_seconds: 600      # one reply's hard ceiling; past it the turn stops with a plain message
   daily_surface_cap: 20           # max high-salience items surfaced per day
   max_searches_per_day: 25       # web searches per day (chat + background share it); needs TAVILY_API_KEY
 
@@ -126,3 +135,17 @@ workbench:                        # where background jobs run when they must not
   actions_workflow: ""             # the workflow file name in that repository
                                  # (like aether-batch.yml)
   actions_ref: main                # the branch the workflow dispatches on
+
+media:                           # shared and generated images, voice, video —
+                                 # all kept encrypted under one quota
+  storage_quota_mb: 200          # how much is kept before the oldest
+                                 # unreferenced items go; a full store refuses
+                                 # new media in plain words
+  image_provider: pollinations   # pollinations | gemini | none — who draws
+                                 # images when asked (gemini rides the
+                                 # existing GEMINI_API_KEY)
+  max_images_per_day: 10         # the daily brake on generated images
+  max_prompt_chars: 500          # image prompts travel to the image service —
+                                 # short by design
+  max_sandbox_jobs_per_day: 20   # frame-extraction and video-edit jobs on the
+                                 # workbench, per day

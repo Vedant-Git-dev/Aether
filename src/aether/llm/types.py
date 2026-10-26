@@ -28,6 +28,25 @@ class ImageBlock:
 
 
 @dataclass
+class VideoBlock:
+    """A base64-encoded video for providers that watch video natively.
+    Only reaches an adapter whose `supports_video` said yes — the others
+    raise rather than silently drop it."""
+
+    data_b64: str
+    media_type: str  # "video/mp4" | "video/webm" | ...
+
+
+@dataclass
+class AudioBlock:
+    """A base64-encoded audio clip for providers that listen natively.
+    Only reaches an adapter whose `supports_audio` said yes."""
+
+    data_b64: str
+    media_type: str  # "audio/ogg" | "audio/mpeg" | ...
+
+
+@dataclass
 class ToolCall:
     """A tool invocation proposed by the model."""
 
@@ -54,7 +73,7 @@ class ToolResult:
     is_error: bool = False
 
 
-Block = TextBlock | ImageBlock | ToolCall | ToolResult
+Block = TextBlock | ImageBlock | VideoBlock | AudioBlock | ToolCall | ToolResult
 
 
 @dataclass
@@ -79,10 +98,20 @@ class Message:
     # -- constructors for the common shapes ---------------------------------
 
     @classmethod
-    def user(cls, text: str, images: list[ImageBlock] | None = None) -> Message:
+    def user(
+        cls,
+        text: str,
+        images: list[ImageBlock] | None = None,
+        videos: list[VideoBlock] | None = None,
+        audio: list[AudioBlock] | None = None,
+    ) -> Message:
         blocks: list[Block] = [TextBlock(text)]
         if images:
             blocks.extend(images)
+        if videos:
+            blocks.extend(videos)
+        if audio:
+            blocks.extend(audio)
         return cls("user", blocks)
 
     @classmethod

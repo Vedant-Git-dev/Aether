@@ -13,15 +13,20 @@ ciphertext cannot be swapped between records undetected.
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import secrets
 from typing import Any
 
 from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 NONCE_BYTES = 12
 KEY_BYTES = 32
+DEDUP_INFO = b"media-dedup"
 
 
 class CryptoError(Exception):
@@ -43,6 +48,12 @@ class Cipher:
         if len(key) != KEY_BYTES:
             raise CryptoError(f"key must be {KEY_BYTES} bytes, got {len(key)}")
         self._aes = AESGCM(key)
+        # a real subkey for the keyed content tags — never the raw AES key
+        # reused as an HMAC key, so a leaked dedup tag says nothing about
+        # the encryption key and cannot be used to decrypt anything
+        self._dedup_key = HKDF(
+            algorithm=hashes.SHA256(), length=KEY_BYTES, salt=None, info=DEDUP_INFO
+        ).derive(key)
 
     @classmethod
     def from_b64(cls, key_b64: str) -> Cipher:
@@ -73,6 +84,14 @@ class Cipher:
 
     def encrypt_text(self, plaintext: str, aad: str) -> bytes:
         return self.encrypt_bytes(plaintext.encode("utf-8"), aad)
+
+    def dedup_mac(self, data: bytes) -> bytes:
+        """A keyed content tag for dedup — same bytes, same tag; different
+        bytes, different tag. Deliberately NOT a bare hash: a tag stored in
+        a shared database must not let a reader confirm that some known
+        file is stored here, and the HMAC key is an HKDF subkey, not the
+        AES key, so tags never leak key material either."""
+        return hmac.new(self._dedup_key, data, hashlib.sha256).digest()
 
     def decrypt_text(self, blob: bytes, aad: str) -> str:
         return self.decrypt_bytes(blob, aad).decode("utf-8")

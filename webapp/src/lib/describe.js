@@ -317,6 +317,24 @@ export function describeEvent(e) {
     const detail = `${p.description || p.caption || ""}${people}`;
     return { title: who === "you" ? `You shared an image${name}` : `${who} shared an image${name}`, detail };
   }
+  if (e.kind === "shared_video") {
+    // same sender shape as every user-authored event
+    const handle = p.handle || (p._sender && p._sender.handle) || "";
+    const platform = (p._sender && p._sender.platform) || e.source;
+    const who = handle ? personName(platform, handle) : "someone";
+    const name = p.filename ? ` — ${p.filename}` : "";
+    const detail = `${p.description || p.caption || ""}${p.transcript ? (p.description || p.caption ? " · " : "") + p.transcript : ""}`;
+    return { title: who === "you" ? `You shared a video${name}` : `${who} shared a video${name}`, detail };
+  }
+  if (e.kind === "shared_audio") {
+    const handle = p.handle || (p._sender && p._sender.handle) || "";
+    const platform = (p._sender && p._sender.platform) || e.source;
+    const who = handle ? personName(platform, handle) : "someone";
+    const name = p.filename ? ` — ${p.filename}` : "";
+    // a transcript is spoken words — quoted like chat, never raw
+    const words = p.transcript ? quote(p.transcript, 200) : p.description || "";
+    return { title: who === "you" ? `You shared a voice note${name}` : `${who} shared a voice note${name}`, detail: words };
+  }
   if (e.kind === "shared_doc") {
     const handle = p.handle || (p._sender && p._sender.handle) || "";
     const platform = (p._sender && p._sender.platform) || e.source;

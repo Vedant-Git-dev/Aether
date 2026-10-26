@@ -63,6 +63,12 @@ def request(delay_seconds: float = 5.0) -> bool:
     return True
 
 
+def pending() -> bool:
+    """Whether a restart is armed — /status says so, so the window where
+    saved settings haven't loaded yet is visible instead of mysterious."""
+    return _pending
+
+
 def take_pending() -> bool:
     """Consume the restart flag — the serve loop's answer to "iterate or
     exit?". A plain shutdown (SIGINT/SIGTERM) never armed it: exit."""

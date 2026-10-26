@@ -19,6 +19,7 @@ from .base import (
     UnknownToolError,
 )
 from .mcp_host import MCPHost
+from .processed import ProcessedUpdates
 from .registry import ToolRegistry
 from .screenvision import ScreenVision
 
@@ -34,6 +35,7 @@ __all__ = [
     "InboundMessage",
     "MCPHost",
     "MessagingConnector",
+    "ProcessedUpdates",
     "ScreenVision",
     "TaskDecisionCallback",
     "ToolRegistry",
@@ -50,6 +52,7 @@ def build_messaging_connectors(
     on_decision: DecisionCallback | None = None,
     on_inbound: InboundHandler | None = None,
     on_task_decision: TaskDecisionCallback | None = None,
+    processed: ProcessedUpdates | None = None,
 ) -> list[MessagingConnector]:
     """The enabled chat surfaces: toggle on AND the needed tokens present.
 
@@ -69,6 +72,7 @@ def build_messaging_connectors(
                     on_decision=on_decision,
                     on_inbound=on_inbound,
                     on_task_decision=on_task_decision,
+                    processed=processed,
                 )
             )
         else:

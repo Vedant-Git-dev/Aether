@@ -71,6 +71,12 @@ def is_allowlisted(contacts: ContactsConfig, app: str, sender: Sender | None) ->
     mode = section.mode if section is not None and section.mode is not None else contacts.mode
     if mode != "enforce" or sender is None:
         return True
+    # the panel's own surfaces are token-guarded — whoever reached them is
+    # the owner with the credential in hand, so "web" has no third-party
+    # sender for the list to gate (the screen-capture precedent: the
+    # owner's own content is never filtered)
+    if sender.platform == "web":
+        return True
     rules = list(contacts.allowlist)
     if section is not None:
         rules += section.allowlist

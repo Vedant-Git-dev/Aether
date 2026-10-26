@@ -8,7 +8,10 @@ be pasted (by name only — values never travel back). Kind and choices
 are derived from the config models' own annotations, so the catalog
 cannot drift from what ConfigManager will actually accept: a field the
 model types as a Literal renders as a dropdown with exactly its options,
-a bool renders as a toggle, a number as a number.
+a bool renders as a toggle, a number as a number. A field the catalog
+declares a model field renders as the model picker, with the sentinel
+choices that apply to it — the models themselves are fetched live from
+the configured keys, never hardcoded here.
 
 Everything editable here flows through ConfigManager — the same
 validation, persistence, live-apply and audit chat's /config uses — and
@@ -23,7 +26,7 @@ from typing import Any, Literal, get_args, get_origin
 
 from pydantic import BaseModel
 
-from .config import AppConfig
+from .config import MODEL_DEFAULT, MODEL_OFF, AppConfig
 from .config_store import _apply_note
 
 
@@ -34,6 +37,7 @@ class FieldSpec:
     hint: str  # one plain sentence: what the setting does
     note: str = ""  # when it bites, when _apply_note has nothing
     none_ok: bool = False  # text fields where empty means "not set"
+    model: bool = False  # a model picker: the feed names its sentinel choices
 
 
 @dataclass(frozen=True)
@@ -47,6 +51,27 @@ class GroupSpec:
     toggle_hint: str = ""
 
 
+# The sentinel choices each model field offers, in order — the first is
+# also what an empty value behaves as (the honest off for the senses,
+# the main model for the first pass). The main model itself has no
+# sentinels — something has to think — and neither does memory search:
+# it is a forced choice of a real model. "base" is the legacy spelling
+# of "default" and renders as it.
+_MODEL_SENTINELS: dict[str, tuple[str, ...]] = {
+    "llm.model": (),
+    "llm.image_model": (MODEL_OFF, MODEL_DEFAULT),
+    "llm.audio_model": (MODEL_OFF, MODEL_DEFAULT),
+    "llm.video_model": (MODEL_OFF, MODEL_DEFAULT),
+    "llm.salience_model": (MODEL_DEFAULT, MODEL_OFF),
+    "llm.embedding_model": (),
+}
+
+# the plain words the sentinels read as on the page
+_SENTINEL_LABELS = {
+    MODEL_OFF: "None (off)",
+    MODEL_DEFAULT: "Use default",
+}
+
 SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
     GroupSpec(
         key="llm",
@@ -55,34 +80,50 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
         restart=True,
         fields=(
             FieldSpec(
-                path="llm.provider",
-                label="Provider",
-                hint="Which AI service Aether thinks with.",
-            ),
-            FieldSpec(
                 path="llm.model",
                 label="Model",
-                hint="The model name the provider answers to.",
+                hint="The model Aether thinks with, picked from the ones your keys can reach.",
+                model=True,
             ),
             FieldSpec(
-                path="llm.vision_model",
-                label="Vision model",
-                hint="A second model that reads images. Empty means none.",
+                path="llm.image_model",
+                label="Image model",
+                hint="The model that reads images — none (off) leaves them "
+                "unseen, or use default for the main model.",
                 none_ok=True,
+                model=True,
+            ),
+            FieldSpec(
+                path="llm.audio_model",
+                label="Audio model",
+                hint="The model that listens to audio — none (off) leaves only "
+                "transcription, or use default for the main model.",
+                none_ok=True,
+                model=True,
+            ),
+            FieldSpec(
+                path="llm.video_model",
+                label="Video model",
+                hint="The model that watches video — none (off) falls back to "
+                "frames, or use default for the main model.",
+                none_ok=True,
+                model=True,
             ),
             FieldSpec(
                 path="llm.salience_model",
                 label="First-pass model",
                 hint="A cheaper model that skims what happened and picks what is "
-                "worth mentioning. Empty uses the main model.",
+                "worth mentioning — use default for the main model, or none "
+                "to stop the skim and bring nothing up on its own.",
                 none_ok=True,
+                model=True,
             ),
             FieldSpec(
                 path="llm.embedding_model",
                 label="Memory search model",
-                hint="The model that makes memory searchable by meaning. "
-                "Empty turns that search off.",
-                none_ok=True,
+                hint="The model that makes memory searchable by meaning, on your "
+                "Gemini key — a real model is always picked here.",
+                model=True,
             ),
             FieldSpec(
                 path="llm.max_tokens",
@@ -110,6 +151,12 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
                 path="agent.max_tool_iterations",
                 label="Tool call limit",
                 hint="The most tool calls one reply may make before Aether stops and answers.",
+                note="applies from the next turn",
+            ),
+            FieldSpec(
+                path="agent.turn_timeout_seconds",
+                label="Reply time limit",
+                hint="How many seconds one reply may take before Aether stops it and tells you.",
                 note="applies from the next turn",
             ),
             FieldSpec(
@@ -259,6 +306,48 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
             ),
         ),
     ),
+    GroupSpec(
+        key="media",
+        title="Media",
+        note="Shared and generated images, voice, and video are kept encrypted.",
+        fields=(
+            FieldSpec(
+                path="media.storage_quota_mb",
+                label="Storage quota",
+                hint="How many megabytes of media Aether keeps before the oldest "
+                "unreferenced items are removed. A full store refuses new media "
+                "in plain words.",
+                note="applies to the next media stored",
+            ),
+            FieldSpec(
+                path="media.image_provider",
+                label="Image maker",
+                hint="Who draws images when asked: a keyless free service, the "
+                "Gemini key you already have, or nobody.",
+                note="applies to the next image",
+            ),
+            FieldSpec(
+                path="media.max_images_per_day",
+                label="Daily image cap",
+                hint="The most images Aether may make in one day, chat and background together.",
+                note="applies to the next image",
+            ),
+            FieldSpec(
+                path="media.max_prompt_chars",
+                label="Prompt length cap",
+                hint="The most characters an image prompt may run to — prompts "
+                "travel to the image service, so they stay short.",
+                note="applies to the next image",
+            ),
+            FieldSpec(
+                path="media.max_sandbox_jobs_per_day",
+                label="Daily media job cap",
+                hint="The most video-frame and video-edit jobs one day may run "
+                "on the cloud workbench.",
+                note="applies to the next media job",
+            ),
+        ),
+    ),
 )
 
 
@@ -285,6 +374,11 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
         name="GEMINI_API_KEY",
         label="Provider API key",
         hint="Needed when the provider is set to the matching one.",
+    ),
+    CredentialSpec(
+        name="GROQ_API_KEY",
+        label="Voice transcription key",
+        hint="Groq's free key — with it, Aether reads the voice notes you send.",
     ),
     CredentialSpec(
         name="TELEGRAM_BOT_TOKEN",
@@ -400,6 +494,16 @@ def _field_type(model: type[BaseModel], field: str) -> tuple[str, list[str]]:
 def _field_feed(config: AppConfig, spec: FieldSpec, changed: set[str]) -> dict:
     model, field, value = _walk(config, spec.path)
     kind, choices = _field_type(model, field)
+    # a model field is declared, not derived: the value stays a plain
+    # string (any id validates), but the page renders the picker with the
+    # sentinel choices that apply to it
+    sentinels: list[dict] = []
+    if spec.model:
+        kind = "model"
+        choices = []
+        sentinels = [
+            {"value": word, "label": _SENTINEL_LABELS[word]} for word in _MODEL_SENTINELS[spec.path]
+        ]
     note = spec.note or _apply_note(spec.path).removeprefix(" — ")
     return {
         "path": spec.path,
@@ -411,6 +515,7 @@ def _field_feed(config: AppConfig, spec: FieldSpec, changed: set[str]) -> dict:
         "value": value,
         "none_ok": spec.none_ok,
         "changed": spec.path in changed,
+        "sentinels": sentinels,
     }
 
 
@@ -438,6 +543,7 @@ def _toggle_feed(config: AppConfig, group: GroupSpec, changed: set[str]) -> list
             ),
             "none_ok": False,
             "changed": f"{group.toggles}.{key}.enabled" in changed,
+            "sentinels": [],
         }
         for key, label in items
     ]

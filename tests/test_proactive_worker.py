@@ -9,10 +9,11 @@ the worker — durably, and says so once.
 
 from __future__ import annotations
 
-from fakes import FakeProactiveStore
+from fakes import FakeMediaStore, FakeProactiveStore
 
 from aether.authz.approvals import DENIED
 from aether.config import AppConfig, ProactiveConfig
+from aether.connectors.base import Attachment
 from aether.counters import today
 from aether.llm.types import ToolCall
 from aether.proactive import DISCARDED, DONE, FAILED, PENDING, Budget, Opportunity, ProactiveWorker
@@ -88,6 +89,7 @@ def _worker(
     present=None,
     approvals=None,
     carry_out=None,
+    media=None,
 ) -> ProactiveWorker:
     return ProactiveWorker(
         store=store,
@@ -100,6 +102,7 @@ def _worker(
         present=present,
         approvals=approvals,
         carry_out=carry_out,
+        media=media,
     )
 
 
@@ -326,6 +329,52 @@ async def test_planning_runs_read_only_and_run_gets_the_full_executor() -> None:
     assert store.tasks[0].status == DONE
 
 
+async def test_look_at_media_passes_the_planning_gate() -> None:
+    """look_at_media reads stored bytes and writes nothing new, so the
+    planning phases may use it — the gate decides by name, and it is in
+    READ_TOOLS."""
+    from aether.proactive.worker import read_only
+
+    async def full(call: ToolCall) -> str:
+        return "a ginger cat on a windowsill"
+
+    guarded = read_only(full)  # type: ignore[arg-type] — the fake speaks the same shape
+    look = ToolCall(id="l", name="look_at_media", arguments={"media_id": 3})
+    assert await guarded(look) == "a ginger cat on a windowsill"
+
+
+async def test_edit_video_is_refused_in_planning_and_allowed_in_run() -> None:
+    """edit_video writes a new stored blob, so planning may not touch it
+    — the gate decides by name, and it is deliberately absent from
+    READ_TOOLS."""
+    from aether.proactive.worker import read_only
+
+    async def full(call: ToolCall) -> str:
+        return "The edit is done — the new copy is stored as media id 7."
+
+    guarded = read_only(full)  # type: ignore[arg-type] — the fake speaks the same shape
+    edit = ToolCall(id="e", name="edit_video", arguments={"media_id": 3, "operation": "mute"})
+    assert (await guarded(edit)).startswith("not run — planning only looks things up")
+    # the run phase's executor is the full one — the policy gates, not the phase
+    assert (await full(edit)).startswith("The edit is done")
+
+
+async def test_share_media_is_refused_in_planning_and_allowed_in_run() -> None:
+    """A planning phase sends nothing — a file going out is a change, and
+    changes wait for the run phase. share_media is deliberately absent
+    from READ_TOOLS even though it only reaches the owner's own chats."""
+    from aether.proactive.worker import read_only
+
+    async def full(call: ToolCall) -> str:
+        return "Sent to the user's chat surfaces."
+
+    guarded = read_only(full)  # type: ignore[arg-type] — the fake speaks the same shape
+    share = ToolCall(id="s", name="share_media", arguments={"media_id": 3, "text": "here"})
+    assert (await guarded(share)).startswith("not run — planning only looks things up")
+    # the run phase's executor is the full one — the phase gate, not the policy
+    assert (await full(share)).startswith("Sent to the user")
+
+
 # ---------------------------------------------------------------------------
 # failures, refusals, and the skill leaving the list mid-flight
 # ---------------------------------------------------------------------------
@@ -532,6 +581,77 @@ async def test_a_failed_or_refused_run_never_presents() -> None:
     assert await worker.cycle() == 2
     assert shown == []  # no verdict applies to work that never finished
     assert all(t.status == FAILED for t in store.tasks)
+
+
+async def test_a_result_with_stored_media_sends_the_file_with_the_words() -> None:
+    """A task row that carries a media id ships the file itself with the
+    result — the presentation seam (present_result) accepts the
+    attachment only when the bytes are still in the store."""
+    store, counters = FakeProactiveStore(), FakeCounters()
+    media_store = FakeMediaStore()
+    clip = b"\x00\x00\x00\x18ftypisom" + b"laptop-tour"
+    kept = await media_store.put(clip, filename="laptop.mp4", origin="edit")
+    task = await store.claim(skill="followups", key="k", label="x", opportunity={}, day=today())
+    assert task is not None
+    task.media_id = kept.media_id
+    received: list[dict] = []
+
+    async def present(task_id: int, text: str, options, **kwargs) -> None:
+        received.append({"task_id": task_id, "text": text, "options": tuple(options), **kwargs})
+
+    worker = _worker(store, counters, _config(), [FakeSkill()], present=present, media=media_store)
+    await worker._present_result(task, RunOutcome(summary="the captioned clip"), today())
+
+    assert received == [
+        {
+            "task_id": task.id,
+            "text": "the captioned clip",
+            "options": ("approve", "discard"),
+            "attachment": Attachment("video", "laptop.mp4", "video/mp4", clip),
+        }
+    ]
+
+
+async def test_a_result_whose_blob_is_gone_says_so_and_sends_the_words() -> None:
+    """Eviction between the run and the presentation never raises — the
+    words go alone, with a plain note standing in for the file."""
+    store, counters = FakeProactiveStore(), FakeCounters()
+    media_store = FakeMediaStore()
+    kept = await media_store.put(b"ID3" + b"x" * 64, filename="voice.mp3", origin="audio")
+    task = await store.claim(skill="followups", key="k", label="x", opportunity={}, day=today())
+    assert task is not None
+    task.media_id = kept.media_id
+    media_store.rows.pop(kept.media_id)  # evicted to make room, say
+    received: list[dict] = []
+
+    async def present(task_id: int, text: str, options, **kwargs) -> None:
+        received.append({"task_id": task_id, "text": text, "options": tuple(options), **kwargs})
+
+    worker = _worker(store, counters, _config(), [FakeSkill()], present=present, media=media_store)
+    await worker._present_result(task, RunOutcome(summary="the digest"), today())
+
+    assert received == [
+        {
+            "task_id": task.id,
+            "text": "the digest\n\n(the file that went with this is no longer stored)",
+            "options": ("approve", "discard"),
+        }
+    ]
+
+
+async def test_a_result_without_a_media_store_wired_sends_words_only() -> None:
+    """No media store (a bare worker, an older wiring) — the words go out
+    exactly as before, no crash on the media_id the row carries."""
+    store, counters = FakeProactiveStore(), FakeCounters()
+    task = await store.claim(skill="followups", key="k", label="x", opportunity={}, day=today())
+    assert task is not None
+    task.media_id = 9
+    present, shown = _present_recorder()
+
+    worker = _worker(store, counters, _config(), [FakeSkill()], present=present)
+    await worker._present_result(task, RunOutcome(summary="the digest"), today())
+
+    assert shown == [(task.id, "the digest", ("approve", "discard"))]
 
 
 # ---------------------------------------------------------------------------

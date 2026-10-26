@@ -37,6 +37,9 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from . import restart
 from .authz.policy import Policy, PolicyError
 from .config import (
+    MODEL_BASE,
+    MODEL_DEFAULT,
+    MODEL_OFF,
     AppConfig,
     AppContacts,
     AuthzRule,
@@ -56,6 +59,7 @@ _AAD = "config_overrides:value_enc:"
 _APPLY_NOTES = {
     "agent.tick_seconds": " — applies from the next tick",
     "agent.max_tool_iterations": " — applies from the next turn",
+    "agent.turn_timeout_seconds": " — applies from the next turn",
     "agent.quiet_hours": " — the quiet window is live right away",
     "agent.max_searches_per_day": " — applies to the next search",
     "salience.threshold": " — applies to the next scored event",
@@ -77,6 +81,8 @@ def _apply_note(path: str) -> str:
         return " — applies from the next cycle"
     if path.startswith("workbench."):
         return " — applies to the next job"
+    if path.startswith("media."):
+        return " — applies to the next media handled"
     return ""
 
 
@@ -89,6 +95,7 @@ _SECTION_NAMES = (
     "authz",
     "proactive",
     "workbench",
+    "media",
     "mcp_servers",
 )
 
@@ -108,6 +115,48 @@ def _plain_value(value: Any) -> str:
     if isinstance(value, float):
         return f"{value:g}"
     return str(value)
+
+
+# what an empty or "off" model knob means, by field — the honest off, not
+# a raw blank that reads as "maybe something is set"
+_KNOB_EMPTY_TEXT = {
+    "image_model": "images stay unseen",
+    "audio_model": "only voice transcription, when connected",
+    "video_model": "no video model (frames through the image model, when one is set)",
+    "salience_model": "the main model skims what matters first",
+    "embedding_model": "memory search is off",
+}
+# what 'default' (and its legacy spelling 'base') means, by field — the
+# main model doing that job itself. The embedding seam has no such rung:
+# the main model can't embed, so the "main model" word means off there.
+_KNOB_BASE_TEXT = {
+    "image_model": "the main model reads images",
+    "audio_model": "the main model listens to audio",
+    "video_model": "the main model watches video",
+    "salience_model": "the main model skims what matters first",
+}
+# what an explicit 'off' means where it differs from empty — only the
+# first pass has one: empty means the main model skims, off means the
+# skim stops and nothing is brought up on its own
+_KNOB_OFF_TEXT = {
+    "salience_model": "nothing is brought up on its own",
+}
+
+
+def _llm_knob_text(field: str, value: Any, main_model: str) -> str:
+    """The llm model knobs rendered as what they mean, never as raw knob
+    words — 'default'/'base' is the main model, 'off'/empty is the honest
+    off, so config text can't be misread as 'nothing is set' when
+    something is (or vice versa)."""
+    if value in (MODEL_BASE, MODEL_DEFAULT):
+        if field in _KNOB_BASE_TEXT:
+            return f"{value} — {_KNOB_BASE_TEXT[field]} (model {main_model})"
+        return f"{value} — {_KNOB_EMPTY_TEXT[field]}"
+    if not value or value == MODEL_OFF:
+        word = "empty" if not value else "off"
+        text = _KNOB_OFF_TEXT.get(field, _KNOB_EMPTY_TEXT[field])
+        return f"{word} — {text}"
+    return _plain_value(value)
 
 
 def _plain_entry(entry: Any) -> str:
@@ -925,6 +974,7 @@ class ConfigManager:
             ("authz", type(self._live.authz)),
             ("proactive", type(self._live.proactive)),
             ("workbench", type(self._live.workbench)),
+            ("media", type(self._live.media)),
         ):
             for field in model.model_fields:
                 if section_name == "contacts" and isinstance(
@@ -1006,17 +1056,27 @@ class ConfigManager:
         if name == "llm":
             llm = live.llm
             text = f"llm: {llm.provider} · {llm.model}"
-            if llm.vision_model:
-                text += f" · vision {llm.vision_model}"
-            if llm.salience_model:
-                text += f" · salience {llm.salience_model}"
+            for label, knob in (
+                ("images", llm.image_model),
+                ("audio", llm.audio_model),
+                ("video", llm.video_model),
+                ("salience", llm.salience_model),
+            ):
+                if knob:
+                    # 'default' and its legacy spelling 'base' read as the
+                    # main model they resolve to — the overview shows the
+                    # truth the running process serves with, never a knob
+                    # word that looks like nothing
+                    resolved = llm.model if knob in (MODEL_BASE, MODEL_DEFAULT) else knob
+                    text += f" · {label} {resolved}"
             text += f" · max {_plain_value(llm.max_tokens)} tokens"
             return text
         if name == "agent":
             a = live.agent
             return (
                 f"agent: tick {_plain_value(a.tick_seconds)}s · up to {a.max_tool_iterations} "
-                f"tool calls a turn · daily cap {a.daily_surface_cap} · "
+                f"tool calls a turn · turns capped at {_plain_value(a.turn_timeout_seconds)}s · "
+                f"daily cap {a.daily_surface_cap} · "
                 f"{a.max_searches_per_day} web searches a day · quiet hours "
                 f"{a.quiet_hours or 'off'} (urgent at {_plain_value(a.quiet_urgent_salience)})"
             )
@@ -1059,6 +1119,13 @@ class ConfigManager:
                 f"workbench: {w.provider} first · {w.monthly_minutes_cap} batch minutes a month"
                 f" · {w.job_timeout_minutes}min a job"
             )
+        if name == "media":
+            m = live.media
+            return (
+                f"media: keeps up to {_plain_value(m.storage_quota_mb)} MB"
+                f" · images via {m.image_provider}"
+                f" · at most {m.max_images_per_day} images and {m.max_sandbox_jobs_per_day} media jobs a day"
+            )
         servers = live.mcp_servers
         if not servers:
             return "mcp_servers: none configured"
@@ -1084,6 +1151,10 @@ class ConfigManager:
         section_live = getattr(self._live, name)
         section_base = getattr(self._base, name)
         for field in type(section_live).model_fields:
+            if name == "llm" and field == "ollama_vision" and section_live.provider != "ollama":
+                # ollama_vision only governs Ollama — showing it under
+                # another provider reads as a real setting and misleads
+                continue
             live_v = getattr(section_live, field)
             base_v = getattr(section_base, field)
             if isinstance(live_v, list):
@@ -1096,11 +1167,30 @@ class ConfigManager:
                 lines.extend(f"    {_plain_entry(e)}" for e in live_v.allowlist)
             else:
                 marker = " (changed from config.yaml)" if live_v != base_v else ""
-                lines.append(f"  {field} = {_plain_value(live_v)}{marker}")
+                shown = (
+                    _llm_knob_text(field, live_v, section_live.model)
+                    if name == "llm" and field in _KNOB_EMPTY_TEXT
+                    else _plain_value(live_v)
+                )
+                lines.append(f"  {field} = {shown}{marker}")
         return "\n".join(lines)
 
     def _one_show(self, resolved: _Resolved) -> str:
         live_v = getattr(resolved.container, resolved.field)
+        # the perception knobs say what they mean, not their raw words
+        knob = (
+            _llm_knob_text(resolved.field, live_v, self._live.llm.model)
+            if resolved.canonical.startswith("llm.") and resolved.field in _KNOB_EMPTY_TEXT
+            else None
+        )
+        if knob is not None:
+            suffix = (
+                " (changed from config.yaml)"
+                if resolved.base_container is None
+                or live_v != getattr(resolved.base_container, resolved.field)
+                else ""
+            )
+            return f"{resolved.canonical} = {knob}{suffix}"
         if resolved.base_container is None:
             return f"{resolved.canonical} = {_plain_value(live_v)} (not in config.yaml — set from chat)"
         base_v = getattr(resolved.base_container, resolved.field)

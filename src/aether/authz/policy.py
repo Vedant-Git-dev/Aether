@@ -16,9 +16,12 @@ before it executes. First match wins:
 3. internal Aether tools (memory, scheduling, capture requests) -> ALLOW
 4. Aether's web research (the hardened fetch, the key-gated search) ->
    ALLOW — read-only by construction, external by destination
-5. risky verbs (send, delete, pay, ...) -> REQUIRE_APPROVAL
-6. read-only verbs (list, search, get, ...) -> ALLOW
-7. anything else -> REQUIRE_APPROVAL
+5. Aether's image generation -> ALLOW — the prompt reaches the image
+   provider (a stated, capped channel), but the result is a stored
+   file; sending it anywhere still waits for approval
+6. risky verbs (send, delete, pay, ...) -> REQUIRE_APPROVAL
+7. read-only verbs (list, search, get, ...) -> ALLOW
+8. anything else -> REQUIRE_APPROVAL
 
 The verb ladders (5 and 6) run against the lowercased tool name: Composio
 names its tools UPPER_SNAKE (composio__GMAIL_SEND_EMAIL), and a verb is a
@@ -50,23 +53,28 @@ class Decision(StrEnum):
 @dataclass(frozen=True)
 class Ruling:
     decision: Decision
-    matched_rule: str  # "user:<pattern>" | "builtin:walk-connect" | "builtin:config-tune" | "builtin:config-security" | "builtin:internal" | "builtin:web-research" | "builtin:risky" | "builtin:read-only" | "default:fail-safe"
+    matched_rule: str  # "user:<pattern>" | "builtin:walk-connect" | "builtin:config-tune" | "builtin:config-security" | "builtin:internal" | "builtin:web-research" | "builtin:media-generation" | "builtin:risky" | "builtin:read-only" | "default:fail-safe"
     reason: str
 
 
 # Internal tools read and write Aether's own state only; they never reach an
-# external system under their own power. send_chat_message is included
-# because it talks solely to the owner's own chat surfaces, verify_integrity
-# because it only reads Aether's own audit chain back to the owner, the
-# routine tools because they manage Aether's own stored instructions
-# (delete_routine removes a stored trigger, not anything external), and the
-# workspace tools because they only read/write Aether's own Markdown
-# workspace on disk — checked before the risky verbs, which is what lets
-# "delete_routine" and "workspace_remove" (if ever added) win over the bare
-# "delete"/"remove".
+# external system under their own power. send_chat_message and share_media
+# are included because they talk solely to the owner's own chat surfaces —
+# sharing a stored file back to the owner is the same trust line as any chat
+# reply, and anything further out (an email, another person) is a different
+# call that parks; verify_integrity because it only reads Aether's own audit
+# chain back to the owner, the routine tools because they manage Aether's
+# own stored instructions (delete_routine removes a stored trigger, not
+# anything external), and the workspace tools because they only read/write
+# Aether's own Markdown workspace on disk. edit_video writes only a new row
+# in Aether's own encrypted store from a sandbox job under the media
+# budget — the file goes nowhere until a separate act sends it. Checked
+# before the risky verbs, which is what lets "delete_routine" and
+# "workspace_remove" (if ever added) win over the bare "delete"/"remove".
 _INTERNAL = re.compile(
     r"^(?!.*__)(memory_\w+|note_entity|schedule_action|request_screen_capture"
-    r"|get_pending_approvals|send_chat_message|create_routine|list_routines"
+    r"|look_at_media|share_media|edit_video|get_pending_approvals|send_chat_message"
+    r"|create_routine|list_routines"
     r"|set_routine_enabled|delete_routine|explain_decision|verify_integrity"
     r"|get_config|workspace_\w+)$"
 )
@@ -91,6 +99,14 @@ _READONLY = re.compile(r"(^|__)(list|search|get|read|fetch|find|query)([a-z_]|$)
 # action. Explicit rather than riding the verb ladder, because the names
 # start with "web_" and the read-only verb anchor would miss them.
 _WEB_RESEARCH = re.compile(r"^web_(fetch|search)$")
+
+# Aether's image generation. Keyed or keyless, the call is external —
+# the prompt reaches the image provider, a stated and capped channel —
+# but the output is a stored file, not an act: the image goes nowhere
+# until a separate send parks or shares it. Explicit rather than riding
+# the verb ladder because "generate" is neither risky nor read-only,
+# and the fail-safe default would park every attempt.
+_MEDIA_GENERATION = re.compile(r"^generate_image$")
 
 
 # The config vocabulary's two faces, by path root. Personal tuning applies
@@ -167,6 +183,13 @@ class Policy:
                 Decision.ALLOW,
                 "builtin:web-research",
                 "web research — reads a page or search results, nothing is changed",
+            )
+        if _MEDIA_GENERATION.match(tool_name):
+            return Ruling(
+                Decision.ALLOW,
+                "builtin:media-generation",
+                "image generation — the prompt reaches the provider and the "
+                "result is a stored file; sending it anywhere still waits for approval",
             )
         lowered = tool_name.lower()  # Composio's UPPER_SNAKE names classify by the same verbs
         if lowered.startswith("composio__"):

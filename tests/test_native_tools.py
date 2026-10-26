@@ -11,6 +11,9 @@ from fakes import (
     FakeConfigManager,
     FakeEntities,
     FakeEventStore,
+    FakeMediaStore,
+    FakeProvider,
+    FakeRegistry,
     FakeRoutines,
     FakeScheduler,
     FakeSurfaceConnector,
@@ -22,6 +25,9 @@ from aether.agent.loop import CaptureRequestBox, SurfaceFanout
 from aether.agent.tools import FAILURE_REPLY, plain_replay, register_native_tools
 from aether.authz.audit import ChainVerification
 from aether.connectors.registry import ToolRegistry
+from aether.llm.types import Turn
+from aether.media.editing import EditOutcome
+from aether.media.store import MediaRef
 from aether.memory.events import Event
 from aether.memory.vectors import MemoryHit
 from aether.workspace import Workspace
@@ -38,6 +44,11 @@ class NativeKit:
         workspace: object | None = None,
         vectors: object | None = None,
         web: object | None = None,
+        media: object | None = None,
+        providers: object | None = None,
+        editor: object | None = None,
+        generator: object | None = None,
+        connector: object | None = None,
     ) -> None:
         self.registry = ToolRegistry()
         self.events = events or FakeEventStore()
@@ -47,7 +58,9 @@ class NativeKit:
         self.routines = routines or FakeRoutines()
         self.traces = traces or FakeTraces()
         self.audit = audit or FakeAudit()
-        self.connector = FakeSurfaceConnector()
+        # the fanout's one surface — swap in a media-aware double when a
+        # test needs to see the attachment a send carried
+        self.connector = connector or FakeSurfaceConnector()
         self.box = CaptureRequestBox()
         self.count = register_native_tools(
             registry=self.registry,
@@ -64,6 +77,10 @@ class NativeKit:
             workspace=workspace,  # and the workspace tools
             vectors=vectors,  # and the semantic search layer
             web=web,  # and the hardened fetch + search pair
+            media=media,  # and the stored-media look-again tool
+            providers=providers,
+            editor=editor,  # and the fixed-op video edit tool
+            generator=generator,  # and the capped image generation tool
         )
 
     async def run(self, name: str, params: dict) -> str:
@@ -310,6 +327,223 @@ async def test_send_chat_message_fans_out() -> None:
     assert out == "Sent to the user's chat surfaces."
     assert kit.connector.sent == ["the deploy finished"]
     assert await kit.run("send_chat_message", {"text": "  "}) == "send_chat_message needs text."
+
+
+# ---------------------------------------------------------------------------
+# look_at_media — stored bytes seen again, on demand
+# ---------------------------------------------------------------------------
+
+
+async def test_look_at_media_registers_only_when_store_and_eyes_are_wired() -> None:
+    """Without a media store or providers the tool is not offered at all —
+    same shape as every other feature-gated native tool."""
+    store = FakeMediaStore()
+
+    def names(kit: NativeKit) -> set[str]:
+        return {s.name for s in kit.registry.specs()}
+
+    assert "look_at_media" not in names(NativeKit())
+    assert "look_at_media" not in names(NativeKit(media=store))  # bytes but no eyes
+    assert "look_at_media" not in names(
+        NativeKit(providers=FakeRegistry(FakeProvider([])))
+    )  # eyes but no bytes
+    assert "look_at_media" in names(
+        NativeKit(media=store, providers=FakeRegistry(FakeProvider([])))
+    )
+
+
+async def test_look_at_media_describes_the_stored_image_again() -> None:
+    store = FakeMediaStore()
+    kept = await store.put(
+        b"\x89PNG\r\n\x1a\n" + b"fake-cat", filename="cat.png", origin="telegram"
+    )
+    provider = FakeProvider([Turn(text="A ginger cat asleep on a keyboard")])
+    kit = NativeKit(media=store, providers=FakeRegistry(provider))
+
+    out = await kit.run("look_at_media", {"media_id": kept.media_id, "question": "the cat?"})
+    assert out == "A ginger cat asleep on a keyboard"
+
+    # the vision turn carried the stored bytes and the question, no tools
+    system, messages, tools = provider.calls[0]
+    assert tools == []
+    assert "the cat?" in messages[0].text
+    from aether.llm.types import ImageBlock
+
+    assert any(isinstance(b, ImageBlock) for b in messages[0].blocks)
+
+
+async def test_look_at_media_answers_plainly_when_the_blob_is_gone() -> None:
+    store = FakeMediaStore()
+    kept = await store.put(b"\x89PNG\r\n\x1a\n" + b"fake", filename="gone.png", origin="telegram")
+    store.rows.pop(kept.media_id)  # evicted to make room, say
+    kit = NativeKit(media=store, providers=FakeRegistry(FakeProvider([])))
+
+    out = await kit.run("look_at_media", {"media_id": kept.media_id})
+    assert "no longer stored" in out
+
+
+async def test_look_at_media_refuses_a_non_image_in_plain_words() -> None:
+    store = FakeMediaStore()
+    kept = await store.put(b"ID3" + b"x" * 64, filename="voice.mp3", origin="telegram")
+    kit = NativeKit(media=store, providers=FakeRegistry(FakeProvider([])))
+
+    out = await kit.run("look_at_media", {"media_id": kept.media_id})
+    assert "not an image" in out
+    assert "audio" in out
+
+
+async def test_look_at_media_without_vision_says_so_plainly() -> None:
+    store = FakeMediaStore()
+    kept = await store.put(b"\x89PNG\r\n\x1a\n" + b"fake", filename="cat.png", origin="telegram")
+    kit = NativeKit(media=store, providers=FakeRegistry(None))
+
+    out = await kit.run("look_at_media", {"media_id": kept.media_id})
+    assert "can't see images" in out
+    assert "image_model" in out
+
+
+async def test_look_at_media_rejects_a_missing_or_bad_id() -> None:
+    store = FakeMediaStore()
+    kit = NativeKit(media=store, providers=FakeRegistry(FakeProvider([])))
+    assert "needs media_id" in await kit.run("look_at_media", {})
+    assert "needs media_id" in await kit.run("look_at_media", {"media_id": "one"})
+
+
+# ---------------------------------------------------------------------------
+# share_media — the owner's stored file, back to the owner's own chats
+# ---------------------------------------------------------------------------
+
+
+class RecordingSurfaces:
+    """A media-aware surface double for the fanout: records the text and
+    whatever else a send carried."""
+
+    def __init__(self) -> None:
+        self.name = "recording"
+        self.sends: list[dict] = []
+
+    async def send_to_user(self, text: str, **kwargs) -> str:
+        self.sends.append({"text": text, **kwargs})
+        return "r1"
+
+
+async def test_share_media_registers_when_the_store_is_wired() -> None:
+    store = FakeMediaStore()
+
+    def names(kit: NativeKit) -> set[str]:
+        return {s.name for s in kit.registry.specs()}
+
+    assert "share_media" not in names(NativeKit())
+    assert "share_media" in names(NativeKit(media=store))
+
+
+async def test_share_media_sends_the_stored_file_with_the_note() -> None:
+    store = FakeMediaStore()
+    clip = b"\x00\x00\x00\x18ftypisom" + b"laptop-tour"
+    kept = await store.put(clip, filename="laptop.mp4", origin="telegram")
+    surfaces = RecordingSurfaces()
+    kit = NativeKit(media=store, connector=surfaces)
+
+    out = await kit.run(
+        "share_media", {"media_id": kept.media_id, "text": "here is the laptop video"}
+    )
+
+    assert out == "Sent to the user's chat surfaces."
+    sent = surfaces.sends[-1]
+    assert sent["text"] == "here is the laptop video"
+    attachment = sent["attachment"]
+    assert attachment.kind == "video"
+    assert attachment.filename == "laptop.mp4"
+    assert attachment.data == clip
+    assert attachment.media_type == "video/mp4"
+
+
+async def test_share_media_needs_the_id_and_the_note() -> None:
+    store = FakeMediaStore()
+    kept = await store.put(b"\x89PNG\r\n\x1a\n" + b"fake", filename="cat.png", origin="telegram")
+    surfaces = RecordingSurfaces()
+    kit = NativeKit(media=store, connector=surfaces)
+
+    assert "needs media_id" in await kit.run("share_media", {"text": "here"})
+    assert "needs text" in await kit.run("share_media", {"media_id": kept.media_id})
+    assert surfaces.sends == []  # nothing went out on a bad call
+
+
+async def test_share_media_answers_plainly_when_the_blob_is_gone() -> None:
+    store = FakeMediaStore()
+    kept = await store.put(b"\x89PNG\r\n\x1a\n" + b"fake", filename="gone.png", origin="telegram")
+    store.rows.pop(kept.media_id)  # evicted to make room, say
+    surfaces = RecordingSurfaces()
+    kit = NativeKit(media=store, connector=surfaces)
+
+    out = await kit.run("share_media", {"media_id": kept.media_id, "text": "here"})
+    assert "no longer stored" in out
+    assert "do not claim" in out  # the model is told never to say it sent
+    assert surfaces.sends == []
+
+
+# ---------------------------------------------------------------------------
+# edit_video — the fixed-op ffmpeg job, stored under a new media id
+# ---------------------------------------------------------------------------
+
+
+class FakeEditor:
+    """The MediaEditor double: records the ask, hands back a scripted
+    outcome — the tool's own validation and wording is what's under
+    test here, not the job's."""
+
+    def __init__(self, outcome: EditOutcome | None = None) -> None:
+        self.calls: list[tuple[int, str, dict]] = []
+        self.outcome = outcome
+
+    async def edit(self, media_id: int, operation: str, params: dict) -> EditOutcome:
+        self.calls.append((media_id, operation, dict(params)))
+        return self.outcome or EditOutcome(reason="no outcome scripted")
+
+
+async def test_edit_video_registers_only_when_the_editor_is_wired() -> None:
+    """No editor, no dead tool spec — same shape as every other
+    feature-gated native tool."""
+
+    def names(kit: NativeKit) -> set[str]:
+        return {s.name for s in kit.registry.specs()}
+
+    assert "edit_video" not in names(NativeKit())
+    assert "edit_video" in names(NativeKit(editor=FakeEditor()))
+
+
+async def test_edit_video_names_the_new_media_id() -> None:
+    editor = FakeEditor(
+        outcome=EditOutcome(
+            media_ref=MediaRef(
+                media_id=9, media_type="video/mp4", filename="clip-edited.mp4", size=120
+            )
+        )
+    )
+    kit = NativeKit(editor=editor)
+
+    out = await kit.run("edit_video", {"media_id": 3, "operation": "mute"})
+
+    assert out == "The edit is done — the new copy is stored as media id 9."
+    assert editor.calls == [(3, "mute", {})]
+
+
+async def test_edit_video_passes_only_the_operation_its_own_params() -> None:
+    editor = FakeEditor(outcome=EditOutcome(reason="trim needs start and end in seconds"))
+    kit = NativeKit(editor=editor)
+
+    out = await kit.run("edit_video", {"media_id": 3, "operation": "trim", "start": 1, "end": 5})
+
+    assert out == "trim needs start and end in seconds"
+    assert editor.calls == [(3, "trim", {"start": 1, "end": 5})]
+
+
+async def test_edit_video_needs_an_id_and_an_operation() -> None:
+    editor = FakeEditor()
+    kit = NativeKit(editor=editor)
+    assert "needs media_id" in await kit.run("edit_video", {"operation": "mute"})
+    assert "needs an operation" in await kit.run("edit_video", {"media_id": 3})
+    assert editor.calls == []  # nothing reached the editor
 
 
 # ---------------------------------------------------------------------------
@@ -577,12 +811,12 @@ async def test_set_config_delegates_and_passes_explicit_null_through() -> None:
     assert manager.set_calls == [
         {"op": "set", "path": "agent.tick_seconds", "value": 10, "source": "tool"}
     ]
-    # explicit null is a legal value (clearing llm.vision_model) — it must
+    # explicit null is a legal value (clearing llm.image_model) — it must
     # reach the manager, not be mistaken for a missing one
-    await kit.run("set_config", {"op": "set", "path": "llm.vision_model", "value": None})
+    await kit.run("set_config", {"op": "set", "path": "llm.image_model", "value": None})
     assert manager.set_calls[-1] == {
         "op": "set",
-        "path": "llm.vision_model",
+        "path": "llm.image_model",
         "value": None,
         "source": "tool",
     }
@@ -769,3 +1003,41 @@ async def test_web_tools_register_only_when_wired() -> None:
         ("web_fetch", {"url": "https://example.com/x"}),
         ("web_search", {"query": "tea"}),
     ]
+
+
+# ---------------------------------------------------------------------------
+# generate_image — the capped pollinations/gemini seam, stored not sent
+# ---------------------------------------------------------------------------
+
+
+class FakeGenerator:
+    """The ImageGenerator double — records the ask, hands back a canned
+    reply; the provider gating and caps are pinned in their own file."""
+
+    def __init__(self, reply: str = "made") -> None:
+        self.reply = reply
+        self.calls: list[dict] = []
+
+    async def generate_tool(self, params: dict) -> str:
+        self.calls.append(dict(params))
+        return self.reply
+
+
+async def test_generate_image_registers_only_when_the_generator_is_wired() -> None:
+    """No generator, no dead tool spec — same shape as every other
+    feature-gated native tool."""
+
+    def names(kit: NativeKit) -> set[str]:
+        return {s.name for s in kit.registry.specs()}
+
+    assert "generate_image" not in names(NativeKit())
+    assert "generate_image" in names(NativeKit(generator=FakeGenerator()))
+
+
+async def test_generate_image_delegates_to_the_generator() -> None:
+    generator = FakeGenerator()
+    kit = NativeKit(generator=generator)
+
+    assert await kit.run("generate_image", {"prompt": "a red cat"}) == "made"
+
+    assert generator.calls == [{"prompt": "a red cat"}]

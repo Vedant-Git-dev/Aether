@@ -1892,7 +1892,13 @@ async def test_config_set_security_parks_for_one_tap() -> None:
     # the card went to the surfaces as one plain question
     presented = kit.connector.approvals_presented[-1]
     assert presented[0] == approval.id
-    assert presented[1] == "Change my configuration (path messaging.telegram.enabled)?"
+    # the card shows the question and the rule's own plain words for why
+    # it needs a tap — the spec from the honesty fixes
+    assert (
+        presented[1] == "Change my configuration (path messaging.telegram.enabled)?"
+        "\n\n(needs approval — changes who Aether listens to, what it may do, or "
+        "what it's connected to — the user decides that with one tap)"
+    )
     # the reply is in the user's own words, never the model-directed wording
     note = kit.connector.sent[-1]
     assert f"one-tap approval (#{approval.id})" in note
@@ -2010,7 +2016,13 @@ async def test_a_guided_security_walk_parks_for_one_tap() -> None:
     assert approval.params == {"op": "set", "path": "messaging.telegram.enabled", "value": True}
     presented = kit.connector.approvals_presented[-1]
     assert presented[0] == approval.id
-    assert presented[1] == "Change my configuration (path messaging.telegram.enabled)?"
+    # the card shows the question and the rule's own plain words for why
+    # it needs a tap — the spec from the honesty fixes
+    assert (
+        presented[1] == "Change my configuration (path messaging.telegram.enabled)?"
+        "\n\n(needs approval — changes who Aether listens to, what it may do, or "
+        "what it's connected to — the user decides that with one tap)"
+    )
     # the walk relays the park card, then offers the menu again
     note = kit.connector.sent[-1]
     assert f"one-tap approval (#{approval.id})" in note
@@ -2621,7 +2633,7 @@ async def test_no_vision_means_one_plain_note_and_no_image_memory() -> None:
     # the plain note lands first, then the turn's own reply
     assert kit.connector.sent[0] == (
         "I can't see this image yet — no vision model is set. Set one with "
-        "/config (llm.vision_model), or pick a main model that can read "
+        "/config (llm.image_model), or pick a main model that can read "
         "images, and I'll see what you send."
     )
     assert [r["kind"] for r in kit.events.ingested] == ["chat_message"]

@@ -20,13 +20,36 @@ class TestDescribeCall:
         assert describe_call("mail__list_messages") == "Checking mail"
 
     def test_send_words_carry_the_salient_context_never_a_dump(self) -> None:
+        # the body rides as a clipped one-line preview, never a recital
         assert (
             describe_call(
                 "mail__send_message",
                 {"to": "sam@example.com", "subject": "Re: Thursday", "body": "x" * 200},
             )
-            == "Sending an email (to sam@example.com, subject 'Re: Thursday')"
+            == "Sending an email (to sam@example.com, subject 'Re: Thursday', body "
+            + "x" * 77
+            + "...)"
         )
+
+    def test_the_body_preview_flattens_and_clips(self) -> None:
+        # newlines and blank space flatten to one line, and anything past
+        # the preview length clips — the card says what the message says
+        # without becoming the message
+        assert (
+            describe_call(
+                "mail__send_message",
+                {"to": "sam@example.com", "body": "line one\n\nline two " + "y" * 200},
+            )
+            == f"Sending an email (to sam@example.com, body 'line one line two {'y' * 59}...')"
+        )
+
+    def test_composio_recipient_email_reads_as_the_recipient(self) -> None:
+        # composio's gmail spells the recipient recipient_email — without
+        # the mapping the approval card showed only the subject
+        assert describe_call(
+            "composio__GMAIL_SEND_EMAIL",
+            {"recipient_email": "sam@example.com", "subject": "hi", "body": "quick note"},
+        ) == ("Sending an email (to sam@example.com, subject hi, body 'quick note')")
 
     def test_composio_reads_run_the_verb_check_on_the_action(self) -> None:
         # regression: the read-like check must see "list_messages", not

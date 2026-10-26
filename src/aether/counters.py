@@ -18,7 +18,9 @@ log = logging.getLogger("aether.counters")
 
 # the columns the vocabulary accepts — the SQL is always formed from this
 # set, never from a caller's string
-FIELDS = frozenset({"searches", "tasks", "tokens", "sandbox_seconds", "notifications"})
+FIELDS = frozenset(
+    {"searches", "tasks", "tokens", "sandbox_seconds", "notifications", "images", "sandbox_jobs"}
+)
 
 # guards against unbounded growth the same way every other time-scoped
 # store does: rows older than a year are pruned on bump, not on a timer

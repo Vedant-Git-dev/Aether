@@ -34,6 +34,9 @@ def test_internal_tools_are_allowed() -> None:
         "note_entity",
         "schedule_action",
         "request_screen_capture",
+        "look_at_media",
+        "edit_video",
+        "share_media",
         "get_pending_approvals",
         "send_chat_message",
         "create_routine",
@@ -66,6 +69,21 @@ def test_web_research_tools_are_read_only_allowed() -> None:
         assert ruling.matched_rule == "builtin:web-research", name
     # a look-alike never rides the rule — only fetch and search do
     for name in ("web_post", "web_fetch_all", "web_search_and_send", "webfetch"):
+        ruling = policy.classify(name)
+        assert ruling.decision is Decision.REQUIRE_APPROVAL, name
+
+
+def test_image_generation_is_allowed_as_a_stored_result() -> None:
+    """The prompt reaches the image provider, but what comes back is a
+    stored file, not an act: allowed like web research, bounded by the
+    caps, and sending the result anywhere still parks. The neighbors
+    stay fail-safe."""
+    policy = Policy([])
+    ruling = policy.classify("generate_image")
+    assert ruling.decision is Decision.ALLOW
+    assert ruling.matched_rule == "builtin:media-generation"
+    # a look-alike never rides the rule — only the exact tool does
+    for name in ("generate_images", "generate_image_and_send", "generateimage"):
         ruling = policy.classify(name)
         assert ruling.decision is Decision.REQUIRE_APPROVAL, name
 
@@ -208,7 +226,7 @@ def test_set_config_tuning_paths_are_allowed() -> None:
     for path in (
         "llm.provider",
         "llm.model",
-        "llm.vision_model",
+        "llm.image_model",
         "llm.salience_model",
         "llm.max_tokens",
         "llm.ollama_vision",

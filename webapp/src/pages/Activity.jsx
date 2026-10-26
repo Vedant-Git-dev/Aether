@@ -1,6 +1,7 @@
 // The live feed: everything Aether observed or did, newest first, filterable
 // by app, free text and importance. The app is a plain muted prefix — no chip.
 import { useEffect, useMemo, useState } from "react";
+import MediaBlock from "../components/MediaBlock.jsx";
 import PageHead from "../components/PageHead.jsx";
 import { Card, Field, Select } from "../components/ui.jsx";
 import EmptyState, { NoToken } from "../components/EmptyState.jsx";
@@ -81,6 +82,7 @@ export default function ActivityPage() {
             ) : (
               filtered.map((e) => {
                 const { title, detail } = describeEvent(e);
+                const mediaId = (e.payload || {}).media_id;
                 return (
                   <div
                     key={e.id}
@@ -94,6 +96,7 @@ export default function ActivityPage() {
                         {title}
                       </div>
                       {detail ? <div className="mt-0.5 text-xs text-ink-3">{detail}</div> : null}
+                      {mediaId ? <MediaBlock mediaId={mediaId} /> : null}
                     </div>
                   </div>
                 );

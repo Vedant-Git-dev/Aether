@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from ..agent.tools import with_plain_calls, with_plain_event
 from ..apps_catalog import CATALOG, recipe_for
 from ..composio_bridge import ComposioNotConfigured
+from ..connectors.base import Attachment, InboundMessage, classify_attachment
 from ..proactive import DONE
 from ..settings_catalog import credential_for, settings_feed
 from ..workspace import SecretRejected, WorkspaceEntry, WorkspaceWriteError
@@ -120,6 +121,90 @@ async def take_screen_request(request: Request, token: str | None = None) -> dic
         # response model; the 204 is the one place the two disagree.
         return Response(status_code=204)  # type: ignore[return-value] later
     return {"note": note}
+
+
+# -- stored media: served to the panel, uploaded from it ------------------------
+#
+# Serving hardening: the Content-Type comes only from the type sniffed at
+# ingest — a declared MIME never reaches a response header. Only the
+# panel-renderable types keep their sniffed type and serve inline; every
+# other sniffed type is a download. nosniff plus a sandboxing CSP back the
+# sniffing up for polyglot files (a valid PNG header around an HTML body
+# can never execute in the panel's origin, and media elements run no
+# script from media content anyway).
+_INLINE_MEDIA_TYPES = frozenset(
+    {
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "video/mp4",
+        "video/webm",
+        "audio/mpeg",
+        "audio/ogg",
+    }
+)
+
+
+@router.get("/api/media/{media_id}")
+async def get_media(request: Request, media_id: int, token: str | None = None) -> Response:
+    """One stored file, for the panel to render. A gone blob is the same
+    plain note every consumer degrades to — 404, not a broken element."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    store = getattr(request.app.state, "media_store", None)
+    record = await store.get(media_id) if store is not None else None
+    if record is None:
+        raise HTTPException(status_code=404, detail="that file is no longer stored")
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "sandbox; default-src 'none'",
+        "Cache-Control": "no-store",
+    }
+    if record.media_type in _INLINE_MEDIA_TYPES:
+        return Response(content=record.data, media_type=record.media_type, headers=headers)
+    # not renderable inline: octet-stream + a disposition, with a
+    # header-safe name — stored filenames are user input, and a quote or
+    # newline must never reach the header
+    safe_name = record.filename.replace('"', "").replace("\n", "").replace("\r", "") or "file"
+    headers["Content-Disposition"] = f'attachment; filename="{safe_name}"'
+    return Response(content=record.data, media_type="application/octet-stream", headers=headers)
+
+
+@router.post("/api/media", status_code=202)
+async def upload_media(
+    request: Request,
+    token: str | None = None,
+    file: UploadFile = File(...),
+    note: str = Form(""),
+) -> dict:
+    """The panel's upload point — a REST sibling of the chat surfaces, not
+    a chat channel itself (no chat UI; the ws hub stays text-only). The
+    bytes ride an inbound to the loop, where the normal sharing path
+    stores and describes them like any attachment."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    agent = getattr(request.app.state, "agent", None)
+    if agent is None:
+        raise HTTPException(status_code=503, detail="the agent is not running")
+    data = await file.read(MAX_CAPTURE_BYTES + 1)
+    if len(data) > MAX_CAPTURE_BYTES:
+        raise HTTPException(status_code=413, detail="file too large")
+    if not data:
+        raise HTTPException(status_code=400, detail="empty upload")
+    filename = file.filename or "file"
+    declared = file.content_type or ""
+    kind = classify_attachment(filename, declared)
+    agent.submit_message(
+        InboundMessage(
+            surface="web",
+            handle="user",
+            text=note,
+            chat_ref="web",
+            attachments=(Attachment(kind, filename, declared, data),),
+        )
+    )
+    return {"accepted": True, "kind": kind, "filename": filename}
 
 
 @router.get("/api/approvals")
@@ -553,6 +638,25 @@ async def reset_setting(path: str, request: Request, token: str | None = None) -
         request, op="reset", path=path, value=None, refresh=_settings_state
     )
     return {"reply": reply, "feed": feed}
+
+
+@router.get("/api/settings/models")
+async def settings_models(
+    request: Request, token: str | None = None, refresh: bool = False
+) -> dict:
+    """The models each configured key can reach, grouped by provider —
+    what the Settings page's model dropdowns render. Fetched live from
+    the providers' own model lists (cached by key until the key changes
+    or a refresh is asked for); one provider that doesn't answer is an
+    inline note on its group, never a broken whole. A key's value never
+    rides anywhere: the feed carries provider names, model ids, and
+    plain-words errors only."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    catalog = getattr(request.app.state, "model_catalog", None)
+    if catalog is None:
+        raise HTTPException(status_code=503, detail="the model catalog is not wired")
+    return await catalog.feed(refresh=refresh)
 
 
 @router.put("/api/settings/credentials/{name}")

@@ -66,3 +66,26 @@ def test_unicode_roundtrip(cipher: Cipher) -> None:
     text = "héllo — 世界 𠀋 — tabs\tand\nnewlines"  # 𠀋: 4-byte utf-8, emoji-free
     blob = cipher.encrypt_text(text, aad="t:c:1")
     assert cipher.decrypt_text(blob, aad="t:c:1") == text
+
+
+def test_dedup_mac_is_deterministic_and_content_keyed(cipher: Cipher) -> None:
+    a = cipher.dedup_mac(b"same bytes")
+    b = cipher.dedup_mac(b"same bytes")
+    other = cipher.dedup_mac(b"different bytes")
+    assert a == b  # same bytes, same tag — dedup works
+    assert a != other  # different bytes, different tag
+
+
+def test_dedup_mac_is_not_a_bare_hash(cipher: Cipher) -> None:
+    import hashlib
+
+    data = b"the media bytes"
+    assert cipher.dedup_mac(data) != hashlib.sha256(data).digest()
+    assert cipher.dedup_mac(data) != hashlib.md5(data).digest()
+
+
+def test_dedup_mac_key_depends_on_the_secret() -> None:
+    one = Cipher.from_b64(generate_key_b64())
+    two = Cipher.from_b64(generate_key_b64())
+    data = b"the media bytes"
+    assert one.dedup_mac(data) != two.dedup_mac(data)  # a leaked tag names no file
