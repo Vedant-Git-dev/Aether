@@ -27,6 +27,18 @@ class Settings(BaseSettings):
     )
 
     encryption_key: str = Field(default="", validation_alias="AETHER_ENCRYPTION_KEY")
+    # provider tokens use their own keyring so they can be rotated without
+    # re-encrypting the content key's data
+    token_encryption_key: str = Field(default="", validation_alias="AETHER_TOKEN_ENCRYPTION_KEY")
+    token_encryption_key_id: str = Field(
+        default="", validation_alias="AETHER_TOKEN_ENCRYPTION_KEY_ID"
+    )
+    token_encryption_key_previous: str = Field(
+        default="", validation_alias="AETHER_TOKEN_ENCRYPTION_KEY_PREVIOUS"
+    )
+    token_encryption_key_previous_id: str = Field(
+        default="", validation_alias="AETHER_TOKEN_ENCRYPTION_KEY_PREVIOUS_ID"
+    )
     api_token: str = Field(default="change-me", validation_alias="AETHER_TOKEN")
     dev_ephemeral_key: bool = Field(default=False, validation_alias="AETHER_DEV_EPHEMERAL_KEY")
 
@@ -304,6 +316,20 @@ class MediaConfig(BaseModel):
     max_prompt_chars: int = 500
 
 
+class ProviderAppConfig(BaseModel):
+    """One direct provider app's local settings."""
+
+    poll_minutes: float = 5.0
+
+
+class ProvidersConfig(BaseModel):
+    """Direct provider connections. The token key is a secret and lives in
+    Settings; this section carries only behavior knobs."""
+
+    enabled: bool = True
+    gmail: ProviderAppConfig = Field(default_factory=ProviderAppConfig)
+
+
 class AppConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
@@ -316,6 +342,7 @@ class AppConfig(BaseModel):
     proactive: ProactiveConfig = Field(default_factory=ProactiveConfig)
     workbench: WorkbenchConfig = Field(default_factory=WorkbenchConfig)
     media: MediaConfig = Field(default_factory=MediaConfig)
+    providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:
