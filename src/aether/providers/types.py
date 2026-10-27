@@ -123,6 +123,7 @@ class ProviderAppView:
     setup_required: bool
     setup_url: str
     setup_steps: tuple[str, ...]
+    redirect_uri: str = ""
 
 
 @dataclass(frozen=True)
@@ -142,6 +143,8 @@ class ConnectResult:
     setup_url: str = ""
     setup_steps: tuple[str, ...] = ()
     redirect_uri: str = ""
+    client_id_name: str = ""
+    client_secret_name: str = ""
     already_connected: bool = False
 
 

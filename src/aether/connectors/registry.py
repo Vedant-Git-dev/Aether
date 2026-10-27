@@ -99,8 +99,10 @@ def _tokens(text: str) -> set[str]:
 @dataclass(frozen=True)
 class RegisteredTool:
     spec: ToolSpec
-    kind: Literal["native", "mcp"]
+    kind: Literal["native", "mcp", "provider"]
     handler: NativeHandler | None = None
+    effect: Literal["read", "write", "destructive"] | None = None
+    auth_mode: Literal["oauth", "token"] | None = None
 
 
 def _gmail_body_breaks(name: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -130,6 +132,7 @@ class ToolRegistry:
         self._tools: dict[str, RegisteredTool] = {}
         self._mcp_host: MCPHost | None = None
         self._mail_filter: MailAllowlist | None = None
+        self._suppressed_mcp_prefixes: set[str] = set()
 
     # -- registration ----------------------------------------------------------
 
@@ -141,6 +144,37 @@ class ToolRegistry:
             log.warning("mcp tool %s is shadowed by a native tool of the same name", spec.name)
             return
         self._tools[spec.name] = RegisteredTool(spec, "native", handler)
+
+    def add_provider(
+        self,
+        spec: ToolSpec,
+        handler: NativeHandler,
+        *,
+        effect: Literal["read", "write", "destructive"],
+        source: str,
+        auth_mode: Literal["oauth", "token"],
+    ) -> None:
+        """Register one direct-provider action.
+
+        Provider tools carry the effect the provider declared, so the gate
+        can be explicit instead of guessing from a verb in the name. A
+        native tool of the same name wins; a provider app must never shadow
+        Aether's own tools.
+        """
+        existing = self._tools.get(spec.name)
+        if existing is not None:
+            log.warning("provider tool %s is shadowed by an existing tool", spec.name)
+            return
+        if spec.source != source:
+            spec = ToolSpec(
+                name=spec.name,
+                description=spec.description,
+                input_schema=spec.input_schema,
+                source=source,
+            )
+        self._tools[spec.name] = RegisteredTool(
+            spec, "provider", handler, effect=effect, auth_mode=auth_mode
+        )
 
     def attach_mcp(self, host: MCPHost) -> None:
         self._mcp_host = host
@@ -161,6 +195,8 @@ class ToolRegistry:
         added = 0
         reported: dict[str, set[str]] = {}
         for spec in self._mcp_host.tool_specs():
+            if any(spec.name.startswith(prefix) for prefix in self._suppressed_mcp_prefixes):
+                continue
             reported.setdefault(spec.source, set()).add(spec.name)
             existing = self._tools.get(spec.name)
             if existing is not None:
@@ -257,6 +293,22 @@ class ToolRegistry:
         """How many of the namespace's actions come from this server."""
         return sum(1 for t in self._tools.values() if t.kind == "mcp" and t.spec.source == server)
 
+    def suppress_mcp_prefix(self, prefix: str) -> int:
+        """Never expose MCP tools under this prefix again — used when a
+        direct provider takes over an app the hub also offers. Existing
+        tools leave the namespace now; sync_mcp_tools skips them later."""
+        self._suppressed_mcp_prefixes.add(prefix)
+        names = [
+            name
+            for name, tool in self._tools.items()
+            if tool.kind == "mcp" and name.startswith(prefix)
+        ]
+        for name in names:
+            del self._tools[name]
+        if names:
+            log.info("suppressed %d mcp tool(s) under %r", len(names), prefix)
+        return len(names)
+
     def drop_server(self, server: str) -> int:
         """Remove every tool an MCP server contributed. The other half of
         sync_mcp_tools: an app unlinked or disabled at runtime must not keep
@@ -273,6 +325,39 @@ class ToolRegistry:
             log.info("dropped %d tool(s) from mcp server %r", len(names), server)
         return len(names)
 
+    def drop_app(self, app: str) -> int:
+        """Remove every direct-provider tool an app contributed."""
+        names = [
+            name
+            for name, tool in self._tools.items()
+            if tool.kind == "provider" and tool.spec.source == app
+        ]
+        for name in names:
+            del self._tools[name]
+        if names:
+            log.info("dropped %d provider tool(s) from %r", len(names), app)
+        return len(names)
+
+    def drop_provider_tools(self) -> int:
+        names = [name for name, tool in self._tools.items() if tool.kind == "provider"]
+        for name in names:
+            del self._tools[name]
+        return len(names)
+
+    def provider_apps(self) -> list[str]:
+        seen: set[str] = set()
+        for tool in self._tools.values():
+            if tool.kind == "provider":
+                seen.add(tool.spec.source)
+        return sorted(seen)
+
+    def provider_action_count(self, app: str) -> int:
+        return sum(
+            1
+            for tool in self._tools.values()
+            if tool.kind == "provider" and tool.spec.source == app
+        )
+
     def __len__(self) -> int:
         return len(self._tools)
 
@@ -283,6 +368,12 @@ class ToolRegistry:
         if tool.kind == "native":
             assert tool.handler is not None
             return _stringify(await tool.handler(params or {}))
+        if tool.kind == "provider":
+            assert tool.handler is not None
+            result = _stringify(await tool.handler(params or {}))
+            if self._mail_filter is not None:
+                result = await self._mail_filter.filter_result(name, result)
+            return result
         if self._mcp_host is None:
             raise UnknownToolError(f"mcp tool {name} has no host to route through")
         result = await self._mcp_host.call(name, _gmail_body_breaks(name, params or {}))

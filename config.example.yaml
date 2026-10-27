@@ -121,6 +121,12 @@ proactive:                        # the background worker — OFF by default
                                  # chat, and it also pauses itself if too much
                                  # comes back wrong
 
+providers:                       # direct app connections — Aether owns the
+                                 # OAuth client and the encrypted tokens
+  enabled: true
+  gmail:
+    poll_minutes: 5              # how often the Gmail history poll runs
+
 workbench:                        # where background jobs run when they must not
                                  # run on this machine — never with Aether's keys
   provider: modal                 # modal | vercel | github_actions | none — the

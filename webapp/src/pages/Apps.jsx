@@ -3,7 +3,7 @@
 // walk can still switch on. Everything here reflects live backend state.
 import { useCallback, useEffect, useState } from "react";
 import PageHead from "../components/PageHead.jsx";
-import { Card, Field, SectionLabel } from "../components/ui.jsx";
+import { Button, Card, Field, SectionLabel } from "../components/ui.jsx";
 import EmptyState, { NoToken } from "../components/EmptyState.jsx";
 import IntegrationCard, { BrandLogo, CONFIG_TOAST } from "../components/IntegrationCard.jsx";
 import HubCard from "../components/HubCard.jsx";
@@ -37,6 +37,183 @@ const SERVER_FACES = {
 
 const icon = (p) => assetUrl(`${p}?v=${ASSET_V}`);
 
+const PROVIDER_FACES = {
+  gmail: { imgSrc: icon("icon-gmail.png"), label: "Gmail" },
+  calendar: { imgSrc: icon("icon-calendar.png"), label: "Calendar" },
+  github: { imgSrc: icon("icon-github.png"), label: "GitHub" },
+  notion: { icon: "apps", label: "Notion" },
+  linear: { icon: "apps", label: "Linear" },
+  linkedin: { icon: "apps", label: "LinkedIn" },
+};
+
+function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken }) {
+  const toast = useToast();
+  const [setupOpen, setSetupOpen] = useState(Boolean(app.setup_required && !app.connected));
+  const [tokenOpen, setTokenOpen] = useState(false);
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [token, setToken] = useState("");
+  const [expiry, setExpiry] = useState("");
+  const [busy, setBusy] = useState(false);
+  const face = PROVIDER_FACES[app.key] || { icon: "apps", label: app.name };
+  const connected = app.status === "active";
+  const reauth = app.status === "reauth_required";
+  const statusText = connected
+    ? `Connected${app.identity ? ` — ${app.identity}` : ""} · ${app.actions} action${app.actions === 1 ? "" : "s"}`
+    : reauth
+      ? "Needs reconnecting"
+      : app.setup_required
+        ? "Setup needed"
+        : "Not connected";
+  const statusTone = connected ? "ok" : reauth || app.setup_required ? "warn" : "idle";
+
+  const connect = async () => {
+    setBusy(true);
+    try {
+      const result = await onConnect(app);
+      if (result?.setup_required) setSetupOpen(true);
+      if (result?.token_required) setTokenOpen(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveClient = async (event) => {
+    event.preventDefault();
+    if (!clientId.trim() || !clientSecret.trim()) {
+      toast("Both the client ID and client secret are needed.", "err");
+      return;
+    }
+    setBusy(true);
+    try {
+      await onSaveClient(app, clientId, clientSecret);
+      setClientId("");
+      setClientSecret("");
+      setSetupOpen(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveToken = async (event) => {
+    event.preventDefault();
+    if (!token.trim()) {
+      toast("Paste the token first.", "err");
+      return;
+    }
+    setBusy(true);
+    try {
+      await onSaveToken(app, token, expiry);
+      setToken("");
+      setExpiry("");
+      setTokenOpen(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card className="flex flex-col gap-3 p-4" data-testid={`provider-${app.key}`}>
+      <div className="flex items-center gap-3">
+        {face.imgSrc
+          ? <img src={face.imgSrc} alt="" className="h-9 w-9 shrink-0 rounded-md object-contain" />
+          : <BrandLogo icon={face.icon} />}
+        <div className="min-w-0">
+          <div role="heading" className="text-sm font-semibold text-ink">{app.name}</div>
+          <p className="text-xs text-ink-3">
+            {app.auth_mode === "token" ? "Token connection" : "Browser sign-in"}
+          </p>
+        </div>
+        <span className={`ml-auto text-xs font-medium ${statusTone === "ok" ? "text-success" : statusTone === "warn" ? "text-warning" : "text-ink-3"}`}>
+          {statusText}
+        </span>
+      </div>
+
+      {setupOpen ? (
+        <form className="flex flex-col gap-2 rounded-md border border-line bg-subtle p-3" onSubmit={saveClient}>
+          <div className="text-xs text-ink-2">
+            {app.setup_steps?.length
+              ? "Finish the provider setup once, then connect."
+              : "Finish the provider setup once, then connect."}
+          </div>
+          {app.setup_url ? (
+            <a className="text-xs text-accent hover:underline" href={app.setup_url} target="_blank" rel="noreferrer">
+              Open the provider setup page
+            </a>
+          ) : null}
+          {app.setup_steps?.length ? (
+            <ol className="list-decimal space-y-1 pl-4 text-xs text-ink-3">
+              {app.setup_steps.map((step, i) => <li key={i}>{step}</li>)}
+            </ol>
+          ) : null}
+          <div className="text-xs text-ink-3">
+            Add this redirect URI exactly: <span className="break-all text-ink-2">{app.redirect_uri || "the callback shown by Aether"}</span>
+          </div>
+          <Field
+            type="text"
+            autoComplete="off"
+            placeholder="Client ID"
+            value={clientId}
+            onChange={(e) => setClientId(e.target.value)}
+          />
+          <Field
+            type="password"
+            autoComplete="off"
+            placeholder="Client secret"
+            value={clientSecret}
+            onChange={(e) => setClientSecret(e.target.value)}
+          />
+          <div className="flex items-center gap-2">
+            <Button type="submit" kind="primary" disabled={busy}>Save client</Button>
+            <Button type="button" onClick={() => setSetupOpen(false)} disabled={busy}>Cancel</Button>
+          </div>
+        </form>
+      ) : null}
+
+      {tokenOpen ? (
+        <form className="flex flex-col gap-2 rounded-md border border-line bg-subtle p-3" onSubmit={saveToken}>
+          <div className="text-xs text-ink-2">Paste the token. It is stored encrypted and never shown again.</div>
+          <Field
+            type="password"
+            autoComplete="off"
+            placeholder="Token"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+          />
+          <Field
+            type="date"
+            value={expiry}
+            onChange={(e) => setExpiry(e.target.value)}
+            aria-label="Token expiry"
+          />
+          <div className="flex items-center gap-2">
+            <Button type="submit" kind="primary" disabled={busy}>Save token</Button>
+            <Button type="button" onClick={() => setTokenOpen(false)} disabled={busy}>Cancel</Button>
+          </div>
+        </form>
+      ) : null}
+
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs text-ink-3">
+          {connected ? "What Aether may do is governed by the policy gate." : "Connect to let Aether use this app."}
+        </span>
+        <div className="flex items-center gap-2">
+          {connected ? (
+            <Button type="button" kind="neutral" onClick={() => onDisconnect(app)} disabled={busy}>
+              Disconnect
+            </Button>
+          ) : (
+            <Button type="button" kind="primary" onClick={connect} disabled={busy}>
+              {reauth ? "Reconnect" : app.setup_required ? "Set up" : "Connect"}
+            </Button>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+
 function AvailableCard({ iconFace, name, blurb }) {
   return (
     <div className="flex items-center gap-3 rounded-lg border border-line bg-card p-3">
@@ -56,6 +233,7 @@ export default function AppsPage() {
   const toast = useToast();
   const [data, setData] = useState(null);
   const [hub, setHub] = useState(undefined); // undefined = not tried, null = not wired
+  const [providers, setProviders] = useState(undefined); // undefined = not tried, null = not wired
   const [error, setError] = useState("");
   const [query, setQuery] = useState(hubQuery);
 
@@ -64,6 +242,7 @@ export default function AppsPage() {
       const d = await api("/api/settings/apps");
       setData(d);
       try { setHub(await api("/api/connections")); } catch { setHub(null); }
+      try { setProviders(await api("/api/providers")); } catch { setProviders(null); }
     } catch (err) {
       setError(err.message);
     }
@@ -85,6 +264,62 @@ export default function AppsPage() {
       toast(`Disconnected ${account.toolkit}`);
       load();
     } catch (err) { toast(err.message, "err"); }
+  };
+
+  const connectProvider = async (app) => {
+    try {
+      const r = await api(`/api/providers/${encodeURIComponent(app.key)}/connect`, { method: "POST" });
+      if (r.redirect_url) {
+        window.open(r.redirect_url, "_blank", "noopener");
+        toast(`Approve ${app.name} in the tab that just opened. Aether will confirm once it's connected.`);
+      } else if (r.setup_required) {
+        toast(`Finish the ${app.name} setup below, then connect.`);
+      } else if (r.token_required) {
+        toast(`Paste the ${app.name} token below.`);
+      }
+      return r;
+    } catch (err) {
+      toast(err.message, "err");
+      return null;
+    }
+  };
+
+  const disconnectProvider = async (app) => {
+    try {
+      await api(`/api/providers/${encodeURIComponent(app.key)}/disconnect`, { method: "POST" });
+      toast(`Disconnected ${app.name}`);
+      load();
+    } catch (err) { toast(err.message, "err"); }
+  };
+
+  const saveProviderClient = async (app, clientId, clientSecret) => {
+    try {
+      await api(`/api/providers/${encodeURIComponent(app.provider)}/client`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+      });
+      toast(`Saved the ${app.name} client. Now connect it.`);
+      load();
+    } catch (err) {
+      toast(err.message, "err");
+      throw err;
+    }
+  };
+
+  const saveProviderToken = async (app, token, expiry) => {
+    try {
+      await api(`/api/providers/${encodeURIComponent(app.key)}/token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token, expires_at: expiry || null }),
+      });
+      toast(`Connected ${app.name}`);
+      load();
+    } catch (err) {
+      toast(err.message, "err");
+      throw err;
+    }
   };
 
   const onSearch = (e) => { hubQuery = e.target.value; setQuery(e.target.value); };
@@ -204,6 +439,41 @@ export default function AppsPage() {
         {cards.map((c) => (
           <IntegrationCard key={c.key} data-testid={`integration-${c.key}`} {...c} />
         ))}
+      </div>
+
+      <SectionLabel className="mb-2">
+        Direct apps
+        <span className="ml-2 font-normal normal-case text-ink-3">
+          Aether owns the sign-in and the tokens for these apps
+        </span>
+      </SectionLabel>
+      <div className="mb-6">
+        {providers === undefined ? (
+          <Card className="p-4"><div className="text-sm text-ink-3">Loading direct apps…</div></Card>
+        ) : providers === null ? (
+          <Card className="p-4">
+            <div className="text-sm text-ink-3">Direct app connections aren't wired on this instance.</div>
+          </Card>
+        ) : providers.apps.length === 0 ? (
+          <Card className="p-4">
+            <div className="text-sm text-ink-3">
+              No direct apps are configured yet. Add a provider definition to make one available here.
+            </div>
+          </Card>
+        ) : (
+          <div data-testid="provider-grid" className="grid gap-3 sm:grid-cols-2">
+            {providers.apps.map((app) => (
+              <ProviderCard
+                key={app.key}
+                app={app}
+                onConnect={connectProvider}
+                onDisconnect={disconnectProvider}
+                onSaveClient={saveProviderClient}
+                onSaveToken={saveProviderToken}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       <SectionLabel className="mb-2">

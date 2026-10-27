@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, Response
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -57,6 +58,11 @@ from .memory.events import EventStore
 from .memory.salience import LLMJudge, Salience
 from .memory.vectors import VectorMemory
 from .proactive import Budget, ProactiveStore, ProactiveWorker
+from .providers.catalog import PROVIDERS
+from .providers.crypto import TokenKeyError, TokenKeyring
+from .providers.oauth import OAuthEngine
+from .providers.runtime import ProviderRuntime
+from .providers.store import ProviderStore
 from .routines import Routines
 from .scheduler import Scheduler, SchedulerWorker
 from .secret_env import EnvResolver
@@ -119,6 +125,19 @@ def create_app(
                 "create a free Neon database and put its connection string in .env."
             )
         cipher = _build_cipher(settings)
+        try:
+            token_keyring = TokenKeyring.from_values(
+                active_key_b64=settings.token_encryption_key,
+                active_id=settings.token_encryption_key_id,
+                previous_key_b64=settings.token_encryption_key_previous,
+                previous_id=settings.token_encryption_key_previous_id,
+            )
+        except TokenKeyError as exc:
+            raise StartupError(f"provider token keyring: {exc}") from exc
+        if token_keyring is None:
+            log.warning(
+                "AETHER_TOKEN_ENCRYPTION_KEY not set — direct provider connections are disabled"
+            )
 
         # --- database ------------------------------------------------------
         pool = await create_pool(settings.database_url)
@@ -273,6 +292,46 @@ def create_app(
         tools.attach_mail_filter(mail_filter)
         log.info("mcp tools in the namespace: %d", tools.sync_mcp_tools())
         app.state.tools = tools
+
+        # --- direct provider connections -----------------------------------
+        # Tokens live in their own encrypted store, under a keyring separate
+        # from the content key. Without that keyring the runtime still exists
+        # so the panel can say why, but it exposes no actions and stores
+        # nothing.
+        provider_http = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0))
+        provider_store = ProviderStore(pool, token_keyring) if token_keyring is not None else None
+        provider_oauth = (
+            OAuthEngine(
+                store=provider_store,
+                resolver=env_resolver,
+                http=provider_http,
+                audit=audit,
+            )
+            if provider_store is not None
+            else None
+        )
+        provider_runtime = ProviderRuntime(
+            definitions=PROVIDERS,
+            store=provider_store,
+            oauth=provider_oauth,
+            http=provider_http,
+            registry=tools,
+            audit=audit,
+            resolver=env_resolver,
+            config=config,
+            public_base_url=settings.public_url,
+            port=settings.port,
+            secrets=secret_store,
+        )
+        if config.providers.enabled and provider_store is not None:
+            try:
+                log.info(
+                    "provider tools in the namespace: %d", await provider_runtime.register_tools()
+                )
+            except Exception:
+                log.exception("provider tool registration failed — continuing")
+        app.state.provider_store = provider_store
+        app.state.provider_runtime = provider_runtime
 
         # --- encrypted media storage ----------------------------------------
         # shared files, screen captures, and later generated images become
@@ -537,6 +596,7 @@ def create_app(
         for connector in connectors:
             await connector.stop()
         await host.stop()
+        await provider_http.aclose()
         await pool.close()
         log.info("aether stopped")
 

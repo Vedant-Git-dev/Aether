@@ -83,6 +83,8 @@ def _apply_note(path: str) -> str:
         return " — applies to the next job"
     if path.startswith("media."):
         return " — applies to the next media handled"
+    if path.startswith("providers."):
+        return " — applies to the next provider poll"
     return ""
 
 
@@ -96,6 +98,7 @@ _SECTION_NAMES = (
     "proactive",
     "workbench",
     "media",
+    "providers",
     "mcp_servers",
 )
 

@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import hmac
 import logging
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from ..agent.tools import with_plain_calls, with_plain_event
@@ -21,6 +23,7 @@ from ..apps_catalog import CATALOG, recipe_for
 from ..composio_bridge import ComposioNotConfigured
 from ..connectors.base import Attachment, InboundMessage, classify_attachment
 from ..proactive import DONE
+from ..providers.types import ProviderError
 from ..settings_catalog import credential_for, settings_feed
 from ..workspace import SecretRejected, WorkspaceEntry, WorkspaceWriteError
 
@@ -1242,3 +1245,145 @@ async def workbench_transfer_post(
     if not stored:
         raise HTTPException(status_code=404, detail="no such transfer")
     return {"stored": True}
+
+
+# -- direct provider connections ------------------------------------------------
+# The panel and the chat walk both start here. OAuth returns to the callback
+# with a single-use state; the callback is the only route in this file that
+# is not token-guarded, because the browser is the caller and the state is
+# the authentication.
+
+
+class ProviderTokenBody(BaseModel):
+    token: str
+    expires_at: str | None = None
+
+
+class ProviderClientBody(BaseModel):
+    client_id: str
+    client_secret: str
+
+
+def _provider_runtime(request: Request):
+    runtime = getattr(request.app.state, "provider_runtime", None)
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="provider connections are not wired")
+    return runtime
+
+
+@router.get("/api/providers")
+async def providers_feed(request: Request, token: str | None = None) -> dict:
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    return await _provider_runtime(request).feed()
+
+
+@router.get("/api/providers/{provider}/setup")
+async def provider_setup(provider: str, request: Request, token: str | None = None) -> dict:
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    try:
+        return await _provider_runtime(request).setup_recipe(provider)
+    except ProviderError as exc:
+        raise HTTPException(status_code=404, detail=exc.plain) from exc
+
+
+@router.put("/api/providers/{provider}/client")
+async def provider_client(
+    provider: str,
+    body: ProviderClientBody,
+    request: Request,
+    token: str | None = None,
+) -> dict:
+    """Write-only client setup. The values are encrypted in the secret
+    store; this response only says whether the provider is configured."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    try:
+        return await _provider_runtime(request).save_client(
+            provider, body.client_id, body.client_secret
+        )
+    except ProviderError as exc:
+        raise HTTPException(status_code=400, detail=exc.plain) from exc
+
+
+@router.post("/api/providers/{app}/connect")
+async def provider_connect(app: str, request: Request, token: str | None = None) -> dict:
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    try:
+        result = await _provider_runtime(request).connect(app)
+    except ProviderError as exc:
+        raise HTTPException(status_code=400, detail=exc.plain) from exc
+    return result.__dict__
+
+
+@router.post("/api/providers/{app}/token")
+async def provider_connect_token(
+    app: str, body: ProviderTokenBody, request: Request, token: str | None = None
+) -> dict:
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    expires_at = None
+    if body.expires_at:
+        try:
+            expires_at = datetime.fromisoformat(body.expires_at)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="that expiry isn't a date") from exc
+    try:
+        connection = await _provider_runtime(request).connect_token(
+            app, body.token.strip(), expires_at=expires_at
+        )
+    except ProviderError as exc:
+        raise HTTPException(status_code=400, detail=exc.plain) from exc
+    return {
+        "connected": True,
+        "app": app,
+        "identity": connection.account_label,
+    }
+
+
+@router.post("/api/providers/{app}/disconnect")
+async def provider_disconnect(app: str, request: Request, token: str | None = None) -> dict:
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    try:
+        await _provider_runtime(request).disconnect(app)
+    except ProviderError as exc:
+        raise HTTPException(status_code=400, detail=exc.plain) from exc
+    return {"disconnected": True, "app": app}
+
+
+@router.get("/api/oauth/{provider}/callback")
+async def provider_oauth_callback(
+    provider: str,
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+) -> Response:
+    """The browser lands here after consent. The state row is single-use;
+    success redirects to the panel, failure says so in plain words."""
+    if error or not code or not state:
+        return Response(
+            "the sign-in didn't finish — nothing was connected. Open Apps and try again.",
+            status_code=400,
+            media_type="text/plain",
+        )
+    try:
+        connection = await _provider_runtime(request).handle_callback(
+            provider, code=code, state=state
+        )
+    except ProviderError as exc:
+        return Response(
+            f"the sign-in didn't finish — {exc.plain}. Open Apps and try again.",
+            status_code=400,
+            media_type="text/plain",
+        )
+    agent = getattr(request.app.state, "agent", None)
+    if agent is not None and connection.app:
+        try:
+            await agent.announce_provider_connection(connection.app, connection.account_label)
+        except Exception:
+            log.exception("provider connection announcement failed")
+    return RedirectResponse(url="/#/apps", status_code=303)

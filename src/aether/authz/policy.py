@@ -23,6 +23,12 @@ before it executes. First match wins:
 7. read-only verbs (list, search, get, ...) -> ALLOW
 8. anything else -> REQUIRE_APPROVAL
 
+Direct provider tools carry an explicit effect (read, write, destructive).
+The effect is checked right after user rules, before the verb ladders: a
+provider's own declaration is more precise than a name, and a missing or
+unknown effect still falls through to the fail-safe. Provider reads run;
+provider writes and destructive actions park.
+
 The verb ladders (5 and 6) run against the lowercased tool name: Composio
 names its tools UPPER_SNAKE (composio__GMAIL_SEND_EMAIL), and a verb is a
 verb in either case — without it every hub tool would park at fail-safe.
@@ -53,7 +59,7 @@ class Decision(StrEnum):
 @dataclass(frozen=True)
 class Ruling:
     decision: Decision
-    matched_rule: str  # "user:<pattern>" | "builtin:walk-connect" | "builtin:config-tune" | "builtin:config-security" | "builtin:internal" | "builtin:web-research" | "builtin:media-generation" | "builtin:risky" | "builtin:read-only" | "default:fail-safe"
+    matched_rule: str  # "user:<pattern>" | "builtin:walk-connect" | "builtin:config-tune" | "builtin:config-security" | "builtin:provider-read" | "builtin:provider-write" | "builtin:provider-destructive" | "builtin:internal" | "builtin:web-research" | "builtin:media-generation" | "builtin:risky" | "builtin:read-only" | "default:fail-safe"
     reason: str
 
 
@@ -116,7 +122,7 @@ _MEDIA_GENERATION = re.compile(r"^generate_image$")
 # apply silently. The airtight direction matters because an approved call
 # is carried out without re-classifying — park-time is the only gate a
 # security write passes, and the worst case is an extra approval tap.
-_CONFIG_TUNING_ROOTS = {"agent", "salience", "llm", "proactive", "workbench"}
+_CONFIG_TUNING_ROOTS = {"agent", "salience", "llm", "proactive", "workbench", "providers"}
 _CONFIG_SECURITY_ROOTS = {"contacts", "authz", "messaging", "mcp_servers"}
 
 
@@ -158,6 +164,7 @@ class Policy:
         tool_name: str,
         params: dict[str, Any] | None = None,
         origin: str | None = None,
+        effect: str | None = None,
     ) -> Ruling:
         params = params or {}
         for tool_re, param_re, decision, note in self._rules:
@@ -174,6 +181,18 @@ class Policy:
             if connect is not None:
                 return connect
             return self._classify_set_config(params)
+        if effect == "read":
+            return Ruling(
+                Decision.ALLOW,
+                "builtin:provider-read",
+                "a read from a connected app — nothing is changed",
+            )
+        if effect in ("write", "destructive"):
+            return Ruling(
+                Decision.REQUIRE_APPROVAL,
+                "builtin:provider-write" if effect == "write" else "builtin:provider-destructive",
+                "changes something in a connected app — the user decides that with one tap",
+            )
         if _INTERNAL.match(tool_name):
             return Ruling(
                 Decision.ALLOW, "builtin:internal", "internal tool, touches only Aether's own state"
