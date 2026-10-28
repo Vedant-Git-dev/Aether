@@ -56,6 +56,7 @@ class AppDefinition:
     scopes: tuple[str, ...]
     tools: tuple[ToolDefinition, ...]
     poll: PollDefinition | None = None
+    api_base: str = ""
 
 
 @dataclass(frozen=True)

@@ -1,8 +1,9 @@
 """The direct-provider panel walk: Gmail setup, the callback, and disconnect.
 
-The dev fixture's provider runtime is the real route surface with an
-in-memory Gmail card; the OAuth browser tab is skipped by landing the
-callback directly, which is the same state-only route Google calls.
+The dev fixture's provider runtime is the real route surface with
+in-memory Gmail and Calendar cards on one Google connection; the OAuth
+browser tab is skipped by landing the callback directly, which is the
+same state-only route Google calls.
 """
 
 from __future__ import annotations
@@ -25,6 +26,9 @@ def test_direct_gmail_setup_callback_and_disconnect(page, live_server, token) ->
     assert "Setup needed" in card.inner_text()
     assert "Add this redirect URI exactly" in card.inner_text()
     assert "GOOGLE_CLIENT_ID" not in card.inner_text()  # setup steps are plain
+    calendar = page.locator('[data-testid="provider-calendar"]')
+    assert "Google Calendar" in calendar.inner_text()
+    assert "Setup needed" in calendar.inner_text()
 
     form = card.locator("form")
     form.get_by_placeholder("Client ID").fill("client-id.apps.googleusercontent.com")
@@ -39,6 +43,8 @@ def test_direct_gmail_setup_callback_and_disconnect(page, live_server, token) ->
     page.wait_for_selector('[data-testid="provider-gmail"]:has-text("Connected")')
     card = page.locator('[data-testid="provider-gmail"]')
     assert "me@example.com" in card.inner_text()
+    assert "Connected" in page.locator('[data-testid="provider-calendar"]').inner_text()
 
     card.get_by_role("button", name="Disconnect").click()
     page.wait_for_selector('[data-testid="provider-gmail"]:has-text("Not connected")')
+    assert "Not connected" in page.locator('[data-testid="provider-calendar"]').inner_text()

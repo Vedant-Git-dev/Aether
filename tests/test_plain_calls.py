@@ -99,6 +99,13 @@ class TestDescribeCall:
         assert describe_call("gmail__send_draft") == "Sending the draft"
         assert describe_call("gmail__get_profile") == "Checking the connected gmail account"
 
+    def test_direct_calendar_actions_read_as_their_own_act(self) -> None:
+        assert describe_call("calendar__list_events") == "Checking the calendar"
+        assert describe_call("calendar__create_event") == "Creating the event"
+        assert describe_call("calendar__update_event") == "Updating the event"
+        assert describe_call("calendar__delete_event") == "Deleting the event"
+        assert describe_call("calendar__freebusy") == "Checking availability"
+
 
 class TestDescribeOutcome:
     """The fallback chat line when an approved call succeeds with no

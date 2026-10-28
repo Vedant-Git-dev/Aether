@@ -182,6 +182,11 @@ const PROVIDER_ACTION_IDIOMS = {
   create_draft: (appName) => `Drafting an email${appName && appName !== "Email" ? ` in ${appName}` : ""}`,
   send_draft: (appName) => `Sending a draft${appName && appName !== "Email" ? ` from ${appName}` : ""}`,
   get_profile: (appName) => `Checking the connected ${appName ? `${appName} ` : ""}account`,
+  list_events: () => "Checking the calendar",
+  create_event: () => "Creating the event",
+  update_event: () => "Updating the event",
+  delete_event: () => "Deleting the event",
+  freebusy: () => "Checking availability",
 };
 
 export function appLabel(source) {

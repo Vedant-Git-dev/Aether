@@ -321,7 +321,7 @@ def test_approval_cards_show_the_full_ask(page, live_server, token) -> None:
 
     event = cards.nth(3)
     event_text = event.inner_text()
-    assert "Creating events on Calendar" in event_text
+    assert "Creating the event" in event_text
     assert "Title" in event_text and "Dentist" in event_text
 
     patch = cards.nth(4)

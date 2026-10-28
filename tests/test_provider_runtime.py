@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -246,6 +247,31 @@ async def test_connect_returns_setup_or_a_link() -> None:
     runtime = _runtime(FakeStore(), FakeOAuth(configured=True), lambda request: httpx.Response(200))
     result = await runtime.connect("demo")
     assert result.redirect_url == "https://auth.demo/authorize?state=x"
+
+
+@pytest.mark.asyncio
+async def test_adding_a_scope_reuses_the_connection_and_asks_for_the_union() -> None:
+    connection = ProviderConnection(
+        provider="demo",
+        auth_mode="oauth",
+        app="demo",
+        access_token="old",
+        refresh_token="refresh",
+        scopes="read",
+        status="active",
+    )
+    wider_app = replace(APP, scopes=("read", "write"))
+    provider = replace(PROVIDER, apps=(wider_app,))
+    oauth = FakeOAuth()
+    runtime = _runtime(
+        FakeStore(connection),
+        oauth,
+        lambda request: httpx.Response(200),
+        definitions=[provider],
+    )
+    await runtime.connect("demo")
+    assert oauth.last_auth["existing_scopes"] == ("read",)
+    assert oauth.last_auth["prompt_consent"] is True
 
 
 @pytest.mark.asyncio

@@ -147,6 +147,24 @@ async def test_authorization_url_carries_state_pkce_and_scopes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_authorization_url_keeps_existing_scopes_when_adding_an_app() -> None:
+    """Calendar rides the Gmail connection. The consent request must
+    carry the scopes already granted, or Google would replace them."""
+    store = FakeStore()
+    engine = _engine(store, lambda request: httpx.Response(200, json={}))
+    url = await engine.authorization_url(
+        PROVIDER,
+        APP,
+        redirect_uri="https://aether.test/api/oauth/demo/callback",
+        existing_scopes=("read",),
+        prompt_consent=True,
+    )
+    query = parse_qs(urlparse(url).query)
+    assert {"read", "write", "openid", "email"}.issubset(set(query["scope"][0].split()))
+    assert query["prompt"] == ["consent"]
+
+
+@pytest.mark.asyncio
 async def test_exchange_stores_tokens_and_rejects_a_replay() -> None:
     store = FakeStore()
     engine = _engine(store, _token_handler)

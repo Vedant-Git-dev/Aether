@@ -1172,9 +1172,9 @@ class FakeHubBridge:
 
 
 class FakeProviderRuntime:
-    """The direct-provider runtime double: one Gmail card, the write-only
-    client setup, a callback that lands connected, and disconnect. The
-    real routes call exactly these methods."""
+    """The direct-provider runtime double: Gmail and Calendar on one Google
+    connection, the write-only client setup, a callback that lands
+    connected, and disconnect. The real routes call exactly these methods."""
 
     def __init__(self) -> None:
         self.client_configured = False
@@ -1199,7 +1199,31 @@ class FakeProviderRuntime:
             "setup_url": "https://console.cloud.google.com/apis/credentials",
             "setup_steps": [
                 "Open Google Cloud Console and create or select a project.",
-                "Enable the Gmail API.",
+                "Enable the Gmail API and Google Calendar API.",
+            ],
+            "redirect_uri": "http://test/api/oauth/google/callback",
+            "last_error": "",
+        }
+
+    def _calendar_app(self) -> dict:
+        return {
+            "key": "calendar",
+            "name": "Google Calendar",
+            "provider": "google",
+            "connected": self.connected,
+            "status": "active" if self.connected else "not_connected",
+            "identity": self.identity,
+            "auth_mode": "oauth",
+            "scopes": [
+                "https://www.googleapis.com/auth/calendar.readonly",
+                "https://www.googleapis.com/auth/calendar.events",
+            ],
+            "actions": 5 if self.connected else 0,
+            "setup_required": not self.client_configured,
+            "setup_url": "https://console.cloud.google.com/apis/credentials",
+            "setup_steps": [
+                "Open Google Cloud Console and create or select a project.",
+                "Enable the Gmail API and Google Calendar API.",
             ],
             "redirect_uri": "http://test/api/oauth/google/callback",
             "last_error": "",
@@ -1221,7 +1245,7 @@ class FakeProviderRuntime:
     async def feed(self) -> dict:
         return {
             "configured": True,
-            "apps": [self._app()],
+            "apps": [self._app(), self._calendar_app()],
             "providers": [
                 {
                     "key": "google",
@@ -1253,7 +1277,7 @@ class FakeProviderRuntime:
                 provider="google",
                 setup_required=True,
                 setup_url="https://console.cloud.google.com/apis/credentials",
-                setup_steps=("Enable the Gmail API.",),
+                setup_steps=("Enable the Gmail API and Google Calendar API.",),
                 redirect_uri="http://test/api/oauth/google/callback",
                 client_id_name="GOOGLE_CLIENT_ID",
                 client_secret_name="GOOGLE_CLIENT_SECRET",

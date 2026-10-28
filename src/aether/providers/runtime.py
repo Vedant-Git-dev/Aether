@@ -55,9 +55,8 @@ class ProviderContext:
         self.connection = connection
 
     async def request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        url = (
-            path if path.startswith(("http://", "https://")) else f"{self.provider.api_base}{path}"
-        )
+        base = self.app.api_base or self.provider.api_base
+        url = path if path.startswith(("http://", "https://")) else f"{base}{path}"
         return await self._runtime.request(self.connection, method, url, **kwargs)
 
     async def json(self, method: str, path: str, **kwargs: Any) -> Any:
@@ -149,6 +148,10 @@ class ProviderRuntime:
             # direct Gmail owns the name now; the hub's copy must not appear
             # beside it, or the model has two ways to send the same mail.
             self._registry.suppress_mcp_prefix("composio__GMAIL_")
+        if "calendar" in added_apps:
+            # same rule for Calendar; Composio has used both spellings.
+            self._registry.suppress_mcp_prefix("composio__GOOGLECALENDAR_")
+            self._registry.suppress_mcp_prefix("composio__GOOGLE_CALENDAR_")
         return added
 
     def _handler(self, provider: ProviderDefinition, app: AppDefinition, tool_key: str):

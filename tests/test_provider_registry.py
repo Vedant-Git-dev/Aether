@@ -81,6 +81,31 @@ def test_gmail_tools_appear_for_the_words_people_actually_use() -> None:
     assert "gmail__send_email" in [s.name for s in registry.gated_specs("send an email")]
 
 
+def test_calendar_tools_appear_for_calendar_words() -> None:
+    from aether.providers.google import CALENDAR_APP
+
+    registry = ToolRegistry()
+    for tool in CALENDAR_APP.tools:
+        registry.add_provider(
+            ToolSpec(
+                name=f"calendar__{tool.key}",
+                description=tool.description,
+                input_schema=tool.input_schema,
+                source="calendar",
+            ),
+            _echo,
+            effect=tool.effect,
+            source="calendar",
+            auth_mode="oauth",
+        )
+
+    names = [s.name for s in registry.gated_specs("check my calendar")]
+    assert "calendar__list_events" in names
+    assert "calendar__create_event" in names
+    assert "calendar__create_event" in [s.name for s in registry.gated_specs("schedule a meeting")]
+    assert [s.name for s in registry.gated_specs("am i free")] == ["calendar__freebusy"]
+
+
 def test_suppressing_a_prefix_removes_the_hub_copy() -> None:
     class FakeHost:
         def tool_specs(self):

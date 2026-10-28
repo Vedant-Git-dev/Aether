@@ -174,6 +174,21 @@ _PROVIDER_ACTION_WORDS: dict[tuple[str, str], ActionWords] = {
         "checking the connected gmail account",
         "checked the connected gmail account",
     ),
+    ("calendar", "list_events"): ActionWords(
+        "Check the calendar", "checking the calendar", "checked the calendar"
+    ),
+    ("calendar", "create_event"): ActionWords(
+        "Create the event", "creating the event", "created the event"
+    ),
+    ("calendar", "update_event"): ActionWords(
+        "Update the event", "updating the event", "updated the event"
+    ),
+    ("calendar", "delete_event"): ActionWords(
+        "Delete the event", "deleting the event", "deleted the event"
+    ),
+    ("calendar", "freebusy"): ActionWords(
+        "Check availability", "checking availability", "checked availability"
+    ),
 }
 
 _NATIVE_WORDS: dict[str, ActionWords] = {

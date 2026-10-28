@@ -606,6 +606,19 @@ async def test_a_direct_provider_pastes_its_client_then_serves_the_link() -> Non
     assert not wizard.alive
 
 
+async def test_calendar_uses_the_same_google_provider_walk() -> None:
+    connect = FakeConnectProvider([_PROVIDER_LINK])
+    wizard, *_ = _wizard(
+        provider_apps=FakeProviderApps([("gmail", "Gmail"), ("calendar", "Google Calendar")]),
+        connect_provider=connect,
+    )
+    reply = await wizard.start_add("calendar")
+    assert reply.startswith("Google Calendar — last step, let me in:")
+    assert "open this and approve: https://accounts.google.com" in reply
+    assert connect.calls == ["calendar"]
+    assert not wizard.alive
+
+
 async def test_a_provider_client_already_in_env_goes_straight_to_the_link() -> None:
     connect = FakeConnectProvider([_PROVIDER_SETUP, _PROVIDER_LINK])
     wizard, *_ = _wizard(
