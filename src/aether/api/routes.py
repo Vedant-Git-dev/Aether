@@ -386,6 +386,17 @@ async def _contacts_state(request: Request) -> dict:
             key = account.toolkit.lower()
             if key in type(contacts).model_fields:
                 connected.add(key)
+    runtime = getattr(request.app.state, "provider_runtime", None)
+    if runtime is not None:
+        try:
+            feed = await runtime.feed()
+        except Exception:
+            log.exception("reading direct provider connections failed")
+            feed = {"apps": []}
+        for app in feed.get("apps", []):
+            key = str(app.get("key", "")).lower()
+            if app.get("status") == "active" and key in type(contacts).model_fields:
+                connected.add(key)
     messaging = request.app.state.config.messaging
     connected |= {p for p in ("telegram", "discord", "slack") if getattr(messaging, p).enabled}
 

@@ -17,6 +17,7 @@ from aether.providers.types import (
     ProviderAuthError,
     ProviderConnection,
     ProviderDefinition,
+    ProviderHTTPError,
     ProviderReauthRequired,
     StaticTokenSetup,
     ToolDefinition,
@@ -137,24 +138,36 @@ class FakeOAuth:
     def __init__(self, configured: bool = True) -> None:
         self.configured = configured
         self.refreshed = 0
+        self.last_auth: dict = {}
+        self.revoked: list[str] = []
 
     async def client_configured(self, provider) -> bool:
         return self.configured
 
     async def authorization_url(self, provider, app, **kwargs) -> str:
+        self.last_auth = kwargs
         return "https://auth.demo/authorize?state=x"
 
     async def identity(self, provider, token: str):
         return "acct-1", "me@example.com"
 
     async def revoke(self, provider, token: str) -> None:
-        return None
+        self.revoked.append(token)
 
     async def refresh(self, provider, connection: ProviderConnection):
         self.refreshed += 1
         connection.access_token = "new-token"
         connection.expires_at = datetime.now(UTC) + timedelta(hours=1)
         return connection
+
+
+class FakeApprovals:
+    def __init__(self) -> None:
+        self.failed: list[tuple[str, str]] = []
+
+    async def fail_pending_matching(self, tool_prefix: str, reason: str) -> int:
+        self.failed.append((tool_prefix, reason))
+        return 1
 
 
 def _runtime(
@@ -164,6 +177,7 @@ def _runtime(
     *,
     definitions=None,
     secrets=None,
+    approvals=None,
 ) -> ProviderRuntime:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     return ProviderRuntime(
@@ -177,6 +191,7 @@ def _runtime(
         config=AppConfig(),
         public_base_url="https://aether.test",
         secrets=secrets,
+        approvals=approvals,
     )
 
 
@@ -234,6 +249,28 @@ async def test_connect_returns_setup_or_a_link() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reconnecting_a_dead_connection_forces_a_fresh_consent() -> None:
+    connection = ProviderConnection(
+        provider="demo",
+        auth_mode="oauth",
+        app="demo",
+        access_token="old",
+        refresh_token="dead",
+        scopes="read",
+        status="reauth_required",
+    )
+    oauth = FakeOAuth()
+    runtime = _runtime(FakeStore(connection), oauth, lambda request: httpx.Response(200))
+    await runtime.connect("demo")
+    assert oauth.last_auth["prompt_consent"] is True
+
+    connection.status = "active"
+    oauth.last_auth = {}
+    await runtime.connect("demo")
+    assert oauth.last_auth["prompt_consent"] is False
+
+
+@pytest.mark.asyncio
 async def test_a_401_refreshes_once_and_retries() -> None:
     connection = ProviderConnection(
         provider="demo",
@@ -261,6 +298,68 @@ async def test_a_401_refreshes_once_and_retries() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_5xx_read_is_retried_once() -> None:
+    connection = ProviderConnection(
+        provider="demo",
+        auth_mode="token",
+        access_token="pat",
+        status="active",
+    )
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        if len(calls) == 1:
+            return httpx.Response(503, json={"error": "down"})
+        return httpx.Response(200, json={"ok": True})
+
+    runtime = _runtime(FakeStore(connection), FakeOAuth(), handler)
+    response = await runtime.request(connection, "GET", "https://api.demo/thing")
+    assert response.status_code == 200
+    assert calls == ["GET", "GET"]
+
+
+@pytest.mark.asyncio
+async def test_a_write_timeout_says_the_outcome_is_unknown() -> None:
+    connection = ProviderConnection(
+        provider="demo",
+        auth_mode="token",
+        access_token="pat",
+        status="active",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow", request=request)
+
+    runtime = _runtime(FakeStore(connection), FakeOAuth(), handler)
+    with pytest.raises(ProviderHTTPError) as caught:
+        await runtime.request(connection, "POST", "https://api.demo/send")
+    assert "can't tell whether that action went through" in caught.value.plain
+
+
+@pytest.mark.asyncio
+async def test_a_5xx_write_is_never_retried() -> None:
+    """A send may have left Aether before the 5xx landed — retrying it
+    would be a duplicate, so the outcome is reported as unknown instead."""
+    connection = ProviderConnection(
+        provider="demo",
+        auth_mode="token",
+        access_token="pat",
+        status="active",
+    )
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        return httpx.Response(503, json={"error": "down"})
+
+    runtime = _runtime(FakeStore(connection), FakeOAuth(), handler)
+    with pytest.raises(ProviderHTTPError):
+        await runtime.request(connection, "POST", "https://api.demo/send")
+    assert calls == ["POST"]
+
+
+@pytest.mark.asyncio
 async def test_a_token_mode_401_marks_reauth_and_drops_tools() -> None:
     connection = ProviderConnection(
         provider="demo",
@@ -270,12 +369,14 @@ async def test_a_token_mode_401_marks_reauth_and_drops_tools() -> None:
         status="active",
     )
     store = FakeStore(connection)
-    runtime = _runtime(store, FakeOAuth(), lambda request: httpx.Response(401))
+    approvals = FakeApprovals()
+    runtime = _runtime(store, FakeOAuth(), lambda request: httpx.Response(401), approvals=approvals)
     await runtime.register_tools()
     with pytest.raises(ProviderReauthRequired):
         await runtime.request(connection, "GET", "https://api.demo/thing")
     assert store.status == "reauth_required"
     assert runtime._registry.get("demo__ping") is None  # noqa: SLF001 - test seam
+    assert approvals.failed == [("demo__", "demo needs reconnecting — the held action did not run")]
 
 
 @pytest.mark.asyncio
@@ -303,6 +404,37 @@ class FakeSecrets:
 
     async def set(self, name: str, value: str) -> None:
         self.values[name] = value
+
+
+@pytest.mark.asyncio
+async def test_disconnect_drops_tools_and_fails_the_apps_pending_approvals() -> None:
+    connection = ProviderConnection(
+        provider="demo",
+        auth_mode="oauth",
+        app="demo",
+        access_token="token",
+        refresh_token="refresh",
+        scopes="read",
+        status="active",
+    )
+    store = FakeStore(connection)
+    approvals = FakeApprovals()
+    oauth = FakeOAuth()
+    runtime = _runtime(
+        store,
+        oauth,
+        lambda request: httpx.Response(200, json={}),
+        approvals=approvals,
+    )
+    assert await runtime.register_tools() == 1
+    assert runtime._registry.get("demo__ping") is not None
+
+    await runtime.disconnect("demo")
+
+    assert store.connection is None
+    assert runtime._registry.get("demo__ping") is None
+    assert oauth.revoked == ["token", "refresh"]
+    assert approvals.failed == [("demo__", "demo was disconnected — the held action did not run")]
 
 
 @pytest.mark.asyncio

@@ -61,7 +61,7 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken 
   const statusText = connected
     ? `Connected${app.identity ? ` — ${app.identity}` : ""} · ${app.actions} action${app.actions === 1 ? "" : "s"}`
     : reauth
-      ? "Needs reconnecting"
+      ? `Needs reconnecting${app.last_error ? ` — ${app.last_error}` : ""}`
       : app.setup_required
         ? "Setup needed"
         : "Not connected";
@@ -132,9 +132,7 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken 
       {setupOpen ? (
         <form className="flex flex-col gap-2 rounded-md border border-line bg-subtle p-3" onSubmit={saveClient}>
           <div className="text-xs text-ink-2">
-            {app.setup_steps?.length
-              ? "Finish the provider setup once, then connect."
-              : "Finish the provider setup once, then connect."}
+            Finish the provider setup once, then connect.
           </div>
           {app.setup_url ? (
             <a className="text-xs text-accent hover:underline" href={app.setup_url} target="_blank" rel="noreferrer">

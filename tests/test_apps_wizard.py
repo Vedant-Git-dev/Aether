@@ -16,6 +16,7 @@ real policy — lives in test_agent_loop.
 from __future__ import annotations
 
 from aether.agent.apps_wizard import AppsWizard
+from aether.providers.types import ConnectResult, ProviderNotConfigured
 
 _ADD_HINT = "add one with /apps add <name> — like /apps add gmail"
 _GOODBYE = "ok — anytime. /apps to start again."
@@ -123,6 +124,33 @@ class FakeAuthorize:
         return f"req-{toolkit}", f"{self.url}/{toolkit}"
 
 
+class FakeProviderApps:
+    """provider_apps() — the direct-provider catalog double."""
+
+    def __init__(self, apps: list[tuple[str, str]] | None = None) -> None:
+        self.apps = apps or [("gmail", "Gmail")]
+        self.calls = 0
+
+    async def __call__(self) -> list[tuple[str, str]]:
+        self.calls += 1
+        return list(self.apps)
+
+
+class FakeConnectProvider:
+    """connect_provider(app) — scripted sign-in results, in order."""
+
+    def __init__(self, results: list[ConnectResult | Exception]) -> None:
+        self.results = list(results)
+        self.calls: list[str] = []
+
+    async def __call__(self, app: str) -> ConnectResult:
+        self.calls.append(app)
+        result = self.results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
 def _wizard(
     *,
     status: str = "your apps: nothing connected yet.",
@@ -131,7 +159,18 @@ def _wizard(
     applier: FakeApplier | None = None,
     toolkits: FakeToolkits | None = None,
     authorize: FakeAuthorize | None = None,
-) -> tuple[AppsWizard, FakeApplier, FakeSave, set[str], FakeToolkits, FakeAuthorize]:
+    provider_apps: FakeProviderApps | None = None,
+    connect_provider: FakeConnectProvider | None = None,
+) -> tuple[
+    AppsWizard,
+    FakeApplier,
+    FakeSave,
+    set[str],
+    FakeToolkits,
+    FakeAuthorize,
+    FakeProviderApps | None,
+    FakeConnectProvider | None,
+]:
     env = set() if env is None else env
     applier = applier or FakeApplier()
     save = save or FakeSave(env=env)
@@ -151,8 +190,19 @@ def _wizard(
         save_secret=save,
         find_toolkits=toolkits,
         authorize=authorize,
+        provider_apps=provider_apps,
+        connect_provider=connect_provider,
     )
-    return wizard, applier, save, env, toolkits, authorize
+    return (
+        wizard,
+        applier,
+        save,
+        env,
+        toolkits,
+        authorize,
+        provider_apps,
+        connect_provider,
+    )
 
 
 async def _say(wizard: AppsWizard, *texts: str) -> list[str]:
@@ -294,7 +344,7 @@ async def test_a_user_rule_forcing_a_hold_relays_its_card_verbatim() -> None:
 
 
 async def test_a_hub_app_serves_the_connect_link() -> None:
-    wizard, applier, _, _, toolkits, authorize = _wizard(env={"COMPOSIO_API_KEY"})
+    wizard, applier, _, _, toolkits, authorize, *_ = _wizard(env={"COMPOSIO_API_KEY"})
     reply = await wizard.start_add("gmail")
     assert reply == (
         "Gmail — last step, let me in:\n"
@@ -320,7 +370,7 @@ async def test_the_link_wait_nudges_and_a_changed_subject_steps_aside() -> None:
 
 
 async def test_no_hub_key_asks_for_it_once_then_serves_the_link() -> None:
-    wizard, _, save, _, toolkits, authorize = _wizard()
+    wizard, _, save, _, toolkits, authorize, *_ = _wizard()
     recipe = await wizard.start_add("gmail")
     assert recipe == _HUB_KEY_RECIPE
     assert toolkits.calls == []  # the catalog can't answer before the key
@@ -502,6 +552,87 @@ async def test_the_generic_walk_nudges_each_question() -> None:
     (reask,) = await _say(wizard, 'npx -y "unterminated')
     assert reask == "that command didn't parse — check the quotes and try again"
     assert wizard.alive
+
+
+# -- direct providers: the setup paste, then the provider's own link ---------------
+
+_PROVIDER_SETUP = ConnectResult(
+    app="gmail",
+    provider="google",
+    setup_required=True,
+    setup_url="https://console.cloud.google.com/apis/credentials",
+    setup_steps=("Enable the Gmail API.",),
+    redirect_uri="https://aether.test/api/oauth/google/callback",
+    client_id_name="GOOGLE_CLIENT_ID",
+    client_secret_name="GOOGLE_CLIENT_SECRET",
+)
+_PROVIDER_LINK = ConnectResult(
+    app="gmail",
+    provider="google",
+    redirect_url="https://accounts.google.com/o/oauth2/v2/auth?state=abc",
+    redirect_uri="https://aether.test/api/oauth/google/callback",
+)
+
+
+async def test_a_direct_provider_pastes_its_client_then_serves_the_link() -> None:
+    connect = FakeConnectProvider([_PROVIDER_SETUP, _PROVIDER_LINK])
+    wizard, _applier, save, _env, *_ = _wizard(
+        provider_apps=FakeProviderApps(),
+        connect_provider=connect,
+    )
+
+    setup = await wizard.start_add("gmail")
+    assert "Gmail needs a one-time setup before it can connect." in setup
+    assert "https://console.cloud.google.com/apis/credentials" in setup
+    assert "https://aether.test/api/oauth/google/callback" in setup
+    assert "paste GOOGLE_CLIENT_ID here" in setup
+    assert wizard.alive
+
+    ask_secret = await _say(wizard, "client-id.apps.googleusercontent.com")
+    assert ask_secret == [
+        "stored. paste GOOGLE_CLIENT_SECRET here — the value is stored encrypted "
+        "and never shown again."
+    ]
+    assert save.calls == [("GOOGLE_CLIENT_ID", "client-id.apps.googleusercontent.com", "Gmail")]
+
+    link = await _say(wizard, "client-secret")
+    assert link == [
+        "Gmail — last step, let me in:\n"
+        "open this and approve: https://accounts.google.com/o/oauth2/v2/auth?state=abc\n"
+        "(I'll take it from there)"
+    ]
+    assert save.calls[-1] == ("GOOGLE_CLIENT_SECRET", "client-secret", "Gmail")
+    assert connect.calls == ["gmail", "gmail"]
+    assert not wizard.alive
+
+
+async def test_a_provider_client_already_in_env_goes_straight_to_the_link() -> None:
+    connect = FakeConnectProvider([_PROVIDER_SETUP, _PROVIDER_LINK])
+    wizard, *_ = _wizard(
+        env={"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"},
+        provider_apps=FakeProviderApps(),
+        connect_provider=connect,
+    )
+    reply = await wizard.start_add("gmail")
+    assert "open this and approve: https://accounts.google.com" in reply
+    assert connect.calls == ["gmail", "gmail"]
+    assert not wizard.alive
+
+
+async def test_a_provider_connect_error_is_plain_and_ends_the_walk() -> None:
+    connect = FakeConnectProvider([ProviderNotConfigured("direct apps are off")])
+    wizard, *_ = _wizard(provider_apps=FakeProviderApps(), connect_provider=connect)
+    reply = await wizard.start_add("gmail")
+    assert reply == "direct apps are off"
+    assert not wizard.alive
+
+
+async def test_provider_permissions_write_the_provider_prefix() -> None:
+    wizard, applier, *_ = _wizard(applier=FakeApplier(reply=_PARK_CARD))
+    wizard.enter_permissions("gmail", "me@example.com", prefix="gmail__")
+    (card,) = await _say(wizard, "2")
+    assert card == _PARK_CARD
+    assert applier.calls[0][2]["tool_pattern"] == "gmail__"
 
 
 # -- the permissions ask: the gate's question, after the link lands -----------------

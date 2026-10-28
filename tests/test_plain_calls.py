@@ -87,6 +87,18 @@ class TestDescribeCall:
         assert text == "An action in horizon"
         assert "HORIZON" not in text and "__" not in text
 
+    def test_direct_gmail_actions_read_as_their_own_act(self) -> None:
+        # the app-level "gmail" words are a send; the read and draft tools
+        # must not inherit that
+        assert describe_call("gmail__list_messages") == "Checking the mail"
+        assert describe_call("gmail__get_message") == "Reading the email"
+        assert describe_call("gmail__send_email", {"to": "sam@example.com"}) == (
+            "Sending the email (to sam@example.com)"
+        )
+        assert describe_call("gmail__create_draft") == "Drafting the email"
+        assert describe_call("gmail__send_draft") == "Sending the draft"
+        assert describe_call("gmail__get_profile") == "Checking the connected gmail account"
+
 
 class TestDescribeOutcome:
     """The fallback chat line when an approved call succeeds with no

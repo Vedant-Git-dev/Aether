@@ -58,6 +58,29 @@ def test_drop_app_only_removes_that_app() -> None:
     assert registry.provider_apps() == ["other"]
 
 
+def test_gmail_tools_appear_for_the_words_people_actually_use() -> None:
+    from aether.providers.google import GMAIL_APP
+
+    registry = ToolRegistry()
+    for tool in GMAIL_APP.tools:
+        registry.add_provider(
+            ToolSpec(
+                name=f"gmail__{tool.key}",
+                description=tool.description,
+                input_schema=tool.input_schema,
+                source="gmail",
+            ),
+            _echo,
+            effect=tool.effect,
+            source="gmail",
+            auth_mode="oauth",
+        )
+
+    assert [s.name for s in registry.gated_specs("check my mail")] == ["gmail__list_messages"]
+    assert "gmail__get_message" in [s.name for s in registry.gated_specs("read my email")]
+    assert "gmail__send_email" in [s.name for s in registry.gated_specs("send an email")]
+
+
 def test_suppressing_a_prefix_removes_the_hub_copy() -> None:
     class FakeHost:
         def tool_specs(self):

@@ -91,6 +91,7 @@ class ProviderRuntime:
         public_base_url: str,
         port: int = 8000,
         secrets: SecretStore | None = None,
+        approvals: Any = None,
     ) -> None:
         self._definitions = {provider.key: provider for provider in definitions}
         self._store = store
@@ -100,6 +101,7 @@ class ProviderRuntime:
         self._audit = audit
         self._resolver = resolver
         self._secrets = secrets
+        self._approvals = approvals
         self._config = config
         self._public_base_url = public_base_url.rstrip("/")
         self._port = port
@@ -227,6 +229,7 @@ class ProviderRuntime:
                         setup_url=provider.setup_url,
                         setup_steps=provider.setup_steps,
                         redirect_uri=self.redirect_uri(provider),
+                        last_error=connection.last_error if connection is not None else "",
                     )
                 )
         return {
@@ -261,7 +264,11 @@ class ProviderRuntime:
             )
         existing = await self._connection_or_none(provider.key)
         existing_scopes = tuple(existing.scopes.split()) if existing and existing.scopes else ()
-        prompt_consent = existing is None or not set(app.scopes).issubset(set(existing_scopes))
+        prompt_consent = (
+            existing is None
+            or existing.status != "active"
+            or not set(app.scopes).issubset(set(existing_scopes))
+        )
         url = await self._oauth.authorization_url(
             provider,
             app,
@@ -369,6 +376,9 @@ class ProviderRuntime:
             if connection.refresh_token:
                 await self._oauth.revoke(provider, connection.refresh_token)
             await self._store.delete(provider.key)
+        await self._fail_pending(
+            app.key, f"{app.key} was disconnected — the held action did not run"
+        )
         self._registry.drop_provider_tools()
         await self._audit.append(
             actor="owner",
@@ -465,7 +475,10 @@ class ProviderRuntime:
                 response = await self._send(connection, method, url, **kwargs)
             if response.status_code == 429:
                 raise ProviderRateLimited(f"{provider.name} is asking me to slow down")
-        if response.status_code >= 500:
+        if response.status_code >= 500 and method.upper() in ("GET", "HEAD"):
+            # a read is safe to retry; a send may have left Aether before
+            # the 5xx landed, so its outcome is unknown and it must not run
+            # twice. The caller gets the plain failure and the user decides.
             await asyncio.sleep(0.2)
             response = await self._send(connection, method, url, **kwargs)
         if response.status_code >= 400:
@@ -485,6 +498,14 @@ class ProviderRuntime:
         headers.setdefault("Accept", "application/json")
         try:
             return await self._http.request(method, url, headers=headers, **kwargs)
+        except httpx.TimeoutException as exc:
+            if method.upper() not in ("GET", "HEAD"):
+                raise ProviderHTTPError(
+                    504,
+                    f"{provider.name} timed out — I can't tell whether that action "
+                    "went through; check before trying again",
+                ) from exc
+            raise ProviderHTTPError(504, f"{provider.name} isn't responding right now") from exc
         except httpx.HTTPError as exc:
             raise ProviderHTTPError(502, f"{provider.name} isn't responding right now") from exc
 
@@ -525,7 +546,34 @@ class ProviderRuntime:
         connection.last_error = error
         if self._store is not None:
             await self._store.set_status(connection.provider, "reauth_required", error)
-        self._registry.drop_provider_tools()
+        app_key = connection.app or connection.provider
+        try:
+            await self._audit.append(
+                actor="system",
+                tool_name=f"{app_key}__reauth",
+                decision="error",
+                rules_matched="provider:sign-in",
+                params={"provider": connection.provider},
+                outcome=error,
+            )
+        except Exception:
+            log.exception("recording the reauth audit row failed — continuing")
+        await self._fail_pending(
+            app_key, f"{app_key} needs reconnecting — the held action did not run"
+        )
+        # drop this app's tools but keep any other connected app callable
+        try:
+            await self.register_tools()
+        except Exception:
+            log.exception("re-registering provider tools after reauth failed — continuing")
+
+    async def _fail_pending(self, app_key: str, reason: str) -> None:
+        if self._approvals is None:
+            return
+        try:
+            await self._approvals.fail_pending_matching(f"{app_key}__", reason)
+        except Exception:
+            log.exception("failing pending approvals for %s failed — continuing", app_key)
 
     async def _connection(self, provider: str) -> ProviderConnection:
         connection = await self._connection_or_none(provider)

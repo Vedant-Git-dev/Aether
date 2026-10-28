@@ -124,6 +124,7 @@ class ProviderAppView:
     setup_url: str
     setup_steps: tuple[str, ...]
     redirect_uri: str = ""
+    last_error: str = ""
 
 
 @dataclass(frozen=True)

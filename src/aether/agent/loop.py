@@ -61,6 +61,8 @@ from ..memory.entities import Sender
 from ..memory.events import Event, EventStore
 from ..memory.salience import Salience
 from ..memory.vectors import MemoryHit, VectorMemory
+from ..providers.runtime import ProviderRuntime
+from ..providers.types import ConnectResult, ProviderError, ProviderNotConfigured
 from ..restart import pending as restart_pending
 from ..routines import Routines, trigger_matches
 from ..scheduler.jobs import ScheduledAction, Scheduler
@@ -451,6 +453,7 @@ class AgentLoop:
         secret_store: SecretStore | None = None,
         settings: Any = None,
         composio: ComposioBridge | None = None,
+        provider_runtime: ProviderRuntime | None = None,
         transcript: Any = None,
         attachments: AttachmentProcessor | None = None,
         vectors: VectorMemory | None = None,
@@ -482,6 +485,7 @@ class AgentLoop:
         self._secret_store = secret_store
         self._settings = settings
         self._composio = composio
+        self._provider_runtime = provider_runtime
         # the cross-surface transcript (chat_messages) — both directions,
         # read back each turn as conversation memory
         self._transcript = transcript
@@ -734,6 +738,7 @@ class AgentLoop:
         polled = False
         if self._queue.empty():
             await self._run_due_polls()
+            await self._run_due_provider_polls()
             polled = True
 
         # (a2) a server that answered late joins the namespace here —
@@ -860,6 +865,7 @@ class AgentLoop:
             # queued message deferred still run before the tick closes
             if not polled:
                 await self._run_due_polls()
+                await self._run_due_provider_polls()
             return
 
         await self._turn(messages, observations)
@@ -868,6 +874,7 @@ class AgentLoop:
         # before it
         if not polled:
             await self._run_due_polls()
+            await self._run_due_provider_polls()
 
         # a tick that never suspended (a provider-less turn, say) still
         # lets the scorers it spawned take their first step here, so none
@@ -1214,6 +1221,33 @@ class AgentLoop:
                 lines.append(f"· {platform} — on")
             else:
                 lines.append(f"· {platform} — on — no token yet")
+        if self._provider_runtime is not None:
+            try:
+                feed = await self._provider_runtime.feed()
+            except Exception:
+                log.exception("reading direct provider connections failed")
+                feed = {"apps": []}
+            for app in feed.get("apps", []):
+                key = str(app.get("key", ""))
+                name = str(app.get("name", key))
+                status = str(app.get("status", "not_connected"))
+                who = str(app.get("identity", ""))
+                if status == "active":
+                    suffix = f" — {who}" if who else ""
+                    lines.append(f"· {name}{suffix} — connected")
+                elif status == "reauth_required":
+                    lines.append(f"· {name} — needs reconnecting — /apps add {key} to reconnect")
+                elif app.get("setup_required"):
+                    lines.append(f"· {name} — not connected — finish the {name} setup first")
+                else:
+                    lines.append(f"· {name} — not connected — /apps add {key} to connect")
+            direct_active = {
+                str(app.get("key", "")).lower()
+                for app in feed.get("apps", [])
+                if app.get("status") == "active"
+            }
+        else:
+            direct_active = set()
         if self._composio is not None:
             try:
                 apps = await self._composio.accounts()
@@ -1221,6 +1255,8 @@ class AgentLoop:
                 log.exception("reading the hub's connected apps failed")
                 apps = []
             for app in apps:
+                if app.toolkit.lower() in direct_active:
+                    continue
                 if app.status == "ACTIVE":
                     who = f" — {app.identity}" if app.identity else ""
                     lines.append(f"· {app.toolkit}{who} — connected")
@@ -1253,7 +1289,36 @@ class AgentLoop:
             save_secret=self._store_secret,
             find_toolkits=self._find_toolkits,
             authorize=self._authorize_composio,
+            provider_apps=self._provider_apps,
+            connect_provider=self._connect_provider_reply,
         )
+
+    async def _provider_apps(self) -> list[tuple[str, str]]:
+        if self._provider_runtime is None:
+            return []
+        try:
+            feed = await self._provider_runtime.feed()
+        except Exception:
+            log.exception("reading direct provider apps failed")
+            return []
+        return [
+            (str(app.get("key", "")), str(app.get("name", "")))
+            for app in feed.get("apps", [])
+            if app.get("key")
+        ]
+
+    async def _connect_provider_reply(self, app_key: str) -> ConnectResult:
+        """Start one direct-provider sign-in from chat. The wizard owns the
+        setup recipe and the paste asks; this only returns the provider's
+        answer or raises a plain ProviderError."""
+        runtime = self._provider_runtime
+        if runtime is None:
+            raise ProviderNotConfigured(
+                "direct app connections aren't wired on this instance — "
+                "set AETHER_TOKEN_ENCRYPTION_KEY and AETHER_TOKEN_ENCRYPTION_KEY_ID, "
+                "then restart."
+            )
+        return await runtime.connect(app_key)
 
     async def _find_toolkits(self, query: str) -> list[tuple[str, str]]:
         """The hub's live catalog, fuzzy-matched — [] when there's no hub
@@ -1317,6 +1382,18 @@ class AgentLoop:
         )
         self._connect_waits.add(task)
         task.add_done_callback(self._connect_waits.discard)
+
+    async def announce_provider_connection(self, app_key: str, identity: str = "") -> None:
+        """The OAuth callback landed — move the walk to the gate's question:
+        what may Aether do with this app. The answer writes an authz rule
+        with the direct provider prefix, not the hub's."""
+        walk = self._apps_walk
+        if walk is None or not walk.alive:
+            walk = self._new_apps_wizard()
+            self._apps_walk = walk
+        await self._surfaces.send_to_user(
+            walk.enter_permissions(app_key, identity, prefix=f"{app_key}__")
+        )
 
     async def _wait_for_connect(self, toolkit: str, request_id: str) -> None:
         """The out-of-band half of a Connect Link: block until the click
@@ -1437,6 +1514,41 @@ class AgentLoop:
                 source=server,
                 kind=f"poll:{poll.tool}",
                 payload={"args": poll.args, "result": result[:4000]},
+            )
+            if ingest.stored:
+                self.notify()
+
+    async def _run_due_provider_polls(self) -> None:
+        """Run due direct-provider polls (Gmail history, later others).
+
+        The provider runtime owns the cursor and the schedule; this path
+        owns the same audit row and event ingest the MCP polls use. Gmail
+        results still pass the allowlist before the model can see them.
+        """
+        if self._provider_runtime is None:
+            return
+        try:
+            results = await self._provider_runtime.poll_due()
+        except Exception:
+            log.exception("provider polling failed — continuing")
+            return
+        for result in results:
+            text = json.dumps(result.payload, ensure_ascii=False, default=str)
+            if self._mail_filter is not None:
+                text = await self._mail_filter.filter_result(result.tool, text)
+            await self._audit.append(
+                actor="scheduler",
+                tool_name=result.tool,
+                decision="allow",
+                rules_matched="provider:poll",
+                params={},
+                outcome="provider poll",
+            )
+            kind = result.tool.split("__", 1)[-1]
+            ingest = await self._events.ingest(
+                source=result.app,
+                kind=f"poll:{kind}",
+                payload={"result": text[:4000]},
             )
             if ingest.stored:
                 self.notify()
@@ -2167,7 +2279,16 @@ class AgentLoop:
                 {k: v for k, v in call.arguments.items() if k != PLAIN_PARAM},
                 plain=str(plain),
             )
-        ruling = self._policy.classify(call.name, call.arguments, origin=origin)
+        ruling = self._policy.classify(
+            call.name,
+            call.arguments,
+            origin=origin,
+            effect=(
+                self._tools.get(call.name).effect
+                if self._tools.get(call.name) is not None
+                else None
+            ),
+        )
 
         if ruling.decision is Decision.DENY:
             seq = await self._audit.append(
@@ -2228,6 +2349,23 @@ class AgentLoop:
                     is_error=True,
                 )
                 self._note_call(trace, call, result, ruling=ruling)
+                return result
+            except ProviderError as exc:
+                seq = await self._audit.append(
+                    actor="agent",
+                    tool_name=call.name,
+                    decision="error",
+                    rules_matched=ruling.matched_rule,
+                    params=call.arguments,
+                    outcome=exc.plain,
+                )
+                result = ToolResult(
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=exc.plain,
+                    is_error=True,
+                )
+                self._note_call(trace, call, result, ruling=ruling, audit_seq=seq)
                 return result
             seq = await self._audit.append(
                 actor="agent",
@@ -2431,6 +2569,16 @@ class AgentLoop:
             fallback = (
                 f"the approved action couldn't run — {self._plain_unresponsive(approval.tool_name)}"
             )
+        except ProviderError as exc:
+            log.warning("approved provider call %s can't run: %s", approval.tool_name, exc)
+            await self._approvals.mark_failed(approval.id)
+            trace["result"] = exc.plain
+            trace["is_error"] = True
+            outcome = (
+                "The user approved it, but it could not run — "
+                f"{exc.plain}. Tell them plainly it did not happen."
+            )
+            fallback = f"the approved action couldn't run — {exc.plain}"
         except Exception as exc:
             log.exception("approved call %s failed to run", approval.tool_name)
             await self._approvals.mark_failed(approval.id)

@@ -177,6 +177,28 @@ async def test_mark_failed_flips_approved_rows_only(db) -> None:
 
 
 @pytest.mark.integration
+async def test_fail_pending_matching_closes_only_that_apps_holds(db) -> None:
+    approvals = await _make_approvals(db)
+    gmail = await approvals.create(tool_name="gmail__send_email", params={"to": "a@b.c"})
+    calendar = await approvals.create(tool_name="calendar__create_event", params={"title": "x"})
+
+    failed = await approvals.fail_pending_matching(
+        "gmail__", "gmail was disconnected — the held action did not run"
+    )
+
+    assert failed == 1
+    assert (await approvals.get(gmail.id)).status == FAILED
+    assert (await approvals.get(calendar.id)).status == PENDING
+    rows = await db.fetch(
+        "SELECT tool_name, outcome FROM audit_log"
+        " WHERE outcome = 'gmail was disconnected — the held action did not run'"
+    )
+    assert [(r["tool_name"], r["outcome"]) for r in rows] == [
+        ("gmail__send_email", "gmail was disconnected — the held action did not run")
+    ]
+
+
+@pytest.mark.integration
 async def test_every_step_is_audited(db) -> None:
     approvals = await _make_approvals(db)
     parked = await approvals.create(

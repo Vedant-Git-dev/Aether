@@ -322,6 +322,7 @@ def create_app(
             public_base_url=settings.public_url,
             port=settings.port,
             secrets=secret_store,
+            approvals=approvals,
         )
         if config.providers.enabled and provider_store is not None:
             try:
@@ -483,6 +484,7 @@ def create_app(
             secret_store=secret_store,
             settings=settings,
             composio=composio,
+            provider_runtime=provider_runtime,
             transcript=chat_history,
             attachments=app.state.attachments,
             vectors=vectors,

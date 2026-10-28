@@ -48,6 +48,7 @@ from aether.connectors.base import InboundMessage
 from aether.memory.entities import Entity, EntityNote
 from aether.memory.events import Event
 from aether.proactive import ProactiveTask
+from aether.providers.types import ConnectResult, ProviderConnection
 from aether.scheduler.jobs import ScheduledAction
 from aether.workspace import WorkspaceEntry
 
@@ -1170,6 +1171,119 @@ class FakeHubBridge:
         return None
 
 
+class FakeProviderRuntime:
+    """The direct-provider runtime double: one Gmail card, the write-only
+    client setup, a callback that lands connected, and disconnect. The
+    real routes call exactly these methods."""
+
+    def __init__(self) -> None:
+        self.client_configured = False
+        self.connected = False
+        self.identity = ""
+
+    def _app(self) -> dict:
+        return {
+            "key": "gmail",
+            "name": "Gmail",
+            "provider": "google",
+            "connected": self.connected,
+            "status": "active" if self.connected else "not_connected",
+            "identity": self.identity,
+            "auth_mode": "oauth",
+            "scopes": [
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/gmail.compose",
+            ],
+            "actions": 6 if self.connected else 0,
+            "setup_required": not self.client_configured,
+            "setup_url": "https://console.cloud.google.com/apis/credentials",
+            "setup_steps": [
+                "Open Google Cloud Console and create or select a project.",
+                "Enable the Gmail API.",
+            ],
+            "redirect_uri": "http://test/api/oauth/google/callback",
+            "last_error": "",
+        }
+
+    def _recipe(self) -> dict:
+        app = self._app()
+        return {
+            "provider": "google",
+            "name": "Google",
+            "configured": self.client_configured,
+            "setup_url": app["setup_url"],
+            "setup_steps": app["setup_steps"],
+            "redirect_uri": app["redirect_uri"],
+            "client_id_name": "GOOGLE_CLIENT_ID",
+            "client_secret_name": "GOOGLE_CLIENT_SECRET",
+        }
+
+    async def feed(self) -> dict:
+        return {
+            "configured": True,
+            "apps": [self._app()],
+            "providers": [
+                {
+                    "key": "google",
+                    "name": "Google",
+                    "configured": self.client_configured,
+                    "auth_modes": ["oauth"],
+                    "default_auth_mode": "oauth",
+                    "setup_url": "https://console.cloud.google.com/apis/credentials",
+                    "setup_steps": [],
+                    "redirect_uri": "http://test/api/oauth/google/callback",
+                    "client_id_name": "GOOGLE_CLIENT_ID",
+                    "client_secret_name": "GOOGLE_CLIENT_SECRET",
+                }
+            ],
+        }
+
+    async def setup_recipe(self, provider: str) -> dict:
+        return self._recipe()
+
+    async def save_client(self, provider: str, client_id: str, client_secret: str) -> dict:
+        assert client_id and client_secret
+        self.client_configured = True
+        return self._recipe()
+
+    async def connect(self, app: str) -> ConnectResult:
+        if not self.client_configured:
+            return ConnectResult(
+                app=app,
+                provider="google",
+                setup_required=True,
+                setup_url="https://console.cloud.google.com/apis/credentials",
+                setup_steps=("Enable the Gmail API.",),
+                redirect_uri="http://test/api/oauth/google/callback",
+                client_id_name="GOOGLE_CLIENT_ID",
+                client_secret_name="GOOGLE_CLIENT_SECRET",
+            )
+        return ConnectResult(
+            app=app,
+            provider="google",
+            redirect_url="https://accounts.google.com/o/oauth2/v2/auth?state=e2e",
+            redirect_uri="http://test/api/oauth/google/callback",
+        )
+
+    async def handle_callback(self, provider: str, *, code: str, state: str) -> ProviderConnection:
+        self.connected = True
+        self.identity = "me@example.com"
+        return ProviderConnection(
+            provider=provider,
+            auth_mode="oauth",
+            app="gmail",
+            account_label=self.identity,
+            access_token="token",
+        )
+
+    async def disconnect(self, app: str) -> None:
+        self.connected = False
+        self.identity = ""
+
+    async def poll_due(self) -> list:
+        return []
+
+
 def build_app() -> FastAPI:
     """A fresh app + fresh in-memory state — call once per test for isolation."""
     now = datetime.now(UTC)
@@ -1243,6 +1357,7 @@ def build_app() -> FastAPI:
     app.state.resolver = FakeResolver(secret_store)
     app.state.model_catalog = FakeModelCatalog()
     app.state.composio = FakeHubBridge()
+    app.state.provider_runtime = FakeProviderRuntime()
 
     @app.get("/")
     async def index() -> Response:

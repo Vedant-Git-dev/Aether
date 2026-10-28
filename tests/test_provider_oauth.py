@@ -83,6 +83,9 @@ class FakeStore:
         state = self.states.pop(state_hash, None)
         return state
 
+    async def get(self, provider: str):
+        return self.connections.get(provider)
+
     async def upsert(self, connection: ProviderConnection):
         self.connections[connection.provider] = connection
         return connection
@@ -191,6 +194,41 @@ async def test_refresh_stores_a_rotating_refresh_token() -> None:
     assert refreshed.refresh_token == "refresh-2"
     assert store.updated[0]["refresh_token"] == "refresh-2"
     assert store.updated[0]["access_token"] == "access-2"
+
+
+@pytest.mark.asyncio
+async def test_exchange_keeps_the_stored_refresh_token_when_google_omits_it() -> None:
+    """Adding a scope re-consents, but Google only hands the refresh token
+    back on the first consent (or a forced one). The stored one must
+    survive that reconnect."""
+    store = FakeStore()
+    store.connections["demo"] = ProviderConnection(
+        provider="demo",
+        auth_mode="oauth",
+        access_token="old-access",
+        refresh_token="refresh-1",
+        scopes="read",
+    )
+
+    def no_refresh(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/token":
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "access-2",
+                    "expires_in": 3600,
+                    "scope": "read write openid email",
+                },
+            )
+        return httpx.Response(200, json={"sub": "acct-1", "email": "me@example.com"})
+
+    engine = _engine(store, no_refresh)
+    url = await engine.authorization_url(
+        PROVIDER, APP, redirect_uri="https://aether.test/api/oauth/demo/callback"
+    )
+    state = parse_qs(urlparse(url).query)["state"][0]
+    connection = await engine.exchange(PROVIDER, code="code-2", state=state)
+    assert connection.refresh_token == "refresh-1"
 
 
 @pytest.mark.asyncio

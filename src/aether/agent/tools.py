@@ -157,6 +157,25 @@ _ACTION_WORDS: dict[str, ActionWords] = {
     "payments": ActionWords("Send the payment", "a payment", "sent the payment"),
 }
 
+# Provider actions whose name alone would read as the wrong act. The app's
+# default words are still the fallback; these are the explicit overrides.
+_PROVIDER_ACTION_WORDS: dict[tuple[str, str], ActionWords] = {
+    ("gmail", "list_messages"): ActionWords(
+        "Check the mail", "checking the mail", "checked the mail"
+    ),
+    ("gmail", "get_message"): ActionWords("Read the email", "reading the email", "read the email"),
+    ("gmail", "send_email"): ActionWords("Send the email", "sending the email", "sent the email"),
+    ("gmail", "create_draft"): ActionWords(
+        "Draft the email", "drafting the email", "drafted the email"
+    ),
+    ("gmail", "send_draft"): ActionWords("Send the draft", "sending the draft", "sent the draft"),
+    ("gmail", "get_profile"): ActionWords(
+        "Check the connected gmail account",
+        "checking the connected gmail account",
+        "checked the connected gmail account",
+    ),
+}
+
 _NATIVE_WORDS: dict[str, ActionWords] = {
     "send_chat_message": ActionWords("Send the message", "messaging you", "sent you the message"),
     "memory_search": ActionWords("Search my memory", "searching my memory", "searched my memory"),
@@ -280,6 +299,10 @@ def _action_words(name: str) -> ActionWords:
         if action == "who_am_i":
             account = f"the connected {app} account"
             return ActionWords(f"Check {account}", f"checking {account}", f"checked {account}")
+        if server != "composio":
+            provider_words = _PROVIDER_ACTION_WORDS.get((app, action))
+            if provider_words is not None:
+                return provider_words
         # a read-like tool must never read as a send — "I went ahead with
         # sending an email" about listing mail would be a lie
         read_like = ("list", "search", "get", "read", "find", "check", "query", "fetch")

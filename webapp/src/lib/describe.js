@@ -172,6 +172,18 @@ const ACTION_IDIOMS = {
   who_am_i: (appName) => `Checking the connected ${appName ? `${appName} ` : ""}account`,
 };
 
+// direct provider actions whose name alone would read as the wrong act;
+// composio keeps its own older fallback (the backend supplies `plain` for
+// every live row, so this only matters for legacy rows)
+const PROVIDER_ACTION_IDIOMS = {
+  list_messages: (appName) => `Checking ${appName && appName !== "Email" ? appName : "the mail"}`,
+  get_message: (appName) => `Reading an email${appName && appName !== "Email" ? ` in ${appName}` : ""}`,
+  send_email: (appName) => `Sending an email${appName && appName !== "Email" ? ` from ${appName}` : ""}`,
+  create_draft: (appName) => `Drafting an email${appName && appName !== "Email" ? ` in ${appName}` : ""}`,
+  send_draft: (appName) => `Sending a draft${appName && appName !== "Email" ? ` from ${appName}` : ""}`,
+  get_profile: (appName) => `Checking the connected ${appName ? `${appName} ` : ""}account`,
+};
+
 export function appLabel(source) {
   if (!source) return "";
   const key = String(source).toLowerCase();
@@ -406,10 +418,11 @@ function cleanPattern(pattern) {
 function describeName(name) {
   const wildcard = /[.*+?\[\]]/;
   let [app, action] = name.includes("__") ? name.split("__") : ["", name];
+  const direct = app !== "composio";
   // composio actions are UPPER_SNAKE with the toolkit as the first word —
   // composio__GMAIL_SEND_EMAIL reads as gmail, never as "composio" (mirrors
   // _action_words in src/aether/agent/tools.py)
-  if (app === "composio" && action) {
+  if (!direct && action) {
     const [toolkit, ...rest] = action.toLowerCase().split("_");
     app = toolkit;
     action = rest.join("_");
@@ -418,7 +431,8 @@ function describeName(name) {
   if (!action || wildcard.test(action) && !/[a-z]{3,}/i.test(action.replace(/[.*+?\[\]]/g, ""))) {
     return appName ? `Anything in ${appName}` : "Any action";
   }
-  const idiom = ACTION_IDIOMS[action.toLowerCase()];
+  const idiom = ACTION_IDIOMS[action.toLowerCase()]
+    || (direct ? PROVIDER_ACTION_IDIOMS[action.toLowerCase()] : null);
   if (idiom) return idiom(appName);
   const words = action.replace(/[.*+?\[\]]/g, " ").toLowerCase().split(/[_\s]+/).filter(Boolean);
   const verbHit = words.map((w) => VERBS.find(([re]) => re.test(w))).find(Boolean);

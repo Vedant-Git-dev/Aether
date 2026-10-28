@@ -65,6 +65,7 @@ from aether.connectors.registry import ToolRegistry
 from aether.llm.types import ImageBlock, ToolCall, ToolResult, ToolSpec, Turn
 from aether.memory.events import Event, IngestResult
 from aether.memory.vectors import MemoryHit
+from aether.providers.types import ConnectResult, PollResult
 from aether.scheduler.jobs import ScheduledAction
 from aether.secret_env import EnvResolver
 from aether.workspace import Workspace
@@ -102,6 +103,51 @@ def _event(
     )
 
 
+class FakeMailFilter:
+    """MailAllowlist double: records the tool/result pair and rewrites it."""
+
+    def __init__(self, result: str = '{"filtered": true}') -> None:
+        self.result = result
+        self.calls: list[tuple[str, str]] = []
+
+    async def filter_result(self, name: str, result: str) -> str:
+        self.calls.append((name, result))
+        return self.result
+
+
+class FakeProviderRuntime:
+    """ProviderRuntime double: a scripted feed, connect answers, and polls."""
+
+    def __init__(
+        self,
+        *,
+        apps: list[dict] | None = None,
+        connect_results: list[ConnectResult | Exception] | None = None,
+        polls: list[PollResult] | None = None,
+    ) -> None:
+        self.apps = list(apps or [])
+        self.connect_results = list(connect_results or [])
+        self.polls = list(polls or [])
+        self.connect_calls: list[str] = []
+        self.poll_calls = 0
+
+    async def feed(self) -> dict:
+        return {"configured": True, "apps": list(self.apps), "providers": []}
+
+    async def connect(self, app: str) -> ConnectResult:
+        self.connect_calls.append(app)
+        result = self.connect_results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    async def poll_due(self) -> list[PollResult]:
+        self.poll_calls += 1
+        results = list(self.polls)
+        self.polls = []
+        return results
+
+
 class LoopKit:
     """One agent loop wired to every fake, for one test."""
 
@@ -118,6 +164,7 @@ class LoopKit:
         attachments: Any = None,
         vectors: Any = None,
         mail_filter: Any = None,
+        provider_runtime: Any = None,
     ):
         self.tools = ToolRegistry()
         self.events = FakeEventStore()
@@ -154,6 +201,7 @@ class LoopKit:
             attachments=attachments,
             vectors=vectors,
             mail_filter=mail_filter,
+            provider_runtime=provider_runtime,
         )
         if config_manager is not None:
             # the real native config tools, so a /config write goes through
@@ -234,6 +282,37 @@ async def test_a_calls_plain_line_is_recorded_and_never_reaches_the_tool() -> No
     assert kit.audit.entries[-1]["params"] == {"limit": 2}
     assert trace[0]["plain"] == "Checking mail for Sam's reply"
     assert trace[0]["params"] == {"limit": 2}
+
+
+async def test_a_provider_write_parks_with_its_declared_effect() -> None:
+    kit = LoopKit(FakeProvider([]))
+    ran: list[dict] = []
+
+    async def send(params: dict) -> str:
+        ran.append(params)
+        return "sent"
+
+    kit.tools.add_provider(
+        ToolSpec(name="gmail__send_email", description="send"),
+        send,
+        effect="write",
+        source="gmail",
+        auth_mode="oauth",
+    )
+
+    result = await kit.loop._execute(
+        ToolCall(
+            id="t1",
+            name="gmail__send_email",
+            arguments={"to": "sam@example.com", "subject": "hi", "body": "hello"},
+        )
+    )
+
+    assert result.is_error is False
+    assert "held for approval" in result.content
+    assert ran == []
+    assert kit.approvals.created[-1].tool_name == "gmail__send_email"
+    assert kit.approvals.created[-1].rules_matched == "builtin:provider-write"
 
 
 async def test_a_call_without_plain_gets_the_backend_sentence() -> None:
@@ -2671,3 +2750,132 @@ async def test_attachment_processing_failure_never_kills_the_tick() -> None:
     # the tick survived: the message itself became memory, the turn ran
     assert [r["kind"] for r in kit.events.ingested] == ["chat_message"]
     assert provider.calls
+
+
+# ---------------------------------------------------------------------------
+# direct providers: setup in chat, the callback's gate, polls, status
+# ---------------------------------------------------------------------------
+
+
+def _provider_apps() -> list[dict]:
+    return [
+        {
+            "key": "gmail",
+            "name": "Gmail",
+            "provider": "google",
+            "status": "not_connected",
+            "identity": "",
+            "setup_required": True,
+        }
+    ]
+
+
+_PROVIDER_SETUP = ConnectResult(
+    app="gmail",
+    provider="google",
+    setup_required=True,
+    setup_url="https://console.cloud.google.com/apis/credentials",
+    setup_steps=("Enable the Gmail API.",),
+    redirect_uri="https://aether.test/api/oauth/google/callback",
+    client_id_name="GOOGLE_CLIENT_ID",
+    client_secret_name="GOOGLE_CLIENT_SECRET",
+)
+_PROVIDER_LINK = ConnectResult(
+    app="gmail",
+    provider="google",
+    redirect_url="https://accounts.google.com/o/oauth2/v2/auth?state=abc",
+    redirect_uri="https://aether.test/api/oauth/google/callback",
+)
+
+
+async def test_a_direct_provider_setup_paste_connects_without_the_model(tmp_path) -> None:
+    provider = FakeProvider([])  # any model call would fail the test
+    runtime = FakeProviderRuntime(
+        apps=_provider_apps(),
+        connect_results=[_PROVIDER_SETUP, _PROVIDER_LINK],
+    )
+    kit = LoopKit(provider, provider_runtime=runtime)
+    store = FakeSecretStore()
+    kit.loop._resolver = EnvResolver(tmp_path / ".env", secrets=store)
+    kit.loop._secret_store = store
+
+    kit.loop.submit_message(_msg("/apps add gmail"))
+    await kit.loop._tick()
+    assert "paste GOOGLE_CLIENT_ID here" in kit.connector.sent[-1]
+
+    kit.loop.submit_message(_msg("client-id.apps.googleusercontent.com"))
+    await kit.loop._tick()
+    assert store.saved == {"GOOGLE_CLIENT_ID": "client-id.apps.googleusercontent.com"}
+    assert "paste GOOGLE_CLIENT_SECRET here" in kit.connector.sent[-1]
+
+    kit.loop.submit_message(_msg("client-secret"))
+    await kit.loop._tick()
+    assert "open this and approve: https://accounts.google.com" in kit.connector.sent[-1]
+    assert store.saved["GOOGLE_CLIENT_SECRET"] == "client-secret"
+    assert runtime.connect_calls == ["gmail", "gmail"]
+    assert kit.events.ingested == []  # the values never became memory
+    assert provider.calls == []  # and the model never woke
+
+
+async def test_the_direct_provider_callback_asks_the_gates_question() -> None:
+    runtime = FakeProviderRuntime(apps=_provider_apps())
+    kit = LoopKit(
+        FakeProvider([]),
+        config_manager=FakeConfigManager(set_reply="applied."),
+        provider_runtime=runtime,
+    )
+
+    await kit.loop.announce_provider_connection("gmail", "me@example.com")
+    assert "what may I do with gmail?" in kit.connector.sent[-1]
+
+    kit.loop.submit_message(_msg("2"))
+    await kit.loop._tick()
+    assert kit.approvals.created[-1].params["value"]["tool_pattern"] == "gmail__"
+    assert "one-tap approval" in kit.connector.sent[-1]
+    assert kit.loop._apps_walk is None
+
+
+async def test_provider_polls_are_filtered_audited_and_ingested() -> None:
+    mail_filter = FakeMailFilter()
+    runtime = FakeProviderRuntime(
+        polls=[
+            PollResult(
+                app="gmail",
+                tool="gmail__new_mail",
+                payload={"successful": True, "data": {"messages": [{"id": "m1"}]}},
+            )
+        ]
+    )
+    kit = LoopKit(None, provider_runtime=runtime, mail_filter=mail_filter)
+
+    await kit.loop._run_due_provider_polls()
+
+    assert mail_filter.calls
+    assert mail_filter.calls[0][0] == "gmail__new_mail"
+    assert kit.audit.entries[-1]["tool_name"] == "gmail__new_mail"
+    assert kit.audit.entries[-1]["decision"] == "allow"
+    assert kit.events.ingested == [
+        {
+            "source": "gmail",
+            "kind": "poll:new_mail",
+            "payload": {"result": '{"filtered": true}'},
+            "sender": None,
+        }
+    ]
+
+
+async def test_the_status_names_a_connected_direct_provider() -> None:
+    runtime = FakeProviderRuntime(
+        apps=[
+            {
+                "key": "gmail",
+                "name": "Gmail",
+                "status": "active",
+                "identity": "me@example.com",
+                "setup_required": False,
+            }
+        ]
+    )
+    kit = LoopKit(None, provider_runtime=runtime)
+    status = await kit.loop._apps_status()
+    assert "Gmail — me@example.com — connected" in status

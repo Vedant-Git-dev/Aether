@@ -34,6 +34,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..apps_catalog import AppRecipe, recipe_for
+from ..providers.types import ConnectResult
 
 # the loop's shared applier: (op, path[, value][, origin]) -> the reply to relay
 ApplyFn = Callable[..., Awaitable[str]]
@@ -47,6 +48,10 @@ SaveSecretFn = Callable[[str, str, str], Awaitable[bool]]
 FindToolkitsFn = Callable[[str], Awaitable[list[tuple[str, str]]]]
 # toolkit slug -> (request id, connect link); None when the hub said no
 AuthorizeFn = Callable[[str], Awaitable[tuple[str, str] | None]]
+# direct-provider apps: () -> [(app key, display name)]
+ProviderAppsFn = Callable[[], Awaitable[list[tuple[str, str]]]]
+# direct-provider app key -> the sign-in result (link or setup recipe)
+ConnectProviderFn = Callable[[str], Awaitable[ConnectResult]]
 
 _CANCEL_WORDS = frozenset({"stop", "cancel", "done", "quit", "exit", "nevermind", "never mind"})
 _IDLE_SECONDS = 15 * 60  # a walk nobody answers stops intercepting messages
@@ -101,6 +106,8 @@ class AppsWizard:
         save_secret: SaveSecretFn,
         find_toolkits: FindToolkitsFn,
         authorize: AuthorizeFn,
+        provider_apps: ProviderAppsFn | None = None,
+        connect_provider: ConnectProviderFn | None = None,
     ) -> None:
         self._apply = apply
         self._status = status
@@ -108,6 +115,8 @@ class AppsWizard:
         self._save_secret = save_secret
         self._find_toolkits = find_toolkits
         self._authorize = authorize
+        self._provider_apps = provider_apps
+        self._connect_provider = connect_provider
         # the loop's handoff: (toolkit slug, request id) once a link is
         # served — read once to spawn the background waiter, then cleared
         self.pending_connect: tuple[str, str] | None = None
@@ -121,6 +130,14 @@ class AppsWizard:
         self._paste_names: list[str] = []
         # the hub app being connected (slug, display name), when one is
         self._pending_toolkit: tuple[str, str] | None = None
+        # the authz prefix the permissions answer writes; the hub uses its
+        # own toolkit pattern, direct providers use "<app>__"
+        self._pending_prefix: str | None = None
+        # the direct provider app being connected, its setup result, and
+        # the client names still waiting to be pasted
+        self._provider_app: tuple[str, str] | None = None
+        self._provider_setup: ConnectResult | None = None
+        self._provider_paste_names: list[str] = []
         # a name asked for before the hub's key existed — resolved after
         self._wanted_name: str | None = None
         # fuzzy matches the toolkit_pick menu is answering
@@ -162,9 +179,9 @@ class AppsWizard:
         self._at = stamp
         text = text.strip()
         lowered = text.lower()
-        # "done" is the paste stage's .env-fallback check; everywhere else
+        # "done" is the paste stages' .env-fallback check; everywhere else
         # it's a way out like the rest of the cancel words
-        done_answers = lowered == "done" and self._stage == "paste"
+        done_answers = lowered == "done" and self._stage in ("paste", "provider_setup_paste")
         if lowered in _CANCEL_WORDS and not done_answers:
             self._stage = "dead"
             return _GOODBYE
@@ -177,6 +194,8 @@ class AppsWizard:
             return await self._answer_generic_offer(text)
         if stage == "paste":
             return await self._answer_paste(text)
+        if stage == "provider_setup_paste":
+            return await self._answer_provider_setup_paste(text)
         if stage == "link_wait":
             return self._answer_link_wait(text)
         if stage == "permissions":
@@ -222,6 +241,9 @@ class AppsWizard:
         if recipe is not None:
             self._recipe = recipe
             return await self._serve_recipe(recipe)
+        provider_app = await self._provider_match(name)
+        if provider_app is not None:
+            return await self._begin_provider(*provider_app)
         self._generic_name = _slugify(name)  # a later "by hand" keeps the name
         if "COMPOSIO_API_KEY" not in await self._env_names():
             self._wanted_name = name
@@ -230,6 +252,134 @@ class AppsWizard:
             self._stage = "paste"
             return self._recipe_text(self._recipe, "COMPOSIO_API_KEY")
         return await self._resolve_in_hub(name)
+
+    async def _provider_match(self, name: str) -> tuple[str, str] | None:
+        if self._provider_apps is None:
+            return None
+        wanted = name.strip().lower()
+        for key, title in await self._provider_apps():
+            if wanted in (key.lower(), title.lower()):
+                return key, title
+        return None
+
+    async def _begin_provider(self, key: str, title: str) -> str:
+        """A direct provider app: the loop owns the OAuth URL and the
+        client-setup recipe. If the client is missing, the walk asks for
+        the two values here, using the same paste discipline as every
+        other key; once they are stored it starts the sign-in again."""
+        self._provider_app = (key, title)
+        if self._connect_provider is None:
+            self._stage = "dead"
+            return f"{title} isn't wired on this instance."
+        try:
+            result = await self._connect_provider(key)
+        except Exception as exc:
+            self._stage = "dead"
+            return getattr(exc, "plain", f"couldn't start the {title} connection.")
+        return await self._handle_provider_result(result)
+
+    async def _handle_provider_result(self, result: ConnectResult) -> str:
+        app = self._provider_app
+        assert app is not None
+        key, title = app
+        self._provider_setup = result
+        if result.token_required:
+            self._stage = "dead"
+            lines = [f"{title} needs a token."]
+            lines.extend(result.setup_steps)
+            lines.append("open the app's token page, create a token, then paste it in the panel.")
+            return "\n".join(lines)
+        if result.setup_required:
+            names = [name for name in (result.client_id_name, result.client_secret_name) if name]
+            missing = [name for name in names if name not in await self._env_names()]
+            if not missing:
+                # the values arrived through .env or another surface — try
+                # the sign-in again now that the client is configured
+                try:
+                    retry = await self._connect_provider(key)  # type: ignore[misc]
+                except Exception as exc:
+                    self._stage = "dead"
+                    return getattr(exc, "plain", f"couldn't start the {title} connection.")
+                if retry.setup_required:
+                    self._stage = "dead"
+                    return (
+                        f"{title}'s client is saved but the provider still "
+                        "doesn't see it — check the names and try /apps add again."
+                    )
+                return await self._handle_provider_result(retry)
+            self._provider_paste_names = missing
+            self._stage = "provider_setup_paste"
+            lines = [f"{title} needs a one-time setup before it can connect."]
+            if result.setup_url:
+                lines.append(f"open {result.setup_url}")
+            for i, step in enumerate(result.setup_steps, 1):
+                lines.append(f"{i} — {step}")
+            if result.redirect_uri:
+                lines.append(f"add this redirect URI exactly: {result.redirect_uri}")
+            lines.append(
+                f"paste {missing[0]} here — the value is stored encrypted and never shown again."
+            )
+            return "\n".join(lines)
+        self._stage = "dead"
+        if result.redirect_url:
+            return (
+                f"{title} — last step, let me in:\n"
+                f"open this and approve: {result.redirect_url}\n"
+                "(I'll take it from there)"
+            )
+        return f"couldn't start the {title} connection — nothing was connected."
+
+    async def _answer_provider_setup_paste(self, text: str) -> str | None:
+        app = self._provider_app
+        assert app is not None
+        key, title = app
+        if text.lower() == "done":
+            missing = [n for n in self._provider_paste_names if n not in await self._env_names()]
+            self._provider_paste_names = missing
+            if missing:
+                names = " and ".join(missing)
+                return (
+                    f"not yet — {names} isn't set. paste it here, or add it "
+                    'to .env and reply "done".'
+                )
+            if self._connect_provider is None:
+                self._stage = "dead"
+                return f"{title} isn't wired on this instance."
+            try:
+                result = await self._connect_provider(key)
+            except Exception as exc:
+                self._stage = "dead"
+                return getattr(exc, "plain", f"couldn't start the {title} connection.")
+            return await self._handle_provider_result(result)
+        if " " in text or "\n" in text:
+            return _NOT_A_VALUE
+        if text.isdigit() and len(text) <= 6:
+            return _MENU_NUMBER
+        name = self._provider_paste_names[0]
+        value = text.strip("\"'`")
+        if not value:
+            return _NOT_A_VALUE
+        stored = await self._save_secret(name, value, title)
+        if not stored:
+            return (
+                "that didn't work — nothing was stored. add "
+                f'{name} to .env and reply "done", or paste it again.'
+            )
+        self._provider_paste_names.pop(0)
+        if self._provider_paste_names:
+            return (
+                f"stored. paste {self._provider_paste_names[0]} here — "
+                "the value is stored encrypted and never shown again."
+            )
+        if self._connect_provider is None:
+            self._stage = "dead"
+            return f"{title} isn't wired on this instance."
+        try:
+            result = await self._connect_provider(key)
+        except Exception as exc:
+            self._stage = "dead"
+            return getattr(exc, "plain", f"couldn't start the {title} connection.")
+        return await self._handle_provider_result(result)
 
     async def _resolve_in_hub(self, name: str) -> str:
         """The hub's live catalog: an exact hit connects, a fuzzy handful
@@ -338,12 +488,14 @@ class AppsWizard:
             return None
         return _LINK_WAITING
 
-    def enter_permissions(self, slug: str, identity: str) -> str:
+    def enter_permissions(self, slug: str, identity: str, prefix: str | None = None) -> str:
         """The background connect finished — the loop moves the walk (this
         one or a fresh one) to the gate's question: what may Aether do with
-        the new app."""
+        the new app. `prefix` is the authz tool prefix; the hub keeps its
+        toolkit pattern, direct providers pass "<app>__"."""
         self._reset()
         self._pending_toolkit = (slug, slug)
+        self._pending_prefix = prefix or f"composio__{slug.upper()}_"
         self._stage = "permissions"
         who = f" — {identity}" if identity else ""
         return (
@@ -393,7 +545,7 @@ class AppsWizard:
             "add",
             "authz.rules",
             {
-                "tool_pattern": f"composio__{slug.upper()}_",
+                "tool_pattern": self._pending_prefix or f"composio__{slug.upper()}_",
                 "decision": decision,
                 "note": note,
             },

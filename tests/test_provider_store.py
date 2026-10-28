@@ -84,6 +84,7 @@ async def test_provider_store_round_trip(db) -> None:
 
     await store.delete("google")
     assert await store.get("google") is None
+    assert await store.get_sync("google", "gmail", "history_id") is None
 
 
 @pytest.mark.integration

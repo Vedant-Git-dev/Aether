@@ -115,6 +115,14 @@ async def test_provider_feed_requires_the_token() -> None:
     assert response.json()["apps"][0]["key"] == "gmail"
 
 
+async def test_setup_recipe_is_token_guarded_and_returns_the_redirect_uri() -> None:
+    async with _client(_app()) as client:
+        assert (await client.get("/api/providers/google/setup")).status_code == 401
+        response = await client.get("/api/providers/google/setup", params={"token": "secret"})
+    assert response.status_code == 200
+    assert response.json()["redirect_uri"] == "https://x/cb"
+
+
 async def test_connect_returns_a_link() -> None:
     async with _client(_app()) as client:
         response = await client.post("/api/providers/gmail/connect", params={"token": "secret"})

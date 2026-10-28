@@ -110,6 +110,7 @@ def _app(
     config: AppConfig | None = None,
     agent_settings: FakeAgentSettings | None = None,
     composio: FakeComposioBridge | None = None,
+    provider_runtime=None,
     config_manager: FakeConfigManager | None = None,
     entities=None,
     scheduler=None,
@@ -145,6 +146,8 @@ def _app(
         app.state.agent_settings = agent_settings
     if composio is not None:
         app.state.composio = composio
+    if provider_runtime is not None:
+        app.state.provider_runtime = provider_runtime
     if config_manager is not None:
         app.state.config_manager = config_manager
     if workspace is not None:
@@ -532,6 +535,28 @@ async def test_contacts_feed_lists_a_connected_composio_app() -> None:
     )
     config = _contacts_config()
     async with _client(_app(None, config=config, composio=bridge)) as client:
+        body = (await client.get("/api/contacts", params={"token": "secret"})).json()
+    apps = {a["key"]: a for a in body["apps"]}
+    assert apps["gmail"]["connected"] is True
+
+
+async def test_contacts_feed_lists_a_connected_direct_provider_app() -> None:
+    class _ProviderFeed:
+        async def feed(self):
+            return {
+                "apps": [
+                    {
+                        "key": "gmail",
+                        "name": "Gmail",
+                        "status": "active",
+                        "identity": "me@example.com",
+                    }
+                ]
+            }
+
+    async with _client(
+        _app(None, config=_contacts_config(), provider_runtime=_ProviderFeed())
+    ) as client:
         body = (await client.get("/api/contacts", params={"token": "secret"})).json()
     apps = {a["key"]: a for a in body["apps"]}
     assert apps["gmail"]["connected"] is True

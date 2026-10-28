@@ -1,11 +1,8 @@
-"""The provider definitions this build ships.
-
-Milestone 0 ships the framework with no provider apps. Milestone 1 adds
-Google and Gmail here; later milestones add the remaining providers.
-"""
+"""The provider definitions this build ships."""
 
 from __future__ import annotations
 
+from .google import GOOGLE_PROVIDER
 from .types import ProviderDefinition
 
-PROVIDERS: list[ProviderDefinition] = []
+PROVIDERS: list[ProviderDefinition] = [GOOGLE_PROVIDER]

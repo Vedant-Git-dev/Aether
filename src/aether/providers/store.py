@@ -175,7 +175,13 @@ class ProviderStore:
         )
 
     async def delete(self, provider: str) -> None:
-        await self._pool.execute("DELETE FROM provider_connections WHERE provider = $1", provider)
+        """Remove the connection and everything tied to it. A reconnect
+        must start from a clean history cursor, not resume an inbox that
+        was never really synced under the new account."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute("DELETE FROM provider_connections WHERE provider = $1", provider)
+            await conn.execute("DELETE FROM provider_sync_state WHERE provider = $1", provider)
+            await conn.execute("DELETE FROM provider_oauth_states WHERE provider = $1", provider)
 
     # -- OAuth state ---------------------------------------------------------
 

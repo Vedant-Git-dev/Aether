@@ -195,7 +195,7 @@ async def test_filtered_results_say_so_in_the_same_words_every_turn() -> None:
         )
     )
     assert with_drops["data"]["allowlist_note"] == (
-        "these results are filtered by the Gmail allowlist — 1 message not on it were left out"
+        "these results are filtered by the Gmail allowlist — 1 message not on it was left out"
     )
 
     all_kept = json.loads(
@@ -232,3 +232,41 @@ async def test_an_off_allowlist_never_claims_its_results_are_filtered() -> None:
         "composio__GMAIL_FETCH_EMAILS", _envelope(_msg("stranger@elsewhere.net"))
     )
     assert "allowlist_note" not in out
+
+
+async def test_a_from_field_is_judged_like_sender() -> None:
+    contacts = ContactsConfig(
+        mode="enforce",
+        gmail=AppContacts(allowlist=[ContactRule(platform="gmail", handle="friend@example.com")]),
+    )
+    raw = json.dumps(
+        {
+            "successful": True,
+            "data": {
+                "messages": [
+                    {"from": "Friend <friend@example.com>", "subject": "kept"},
+                    {"from": "stranger@elsewhere.net", "subject": "dropped"},
+                ]
+            },
+        }
+    )
+    out = json.loads(await _filter(contacts).filter_result("gmail__list_messages", raw))
+    assert [m["subject"] for m in out["data"]["messages"]] == ["kept"]
+
+
+async def test_the_direct_gmail_tool_rides_the_same_filter() -> None:
+    contacts = ContactsConfig(
+        mode="enforce",
+        gmail=AppContacts(allowlist=[ContactRule(platform="gmail", handle="abc123@xyz.com")]),
+    )
+    out = json.loads(
+        await _filter(contacts).filter_result(
+            "gmail__list_messages",
+            _envelope(
+                _msg("abc123@xyz.com", subject="from the list"),
+                _msg("stranger@elsewhere.net", subject="noise"),
+            ),
+        )
+    )
+    assert [m["subject"] for m in out["data"]["messages"]] == ["from the list"]
+    assert out["data"]["allowlist_note"].endswith(" — 1 message not on it was left out")

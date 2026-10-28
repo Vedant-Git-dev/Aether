@@ -143,7 +143,13 @@ class OAuthEngine:
         access = str(payload.get("access_token") or "")
         if not access:
             raise ProviderAuthError("the provider didn't return an access token")
-        refresh = str(payload.get("refresh_token") or "") or None
+        # Google only returns a refresh token on the first consent (and on
+        # a forced re-consent). Reconnecting to add a scope must never
+        # erase the one already stored.
+        existing = await self._store.get(provider.key)
+        refresh = str(payload.get("refresh_token") or "") or (
+            existing.refresh_token if existing is not None else None
+        )
         expires_at = _expiry(payload.get("expires_in"))
         token_type = str(payload.get("token_type") or "Bearer")
         scopes = str(payload.get("scope") or state_row.scopes)

@@ -249,7 +249,8 @@ flowchart TB
 ## Quick start
 
 ```bash
-cp .env.example .env            # fill in DATABASE_URL (Neon), AETHER_ENCRYPTION_KEY, AETHER_TOKEN
+cp .env.example .env            # fill in DATABASE_URL (Neon), AETHER_ENCRYPTION_KEY, AETHER_TOKEN,
+                                # and AETHER_TOKEN_ENCRYPTION_KEY/ID if you want direct app connections
 cp config.example.yaml config.yaml
 pip install -e ".[dev]"
 aether                          # serves on :8000
