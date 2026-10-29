@@ -121,7 +121,8 @@ const APP_NAMES = {
   gmail: "Email", mail: "Email", email: "Email", outlook: "Email",
   calendar: "Calendar", gcal: "Calendar",
   slack: "Slack", telegram: "Telegram", discord: "Discord", whatsapp: "WhatsApp", teams: "Teams",
-  github: "GitHub", drive: "Drive", docs: "Docs", filesystem: "Files", fs: "Files",
+  github: "GitHub", drive: "Drive", docs: "Docs", linkedin: "LinkedIn",
+  filesystem: "Files", fs: "Files",
   phone: "Phone (SMS)", sms: "Phone (SMS)", call: "Phone call",
   memory: "Aether's memory",
 };
@@ -203,6 +204,7 @@ const PROVIDER_ACTION_IDIOMS = {
   create_document: () => "Creating the document",
   read_document: () => "Reading the document",
   append_text: () => "Adding to the document",
+  create_post: () => "Publishing the LinkedIn post",
 };
 
 export function appLabel(source) {

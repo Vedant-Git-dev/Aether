@@ -154,6 +154,11 @@ _ACTION_WORDS: dict[str, ActionWords] = {
     "github": ActionWords("Make the github change", "a github action", "made the github change"),
     "drive": ActionWords("Make the Drive change", "a Drive action", "made the Drive change"),
     "docs": ActionWords("Make the Docs change", "a Docs action", "made the Docs change"),
+    "linkedin": ActionWords(
+        "Publish the LinkedIn post",
+        "publishing the LinkedIn post",
+        "published the LinkedIn post",
+    ),
     "notion": ActionWords("Update notion", "a notion update", "updated notion"),
     "linear": ActionWords("Make the linear change", "a linear action", "made the linear change"),
     "payments": ActionWords("Send the payment", "a payment", "sent the payment"),
@@ -241,6 +246,16 @@ _PROVIDER_ACTION_WORDS: dict[tuple[str, str], ActionWords] = {
     ),
     ("docs", "append_text"): ActionWords(
         "Add to the document", "adding to the document", "added to the document"
+    ),
+    ("linkedin", "get_profile"): ActionWords(
+        "Check the LinkedIn account",
+        "checking the LinkedIn account",
+        "checked the LinkedIn account",
+    ),
+    ("linkedin", "create_post"): ActionWords(
+        "Publish the LinkedIn post",
+        "publishing the LinkedIn post",
+        "published the LinkedIn post",
     ),
 }
 

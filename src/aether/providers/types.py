@@ -58,6 +58,7 @@ class AppDefinition:
     tools: tuple[ToolDefinition, ...]
     poll: PollDefinition | None = None
     api_base: str = ""
+    note: str = ""
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,7 @@ class ProviderDefinition:
     client_id_name: str | None = None
     client_secret_name: str | None = None
     pkce: bool = True
+    prompt_consent_param: bool = True
     base_scopes: tuple[str, ...] = ()
     extra_auth_params: dict[str, str] = field(default_factory=dict)
     setup_url: str = ""
@@ -139,6 +141,7 @@ class ProviderAppView:
     token_steps: tuple[str, ...] = ()
     token_expires: bool = False
     token_url: str = ""
+    note: str = ""
 
 
 @dataclass(frozen=True)

@@ -218,6 +218,7 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken,
           Aether can read and append to the Docs you choose in the Drive card.
         </div>
       ) : null}
+      {app.note ? <div className="text-xs text-ink-3">{app.note}</div> : null}
 
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs text-ink-3">
@@ -326,7 +327,9 @@ export default function AppsPage() {
       toast(
         app.auth_mode === "token"
           ? `Disconnected ${app.name}. Remove the saved token at ${app.name} too if you want to revoke it there.`
-          : `Disconnected ${app.name}`,
+          : app.key === "linkedin"
+            ? `Disconnected ${app.name}. You can also remove Aether in LinkedIn's permitted services.`
+            : `Disconnected ${app.name}`,
       );
       load();
     } catch (err) { toast(err.message, "err"); }

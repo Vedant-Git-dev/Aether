@@ -266,6 +266,7 @@ class ProviderRuntime:
                             if provider.static_token is not None
                             else ""
                         ),
+                        note=app.note,
                     )
                 )
         return {

@@ -1,10 +1,10 @@
 """The direct-provider panel walk: Gmail setup, the callback, Drive's file
-picker setup, and disconnect.
+picker setup, LinkedIn setup, and disconnect.
 
-The dev fixture's provider runtime is the real route surface with
-in-memory Gmail, Calendar, Drive, and Docs cards on one Google connection;
-the OAuth browser tab is skipped by landing the callback directly, which is
-the same state-only route Google calls.
+The dev fixture's provider runtime is the real route surface with in-memory
+Gmail, Calendar, Drive, and Docs cards on one Google connection, plus GitHub
+and LinkedIn cards. The OAuth browser tab is skipped by landing the callback
+directly, which is the same state-only route the provider calls.
 """
 
 from __future__ import annotations
@@ -66,6 +66,31 @@ def test_drive_picker_setup_is_saved_from_the_panel(page, live_server, token) ->
     picker.get_by_role("button", name="Save picker setup").click()
     page.wait_for_selector('[data-testid="drive-picker"]:has-text("Choose files")')
     assert "Choose the Google Docs" in picker.inner_text()
+
+
+def test_linkedin_setup_callback_note_and_disconnect(page, live_server, token) -> None:
+    _set_token(page, token)
+    page.goto(f"{live_server}/#/apps")
+    page.wait_for_selector('[data-testid="provider-linkedin"]')
+
+    card = page.locator('[data-testid="provider-linkedin"]')
+    assert "Setup needed" in card.inner_text()
+    assert "60 days" in card.inner_text()
+
+    form = card.locator("form")
+    form.get_by_placeholder("Client ID").fill("linkedin-client-id")
+    form.get_by_placeholder("Client secret").fill("linkedin-client-secret")
+    form.get_by_role("button", name="Save client").click()
+    page.wait_for_selector('[data-testid="provider-linkedin"]:has-text("Not connected")')
+
+    page.goto(f"{live_server}/api/oauth/linkedin/callback?code=e2e&state=e2e")
+    page.wait_for_selector('[data-testid="provider-linkedin"]:has-text("Connected")')
+    card = page.locator('[data-testid="provider-linkedin"]')
+    assert "ada@example.com" in card.inner_text()
+    assert "60 days" in card.inner_text()
+
+    card.get_by_role("button", name="Disconnect").click()
+    page.wait_for_selector('[data-testid="provider-linkedin"]:has-text("Not connected")')
 
 
 def test_direct_gmail_setup_callback_and_disconnect(page, live_server, token) -> None:

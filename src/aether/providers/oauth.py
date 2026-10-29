@@ -97,7 +97,7 @@ class OAuthEngine:
             params["code_challenge"] = challenge
             params["code_challenge_method"] = "S256"
         params.update(provider.extra_auth_params)
-        if prompt_consent:
+        if prompt_consent and provider.prompt_consent_param:
             params["prompt"] = "consent"
 
         await self._store.create_state(

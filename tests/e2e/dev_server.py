@@ -1175,9 +1175,10 @@ class FakeHubBridge:
 
 
 class FakeProviderRuntime:
-    """The direct-provider runtime double: Gmail and Calendar on one Google
-    connection, the write-only client setup, a callback that lands
-    connected, and disconnect. The real routes call exactly these methods."""
+    """The direct-provider runtime double: Gmail, Calendar, Drive, and Docs on
+    one Google connection, plus GitHub and LinkedIn, the write-only client
+    setup, a callback that lands connected, and disconnect. The real routes
+    call exactly these methods."""
 
     def __init__(self) -> None:
         self.client_configured = False
@@ -1185,6 +1186,9 @@ class FakeProviderRuntime:
         self.identity = ""
         self.github_connected = False
         self.github_identity = ""
+        self.linkedin_configured = False
+        self.linkedin_connected = False
+        self.linkedin_identity = ""
         self.picker_configured = False
         self.picker_api_key = ""
         self.picker_app_id = ""
@@ -1316,7 +1320,50 @@ class FakeProviderRuntime:
             "token_url": "https://github.com/settings/tokens?type=beta",
         }
 
-    def _recipe(self) -> dict:
+    def _linkedin_app(self) -> dict:
+        return {
+            "key": "linkedin",
+            "name": "LinkedIn",
+            "provider": "linkedin",
+            "connected": self.linkedin_connected,
+            "status": "active" if self.linkedin_connected else "not_connected",
+            "identity": self.linkedin_identity,
+            "auth_mode": "oauth",
+            "scopes": ["openid", "profile", "email", "w_member_social"],
+            "actions": 2 if self.linkedin_connected else 0,
+            "setup_required": not self.linkedin_configured,
+            "setup_url": "https://www.linkedin.com/developers/apps",
+            "setup_steps": [
+                "Open LinkedIn Developers and create an app.",
+                "Request Share on LinkedIn and Sign In with LinkedIn using OpenID Connect.",
+            ],
+            "redirect_uri": "http://test/api/oauth/linkedin/callback",
+            "last_error": "",
+            "auth_modes": ["oauth"],
+            "default_auth_mode": "oauth",
+            "token_label": "",
+            "token_steps": [],
+            "token_expires": False,
+            "token_url": "",
+            "note": (
+                "LinkedIn personal sign-ins last about 60 days. Aether will ask "
+                "you to reconnect when this one expires."
+            ),
+        }
+
+    def _recipe(self, provider: str = "google") -> dict:
+        if provider == "linkedin":
+            app = self._linkedin_app()
+            return {
+                "provider": "linkedin",
+                "name": "LinkedIn",
+                "configured": self.linkedin_configured,
+                "setup_url": app["setup_url"],
+                "setup_steps": app["setup_steps"],
+                "redirect_uri": app["redirect_uri"],
+                "client_id_name": "LINKEDIN_CLIENT_ID",
+                "client_secret_name": "LINKEDIN_CLIENT_SECRET",
+            }
         app = self._app()
         return {
             "provider": "google",
@@ -1338,6 +1385,7 @@ class FakeProviderRuntime:
                 self._drive_app(),
                 self._docs_app(),
                 self._github_app(),
+                self._linkedin_app(),
             ],
             "providers": [
                 {
@@ -1364,16 +1412,31 @@ class FakeProviderRuntime:
                     "client_id_name": "GITHUB_CLIENT_ID",
                     "client_secret_name": "GITHUB_CLIENT_SECRET",
                 },
+                {
+                    "key": "linkedin",
+                    "name": "LinkedIn",
+                    "configured": self.linkedin_configured,
+                    "auth_modes": ["oauth"],
+                    "default_auth_mode": "oauth",
+                    "setup_url": "https://www.linkedin.com/developers/apps",
+                    "setup_steps": [],
+                    "redirect_uri": "http://test/api/oauth/linkedin/callback",
+                    "client_id_name": "LINKEDIN_CLIENT_ID",
+                    "client_secret_name": "LINKEDIN_CLIENT_SECRET",
+                },
             ],
         }
 
     async def setup_recipe(self, provider: str) -> dict:
-        return self._recipe()
+        return self._recipe(provider)
 
     async def save_client(self, provider: str, client_id: str, client_secret: str) -> dict:
         assert client_id and client_secret
-        self.client_configured = True
-        return self._recipe()
+        if provider == "linkedin":
+            self.linkedin_configured = True
+        else:
+            self.client_configured = True
+        return self._recipe(provider)
 
     async def picker_recipe(self, provider: str) -> dict:
         return {
@@ -1418,6 +1481,27 @@ class FakeProviderRuntime:
                     "Select only the repositories Aether may use.",
                 ),
             )
+        if app == "linkedin":
+            if not self.linkedin_configured:
+                return ConnectResult(
+                    app=app,
+                    provider="linkedin",
+                    setup_required=True,
+                    setup_url="https://www.linkedin.com/developers/apps",
+                    setup_steps=(
+                        "Open LinkedIn Developers and create an app.",
+                        "Request Share on LinkedIn and Sign In with LinkedIn using OpenID Connect.",
+                    ),
+                    redirect_uri="http://test/api/oauth/linkedin/callback",
+                    client_id_name="LINKEDIN_CLIENT_ID",
+                    client_secret_name="LINKEDIN_CLIENT_SECRET",
+                )
+            return ConnectResult(
+                app=app,
+                provider="linkedin",
+                redirect_url="https://www.linkedin.com/oauth/v2/authorization?state=e2e",
+                redirect_uri="http://test/api/oauth/linkedin/callback",
+            )
         if not self.client_configured:
             return ConnectResult(
                 app=app,
@@ -1460,6 +1544,17 @@ class FakeProviderRuntime:
                 account_label=self.github_identity,
                 access_token="token",
             )
+        if provider == "linkedin":
+            self.linkedin_connected = True
+            self.linkedin_identity = "ada@example.com"
+            return ProviderConnection(
+                provider="linkedin",
+                auth_mode="oauth",
+                app="linkedin",
+                account_id="member-1",
+                account_label=self.linkedin_identity,
+                access_token="token",
+            )
         self.connected = True
         self.identity = "me@example.com"
         return ProviderConnection(
@@ -1474,6 +1569,10 @@ class FakeProviderRuntime:
         if app == "github":
             self.github_connected = False
             self.github_identity = ""
+            return
+        if app == "linkedin":
+            self.linkedin_connected = False
+            self.linkedin_identity = ""
             return
         self.connected = False
         self.identity = ""
