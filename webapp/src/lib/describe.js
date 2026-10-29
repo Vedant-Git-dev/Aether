@@ -187,6 +187,15 @@ const PROVIDER_ACTION_IDIOMS = {
   update_event: () => "Updating the event",
   delete_event: () => "Deleting the event",
   freebusy: () => "Checking availability",
+  list_issues: () => "Checking the GitHub issues",
+  get_issue: () => "Reading the GitHub issue",
+  create_issue: () => "Opening the GitHub issue",
+  comment_on_issue: () => "Commenting on the GitHub issue",
+  list_pull_requests: () => "Checking the pull requests",
+  get_pull_request: () => "Reading the pull request",
+  comment_on_pull_request: () => "Commenting on the pull request",
+  list_notifications: () => "Checking GitHub notifications",
+  search: (appName) => `Searching ${appName || "GitHub"}`,
 };
 
 export function appLabel(source) {
@@ -215,6 +224,8 @@ const PARAM_LABELS = {
   subject: "Subject", title: "Title", body: "Message", text: "Message", message: "Message", content: "Message",
   start: "When", when: "When", run_at: "When", end: "Until", date: "Date", location: "Where",
   attendees: "People", amount: "Amount", note: "Note", query: "Looking for",
+  repo: "Repository", number: "Number", state: "State", labels: "Labels",
+  assignees: "People", head: "From", base: "Into", draft: "Draft", milestone: "Milestone",
 };
 
 export function friendlyValue(value) {

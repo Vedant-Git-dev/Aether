@@ -15,6 +15,7 @@ class FakeRuntime:
         self.connected: list[tuple[str, str]] = []
         self.disconnected: list[str] = []
         self.token_calls: list[tuple[str, str]] = []
+        self.connect_modes: list[tuple[str, str | None]] = []
 
     async def feed(self) -> dict:
         return {
@@ -45,11 +46,12 @@ class FakeRuntime:
         assert client_secret
         return {"provider": provider, "configured": True, "redirect_uri": "https://x/cb"}
 
-    async def connect(self, app: str) -> ConnectResult:
+    async def connect(self, app: str, *, auth_mode: str | None = None) -> ConnectResult:
         if app == "missing":
             from aether.providers.types import ProviderNotConfigured
 
             raise ProviderNotConfigured("no such app")
+        self.connect_modes.append((app, auth_mode))
         return ConnectResult(
             app=app,
             provider="google",
@@ -124,10 +126,23 @@ async def test_setup_recipe_is_token_guarded_and_returns_the_redirect_uri() -> N
 
 
 async def test_connect_returns_a_link() -> None:
-    async with _client(_app()) as client:
+    runtime = FakeRuntime()
+    async with _client(_app(runtime)) as client:
         response = await client.post("/api/providers/gmail/connect", params={"token": "secret"})
     assert response.status_code == 200
     assert response.json()["redirect_url"] == "https://accounts.example/auth"
+    assert runtime.connect_modes == [("gmail", None)]
+
+
+async def test_connect_forwards_an_explicit_auth_mode() -> None:
+    runtime = FakeRuntime()
+    async with _client(_app(runtime)) as client:
+        response = await client.post(
+            "/api/providers/github/connect",
+            params={"token": "secret", "mode": "oauth"},
+        )
+    assert response.status_code == 200
+    assert runtime.connect_modes == [("github", "oauth")]
 
 
 async def test_connect_error_is_plain() -> None:
@@ -163,7 +178,8 @@ async def test_callback_failure_is_plain_and_does_not_connect() -> None:
 
 async def test_token_connect_and_disconnect() -> None:
     runtime = FakeRuntime()
-    async with _client(_app(runtime)) as client:
+    agent = FakeAgent()
+    async with _client(_app(runtime, agent)) as client:
         response = await client.post(
             "/api/providers/github/token",
             params={"token": "secret"},
@@ -176,6 +192,7 @@ async def test_token_connect_and_disconnect() -> None:
         ).status_code == 200
     assert runtime.token_calls == [("github", "github_pat_abc")]
     assert runtime.disconnected == ["github"]
+    assert agent.announced == [("github", "octocat")]
 
 
 async def test_client_setup_is_write_only_and_returns_the_recipe() -> None:

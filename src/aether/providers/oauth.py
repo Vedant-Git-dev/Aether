@@ -151,9 +151,17 @@ class OAuthEngine:
             existing.refresh_token if existing is not None else None
         )
         expires_at = _expiry(payload.get("expires_in"))
+        refresh_expires_at = _expiry(payload.get("refresh_token_expires_in")) or (
+            existing.refresh_expires_at if existing is not None else None
+        )
         token_type = str(payload.get("token_type") or "Bearer")
-        scopes = str(payload.get("scope") or state_row.scopes)
+        scopes = _scope_string(payload.get("scope"), state_row.scopes)
         account_id, label = await self.identity(provider, access)
+        if existing is not None and existing.auth_mode == "token":
+            # switching from a static token to OAuth replaces the credential;
+            # there is nothing to revoke on the provider side.
+            await self._store.delete(provider.key)
+            existing = None
         connection = ProviderConnection(
             provider=provider.key,
             auth_mode="oauth",
@@ -165,6 +173,7 @@ class OAuthEngine:
             token_type=token_type,
             scopes=scopes,
             expires_at=expires_at,
+            refresh_expires_at=refresh_expires_at,
             status="active",
             last_refreshed_at=datetime.now(UTC),
         )
@@ -203,14 +212,17 @@ class OAuthEngine:
         if not access:
             raise ProviderReauthRequired(f"{provider.name} rejected the refresh")
         refresh = str(payload.get("refresh_token") or "") or connection.refresh_token
-        scopes = str(payload.get("scope") or connection.scopes)
+        scopes = _scope_string(payload.get("scope"), connection.scopes)
         expires_at = _expiry(payload.get("expires_in"))
+        refresh_expires_at = _expiry(payload.get("refresh_token_expires_in")) or (
+            connection.refresh_expires_at
+        )
         key_id = await self._store.update_tokens(
             provider.key,
             access_token=access,
             refresh_token=refresh,
             expires_at=expires_at,
-            refresh_expires_at=connection.refresh_expires_at,
+            refresh_expires_at=refresh_expires_at,
             scopes=scopes,
             status="active",
         )
@@ -218,6 +230,7 @@ class OAuthEngine:
         connection.refresh_token = refresh
         connection.scopes = scopes
         connection.expires_at = expires_at
+        connection.refresh_expires_at = refresh_expires_at
         connection.key_id = key_id
         connection.status = "active"
         connection.last_error = ""
@@ -227,9 +240,28 @@ class OAuthEngine:
     async def revoke(self, provider: ProviderDefinition, token: str) -> None:
         if not provider.revocation_endpoint or not token:
             return
+        endpoint = provider.revocation_endpoint
+        if "{client_id}" in endpoint:
+            client = await self.client(provider)
+            if client is None:
+                return
+            client_id, client_secret = client
+            endpoint = endpoint.format(client_id=client_id)
+            try:
+                await self._http.request(
+                    "DELETE",
+                    endpoint,
+                    json={"access_token": token},
+                    auth=(client_id, client_secret),
+                    headers={"Accept": "application/json"},
+                    timeout=_TIMEOUT,
+                )
+            except httpx.HTTPError:
+                return
+            return
         try:
             await self._http.post(
-                provider.revocation_endpoint,
+                endpoint,
                 data={"token": token},
                 headers={"Accept": "application/json"},
                 timeout=_TIMEOUT,
@@ -301,3 +333,12 @@ def _expiry(seconds: Any) -> datetime | None:
     except (TypeError, ValueError):
         return None
     return datetime.now(UTC) + timedelta(seconds=value)
+
+
+def _scope_string(value: Any, fallback: str) -> str:
+    """Normalize provider scope lists to the space-separated shape used here.
+
+    GitHub returns comma-separated scopes; Google returns spaces.
+    """
+
+    return str(value or fallback).replace(",", " ").strip()

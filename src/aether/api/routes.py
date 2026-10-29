@@ -1319,11 +1319,16 @@ async def provider_client(
 
 
 @router.post("/api/providers/{app}/connect")
-async def provider_connect(app: str, request: Request, token: str | None = None) -> dict:
+async def provider_connect(
+    app: str,
+    request: Request,
+    mode: str | None = None,
+    token: str | None = None,
+) -> dict:
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
     try:
-        result = await _provider_runtime(request).connect(app)
+        result = await _provider_runtime(request).connect(app, auth_mode=mode)
     except ProviderError as exc:
         raise HTTPException(status_code=400, detail=exc.plain) from exc
     return result.__dict__
@@ -1347,6 +1352,12 @@ async def provider_connect_token(
         )
     except ProviderError as exc:
         raise HTTPException(status_code=400, detail=exc.plain) from exc
+    agent = getattr(request.app.state, "agent", None)
+    if agent is not None and connection.app:
+        try:
+            await agent.announce_provider_connection(connection.app, connection.account_label)
+        except Exception:
+            log.exception("provider token connection announcement failed")
     return {
         "connected": True,
         "app": app,

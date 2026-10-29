@@ -106,6 +106,34 @@ def test_calendar_tools_appear_for_calendar_words() -> None:
     assert [s.name for s in registry.gated_specs("am i free")] == ["calendar__freebusy"]
 
 
+def test_github_tools_appear_for_github_words() -> None:
+    from aether.providers.github import GITHUB_APP
+
+    registry = ToolRegistry()
+    for tool in GITHUB_APP.tools:
+        registry.add_provider(
+            ToolSpec(
+                name=f"github__{tool.key}",
+                description=tool.description,
+                input_schema=tool.input_schema,
+                source="github",
+            ),
+            _echo,
+            effect=tool.effect,
+            source="github",
+            auth_mode="oauth",
+        )
+
+    names = [s.name for s in registry.gated_specs("check my github issues")]
+    assert "github__list_issues" in names
+    assert "github__get_issue" in names
+    assert "github__create_issue" in [s.name for s in registry.gated_specs("open an issue")]
+    assert "github__list_notifications" in [
+        s.name for s in registry.gated_specs("github notifications")
+    ]
+    assert "github__search" in [s.name for s in registry.gated_specs("search github")]
+
+
 def test_suppressing_a_prefix_removes_the_hub_copy() -> None:
     class FakeHost:
         def tool_specs(self):

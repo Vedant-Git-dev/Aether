@@ -573,6 +573,17 @@ _PROVIDER_LINK = ConnectResult(
     redirect_uri="https://aether.test/api/oauth/google/callback",
 )
 
+_GITHUB_TOKEN = ConnectResult(
+    app="github",
+    provider="github",
+    token_required=True,
+    setup_url="https://github.com/settings/tokens?type=beta",
+    setup_steps=(
+        "Open GitHub Settings, Developer settings, Personal access tokens, Fine-grained tokens.",
+        "Select only the repositories Aether may use.",
+    ),
+)
+
 
 async def test_a_direct_provider_pastes_its_client_then_serves_the_link() -> None:
     connect = FakeConnectProvider([_PROVIDER_SETUP, _PROVIDER_LINK])
@@ -603,6 +614,21 @@ async def test_a_direct_provider_pastes_its_client_then_serves_the_link() -> Non
     ]
     assert save.calls[-1] == ("GOOGLE_CLIENT_SECRET", "client-secret", "Gmail")
     assert connect.calls == ["gmail", "gmail"]
+    assert not wizard.alive
+
+
+async def test_github_asks_for_a_token_and_points_at_the_panel() -> None:
+    connect = FakeConnectProvider([_GITHUB_TOKEN])
+    wizard, *_ = _wizard(
+        provider_apps=FakeProviderApps([("github", "GitHub")]),
+        connect_provider=connect,
+    )
+    reply = await wizard.start_add("github")
+    assert reply.startswith("GitHub needs a token.")
+    assert "https://github.com/settings/tokens?type=beta" in reply
+    assert "Fine-grained tokens" in reply
+    assert "paste it in the panel" in reply
+    assert connect.calls == ["github"]
     assert not wizard.alive
 
 

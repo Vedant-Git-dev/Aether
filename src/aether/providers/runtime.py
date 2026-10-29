@@ -152,6 +152,10 @@ class ProviderRuntime:
             # same rule for Calendar; Composio has used both spellings.
             self._registry.suppress_mcp_prefix("composio__GOOGLECALENDAR_")
             self._registry.suppress_mcp_prefix("composio__GOOGLE_CALENDAR_")
+        if "github" in added_apps:
+            # direct GitHub owns the namespace; the hub's copy would offer
+            # a second, broader credential for the same actions.
+            self._registry.suppress_mcp_prefix("composio__GITHUB_")
         return added
 
     def _handler(self, provider: ProviderDefinition, app: AppDefinition, tool_key: str):
@@ -233,6 +237,24 @@ class ProviderRuntime:
                         setup_steps=provider.setup_steps,
                         redirect_uri=self.redirect_uri(provider),
                         last_error=connection.last_error if connection is not None else "",
+                        auth_modes=provider.auth_modes,
+                        default_auth_mode=provider.default_auth_mode,
+                        token_label=provider.static_token.token_label
+                        if provider.static_token is not None
+                        else "",
+                        token_steps=provider.static_token.instructions
+                        if provider.static_token is not None
+                        else (),
+                        token_expires=(
+                            provider.static_token.expires
+                            if provider.static_token is not None
+                            else False
+                        ),
+                        token_url=(
+                            provider.static_token.token_url
+                            if provider.static_token is not None
+                            else ""
+                        ),
                     )
                 )
         return {
@@ -241,17 +263,22 @@ class ProviderRuntime:
             "providers": providers,
         }
 
-    async def connect(self, app_key: str) -> ConnectResult:
+    async def connect(self, app_key: str, *, auth_mode: str | None = None) -> ConnectResult:
         provider, app = self._app(app_key)
         if self._store is None or self._oauth is None or not self._config.providers.enabled:
             raise ProviderNotConfigured("provider connections are disabled")
-        if provider.default_auth_mode == "token":
+        mode = auth_mode or provider.default_auth_mode
+        if mode not in provider.auth_modes:
+            raise ProviderAuthError(f"{provider.name} doesn't support that sign-in")
+        if mode == "token":
             setup = provider.static_token
             return ConnectResult(
                 app=app.key,
                 provider=provider.key,
                 token_required=True,
-                setup_url=provider.setup_url,
+                setup_url=(
+                    setup.token_url if setup is not None and setup.token_url else provider.setup_url
+                ),
                 setup_steps=setup.instructions if setup else provider.setup_steps,
             )
         if not await self._oauth.client_configured(provider):
@@ -266,9 +293,14 @@ class ProviderRuntime:
                 client_secret_name=provider.client_secret_name or "",
             )
         existing = await self._connection_or_none(provider.key)
-        existing_scopes = tuple(existing.scopes.split()) if existing and existing.scopes else ()
+        existing_scopes = (
+            tuple(existing.scopes.split())
+            if existing is not None and existing.auth_mode == "oauth" and existing.scopes
+            else ()
+        )
         prompt_consent = (
             existing is None
+            or existing.auth_mode != "oauth"
             or existing.status != "active"
             or not set(app.scopes).issubset(set(existing_scopes))
         )
@@ -284,7 +316,11 @@ class ProviderRuntime:
             provider=provider.key,
             redirect_url=url,
             redirect_uri=self.redirect_uri(provider),
-            already_connected=existing is not None and existing.status == "active",
+            already_connected=(
+                existing is not None
+                and existing.auth_mode == "oauth"
+                and existing.status == "active"
+            ),
         )
 
     async def save_client(
@@ -339,12 +375,25 @@ class ProviderRuntime:
             raise ProviderNotConfigured("provider connections are disabled")
         if "token" not in provider.auth_modes:
             raise ProviderAuthError(f"{provider.name} only supports browser sign-in")
+        token = token.strip()
+        if not token:
+            raise ProviderAuthError("paste a token first")
         setup = provider.static_token
         if setup and setup.token_prefix and not token.startswith(setup.token_prefix):
             raise ProviderAuthError(
                 f"that isn't a {setup.token_label} — it should start with {setup.token_prefix}"
             )
         account_id, label = await self._oauth.identity(provider, token)
+        if provider.validate_token is not None:
+            await provider.validate_token(self._http, token)
+        existing = await self._connection_or_none(provider.key)
+        if existing is not None:
+            if existing.auth_mode == "oauth":
+                await self._oauth.revoke(provider, existing.access_token)
+                if existing.refresh_token:
+                    await self._oauth.revoke(provider, existing.refresh_token)
+            await self._store.delete(provider.key)
+        permissions = list(setup.permissions) if setup is not None else []
         connection = ProviderConnection(
             provider=provider.key,
             auth_mode="token",
@@ -352,7 +401,7 @@ class ProviderRuntime:
             account_id=account_id,
             app=app.key,
             access_token=token,
-            scopes="",
+            scopes="; ".join(permissions),
             expires_at=expires_at,
             status="active",
             last_refreshed_at=datetime.now(UTC),
@@ -363,7 +412,12 @@ class ProviderRuntime:
             tool_name=f"{app.key}__connect",
             decision="allow",
             rules_matched="builtin:token-consent",
-            params={"provider": provider.key, "app": app.key, "auth_mode": "token"},
+            params={
+                "provider": provider.key,
+                "app": app.key,
+                "auth_mode": "token",
+                "permissions": permissions,
+            },
             outcome=f"{provider.name} connected",
         )
         await self.register_tools()
@@ -375,9 +429,10 @@ class ProviderRuntime:
             raise ProviderNotConfigured("provider connections are disabled")
         connection = await self._connection_or_none(provider.key)
         if connection is not None:
-            await self._oauth.revoke(provider, connection.access_token)
-            if connection.refresh_token:
-                await self._oauth.revoke(provider, connection.refresh_token)
+            if connection.auth_mode == "oauth":
+                await self._oauth.revoke(provider, connection.access_token)
+                if connection.refresh_token:
+                    await self._oauth.revoke(provider, connection.refresh_token)
             await self._store.delete(provider.key)
         await self._fail_pending(
             app.key, f"{app.key} was disconnected — the held action did not run"
@@ -469,8 +524,13 @@ class ProviderRuntime:
             await self._refresh(connection)
             response = await self._send(connection, method, url, **kwargs)
         if response.status_code == 401:
+            if connection.auth_mode == "token":
+                await self._mark_reauth(connection, "the saved token was rejected")
+                raise ProviderReauthRequired(f"{provider.name} needs a new token")
             await self._mark_reauth(connection, "the provider rejected the saved sign-in")
             raise ProviderReauthRequired(f"{provider.name} needs to be reconnected")
+        if response.status_code == 403 and response.headers.get("x-ratelimit-remaining") == "0":
+            raise ProviderRateLimited(f"{provider.name} is asking me to slow down")
         if response.status_code == 429:
             retry_after = _retry_after(response)
             if retry_after is not None:
@@ -677,9 +737,9 @@ def _plain_http_error(provider: ProviderDefinition, status: int) -> str:
     if status == 401:
         return f"{provider.name} needs to be reconnected"
     if status == 403:
-        return f"that action needs more access in {provider.name}"
+        return provider.forbidden_plain or f"that action needs more access in {provider.name}"
     if status == 404:
-        return "that item isn't there"
+        return provider.not_found_plain or "that item isn't there"
     if status == 429:
         return f"{provider.name} is asking me to slow down"
     return "that didn't work"

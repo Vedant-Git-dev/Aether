@@ -17,6 +17,33 @@ def _set_token(page, token: str) -> None:
     page.add_init_script(f"localStorage.setItem('aether_token', '{token}')")
 
 
+def test_github_token_card_connects_and_disconnects(page, live_server, token) -> None:
+    _set_token(page, token)
+    page.goto(f"{live_server}/#/apps")
+    page.wait_for_selector('[data-testid="provider-github"]')
+
+    card = page.locator('[data-testid="provider-github"]')
+    assert "Not connected" in card.inner_text()
+    assert "Use browser sign-in" in card.inner_text()
+
+    card.get_by_role("button", name="Connect").click()
+    card.get_by_placeholder("GitHub fine-grained personal access token").wait_for()
+    assert "Fine-grained tokens" in card.inner_text()
+    assert "Open the token page" in card.inner_text()
+    card.get_by_placeholder("GitHub fine-grained personal access token").fill("github_pat_e2e")
+    card.locator('input[type="date"]').fill("2026-12-31")
+    card.get_by_role("button", name="Save token").click()
+
+    page.wait_for_selector('[data-testid="provider-github"]:has-text("octocat")')
+    card = page.locator('[data-testid="provider-github"]')
+    assert "octocat" in card.inner_text()
+    assert "Token connection" in card.inner_text()
+    assert "Use browser sign-in" in card.inner_text()
+
+    card.get_by_role("button", name="Disconnect").click()
+    page.wait_for_selector('[data-testid="provider-github"]:has-text("Not connected")')
+
+
 def test_direct_gmail_setup_callback_and_disconnect(page, live_server, token) -> None:
     _set_token(page, token)
     page.goto(f"{live_server}/#/apps")

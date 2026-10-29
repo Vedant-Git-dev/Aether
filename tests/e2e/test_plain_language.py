@@ -316,7 +316,7 @@ def test_approval_cards_show_the_full_ask(page, live_server, token) -> None:
 
     issue = cards.nth(2)
     issue_text = issue.inner_text()
-    assert "Creating issues on GitHub" in issue_text
+    assert "Opening the GitHub issue" in issue_text
     assert "Title" in issue_text and "Deploy script fails on the nightly build" in issue_text
 
     event = cards.nth(3)

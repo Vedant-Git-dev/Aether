@@ -41,8 +41,6 @@ const PROVIDER_FACES = {
   gmail: { imgSrc: icon("icon-gmail.png"), label: "Gmail" },
   calendar: { imgSrc: icon("icon-calendar.png"), label: "Calendar" },
   github: { imgSrc: icon("icon-github.png"), label: "GitHub" },
-  notion: { icon: "apps", label: "Notion" },
-  linear: { icon: "apps", label: "Linear" },
   linkedin: { icon: "apps", label: "LinkedIn" },
 };
 
@@ -66,11 +64,14 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken 
         ? "Setup needed"
         : "Not connected";
   const statusTone = connected ? "ok" : reauth || app.setup_required ? "warn" : "idle";
+  const canSwitchMode = (app.auth_modes || []).includes("oauth") && app.default_auth_mode === "token";
+  const alternateMode = app.auth_mode === "oauth" ? "token" : "oauth";
+  const alternateLabel = app.auth_mode === "oauth" ? "Use a token" : "Use browser sign-in";
 
-  const connect = async () => {
+  const connect = async (mode) => {
     setBusy(true);
     try {
-      const result = await onConnect(app);
+      const result = await onConnect(app, mode);
       if (result?.setup_required) setSetupOpen(true);
       if (result?.token_required) setTokenOpen(true);
     } finally {
@@ -171,19 +172,31 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken 
       {tokenOpen ? (
         <form className="flex flex-col gap-2 rounded-md border border-line bg-subtle p-3" onSubmit={saveToken}>
           <div className="text-xs text-ink-2">Paste the token. It is stored encrypted and never shown again.</div>
+          {app.token_url ? (
+            <a className="text-xs text-accent hover:underline" href={app.token_url} target="_blank" rel="noreferrer">
+              Open the token page
+            </a>
+          ) : null}
+          {app.token_steps?.length ? (
+            <ol className="list-decimal space-y-1 pl-4 text-xs text-ink-3">
+              {app.token_steps.map((step, i) => <li key={i}>{step}</li>)}
+            </ol>
+          ) : null}
           <Field
             type="password"
             autoComplete="off"
-            placeholder="Token"
+            placeholder={app.token_label || "Token"}
             value={token}
             onChange={(e) => setToken(e.target.value)}
           />
-          <Field
-            type="date"
-            value={expiry}
-            onChange={(e) => setExpiry(e.target.value)}
-            aria-label="Token expiry"
-          />
+          {app.token_expires ? (
+            <Field
+              type="date"
+              value={expiry}
+              onChange={(e) => setExpiry(e.target.value)}
+              aria-label="Token expiry"
+            />
+          ) : null}
           <div className="flex items-center gap-2">
             <Button type="submit" kind="primary" disabled={busy}>Save token</Button>
             <Button type="button" onClick={() => setTokenOpen(false)} disabled={busy}>Cancel</Button>
@@ -196,12 +209,17 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken 
           {connected ? "What Aether may do is governed by the policy gate." : "Connect to let Aether use this app."}
         </span>
         <div className="flex items-center gap-2">
+          {canSwitchMode ? (
+            <Button type="button" kind="neutral" onClick={() => connect(alternateMode)} disabled={busy}>
+              {alternateLabel}
+            </Button>
+          ) : null}
           {connected ? (
             <Button type="button" kind="neutral" onClick={() => onDisconnect(app)} disabled={busy}>
               Disconnect
             </Button>
           ) : (
-            <Button type="button" kind="primary" onClick={connect} disabled={busy}>
+            <Button type="button" kind="primary" onClick={() => connect(app.auth_mode)} disabled={busy}>
               {reauth ? "Reconnect" : app.setup_required ? "Set up" : "Connect"}
             </Button>
           )}
@@ -264,9 +282,10 @@ export default function AppsPage() {
     } catch (err) { toast(err.message, "err"); }
   };
 
-  const connectProvider = async (app) => {
+  const connectProvider = async (app, mode) => {
     try {
-      const r = await api(`/api/providers/${encodeURIComponent(app.key)}/connect`, { method: "POST" });
+      const query = mode ? `?mode=${encodeURIComponent(mode)}` : "";
+      const r = await api(`/api/providers/${encodeURIComponent(app.key)}/connect${query}`, { method: "POST" });
       if (r.redirect_url) {
         window.open(r.redirect_url, "_blank", "noopener");
         toast(`Approve ${app.name} in the tab that just opened. Aether will confirm once it's connected.`);
@@ -285,7 +304,11 @@ export default function AppsPage() {
   const disconnectProvider = async (app) => {
     try {
       await api(`/api/providers/${encodeURIComponent(app.key)}/disconnect`, { method: "POST" });
-      toast(`Disconnected ${app.name}`);
+      toast(
+        app.auth_mode === "token"
+          ? `Disconnected ${app.name}. Remove the saved token at ${app.name} too if you want to revoke it there.`
+          : `Disconnected ${app.name}`,
+      );
       load();
     } catch (err) { toast(err.message, "err"); }
   };

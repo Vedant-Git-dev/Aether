@@ -19,6 +19,7 @@ from aether.providers.types import (
     ProviderConnection,
     ProviderDefinition,
     ProviderHTTPError,
+    ProviderRateLimited,
     ProviderReauthRequired,
     StaticTokenSetup,
     ToolDefinition,
@@ -321,6 +322,25 @@ async def test_a_401_refreshes_once_and_retries() -> None:
     assert response.status_code == 200
     assert seen == ["Bearer old-token", "Bearer new-token"]
     assert oauth.refreshed == 1
+
+
+@pytest.mark.asyncio
+async def test_a_403_with_no_rate_limit_left_is_plain_slow_down() -> None:
+    connection = ProviderConnection(
+        provider="demo",
+        auth_mode="token",
+        access_token="pat",
+        status="active",
+    )
+    runtime = _runtime(
+        FakeStore(connection),
+        FakeOAuth(),
+        lambda request: httpx.Response(
+            403, headers={"x-ratelimit-remaining": "0"}, json={"message": "rate limit"}
+        ),
+    )
+    with pytest.raises(ProviderRateLimited):
+        await runtime.request(connection, "GET", "https://api.demo/thing")
 
 
 @pytest.mark.asyncio

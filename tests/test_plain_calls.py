@@ -106,6 +106,20 @@ class TestDescribeCall:
         assert describe_call("calendar__delete_event") == "Deleting the event"
         assert describe_call("calendar__freebusy") == "Checking availability"
 
+    def test_direct_github_actions_read_as_their_own_act(self) -> None:
+        assert describe_call("github__list_issues") == "Checking the GitHub issues"
+        assert describe_call("github__get_issue") == "Reading the GitHub issue"
+        assert (
+            describe_call("github__create_issue", {"repo": "acme/widgets", "title": "Add search"})
+            == "Opening the GitHub issue (title 'Add search', in acme/widgets)"
+        )
+        assert describe_call("github__comment_on_issue") == "Commenting on the GitHub issue"
+        assert describe_call("github__list_pull_requests") == "Checking the pull requests"
+        assert describe_call("github__get_pull_request") == "Reading the pull request"
+        assert describe_call("github__comment_on_pull_request") == "Commenting on the pull request"
+        assert describe_call("github__list_notifications") == "Checking GitHub notifications"
+        assert describe_call("github__search") == "Searching GitHub"
+
 
 class TestDescribeOutcome:
     """The fallback chat line when an approved call succeeds with no

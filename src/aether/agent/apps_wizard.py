@@ -286,8 +286,10 @@ class AppsWizard:
         if result.token_required:
             self._stage = "dead"
             lines = [f"{title} needs a token."]
+            if result.setup_url:
+                lines.append(f"open {result.setup_url}")
             lines.extend(result.setup_steps)
-            lines.append("open the app's token page, create a token, then paste it in the panel.")
+            lines.append("create the token, then paste it in the panel.")
             return "\n".join(lines)
         if result.setup_required:
             names = [name for name in (result.client_id_name, result.client_secret_name) if name]

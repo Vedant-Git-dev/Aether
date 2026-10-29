@@ -189,6 +189,39 @@ _PROVIDER_ACTION_WORDS: dict[tuple[str, str], ActionWords] = {
     ("calendar", "freebusy"): ActionWords(
         "Check availability", "checking availability", "checked availability"
     ),
+    ("github", "list_issues"): ActionWords(
+        "Check the GitHub issues", "checking the GitHub issues", "checked the GitHub issues"
+    ),
+    ("github", "get_issue"): ActionWords(
+        "Read the GitHub issue", "reading the GitHub issue", "read the GitHub issue"
+    ),
+    ("github", "create_issue"): ActionWords(
+        "Open the GitHub issue", "opening the GitHub issue", "opened the GitHub issue"
+    ),
+    ("github", "comment_on_issue"): ActionWords(
+        "Comment on the GitHub issue",
+        "commenting on the GitHub issue",
+        "commented on the GitHub issue",
+    ),
+    ("github", "list_pull_requests"): ActionWords(
+        "Check the pull requests",
+        "checking the pull requests",
+        "checked the pull requests",
+    ),
+    ("github", "get_pull_request"): ActionWords(
+        "Read the pull request", "reading the pull request", "read the pull request"
+    ),
+    ("github", "comment_on_pull_request"): ActionWords(
+        "Comment on the pull request",
+        "commenting on the pull request",
+        "commented on the pull request",
+    ),
+    ("github", "list_notifications"): ActionWords(
+        "Check GitHub notifications",
+        "checking GitHub notifications",
+        "checked GitHub notifications",
+    ),
+    ("github", "search"): ActionWords("Search GitHub", "searching GitHub", "searched GitHub"),
 }
 
 _NATIVE_WORDS: dict[str, ActionWords] = {
@@ -291,6 +324,8 @@ _SALIENT_PARAMS: tuple[tuple[str, str], ...] = (
     ("description", "description"),
     ("file_name", "file"),
     ("path", "path"),
+    ("repo", "in"),
+    ("number", "number"),
 )
 
 # a body is a preview, not a paste: one line, clipped, so the card shows

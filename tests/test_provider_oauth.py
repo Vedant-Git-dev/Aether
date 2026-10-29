@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
@@ -68,6 +69,7 @@ class FakeStore:
         self.states: dict[str, OAuthState] = {}
         self.connections: dict[str, ProviderConnection] = {}
         self.updated: list[dict] = []
+        self.deleted: list[str] = []
 
     async def create_state(self, **kwargs) -> None:
         self.states[kwargs["state_hash"]] = OAuthState(
@@ -93,6 +95,10 @@ class FakeStore:
     async def update_tokens(self, provider: str, **kwargs) -> str:
         self.updated.append(kwargs)
         return "v1"
+
+    async def delete(self, provider: str) -> None:
+        self.deleted.append(provider)
+        self.connections.pop(provider, None)
 
 
 def _engine(store: FakeStore, handler, resolver=None) -> OAuthEngine:
@@ -185,6 +191,58 @@ async def test_exchange_stores_tokens_and_rejects_a_replay() -> None:
 
 
 @pytest.mark.asyncio
+async def test_exchange_replaces_a_static_token_connection() -> None:
+    store = FakeStore()
+    store.connections["demo"] = ProviderConnection(
+        provider="demo",
+        auth_mode="token",
+        access_token="pat",
+        scopes="Metadata read",
+    )
+    engine = _engine(store, _token_handler)
+    url = await engine.authorization_url(
+        PROVIDER, APP, redirect_uri="https://aether.test/api/oauth/demo/callback"
+    )
+    state = parse_qs(urlparse(url).query)["state"][0]
+    connection = await engine.exchange(PROVIDER, code="code-1", state=state)
+    assert store.deleted == ["demo"]
+    assert connection.auth_mode == "oauth"
+    assert store.connections["demo"] is connection
+
+
+@pytest.mark.asyncio
+async def test_exchange_normalizes_comma_scopes_and_stores_refresh_expiry() -> None:
+    store = FakeStore()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/token":
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "access-1",
+                    "refresh_token": "refresh-1",
+                    "expires_in": 28800,
+                    "refresh_token_expires_in": 15552000,
+                    "token_type": "bearer",
+                    "scope": "repo,read:user,notifications",
+                },
+            )
+        if request.url.path == "/user":
+            return httpx.Response(200, json={"sub": "acct-1", "email": "me@example.com"})
+        return httpx.Response(404)
+
+    engine = _engine(store, handler)
+    url = await engine.authorization_url(
+        PROVIDER, APP, redirect_uri="https://aether.test/api/oauth/demo/callback"
+    )
+    state = parse_qs(urlparse(url).query)["state"][0]
+    connection = await engine.exchange(PROVIDER, code="code-1", state=state)
+    assert connection.scopes == "repo read:user notifications"
+    assert connection.refresh_expires_at is not None
+    assert connection.refresh_expires_at > connection.expires_at  # type: ignore[operator]
+
+
+@pytest.mark.asyncio
 async def test_refresh_stores_a_rotating_refresh_token() -> None:
     store = FakeStore()
     engine = _engine(
@@ -195,6 +253,7 @@ async def test_refresh_stores_a_rotating_refresh_token() -> None:
                 "access_token": "access-2",
                 "refresh_token": "refresh-2",
                 "expires_in": 3600,
+                "refresh_token_expires_in": 15552000,
                 "scope": "read",
             },
         ),
@@ -212,6 +271,8 @@ async def test_refresh_stores_a_rotating_refresh_token() -> None:
     assert refreshed.refresh_token == "refresh-2"
     assert store.updated[0]["refresh_token"] == "refresh-2"
     assert store.updated[0]["access_token"] == "access-2"
+    assert store.updated[0]["refresh_expires_at"] is not None
+    assert refreshed.refresh_expires_at is not None
 
 
 @pytest.mark.asyncio
@@ -257,3 +318,23 @@ async def test_missing_client_is_reported_without_a_network_call() -> None:
     engine = _engine(store, lambda request: httpx.Response(500), resolver=resolver)
     with pytest.raises(ProviderNotConfigured):
         await engine.authorization_url(PROVIDER, APP, redirect_uri="https://aether.test/callback")
+
+
+@pytest.mark.asyncio
+async def test_a_client_auth_revocation_endpoint_deletes_the_grant() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(204)
+
+    provider = replace(
+        PROVIDER,
+        revocation_endpoint="https://api.github.com/applications/{client_id}/grant",
+    )
+    engine = _engine(FakeStore(), handler)
+    await engine.revoke(provider, "access-1")
+    assert seen[0].method == "DELETE"
+    assert seen[0].url.path == "/applications/client-id/grant"
+    assert seen[0].headers["authorization"].startswith("Basic ")
+    assert b"access_token" in seen[0].content

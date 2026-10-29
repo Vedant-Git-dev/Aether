@@ -248,6 +248,9 @@ class FakeAgent:
     def watch_connect(self, toolkit: str, request_id: str) -> None:
         pass
 
+    async def announce_provider_connection(self, app: str, identity: str = "") -> None:
+        pass
+
 
 class FakeAudit:
     def __init__(self, now: datetime) -> None:
@@ -1180,6 +1183,8 @@ class FakeProviderRuntime:
         self.client_configured = False
         self.connected = False
         self.identity = ""
+        self.github_connected = False
+        self.github_identity = ""
 
     def _app(self) -> dict:
         return {
@@ -1203,6 +1208,12 @@ class FakeProviderRuntime:
             ],
             "redirect_uri": "http://test/api/oauth/google/callback",
             "last_error": "",
+            "auth_modes": ["oauth"],
+            "default_auth_mode": "oauth",
+            "token_label": "",
+            "token_steps": [],
+            "token_expires": False,
+            "token_url": "",
         }
 
     def _calendar_app(self) -> dict:
@@ -1227,6 +1238,44 @@ class FakeProviderRuntime:
             ],
             "redirect_uri": "http://test/api/oauth/google/callback",
             "last_error": "",
+            "auth_modes": ["oauth"],
+            "default_auth_mode": "oauth",
+            "token_label": "",
+            "token_steps": [],
+            "token_expires": False,
+            "token_url": "",
+        }
+
+    def _github_app(self) -> dict:
+        return {
+            "key": "github",
+            "name": "GitHub",
+            "provider": "github",
+            "connected": self.github_connected,
+            "status": "active" if self.github_connected else "not_connected",
+            "identity": self.github_identity,
+            "auth_mode": "token",
+            "scopes": [
+                "Metadata: read-only",
+                "Issues: read and write",
+                "Pull requests: read and write",
+            ],
+            "actions": 8 if self.github_connected else 0,
+            "setup_required": False,
+            "setup_url": "https://github.com/settings/developers",
+            "setup_steps": ["Create a GitHub OAuth App for browser sign-in."],
+            "redirect_uri": "http://test/api/oauth/github/callback",
+            "last_error": "",
+            "auth_modes": ["token", "oauth"],
+            "default_auth_mode": "token",
+            "token_label": "GitHub fine-grained personal access token",
+            "token_steps": [
+                "Open GitHub Settings, Developer settings, Personal access tokens, Fine-grained tokens.",
+                "Select only the repositories Aether may use.",
+                "Grant Metadata read-only, Issues read and write, and Pull requests read and write.",
+            ],
+            "token_expires": True,
+            "token_url": "https://github.com/settings/tokens?type=beta",
         }
 
     def _recipe(self) -> dict:
@@ -1245,7 +1294,7 @@ class FakeProviderRuntime:
     async def feed(self) -> dict:
         return {
             "configured": True,
-            "apps": [self._app(), self._calendar_app()],
+            "apps": [self._app(), self._calendar_app(), self._github_app()],
             "providers": [
                 {
                     "key": "google",
@@ -1258,7 +1307,19 @@ class FakeProviderRuntime:
                     "redirect_uri": "http://test/api/oauth/google/callback",
                     "client_id_name": "GOOGLE_CLIENT_ID",
                     "client_secret_name": "GOOGLE_CLIENT_SECRET",
-                }
+                },
+                {
+                    "key": "github",
+                    "name": "GitHub",
+                    "configured": True,
+                    "auth_modes": ["token", "oauth"],
+                    "default_auth_mode": "token",
+                    "setup_url": "https://github.com/settings/developers",
+                    "setup_steps": ["Create a GitHub OAuth App for browser sign-in."],
+                    "redirect_uri": "http://test/api/oauth/github/callback",
+                    "client_id_name": "GITHUB_CLIENT_ID",
+                    "client_secret_name": "GITHUB_CLIENT_SECRET",
+                },
             ],
         }
 
@@ -1270,7 +1331,24 @@ class FakeProviderRuntime:
         self.client_configured = True
         return self._recipe()
 
-    async def connect(self, app: str) -> ConnectResult:
+    async def connect(self, app: str, *, auth_mode: str | None = None) -> ConnectResult:
+        if app == "github":
+            if auth_mode == "oauth":
+                return ConnectResult(
+                    app=app,
+                    provider="github",
+                    redirect_url="https://github.com/login/oauth/authorize?state=e2e",
+                    redirect_uri="http://test/api/oauth/github/callback",
+                )
+            return ConnectResult(
+                app=app,
+                provider="github",
+                token_required=True,
+                setup_steps=(
+                    "Open GitHub Settings, Developer settings, Personal access tokens.",
+                    "Select only the repositories Aether may use.",
+                ),
+            )
         if not self.client_configured:
             return ConnectResult(
                 app=app,
@@ -1289,7 +1367,30 @@ class FakeProviderRuntime:
             redirect_uri="http://test/api/oauth/google/callback",
         )
 
+    async def connect_token(self, app: str, token: str, *, expires_at=None) -> ProviderConnection:
+        assert token.startswith("github_pat_")
+        self.github_connected = True
+        self.github_identity = "octocat"
+        return ProviderConnection(
+            provider="github",
+            auth_mode="token",
+            app=app,
+            account_label=self.github_identity,
+            access_token=token,
+            expires_at=expires_at,
+        )
+
     async def handle_callback(self, provider: str, *, code: str, state: str) -> ProviderConnection:
+        if provider == "github":
+            self.github_connected = True
+            self.github_identity = "octocat"
+            return ProviderConnection(
+                provider="github",
+                auth_mode="oauth",
+                app="github",
+                account_label=self.github_identity,
+                access_token="token",
+            )
         self.connected = True
         self.identity = "me@example.com"
         return ProviderConnection(
@@ -1301,6 +1402,10 @@ class FakeProviderRuntime:
         )
 
     async def disconnect(self, app: str) -> None:
+        if app == "github":
+            self.github_connected = False
+            self.github_identity = ""
+            return
         self.connected = False
         self.identity = ""
 

@@ -28,6 +28,7 @@ class StaticTokenSetup:
     expires: bool
     instructions: tuple[str, ...]
     permissions: tuple[str, ...]
+    token_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,9 @@ class ProviderDefinition:
     setup_url: str = ""
     setup_steps: tuple[str, ...] = ()
     static_token: StaticTokenSetup | None = None
+    validate_token: Callable[[Any, str], Awaitable[None]] | None = None
+    forbidden_plain: str = ""
+    not_found_plain: str = ""
     apps: tuple[AppDefinition, ...] = ()
 
     def app(self, key: str) -> AppDefinition | None:
@@ -126,6 +130,12 @@ class ProviderAppView:
     setup_steps: tuple[str, ...]
     redirect_uri: str = ""
     last_error: str = ""
+    auth_modes: tuple[str, ...] = ()
+    default_auth_mode: str = "oauth"
+    token_label: str = ""
+    token_steps: tuple[str, ...] = ()
+    token_expires: bool = False
+    token_url: str = ""
 
 
 @dataclass(frozen=True)
