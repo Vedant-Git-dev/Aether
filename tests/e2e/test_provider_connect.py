@@ -35,9 +35,6 @@ def test_direct_apps_use_their_official_icons(page, live_server, token) -> None:
         src = page.locator(f'[data-testid="provider-{key}"] img').first.get_attribute("src")
         assert filename in (src or "")
 
-    slack = page.locator('[data-testid="integration-c-slack"] img')
-    assert "icon-slack.png" in (slack.get_attribute("src") or "")
-
 
 def test_github_token_card_connects_and_disconnects(page, live_server, token) -> None:
     _set_token(page, token)

@@ -497,7 +497,7 @@ async def test_show_renders_the_app_slices_in_plain_words() -> None:
     assert "  gmail: off (changed from config.yaml)" in section
     assert "  telegram: follows the default (changed from config.yaml)" in section
     assert "    */@priya" in section
-    assert "  discord: follows the default\n" in section
+    assert section.endswith("  discord: follows the default")
     # no raw model ever reaches the words
     assert "AppContacts" not in section and "mode=None" not in section
 

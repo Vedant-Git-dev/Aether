@@ -1,6 +1,6 @@
 """Cross-platform identity resolution and relationship notes.
 
-The same person shows up as an email address, a Telegram handle, a Slack
+The same person shows up as an email address, a Telegram handle, a Discord
 id. Resolution: normalize the handle, try an exact match, then generate
 fuzzy candidates (rapidfuzz over handles, display names, email locals,
 phone digits), and let the LLM confirm; link at >= 0.8 confidence,

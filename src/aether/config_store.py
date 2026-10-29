@@ -756,7 +756,7 @@ class ConfigManager:
                 continue
             self._surfaces.add_connectors([connector])
             notes.append(f"{connector.name} is starting up")
-        for platform in ("telegram", "discord", "slack"):
+        for platform in ("telegram", "discord"):
             if getattr(self._live.messaging, platform).enabled and platform not in desired:
                 notes.append(f"{platform} has no token yet — it starts once one is pasted or set")
         if not notes:
@@ -773,8 +773,6 @@ class ConfigManager:
         for field in (
             "telegram_bot_token",
             "discord_bot_token",
-            "slack_bot_token",
-            "slack_app_token",
         ):
             value = await self._resolver.resolve(field.upper())
             if value:
@@ -1089,7 +1087,7 @@ class ConfigManager:
         if name == "messaging":
             m = live.messaging
             onoff = lambda t: "on" if t.enabled else "off"  # noqa: E731
-            return f"messaging: telegram {onoff(m.telegram)} · discord {onoff(m.discord)} · slack {onoff(m.slack)}"
+            return f"messaging: telegram {onoff(m.telegram)} · discord {onoff(m.discord)}"
         if name == "contacts":
             c = live.contacts
             senders = (
@@ -1099,7 +1097,7 @@ class ConfigManager:
             )
             apps = [
                 f"{app} {s.mode or 'default'} ({len(s.allowlist)})"
-                for app in ("gmail", "telegram", "discord", "slack")
+                for app in ("gmail", "telegram", "discord")
                 if (s := getattr(c, app)) is not None and (s.mode is not None or s.allowlist)
             ]
             own = f" · own lists: {', '.join(apps)}" if apps else ""
@@ -1145,7 +1143,7 @@ class ConfigManager:
                 lines.append(f"  {_plain_entry(s)}{marker}")
             return "\n".join(lines)
         if name == "messaging":
-            for platform in ("telegram", "discord", "slack"):
+            for platform in ("telegram", "discord"):
                 live_v = getattr(self._live.messaging, platform).enabled
                 base_v = getattr(self._base.messaging, platform).enabled
                 marker = " (changed from config.yaml)" if live_v != base_v else ""

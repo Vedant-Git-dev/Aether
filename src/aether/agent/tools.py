@@ -143,7 +143,6 @@ _ACTION_WORDS: dict[str, ActionWords] = {
     "gmail": ActionWords("Send the email", "sending an email", "sent the email"),
     "telegram": ActionWords("Send the message", "sending a message", "sent the message"),
     "discord": ActionWords("Send the message", "sending a message", "sent the message"),
-    "slack": ActionWords("Send the message", "sending a message", "sent the message"),
     "whatsapp": ActionWords("Send the message", "sending a message", "sent the message"),
     "calendar": ActionWords(
         "Make the calendar change", "a calendar action", "made the calendar change"
@@ -1703,9 +1702,9 @@ def register_native_tools(
             _spec(
                 "send_chat_message",
                 "Push a message to the user's chat surfaces mid-turn "
-                "(Telegram, Discord, Slack, web chat — whichever are "
-                "enabled). Your end-of-turn reply is delivered "
-                "automatically — never use this to answer or to repeat it.",
+                "(Telegram, Discord, web chat — whichever are enabled). "
+                "Your end-of-turn reply is delivered automatically — never "
+                "use this to answer or to repeat it.",
                 {"text": {"type": "string", "description": "the message"}},
                 ["text"],
             ),

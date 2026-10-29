@@ -63,11 +63,11 @@ async def test_the_same_name_upserts_instead_of_erroring() -> None:
 
 async def test_names_answers_names_only() -> None:
     _, store = _store()
-    await store.set("SLACK_BOT_TOKEN", "xoxb-secret")
-    await store.set("SLACK_APP_TOKEN", "xapp-secret")
+    await store.set("TELEGRAM_BOT_TOKEN", "tg-secret")
+    await store.set("DISCORD_BOT_TOKEN", "dc-secret")
 
     names = await store.names()
-    assert names == {"SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"}  # values never ride along
+    assert names == {"TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN"}  # values never ride along
 
 
 async def test_a_swapped_blob_fails_to_masquerade() -> None:
@@ -75,8 +75,8 @@ async def test_a_swapped_blob_fails_to_masquerade() -> None:
     into another key's row decrypts as nothing, so a leaked blob can't be
     replayed under a different name."""
     pool, store = _store()
-    await store.set("SLACK_BOT_TOKEN", "xoxb-real")
-    await store.set("SLACK_APP_TOKEN", "xapp-real")
-    pool.rows["SLACK_BOT_TOKEN"]["value_enc"] = pool.rows["SLACK_APP_TOKEN"]["value_enc"]
+    await store.set("TELEGRAM_BOT_TOKEN", "tg-real")
+    await store.set("DISCORD_BOT_TOKEN", "dc-real")
+    pool.rows["TELEGRAM_BOT_TOKEN"]["value_enc"] = pool.rows["DISCORD_BOT_TOKEN"]["value_enc"]
     with pytest.raises(CryptoError):
-        await store.get("SLACK_BOT_TOKEN")
+        await store.get("TELEGRAM_BOT_TOKEN")

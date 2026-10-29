@@ -513,9 +513,8 @@ async def test_contacts_feed_lists_apps_with_their_own_slices() -> None:
     assert apps["gmail"]["allowlist"] == [
         {"platform": "gmail", "handle": "friend@example.com", "list": "app"}
     ]
-    # slack/discord: nothing connected, nothing configured — no cards
+    # discord: nothing connected, nothing configured — no card
     assert "discord" not in apps
-    assert "slack" not in apps
 
 
 async def test_contacts_feed_lists_a_connected_direct_provider_app() -> None:
@@ -785,7 +784,6 @@ async def test_apps_feed_reports_configured_connectors_and_capabilities() -> Non
         messaging=MessagingConfig(
             telegram=PlatformToggle(enabled=True),
             discord=PlatformToggle(enabled=False),
-            slack=PlatformToggle(enabled=False),
         ),
         mcp_servers=[
             MCPServerConfig(name="mail", transport=TransportConfig(type="http", url="https://x")),
@@ -810,7 +808,7 @@ async def test_apps_feed_reports_configured_connectors_and_capabilities() -> Non
     assert data["contacts_mode"] == "enforce"
     # the catalog rides along so the panel never hardcodes the chat-surface
     # list — direct apps come from /api/providers, fetched live
-    assert {c["key"] for c in data["catalog"]} == {"telegram", "discord", "slack"}
+    assert {c["key"] for c in data["catalog"]} == {"telegram", "discord"}
     assert all(set(c) == {"key", "name", "blurb", "kind"} for c in data["catalog"])
 
 
@@ -1439,8 +1437,6 @@ async def test_settings_feed_carries_groups_kinds_and_apply_notes() -> None:
         "GROQ_API_KEY",
         "TELEGRAM_BOT_TOKEN",
         "DISCORD_BOT_TOKEN",
-        "SLACK_BOT_TOKEN",
-        "SLACK_APP_TOKEN",
         "TAVILY_API_KEY",
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",

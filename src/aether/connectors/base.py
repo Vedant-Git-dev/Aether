@@ -106,7 +106,7 @@ class InboundMessage:
     with the exact inbound that started it.
     """
 
-    surface: str  # "telegram" | "discord" | "slack" | "web"
+    surface: str  # "telegram" | "discord" | "web"
     handle: str
     text: str
     chat_ref: str  # opaque, surface-specific reply target

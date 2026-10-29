@@ -52,6 +52,6 @@ def configure_logging() -> None:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
     # Quiet the chatty third-party loggers
-    for name in ("httpx", "httpcore", "asyncio", "slack_bolt", "matplotlib"):
+    for name in ("httpx", "httpcore", "asyncio", "matplotlib"):
         logging.getLogger(name).setLevel(logging.WARNING)
     _redact_tokens_from_access_log()

@@ -58,7 +58,7 @@ API_TOKEN = "secret"
 _QUIET_HOURS_RE = _re_compile(r"\d{2}:\d{2}-\d{2}:\d{2}")
 
 # the apps that carry their own contacts slice, matching the config model
-_APPS_WITH_OWN_LISTS = ("gmail", "telegram", "discord", "slack")
+_APPS_WITH_OWN_LISTS = ("gmail", "telegram", "discord")
 
 
 class FakeApprovals:
@@ -945,7 +945,6 @@ class FakeConfigManager:
                 "messaging": {
                     "telegram": {"enabled": True},
                     "discord": {"enabled": False},
-                    "slack": {"enabled": False},
                 },
                 "mcp_servers": [{"name": "mail", "enabled": True}],
                 "contacts": {"mode": "enforce"},
@@ -1570,7 +1569,6 @@ def build_app() -> FastAPI:
         messaging=MessagingConfig(
             telegram=PlatformToggle(enabled=True),
             discord=PlatformToggle(enabled=False),
-            slack=PlatformToggle(enabled=False),
         ),
         contacts=ContactsConfig(
             mode="enforce",

@@ -392,10 +392,10 @@ async def _contacts_state(request: Request) -> dict:
             if app.get("status") == "active" and key in type(contacts).model_fields:
                 connected.add(key)
     messaging = request.app.state.config.messaging
-    connected |= {p for p in ("telegram", "discord", "slack") if getattr(messaging, p).enabled}
+    connected |= {p for p in ("telegram", "discord") if getattr(messaging, p).enabled}
 
     apps: list[dict] = []
-    for key in ("gmail", "telegram", "discord", "slack"):
+    for key in ("gmail", "telegram", "discord"):
         section = getattr(contacts, key)
         if key not in connected and section.mode is None and not section.allowlist:
             continue
@@ -512,7 +512,7 @@ async def set_contacts_mode(
 def _app_contacts_path(key: str, setting: str) -> str:
     """The manager path for one app's own slice — the key must name an app
     the config model knows, so a stranger in the URL can't mint paths."""
-    if key.lower() not in ("gmail", "telegram", "discord", "slack"):
+    if key.lower() not in ("gmail", "telegram", "discord"):
         raise HTTPException(status_code=404, detail="no app with its own allowlist is named that")
     return f"contacts.{key.lower()}.{setting}"
 
@@ -776,7 +776,6 @@ async def apps_feed(request: Request, token: str | None = None) -> dict:
             for name, toggle in (
                 ("telegram", config.messaging.telegram),
                 ("discord", config.messaging.discord),
-                ("slack", config.messaging.slack),
             )
         ],
         "mcp_servers": [

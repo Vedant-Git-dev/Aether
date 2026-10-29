@@ -71,26 +71,6 @@ CATALOG: tuple[AppRecipe, ...] = (
         ),
         asks=("paste the token here — I'll take it from there.",),
     ),
-    AppRecipe(
-        key="slack",
-        name="slack",
-        blurb="talk to me there",
-        kind="messaging",
-        apply_path="messaging.slack.enabled",
-        env_names=("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
-        keys_line="two tokens needed:",
-        stake="your workspace",
-        steps=(
-            "open https://api.slack.com/apps and create an app — under OAuth & "
-            "Permissions, Install to Workspace copies the bot token (xoxb…)",
-            "under Basic Info, App-Level Tokens generates the app token "
-            "(xapp…) with the connections:write scope",
-        ),
-        asks=(
-            "paste the bot token (xoxb…) here — I'll take it from there.",
-            "now the app token (xapp…) — paste it here.",
-        ),
-    ),
 )
 
 

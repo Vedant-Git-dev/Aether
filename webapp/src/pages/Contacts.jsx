@@ -16,7 +16,6 @@ const PLATFORMS = [
   ["*", "Any platform"],
   ["telegram", "Telegram"],
   ["discord", "Discord"],
-  ["slack", "Slack"],
   ["whatsapp", "WhatsApp"],
   ["phone", "Phone (SMS)"],
   ["email", "Email"],
@@ -30,7 +29,6 @@ const APP_META = {
   },
   telegram: { hint: "Only these people's Telegram messages reach Aether while filtering is on.", placeholder: "@name" },
   discord: { hint: "Only these people's Discord messages reach Aether while filtering is on.", placeholder: "@name" },
-  slack: { hint: "Only these people's Slack messages reach Aether while filtering is on.", placeholder: "@name" },
 };
 
 const MODE_TEXT = {
@@ -270,7 +268,7 @@ export default function ContactsPage() {
           <Card className="mb-4 p-4">
             <h2 className="mb-2 text-sm font-semibold text-ink">Any platform</h2>
             <p className="mb-3 text-xs text-ink-2">
-              These people count on every app — Gmail, Discord, Telegram, Slack —
+              These people count on every app — Gmail, Discord, Telegram —
               wherever they match.
             </p>
             {state.allowlist.length === 0 ? (

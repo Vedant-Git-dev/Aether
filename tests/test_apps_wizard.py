@@ -24,20 +24,8 @@ _TELEGRAM_RECIPE = (
     "1 — open https://t.me/BotFather and send it /newbot — it hands you a token\n"
     "paste the token here — I'll take it from there."
 )
-_SLACK_RECIPE = (
-    "slack — talk to me there.\n"
-    "two tokens needed:\n"
-    "1 — open https://api.slack.com/apps and create an app — under OAuth & "
-    "Permissions, Install to Workspace copies the bot token (xoxb…)\n"
-    "2 — under Basic Info, App-Level Tokens generates the app token "
-    "(xapp…) with the connections:write scope\n"
-    "paste the bot token (xoxb…) here — I'll take it from there."
-)
 _APPLY_TELEGRAM = (
     "messaging.telegram.enabled set to true (config.yaml says false). — telegram is starting up"
-)
-_APPLY_SLACK = (
-    "messaging.slack.enabled set to true (config.yaml says false). — slack is starting up"
 )
 _APPLY_WEATHER = (
     "mcp_servers updated — 1 entries now (config.yaml has 0). — weather "
@@ -188,21 +176,6 @@ async def test_the_telegram_walk_pastes_and_switches_on() -> None:
     assert save.calls == [("TELEGRAM_BOT_TOKEN", "123:AAbbCC", "telegram")]
     # the pick-and-paste was the approval — the connect rides origin "walk"
     assert applier.calls == [("set", "messaging.telegram.enabled", True, "walk")]
-    assert not wizard.alive
-
-
-async def test_slack_asks_for_its_two_tokens_one_at_a_time() -> None:
-    wizard, applier, save, *_ = _wizard(applier=FakeApplier(reply=_APPLY_SLACK))
-    assert await wizard.start_add("slack") == _SLACK_RECIPE
-    (next_ask,) = await _say(wizard, "xoxb-111")
-    assert next_ask == "stored. now the app token (xapp…) — paste it here."
-    (applied,) = await _say(wizard, "xapp-222")
-    assert applied == f"stored — switching slack on now.\n{_APPLY_SLACK}"
-    assert save.calls == [
-        ("SLACK_BOT_TOKEN", "xoxb-111", "slack"),
-        ("SLACK_APP_TOKEN", "xapp-222", "slack"),
-    ]
-    assert applier.calls == [("set", "messaging.slack.enabled", True, "walk")]
     assert not wizard.alive
 
 

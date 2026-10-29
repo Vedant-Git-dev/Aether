@@ -157,7 +157,6 @@ POLL_FAILURES_BEFORE_DOWN = 2
 _PLATFORM_TOKENS = {
     "telegram": ("TELEGRAM_BOT_TOKEN",),
     "discord": ("DISCORD_BOT_TOKEN",),
-    "slack": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
 }
 
 
@@ -1184,7 +1183,7 @@ class AgentLoop:
         names = await self._env_names()
         lines: list[str] = []
         messaging = self._config.messaging
-        for platform in ("telegram", "discord", "slack"):
+        for platform in ("telegram", "discord"):
             if not getattr(messaging, platform).enabled:
                 continue
             if all(name in names for name in _PLATFORM_TOKENS[platform]):

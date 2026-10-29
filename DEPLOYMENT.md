@@ -141,11 +141,10 @@ The manual paths, for the record:
   won't have (no Node for `npx …`, for example) — run stdio servers on
   your own machine and expose them over HTTP, or stick to remote ones on
   the hosted instance. Locally, stdio servers work as configured.
-- **Telegram / Discord / Slack**: paste the bot token into `/apps` and
-  the walk flips the toggle itself (or put the tokens in the dashboard
-  env vars and flip the matching `enabled: true` in `config.yaml`).
-  Telegram uses long polling and Slack uses Socket Mode, so neither
-  needs a public webhook URL.
+- **Telegram / Discord**: paste the bot token into `/apps` and the walk
+  flips the toggle itself (or put the tokens in the dashboard env vars and
+  flip the matching `enabled: true` in `config.yaml`). Both use outbound
+  connections, so neither needs a public webhook URL.
 - **The companion** (`companion/aether_snap.py`) runs on **your machine**,
   not on Render — it needs your screen. It has its own token flag:
   `python companion/aether_snap.py --url https://<your-app>.onrender.com \

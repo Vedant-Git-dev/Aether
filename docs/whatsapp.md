@@ -1,6 +1,6 @@
 # WhatsApp — documented stub, not yet wired
 
-Aether ships native Telegram, Discord, and Slack connectors. WhatsApp is
+Aether ships native Telegram and Discord connectors. WhatsApp is
 deliberately **docs-only**: there is no free, official, personal-use route
 to it today, so instead of shipping something that breaks the first week,
 this page documents both realistic routes and exactly where the code

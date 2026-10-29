@@ -54,8 +54,6 @@ class Settings(BaseSettings):
     # Messaging connectors
     telegram_bot_token: str = ""
     discord_bot_token: str = ""
-    slack_bot_token: str = ""
-    slack_app_token: str = ""
 
     # this deployment's public address (https://your-app.onrender.com) —
     # where externally-hosted flows would call back; reserved for a future
@@ -184,7 +182,6 @@ class PlatformToggle(BaseModel):
 class MessagingConfig(BaseModel):
     telegram: PlatformToggle = Field(default_factory=PlatformToggle)
     discord: PlatformToggle = Field(default_factory=PlatformToggle)
-    slack: PlatformToggle = Field(default_factory=PlatformToggle)
 
 
 class ContactRule(BaseModel):
@@ -233,7 +230,6 @@ class ContactsConfig(BaseModel):
     gmail: AppContacts = Field(default_factory=AppContacts)
     telegram: AppContacts = Field(default_factory=AppContacts)
     discord: AppContacts = Field(default_factory=AppContacts)
-    slack: AppContacts = Field(default_factory=AppContacts)
 
 
 class AuthzRule(BaseModel):

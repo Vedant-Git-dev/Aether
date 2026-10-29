@@ -75,7 +75,7 @@ class TestDescribeCall:
             == "Sending a message"
         )
         assert (
-            describe_call("slack__send_message", {"channel_id": "C03ABCDEF", "text": "hi"})
+            describe_call("discord__send_message", {"channel_id": "C03ABCDEF", "text": "hi"})
             == "Sending a message"
         )
 

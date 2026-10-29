@@ -103,8 +103,6 @@ def test_settings_reads_the_documented_env_names(monkeypatch) -> None:
         "OLLAMA_BASE_URL",
         "TELEGRAM_BOT_TOKEN",
         "DISCORD_BOT_TOKEN",
-        "SLACK_BOT_TOKEN",
-        "SLACK_APP_TOKEN",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AETHER_ENCRYPTION_KEY", "key")

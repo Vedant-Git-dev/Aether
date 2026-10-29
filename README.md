@@ -155,10 +155,10 @@ flowchart TD
 - **Any app that speaks MCP.** Mail, calendar, and anything else with an
   [MCP](https://modelcontextprotocol.io) server connects through Aether's
   MCP host, configured in `config.yaml`.
-- **Native chat connectors.** Telegram, Discord and Slack are built in,
-  because they double as chat and approval surfaces. WhatsApp is a
-  documented stub; both free routes (Meta test number, WAHA QR bridge) are
-  in [`docs/whatsapp.md`](docs/whatsapp.md).
+- **Native chat connectors.** Telegram and Discord are built in, because
+  they double as chat and approval surfaces. WhatsApp is a documented
+  stub; both free routes (Meta test number, WAHA QR bridge) are in
+  [`docs/whatsapp.md`](docs/whatsapp.md).
 - **Screen-vision fallback.** For apps with no API, a companion CLI
   captures your screen on request, and Aether reads and remembers what is
   on it. It is strictly perception-only: it never acts inside an app it
@@ -184,8 +184,8 @@ flowchart TD
   happens. The worker is off by default, and pauses itself — a pause
   that survives restarts — if its work keeps coming back wrong.
 - **Verdicts that teach.** Approve, revise or discard from any surface:
-  chat, Telegram, Discord, Slack or the panel. Feedback shapes which
-  skills run next month, and the same opportunity never fires twice.
+  chat, Telegram, Discord or the panel. Feedback shapes which skills run
+  next month, and the same opportunity never fires twice.
 
 ### Flexibility
 
@@ -220,7 +220,7 @@ approver if any) is written to the audit log.
 ```mermaid
 flowchart TB
     subgraph AE["Aether: single always-on process"]
-        Chat["Chat surfaces<br/>Web UI (WebSocket), Telegram, Discord, Slack"]
+        Chat["Chat surfaces<br/>Web UI (WebSocket), Telegram, Discord"]
         Loop["Agent loop<br/>reason → act → observe, continuous"]
         LLM["LLM layer<br/>Claude / OpenAI / Gemini / Ollama"]
         Conn["Connector registry<br/>native + MCP tools"]

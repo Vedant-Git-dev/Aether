@@ -63,8 +63,7 @@ def build_messaging_connectors(
     with whatever it has and the web chat always works.
 
     `render_full` wires the "read the full text" button's renderer on the
-    surfaces that show that button — telegram and discord. Slack stays
-    without it: no button, no renderer, nothing changes there.
+    surfaces that show that button — telegram and discord.
     """
     built: list[MessagingConnector] = []
 
@@ -104,24 +103,5 @@ def build_messaging_connectors(
             )
         else:
             log.warning("messaging.discord is enabled but DISCORD_BOT_TOKEN is not set — skipping")
-
-    if config.messaging.slack.enabled:
-        if settings.slack_bot_token and settings.slack_app_token:
-            from .slack import SlackConnector
-
-            built.append(
-                SlackConnector(
-                    bot_token=settings.slack_bot_token,
-                    app_token=settings.slack_app_token,
-                    approvals=approvals,
-                    on_decision=on_decision,
-                    on_inbound=on_inbound,
-                    on_task_decision=on_task_decision,
-                )
-            )
-        else:
-            log.warning(
-                "messaging.slack is enabled but SLACK_BOT_TOKEN/SLACK_APP_TOKEN are not set — skipping"
-            )
 
     return built

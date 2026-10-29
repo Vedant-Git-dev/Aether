@@ -2,8 +2,8 @@
 # Copy to config.yaml and edit.
 #
 # Everything here is also changeable from chat: send just /config in
-# Telegram, Discord, or Slack and answer the questions — or use the
-# one-line /config commands. Chat changes persist in Postgres and override
+# Telegram or Discord and answer the questions — or use the one-line
+# /config commands. Chat changes persist in Postgres and override
 # this file until you /config reset them — personal tuning applies immediately,
 # the security sections (contacts, authz, messaging, mcp_servers) wait for
 # your one-tap approval, llm changes restart the agent themselves, and
@@ -67,7 +67,6 @@ mcp_servers: []                  # connect apps from chat: /apps add <name> — 
 messaging:
   telegram: {enabled: false}     # set true + TELEGRAM_BOT_TOKEN in .env
   discord: {enabled: false}
-  slack: {enabled: false}
 
 contacts:
   mode: "off"                    # the default every app follows:
@@ -88,9 +87,6 @@ contacts:
     mode: null
     allowlist: []
   discord:
-    mode: null
-    allowlist: []
-  slack:
     mode: null
     allowlist: []
 

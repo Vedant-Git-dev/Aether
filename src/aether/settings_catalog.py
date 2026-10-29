@@ -393,18 +393,6 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
         platform="discord",
     ),
     CredentialSpec(
-        name="SLACK_BOT_TOKEN",
-        label="Slack bot token",
-        hint="From the app you installed for Aether's workspace.",
-        platform="slack",
-    ),
-    CredentialSpec(
-        name="SLACK_APP_TOKEN",
-        label="Slack app token",
-        hint="The app-level token that lets Aether listen in real time.",
-        platform="slack",
-    ),
-    CredentialSpec(
         name="TAVILY_API_KEY",
         label="Web search key",
         hint="Lets Aether search the web. Without it, web search says "

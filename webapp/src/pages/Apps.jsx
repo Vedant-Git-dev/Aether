@@ -14,13 +14,11 @@ import { assetUrl, ASSET_V } from "../lib/assets.js";
 const CONNECTOR_META = {
   telegram: { imgSrc: assetUrl(`icon-telegram.png?v=${ASSET_V}`), subtitle: "Bot API", permission: "Read, reply, monitor" },
   discord: { imgSrc: assetUrl(`icon-discord.png?v=${ASSET_V}`), subtitle: "Gateway", permission: "Read selected servers" },
-  slack: { imgSrc: assetUrl(`icon-slack.png?v=${ASSET_V}`), subtitle: "Socket mode", permission: "Read, search, draft" },
 };
 
 const CATALOG_ICONS = {
   telegram: { imgSrc: assetUrl(`icon-telegram.png?v=${ASSET_V}`) },
   discord: { imgSrc: assetUrl(`icon-discord.png?v=${ASSET_V}`) },
-  slack: { imgSrc: assetUrl(`icon-slack.png?v=${ASSET_V}`) },
 };
 
 // an MCP server's display face — by the name its config entry carries
@@ -32,7 +30,6 @@ const SERVER_FACES = {
   drive: { imgSrc: assetUrl(`icon-drive.png?v=${ASSET_V}`), label: "Google Drive" },
   docs: { imgSrc: assetUrl(`icon-docs.png?v=${ASSET_V}`), label: "Google Docs" },
   linkedin: { imgSrc: assetUrl(`icon-linkedin.png?v=${ASSET_V}`), label: "LinkedIn" },
-  slack: { imgSrc: assetUrl(`icon-slack.png?v=${ASSET_V}`), label: "Slack" },
   notion: { icon: "apps", label: "Notion" },
 };
 

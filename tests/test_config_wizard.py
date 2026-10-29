@@ -249,7 +249,7 @@ async def test_allowlist_add_is_platform_then_handle() -> None:
     assert listing == (
         "the allowlist today: (nothing on it yet)\n1 — add someone  2 — remove someone  3 — back"
     )
-    assert platform == "which platform? (telegram, discord, slack — or * for any)"
+    assert platform == "which platform? (telegram, discord — or * for any)"
     assert handle == "what's their handle?"
     assert applier.calls == [("add", "contacts.allowlist", "telegram @mom")]
     assert done == f"applied\n{_AGAIN}"

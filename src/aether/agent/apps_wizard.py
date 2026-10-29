@@ -1,10 +1,10 @@
 """The guided /apps walk: connect an app without leaving chat.
 
 Bare /apps is just the status — what's connected and what the gate does
-with it. /apps add <name> is the front door: a chat surface (telegram,
-discord, slack) hands over its recipe — the exact link, the paste ask —
-then a direct provider app starts its own sign-in, and anything else gets
-the generic MCP walk's standardized questions.
+with it. /apps add <name> is the front door: a chat surface (telegram or
+discord) hands over its recipe — the exact link, the paste ask — then a
+direct provider app starts its own sign-in, and anything else gets the
+generic MCP walk's standardized questions.
 
 A direct provider app owns its OAuth client and tokens. When the client is
 missing, the walk asks for the two values here using the ordinary paste
