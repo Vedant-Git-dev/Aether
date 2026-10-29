@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -156,6 +158,15 @@ class ProviderRuntime:
             # direct GitHub owns the namespace; the hub's copy would offer
             # a second, broader credential for the same actions.
             self._registry.suppress_mcp_prefix("composio__GITHUB_")
+        if "drive" in added_apps:
+            # Drive and Docs share the hub's Google Drive toolkit. Suppress
+            # both spellings so the direct, file-scoped tools are the only
+            # route to the same files.
+            self._registry.suppress_mcp_prefix("composio__GOOGLEDRIVE_")
+            self._registry.suppress_mcp_prefix("composio__GOOGLE_DRIVE_")
+        if "docs" in added_apps:
+            self._registry.suppress_mcp_prefix("composio__GOOGLEDOCS_")
+            self._registry.suppress_mcp_prefix("composio__GOOGLE_DOCS_")
         return added
 
     def _handler(self, provider: ProviderDefinition, app: AppDefinition, tool_key: str):
@@ -352,6 +363,130 @@ class ProviderRuntime:
             outcome="OAuth client credentials stored encrypted — values never recorded",
         )
         return await self.setup_recipe(provider_key)
+
+    async def picker_recipe(self, provider_key: str) -> dict[str, Any]:
+        """The public values the browser needs to open a provider's file
+        picker. The client secret and access token never appear here."""
+        provider = self._provider(provider_key)
+        if not provider.picker_api_key_name or not provider.picker_app_id_name:
+            raise ProviderNotConfigured(f"{provider.name} doesn't use a file picker")
+        client_id = ""
+        if self._oauth is not None:
+            client = await self._oauth.client(provider)
+            if client is not None:
+                client_id = client[0]
+        api_key = await self._resolver.resolve(provider.picker_api_key_name) or ""
+        app_id = await self._resolver.resolve(provider.picker_app_id_name) or ""
+        return {
+            "provider": provider.key,
+            "configured": bool(client_id and api_key and app_id),
+            "client_id": client_id,
+            "api_key": api_key,
+            "app_id": app_id,
+            "scope": provider.picker_scope,
+            "origin": self._public_base_url,
+            "setup_url": provider.setup_url,
+        }
+
+    async def save_picker(self, provider_key: str, api_key: str, app_id: str) -> dict[str, Any]:
+        """Write-only file-picker setup. The API key and project number are
+        public browser values, but they are stored encrypted like every other
+        setup value and the reply never echoes them."""
+        provider = self._provider(provider_key)
+        if not provider.picker_api_key_name or not provider.picker_app_id_name:
+            raise ProviderNotConfigured(f"{provider.name} doesn't use a file picker")
+        if self._secrets is None:
+            raise ProviderNotConfigured("the secret store isn't wired")
+        api_key = api_key.strip()
+        app_id = app_id.strip()
+        if not api_key or not app_id:
+            raise ProviderAuthError("the API key and project number are both needed")
+        await self._secrets.set(provider.picker_api_key_name, api_key)
+        await self._secrets.set(provider.picker_app_id_name, app_id)
+        await self._audit.append(
+            actor="owner",
+            tool_name=f"{provider.key}__picker_setup",
+            decision="allow",
+            rules_matched="builtin:owner-setup",
+            params={
+                "provider": provider.key,
+                "api_key_name": provider.picker_api_key_name,
+                "app_id_name": provider.picker_app_id_name,
+            },
+            outcome="file picker setup stored encrypted — values never recorded",
+        )
+        return await self.picker_recipe(provider_key)
+
+    async def record_picker_selection(
+        self, app_key: str, files: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Verify files selected in the browser picker against the connected
+        account, then remember them. The picker grant is what lets the
+        backend read files it did not create."""
+        provider, app = self._app(app_key)
+        if app.key != "drive" or not provider.picker_scope:
+            raise ProviderAuthError("file picking is only available for Drive")
+        connection = await self._connection(provider.key)
+        scopes = set(connection.scopes.split()) if connection.scopes else set()
+        if not set(app.scopes).issubset(scopes):
+            raise ProviderAuthError("Drive needs to be connected before files can be picked")
+        ctx = ProviderContext(self, provider, app, connection)
+        picked: list[dict[str, Any]] = []
+        for item in files[:25]:
+            if not isinstance(item, dict):
+                continue
+            file_id = str(item.get("id") or "").strip()
+            if not file_id:
+                continue
+            try:
+                data = await ctx.json(
+                    "GET",
+                    f"/files/{quote(file_id, safe='')}",
+                    params={
+                        "fields": (
+                            "id,name,mimeType,modifiedTime,webViewLink,"
+                            "owners(emailAddress,displayName)"
+                        )
+                    },
+                )
+            except ProviderHTTPError as exc:
+                raise ProviderAuthError(
+                    "that file isn't available to Aether — choose it again in the picker"
+                ) from exc
+            picked.append(
+                {
+                    "id": str(data.get("id", file_id)),
+                    "name": str(data.get("name", item.get("name", ""))),
+                    "mime_type": str(data.get("mimeType", item.get("mime_type", ""))),
+                    "modified_time": str(data.get("modifiedTime", "")),
+                    "web_view_link": str(data.get("webViewLink", "")),
+                }
+            )
+        if not picked:
+            raise ProviderAuthError("choose at least one file")
+        existing: list[dict[str, Any]] = []
+        raw = await ctx.get_sync("picker:selected")
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError):
+                parsed = []
+            if isinstance(parsed, list):
+                existing = [entry for entry in parsed if isinstance(entry, dict)]
+        by_id = {str(entry.get("id", "")): entry for entry in existing if entry.get("id")}
+        for entry in picked:
+            by_id[entry["id"]] = entry
+        selected = list(by_id.values())[-50:]
+        await ctx.set_sync("picker:selected", json.dumps(selected, ensure_ascii=False))
+        await self._audit.append(
+            actor="owner",
+            tool_name=f"{app.key}__picker",
+            decision="allow",
+            rules_matched="builtin:file-picker",
+            params={"app": app.key, "count": len(picked)},
+            outcome=f"selected {len(picked)} file{'' if len(picked) == 1 else 's'} for {app.name}",
+        )
+        return {"selected": picked, "count": len(selected)}
 
     async def handle_callback(
         self, provider_key: str, *, code: str, state: str

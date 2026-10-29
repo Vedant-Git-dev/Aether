@@ -16,7 +16,7 @@ from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..agent.tools import with_plain_calls, with_plain_event
 from ..apps_catalog import CATALOG, recipe_for
@@ -1275,6 +1275,21 @@ class ProviderClientBody(BaseModel):
     client_secret: str
 
 
+class ProviderPickerBody(BaseModel):
+    api_key: str
+    app_id: str
+
+
+class ProviderPickedFile(BaseModel):
+    id: str = ""
+    name: str = ""
+    mime_type: str = ""
+
+
+class ProviderPickedBody(BaseModel):
+    files: list[ProviderPickedFile] = Field(default_factory=list)
+
+
 def _provider_runtime(request: Request):
     runtime = getattr(request.app.state, "provider_runtime", None)
     if runtime is None:
@@ -1313,6 +1328,50 @@ async def provider_client(
     try:
         return await _provider_runtime(request).save_client(
             provider, body.client_id, body.client_secret
+        )
+    except ProviderError as exc:
+        raise HTTPException(status_code=400, detail=exc.plain) from exc
+
+
+@router.get("/api/providers/{provider}/picker")
+async def provider_picker(provider: str, request: Request, token: str | None = None) -> dict:
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    try:
+        return await _provider_runtime(request).picker_recipe(provider)
+    except ProviderError as exc:
+        raise HTTPException(status_code=404, detail=exc.plain) from exc
+
+
+@router.put("/api/providers/{provider}/picker")
+async def provider_picker_setup(
+    provider: str,
+    body: ProviderPickerBody,
+    request: Request,
+    token: str | None = None,
+) -> dict:
+    """Write-only picker setup. The values are public browser identifiers,
+    but the reply never echoes them."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    try:
+        return await _provider_runtime(request).save_picker(provider, body.api_key, body.app_id)
+    except ProviderError as exc:
+        raise HTTPException(status_code=400, detail=exc.plain) from exc
+
+
+@router.post("/api/providers/{app}/picked")
+async def provider_picked(
+    app: str,
+    body: ProviderPickedBody,
+    request: Request,
+    token: str | None = None,
+) -> dict:
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    try:
+        return await _provider_runtime(request).record_picker_selection(
+            app, [file.model_dump() for file in body.files]
         )
     except ProviderError as exc:
         raise HTTPException(status_code=400, detail=exc.plain) from exc

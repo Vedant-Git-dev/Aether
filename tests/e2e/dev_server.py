@@ -1185,6 +1185,9 @@ class FakeProviderRuntime:
         self.identity = ""
         self.github_connected = False
         self.github_identity = ""
+        self.picker_configured = False
+        self.picker_api_key = ""
+        self.picker_app_id = ""
 
     def _app(self) -> dict:
         return {
@@ -1246,6 +1249,41 @@ class FakeProviderRuntime:
             "token_url": "",
         }
 
+    def _drive_app(self) -> dict:
+        return {
+            "key": "drive",
+            "name": "Google Drive",
+            "provider": "google",
+            "connected": self.connected,
+            "status": "active" if self.connected else "not_connected",
+            "identity": self.identity,
+            "auth_mode": "oauth",
+            "scopes": ["https://www.googleapis.com/auth/drive.file"],
+            "actions": 3 if self.connected else 0,
+            "setup_required": not self.client_configured,
+            "setup_url": "https://console.cloud.google.com/apis/credentials",
+            "setup_steps": [
+                "Open Google Cloud Console and create or select a project.",
+                "Enable the Google Drive API and Google Picker API.",
+            ],
+            "redirect_uri": "http://test/api/oauth/google/callback",
+            "last_error": "",
+            "auth_modes": ["oauth"],
+            "default_auth_mode": "oauth",
+            "token_label": "",
+            "token_steps": [],
+            "token_expires": False,
+            "token_url": "",
+        }
+
+    def _docs_app(self) -> dict:
+        return {
+            **self._drive_app(),
+            "key": "docs",
+            "name": "Google Docs",
+            "actions": 3 if self.connected else 0,
+        }
+
     def _github_app(self) -> dict:
         return {
             "key": "github",
@@ -1294,7 +1332,13 @@ class FakeProviderRuntime:
     async def feed(self) -> dict:
         return {
             "configured": True,
-            "apps": [self._app(), self._calendar_app(), self._github_app()],
+            "apps": [
+                self._app(),
+                self._calendar_app(),
+                self._drive_app(),
+                self._docs_app(),
+                self._github_app(),
+            ],
             "providers": [
                 {
                     "key": "google",
@@ -1330,6 +1374,31 @@ class FakeProviderRuntime:
         assert client_id and client_secret
         self.client_configured = True
         return self._recipe()
+
+    async def picker_recipe(self, provider: str) -> dict:
+        return {
+            "provider": provider,
+            "configured": bool(
+                self.client_configured and self.picker_api_key and self.picker_app_id
+            ),
+            "client_id": "client-id.apps.googleusercontent.com",
+            "api_key": self.picker_api_key,
+            "app_id": self.picker_app_id,
+            "scope": "https://www.googleapis.com/auth/drive.file",
+            "origin": "http://test",
+            "setup_url": "https://console.cloud.google.com/apis/credentials",
+        }
+
+    async def save_picker(self, provider: str, api_key: str, app_id: str) -> dict:
+        assert api_key and app_id
+        self.picker_api_key = api_key
+        self.picker_app_id = app_id
+        self.picker_configured = True
+        return await self.picker_recipe(provider)
+
+    async def record_picker_selection(self, app: str, files: list[dict]) -> dict:
+        assert app == "drive"
+        return {"selected": files, "count": len(files)}
 
     async def connect(self, app: str, *, auth_mode: str | None = None) -> ConnectResult:
         if app == "github":

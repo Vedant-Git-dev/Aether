@@ -80,6 +80,9 @@ class ProviderDefinition:
     setup_steps: tuple[str, ...] = ()
     static_token: StaticTokenSetup | None = None
     validate_token: Callable[[Any, str], Awaitable[None]] | None = None
+    picker_api_key_name: str = ""
+    picker_app_id_name: str = ""
+    picker_scope: str = ""
     forbidden_plain: str = ""
     not_found_plain: str = ""
     apps: tuple[AppDefinition, ...] = ()

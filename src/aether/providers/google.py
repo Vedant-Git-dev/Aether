@@ -1,9 +1,10 @@
-"""Google: Gmail and Calendar over one shared OAuth connection."""
+"""Google: Gmail, Calendar, Drive, and Docs over one shared OAuth connection."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import re
 from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
@@ -23,16 +24,27 @@ GMAIL_READ = "https://www.googleapis.com/auth/gmail.readonly"
 GMAIL_COMPOSE = "https://www.googleapis.com/auth/gmail.compose"
 CALENDAR_READ = "https://www.googleapis.com/auth/calendar.readonly"
 CALENDAR_EVENTS = "https://www.googleapis.com/auth/calendar.events"
+DRIVE_FILE = "https://www.googleapis.com/auth/drive.file"
 CALENDAR_API = "https://www.googleapis.com/calendar/v3"
+DRIVE_API = "https://www.googleapis.com/drive/v3"
+DOCS_API = "https://docs.googleapis.com/v1"
+
+_DRIVE_FILE_FIELDS = (
+    "id,name,mimeType,modifiedTime,createdTime,webViewLink,size,parents,"
+    "owners(emailAddress,displayName)"
+)
+_FOLDER_MIME = "application/vnd.google-apps.folder"
 
 _GOOGLE_SETUP_URL = "https://console.cloud.google.com/apis/credentials"
 _GOOGLE_SETUP_STEPS = (
     "Open Google Cloud Console and create or select a project.",
     "Enable the Gmail API and Google Calendar API under APIs and Services, then Library.",
+    "When you connect Drive, also enable the Google Drive API and Google Picker API.",
     "On the OAuth consent screen, choose External and add the exact Google account "
     "you will sign in with as a test user.",
     "Create credentials, choose OAuth client ID, then Web application.",
-    "Add the redirect URI shown here as an authorized redirect URI.",
+    "Add the redirect URI shown here as an authorized redirect URI, and add this "
+    "Aether page's origin as an authorized JavaScript origin for the Drive picker.",
     "Paste the client ID and client secret into Aether when asked.",
 )
 
@@ -483,6 +495,207 @@ async def freebusy(ctx: Any, params: dict[str, Any]) -> Any:
     )
 
 
+def _drive_file(data: dict[str, Any]) -> dict[str, Any]:
+    owners = [
+        str(owner.get("emailAddress") or owner.get("displayName") or "")
+        for owner in data.get("owners", []) or []
+        if isinstance(owner, dict)
+    ]
+    return {
+        "id": str(data.get("id", "")),
+        "name": str(data.get("name", "")),
+        "mime_type": str(data.get("mimeType", "")),
+        "modified_time": str(data.get("modifiedTime", "")),
+        "created_time": str(data.get("createdTime", "")),
+        "web_view_link": str(data.get("webViewLink", "")),
+        "size": str(data.get("size", "")),
+        "parents": [str(parent) for parent in data.get("parents", []) or []],
+        "owners": [owner for owner in owners if owner],
+    }
+
+
+def _document_view(data: dict[str, Any]) -> dict[str, Any]:
+    document_id = str(data.get("documentId", ""))
+    return {
+        "id": document_id,
+        "title": str(data.get("title", "")),
+        "revision_id": str(data.get("revisionId", "")),
+        "url": (
+            f"https://docs.google.com/document/d/{quote(document_id, safe='')}/edit"
+            if document_id
+            else ""
+        ),
+    }
+
+
+def _document_element_text(element: dict[str, Any]) -> str:
+    paragraph = element.get("paragraph")
+    if isinstance(paragraph, dict):
+        parts: list[str] = []
+        for item in paragraph.get("elements", []) or []:
+            run = item.get("textRun") if isinstance(item, dict) else None
+            if isinstance(run, dict):
+                parts.append(str(run.get("content", "")))
+        return "".join(parts)
+    table = element.get("table")
+    if isinstance(table, dict):
+        parts = []
+        for row in table.get("tableRows", []) or []:
+            if not isinstance(row, dict):
+                continue
+            for cell in row.get("tableCells", []) or []:
+                if not isinstance(cell, dict):
+                    continue
+                for child in cell.get("content", []) or []:
+                    if isinstance(child, dict):
+                        parts.append(_document_element_text(child))
+        return "".join(parts)
+    contents = element.get("tableOfContents")
+    if isinstance(contents, dict):
+        return "".join(
+            _document_element_text(child)
+            for child in contents.get("content", []) or []
+            if isinstance(child, dict)
+        )
+    return ""
+
+
+def _document_text(data: dict[str, Any]) -> str:
+    body = data.get("body") or {}
+    return "".join(
+        _document_element_text(element)
+        for element in body.get("content", []) or []
+        if isinstance(element, dict)
+    )
+
+
+async def list_files(ctx: Any, params: dict[str, Any]) -> Any:
+    try:
+        page_size = int(params.get("page_size") or 25)
+    except (TypeError, ValueError):
+        page_size = 25
+    page_size = max(1, min(page_size, 100))
+    request_params: dict[str, Any] = {
+        "pageSize": page_size,
+        "fields": f"files({_DRIVE_FILE_FIELDS}),nextPageToken",
+        "orderBy": str(params.get("order_by") or "modifiedTime desc"),
+        "spaces": "drive",
+        "q": str(params.get("query") or "").strip() or "trashed = false",
+    }
+    page_token = str(params.get("page_token") or "").strip()
+    if page_token:
+        request_params["pageToken"] = page_token
+    data = await ctx.json("GET", "/files", params=request_params)
+    selected: list[dict[str, Any]] = []
+    raw = await ctx.get_sync("picker:selected")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            parsed = []
+        if isinstance(parsed, list):
+            selected = [entry for entry in parsed if isinstance(entry, dict)]
+    selected_ids = {str(entry.get("id", "")) for entry in selected if entry.get("id")}
+    files = []
+    for file in data.get("files", []) or []:
+        if not isinstance(file, dict):
+            continue
+        view = _drive_file(file)
+        view["selected"] = view["id"] in selected_ids
+        files.append(view)
+    return _ok(
+        {
+            "files": files,
+            "selected": selected,
+            "next_page_token": str(data.get("nextPageToken", "")),
+        }
+    )
+
+
+async def get_file(ctx: Any, params: dict[str, Any]) -> Any:
+    file_id = str(params.get("file_id") or "").strip()
+    if not file_id:
+        return _err("a file id is required")
+    data = await ctx.json(
+        "GET",
+        f"/files/{quote(file_id, safe='')}",
+        params={"fields": _DRIVE_FILE_FIELDS},
+    )
+    return _ok({"file": _drive_file(data)})
+
+
+async def create_folder(ctx: Any, params: dict[str, Any]) -> Any:
+    name = str(params.get("name") or "").strip()
+    if not name:
+        return _err("a folder name is required")
+    body: dict[str, Any] = {"name": name, "mimeType": _FOLDER_MIME}
+    parent_id = str(params.get("parent_id") or "").strip()
+    if parent_id:
+        body["parents"] = [parent_id]
+    data = await ctx.json(
+        "POST",
+        "/files",
+        params={"fields": _DRIVE_FILE_FIELDS},
+        json=body,
+    )
+    return _ok({"folder": _drive_file(data)})
+
+
+async def create_document(ctx: Any, params: dict[str, Any]) -> Any:
+    title = str(params.get("title") or "").strip()
+    if not title:
+        return _err("a document title is required")
+    data = await ctx.json("POST", "/documents", json={"title": title})
+    document_id = str(data.get("documentId", ""))
+    text = str(params.get("text") or "")
+    if text:
+        if not document_id:
+            return _err("the document was created, but its id was missing")
+        await ctx.json(
+            "POST",
+            f"/documents/{quote(document_id, safe='')}:batchUpdate",
+            json={"requests": [{"insertText": {"text": text, "endOfSegmentLocation": {}}}]},
+        )
+    return _ok(
+        {
+            "document": _document_view(data),
+            "appended_characters": len(text),
+        }
+    )
+
+
+async def read_document(ctx: Any, params: dict[str, Any]) -> Any:
+    document_id = str(params.get("document_id") or "").strip()
+    if not document_id:
+        return _err("a document id is required")
+    data = await ctx.json("GET", f"/documents/{quote(document_id, safe='')}")
+    document = _document_view(data)
+    document["text"] = _document_text(data)
+    document["text_length"] = len(document["text"])
+    return _ok({"document": document})
+
+
+async def append_text(ctx: Any, params: dict[str, Any]) -> Any:
+    document_id = str(params.get("document_id") or "").strip()
+    if not document_id:
+        return _err("a document id is required")
+    text = str(params.get("text") or "")
+    if not text:
+        return _err("some text is required")
+    data = await ctx.json(
+        "POST",
+        f"/documents/{quote(document_id, safe='')}:batchUpdate",
+        json={"requests": [{"insertText": {"text": text, "endOfSegmentLocation": {}}}]},
+    )
+    return _ok(
+        {
+            "document_id": document_id,
+            "appended_characters": len(text),
+            "replies": data.get("replies") or [],
+        }
+    )
+
+
 _TOOL_LIST = ToolDefinition(
     key="list_messages",
     description=(
@@ -727,6 +940,125 @@ _TOOL_CAL_FREEBUSY = ToolDefinition(
     handler=freebusy,
 )
 
+_TOOL_DRIVE_LIST = ToolDefinition(
+    key="list_files",
+    description=(
+        "List Google Drive files Aether created or you selected in the Google "
+        "Picker. Files picked in Aether's picker are marked selected. Use a "
+        "Drive query to narrow the list. Broad Drive search is not available "
+        "with this connection."
+    ),
+    effect="read",
+    required_scopes=(DRIVE_FILE,),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Optional Drive query, such as name contains 'notes'.",
+            },
+            "page_size": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "description": "How many files to return.",
+            },
+            "page_token": {"type": "string", "description": "Next-page token."},
+            "order_by": {
+                "type": "string",
+                "description": "Drive sort order; defaults to modifiedTime desc.",
+            },
+        },
+        "required": [],
+    },
+    handler=list_files,
+)
+
+_TOOL_DRIVE_GET = ToolDefinition(
+    key="get_file",
+    description="Read metadata for one Google Drive file Aether can access.",
+    effect="read",
+    required_scopes=(DRIVE_FILE,),
+    input_schema={
+        "type": "object",
+        "properties": {"file_id": {"type": "string"}},
+        "required": ["file_id"],
+    },
+    handler=get_file,
+)
+
+_TOOL_DRIVE_FOLDER = ToolDefinition(
+    key="create_folder",
+    description="Create a Google Drive folder Aether owns.",
+    effect="write",
+    required_scopes=(DRIVE_FILE,),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Folder name."},
+            "parent_id": {
+                "type": "string",
+                "description": "Optional parent folder id.",
+            },
+        },
+        "required": ["name"],
+    },
+    handler=create_folder,
+)
+
+_TOOL_DOC_CREATE = ToolDefinition(
+    key="create_document",
+    description=(
+        "Create a Google Doc, optionally with starting text. The new document "
+        "is owned by Aether and can be read or appended to later."
+    ),
+    effect="write",
+    required_scopes=(DRIVE_FILE,),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Document title."},
+            "text": {
+                "type": "string",
+                "description": "Optional text to add when the document is created.",
+            },
+        },
+        "required": ["title"],
+    },
+    handler=create_document,
+)
+
+_TOOL_DOC_READ = ToolDefinition(
+    key="read_document",
+    description=(
+        "Read the full text of a Google Doc Aether created or you selected in the Google Picker."
+    ),
+    effect="read",
+    required_scopes=(DRIVE_FILE,),
+    input_schema={
+        "type": "object",
+        "properties": {"document_id": {"type": "string"}},
+        "required": ["document_id"],
+    },
+    handler=read_document,
+)
+
+_TOOL_DOC_APPEND = ToolDefinition(
+    key="append_text",
+    description="Append text to the end of a Google Doc Aether can access.",
+    effect="write",
+    required_scopes=(DRIVE_FILE,),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "document_id": {"type": "string"},
+            "text": {"type": "string", "description": "Text to add to the end."},
+        },
+        "required": ["document_id", "text"],
+    },
+    handler=append_text,
+)
+
 GMAIL_APP = AppDefinition(
     key="gmail",
     name="Gmail",
@@ -758,6 +1090,32 @@ CALENDAR_APP = AppDefinition(
     ),
 )
 
+DRIVE_APP = AppDefinition(
+    key="drive",
+    name="Google Drive",
+    provider="google",
+    api_base=DRIVE_API,
+    scopes=(DRIVE_FILE,),
+    tools=(
+        _TOOL_DRIVE_LIST,
+        _TOOL_DRIVE_GET,
+        _TOOL_DRIVE_FOLDER,
+    ),
+)
+
+DOCS_APP = AppDefinition(
+    key="docs",
+    name="Google Docs",
+    provider="google",
+    api_base=DOCS_API,
+    scopes=(DRIVE_FILE,),
+    tools=(
+        _TOOL_DOC_CREATE,
+        _TOOL_DOC_READ,
+        _TOOL_DOC_APPEND,
+    ),
+)
+
 GOOGLE_PROVIDER = ProviderDefinition(
     key="google",
     name="Google",
@@ -774,7 +1132,10 @@ GOOGLE_PROVIDER = ProviderDefinition(
     extra_auth_params={"access_type": "offline", "include_granted_scopes": "true"},
     setup_url=_GOOGLE_SETUP_URL,
     setup_steps=_GOOGLE_SETUP_STEPS,
-    apps=(GMAIL_APP, CALENDAR_APP),
+    picker_api_key_name="GOOGLE_PICKER_API_KEY",
+    picker_app_id_name="GOOGLE_PICKER_APP_ID",
+    picker_scope=DRIVE_FILE,
+    apps=(GMAIL_APP, CALENDAR_APP, DRIVE_APP, DOCS_APP),
 )
 
 PROVIDERS = [GOOGLE_PROVIDER]

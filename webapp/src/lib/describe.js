@@ -121,7 +121,7 @@ const APP_NAMES = {
   gmail: "Email", mail: "Email", email: "Email", outlook: "Email",
   calendar: "Calendar", gcal: "Calendar",
   slack: "Slack", telegram: "Telegram", discord: "Discord", whatsapp: "WhatsApp", teams: "Teams",
-  github: "GitHub", drive: "Files", filesystem: "Files", fs: "Files",
+  github: "GitHub", drive: "Drive", docs: "Docs", filesystem: "Files", fs: "Files",
   phone: "Phone (SMS)", sms: "Phone (SMS)", call: "Phone call",
   memory: "Aether's memory",
 };
@@ -140,7 +140,8 @@ const NOUNS = { email: "email", emails: "email", mail: "email", message: "messag
   channel: "channels", channels: "channels", contact: "contacts", contacts: "contacts" };
 
 const DEFAULT_NOUN = { Email: "email", Calendar: "events", Slack: "messages", Telegram: "messages",
-  Discord: "messages", WhatsApp: "messages", Teams: "messages", GitHub: "issues", Files: "files" };
+  Discord: "messages", WhatsApp: "messages", Teams: "messages", GitHub: "issues", Files: "files",
+  Drive: "files", Docs: "documents" };
 
 const NATIVE_TOOLS = {
   memory_search: "Searching memory",
@@ -196,6 +197,12 @@ const PROVIDER_ACTION_IDIOMS = {
   comment_on_pull_request: () => "Commenting on the pull request",
   list_notifications: () => "Checking GitHub notifications",
   search: (appName) => `Searching ${appName || "GitHub"}`,
+  list_files: () => "Checking the Drive files",
+  get_file: () => "Reading the Drive file",
+  create_folder: () => "Creating the Drive folder",
+  create_document: () => "Creating the document",
+  read_document: () => "Reading the document",
+  append_text: () => "Adding to the document",
 };
 
 export function appLabel(source) {

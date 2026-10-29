@@ -1,9 +1,10 @@
-"""The direct-provider panel walk: Gmail setup, the callback, and disconnect.
+"""The direct-provider panel walk: Gmail setup, the callback, Drive's file
+picker setup, and disconnect.
 
 The dev fixture's provider runtime is the real route surface with
-in-memory Gmail and Calendar cards on one Google connection; the OAuth
-browser tab is skipped by landing the callback directly, which is the
-same state-only route Google calls.
+in-memory Gmail, Calendar, Drive, and Docs cards on one Google connection;
+the OAuth browser tab is skipped by landing the callback directly, which is
+the same state-only route Google calls.
 """
 
 from __future__ import annotations
@@ -42,6 +43,29 @@ def test_github_token_card_connects_and_disconnects(page, live_server, token) ->
 
     card.get_by_role("button", name="Disconnect").click()
     page.wait_for_selector('[data-testid="provider-github"]:has-text("Not connected")')
+
+
+def test_drive_picker_setup_is_saved_from_the_panel(page, live_server, token) -> None:
+    _set_token(page, token)
+    page.goto(f"{live_server}/#/apps")
+    page.wait_for_selector('[data-testid="provider-gmail"]')
+
+    card = page.locator('[data-testid="provider-gmail"]')
+    form = card.locator("form")
+    form.get_by_placeholder("Client ID").fill("client-id.apps.googleusercontent.com")
+    form.get_by_placeholder("Client secret").fill("client-secret")
+    form.get_by_role("button", name="Save client").click()
+    page.wait_for_selector('[data-testid="provider-gmail"]:has-text("Not connected")')
+
+    page.goto(f"{live_server}/api/oauth/google/callback?code=e2e&state=e2e")
+    page.wait_for_selector('[data-testid="provider-drive"]:has-text("Connected")')
+
+    picker = page.locator('[data-testid="drive-picker"]')
+    picker.get_by_placeholder("Google API key").fill("picker-api-key")
+    picker.get_by_placeholder("Google Cloud project number").fill("123456")
+    picker.get_by_role("button", name="Save picker setup").click()
+    page.wait_for_selector('[data-testid="drive-picker"]:has-text("Choose files")')
+    assert "Choose the Google Docs" in picker.inner_text()
 
 
 def test_direct_gmail_setup_callback_and_disconnect(page, live_server, token) -> None:

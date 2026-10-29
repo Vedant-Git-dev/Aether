@@ -7,6 +7,7 @@ import { Button, Card, Field, SectionLabel } from "../components/ui.jsx";
 import EmptyState, { NoToken } from "../components/EmptyState.jsx";
 import IntegrationCard, { BrandLogo, CONFIG_TOAST } from "../components/IntegrationCard.jsx";
 import HubCard from "../components/HubCard.jsx";
+import GooglePicker from "../components/GooglePicker.jsx";
 import { useToast } from "../components/Toasts.jsx";
 import { api, hasToken } from "../lib/api.js";
 import { assetUrl, ASSET_V } from "../lib/assets.js";
@@ -41,10 +42,12 @@ const PROVIDER_FACES = {
   gmail: { imgSrc: icon("icon-gmail.png"), label: "Gmail" },
   calendar: { imgSrc: icon("icon-calendar.png"), label: "Calendar" },
   github: { imgSrc: icon("icon-github.png"), label: "GitHub" },
+  drive: { icon: "folder", label: "Google Drive" },
+  docs: { icon: "docs", label: "Google Docs" },
   linkedin: { icon: "apps", label: "LinkedIn" },
 };
 
-function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken }) {
+function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken, onRefresh }) {
   const toast = useToast();
   const [setupOpen, setSetupOpen] = useState(Boolean(app.setup_required && !app.connected));
   const [tokenOpen, setTokenOpen] = useState(false);
@@ -56,14 +59,17 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken 
   const face = PROVIDER_FACES[app.key] || { icon: "apps", label: app.name };
   const connected = app.status === "active";
   const reauth = app.status === "reauth_required";
-  const statusText = connected
-    ? `Connected${app.identity ? ` — ${app.identity}` : ""} · ${app.actions} action${app.actions === 1 ? "" : "s"}`
-    : reauth
-      ? `Needs reconnecting${app.last_error ? ` — ${app.last_error}` : ""}`
-      : app.setup_required
-        ? "Setup needed"
-        : "Not connected";
-  const statusTone = connected ? "ok" : reauth || app.setup_required ? "warn" : "idle";
+  const needsAccess = connected && app.actions === 0;
+  const statusText = needsAccess
+    ? "Access needed"
+    : connected
+      ? `Connected${app.identity ? ` — ${app.identity}` : ""} · ${app.actions} action${app.actions === 1 ? "" : "s"}`
+      : reauth
+        ? `Needs reconnecting${app.last_error ? ` — ${app.last_error}` : ""}`
+        : app.setup_required
+          ? "Setup needed"
+          : "Not connected";
+  const statusTone = needsAccess ? "warn" : connected ? "ok" : reauth || app.setup_required ? "warn" : "idle";
   const canSwitchMode = (app.auth_modes || []).includes("oauth") && app.default_auth_mode === "token";
   const alternateMode = app.auth_mode === "oauth" ? "token" : "oauth";
   const alternateLabel = app.auth_mode === "oauth" ? "Use a token" : "Use browser sign-in";
@@ -204,9 +210,22 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken 
         </form>
       ) : null}
 
+      {app.key === "drive" && connected && !needsAccess ? (
+        <GooglePicker app={app} onSelected={onRefresh} />
+      ) : null}
+      {app.key === "docs" && connected && !needsAccess ? (
+        <div className="text-xs text-ink-3">
+          Aether can read and append to the Docs you choose in the Drive card.
+        </div>
+      ) : null}
+
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs text-ink-3">
-          {connected ? "What Aether may do is governed by the policy gate." : "Connect to let Aether use this app."}
+          {needsAccess
+            ? "Add this app's access without disconnecting the others."
+            : connected
+              ? "What Aether may do is governed by the policy gate."
+              : "Connect to let Aether use this app."}
         </span>
         <div className="flex items-center gap-2">
           {canSwitchMode ? (
@@ -214,13 +233,13 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken 
               {alternateLabel}
             </Button>
           ) : null}
-          {connected ? (
+          {connected && !needsAccess ? (
             <Button type="button" kind="neutral" onClick={() => onDisconnect(app)} disabled={busy}>
               Disconnect
             </Button>
           ) : (
             <Button type="button" kind="primary" onClick={() => connect(app.auth_mode)} disabled={busy}>
-              {reauth ? "Reconnect" : app.setup_required ? "Set up" : "Connect"}
+              {needsAccess ? "Add access" : reauth ? "Reconnect" : app.setup_required ? "Set up" : "Connect"}
             </Button>
           )}
         </div>
@@ -491,6 +510,7 @@ export default function AppsPage() {
                 onDisconnect={disconnectProvider}
                 onSaveClient={saveProviderClient}
                 onSaveToken={saveProviderToken}
+                onRefresh={load}
               />
             ))}
           </div>

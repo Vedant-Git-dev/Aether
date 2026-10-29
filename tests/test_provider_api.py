@@ -46,6 +46,25 @@ class FakeRuntime:
         assert client_secret
         return {"provider": provider, "configured": True, "redirect_uri": "https://x/cb"}
 
+    async def picker_recipe(self, provider: str) -> dict:
+        return {
+            "provider": provider,
+            "configured": True,
+            "client_id": "client-id",
+            "api_key": "api-key",
+            "app_id": "123",
+            "scope": "https://www.googleapis.com/auth/drive.file",
+            "origin": "https://x",
+            "setup_url": "https://console.cloud.google.com/apis/credentials",
+        }
+
+    async def save_picker(self, provider: str, api_key: str, app_id: str) -> dict:
+        assert api_key and app_id
+        return await self.picker_recipe(provider)
+
+    async def record_picker_selection(self, app: str, files: list[dict]) -> dict:
+        return {"selected": files, "count": len(files)}
+
     async def connect(self, app: str, *, auth_mode: str | None = None) -> ConnectResult:
         if app == "missing":
             from aether.providers.types import ProviderNotConfigured
@@ -205,3 +224,36 @@ async def test_client_setup_is_write_only_and_returns_the_recipe() -> None:
     assert response.status_code == 200
     assert response.json()["configured"] is True
     assert "secret-value" not in response.text
+
+
+async def test_picker_setup_and_selection_are_token_guarded() -> None:
+    runtime = FakeRuntime()
+    async with _client(_app(runtime)) as client:
+        assert (await client.get("/api/providers/google/picker")).status_code == 401
+        recipe = await client.get("/api/providers/google/picker", params={"token": "secret"})
+        assert recipe.status_code == 200
+        assert recipe.json()["scope"].endswith("drive.file")
+
+        saved = await client.put(
+            "/api/providers/google/picker",
+            params={"token": "secret"},
+            json={"api_key": "api-key", "app_id": "123"},
+        )
+        assert saved.status_code == 200
+        assert saved.json()["configured"] is True
+
+        picked = await client.post(
+            "/api/providers/drive/picked",
+            params={"token": "secret"},
+            json={
+                "files": [
+                    {
+                        "id": "doc-1",
+                        "name": "Notes",
+                        "mime_type": "application/vnd.google-apps.document",
+                    }
+                ]
+            },
+        )
+        assert picked.status_code == 200
+        assert picked.json()["selected"][0]["id"] == "doc-1"

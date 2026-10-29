@@ -152,6 +152,8 @@ _ACTION_WORDS: dict[str, ActionWords] = {
         "Make the calendar change", "a calendar action", "made the calendar change"
     ),
     "github": ActionWords("Make the github change", "a github action", "made the github change"),
+    "drive": ActionWords("Make the Drive change", "a Drive action", "made the Drive change"),
+    "docs": ActionWords("Make the Docs change", "a Docs action", "made the Docs change"),
     "notion": ActionWords("Update notion", "a notion update", "updated notion"),
     "linear": ActionWords("Make the linear change", "a linear action", "made the linear change"),
     "payments": ActionWords("Send the payment", "a payment", "sent the payment"),
@@ -222,6 +224,24 @@ _PROVIDER_ACTION_WORDS: dict[tuple[str, str], ActionWords] = {
         "checked GitHub notifications",
     ),
     ("github", "search"): ActionWords("Search GitHub", "searching GitHub", "searched GitHub"),
+    ("drive", "list_files"): ActionWords(
+        "Check the Drive files", "checking the Drive files", "checked the Drive files"
+    ),
+    ("drive", "get_file"): ActionWords(
+        "Read the Drive file", "reading the Drive file", "read the Drive file"
+    ),
+    ("drive", "create_folder"): ActionWords(
+        "Create the Drive folder", "creating the Drive folder", "created the Drive folder"
+    ),
+    ("docs", "create_document"): ActionWords(
+        "Create the document", "creating the document", "created the document"
+    ),
+    ("docs", "read_document"): ActionWords(
+        "Read the document", "reading the document", "read the document"
+    ),
+    ("docs", "append_text"): ActionWords(
+        "Add to the document", "adding to the document", "added to the document"
+    ),
 }
 
 _NATIVE_WORDS: dict[str, ActionWords] = {
