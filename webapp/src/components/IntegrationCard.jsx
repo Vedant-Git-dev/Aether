@@ -8,16 +8,7 @@ import { statusColor } from "../lib/status.js";
 
 export const CONFIG_TOAST = "Change this from chat — /apps connects an app, /config changes settings.";
 
-function SlackGlyph() {
-  return (
-    <span className="grid h-9 w-9 grid-cols-2 place-items-center rounded-md border border-line bg-card p-1.5 text-ink-2" aria-hidden="true">
-      {[0, 1, 2, 3].map((i) => <i key={i} className="h-2.5 w-2.5 rounded-[3px] bg-current" />)}
-    </span>
-  );
-}
-
-export function BrandLogo({ icon, iconClass, imgSrc }) {
-  if (iconClass === "slack") return <SlackGlyph />;
+export function BrandLogo({ icon, imgSrc }) {
   if (imgSrc) return <img src={imgSrc} alt="" className="h-9 w-9 rounded-md object-contain" />;
   return (
     <span className="grid h-9 w-9 place-items-center rounded-md border border-line bg-card text-ink-2">

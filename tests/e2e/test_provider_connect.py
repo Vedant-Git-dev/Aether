@@ -18,6 +18,27 @@ def _set_token(page, token: str) -> None:
     page.add_init_script(f"localStorage.setItem('aether_token', '{token}')")
 
 
+def test_direct_apps_use_their_official_icons(page, live_server, token) -> None:
+    _set_token(page, token)
+    page.goto(f"{live_server}/#/apps")
+    page.wait_for_selector('[data-testid="provider-grid"]')
+
+    icons = {
+        "gmail": "icon-gmail.png",
+        "calendar": "icon-calendar.png",
+        "drive": "icon-drive.png",
+        "docs": "icon-docs.png",
+        "github": "icon-github.png",
+        "linkedin": "icon-linkedin.png",
+    }
+    for key, filename in icons.items():
+        src = page.locator(f'[data-testid="provider-{key}"] img').first.get_attribute("src")
+        assert filename in (src or "")
+
+    slack = page.locator('[data-testid="integration-c-slack"] img')
+    assert "icon-slack.png" in (slack.get_attribute("src") or "")
+
+
 def test_github_token_card_connects_and_disconnects(page, live_server, token) -> None:
     _set_token(page, token)
     page.goto(f"{live_server}/#/apps")
@@ -51,6 +72,7 @@ def test_drive_picker_setup_is_saved_from_the_panel(page, live_server, token) ->
     page.wait_for_selector('[data-testid="provider-gmail"]')
 
     card = page.locator('[data-testid="provider-gmail"]')
+    card.get_by_role("button", name="Set up").click()
     form = card.locator("form")
     form.get_by_placeholder("Client ID").fill("client-id.apps.googleusercontent.com")
     form.get_by_placeholder("Client secret").fill("client-secret")
@@ -76,7 +98,10 @@ def test_linkedin_setup_callback_note_and_disconnect(page, live_server, token) -
     card = page.locator('[data-testid="provider-linkedin"]')
     assert "Setup needed" in card.inner_text()
     assert "60 days" in card.inner_text()
+    # setup details are not a default-open menu: the card waits for the click
+    assert card.locator("form").count() == 0
 
+    card.get_by_role("button", name="Set up").click()
     form = card.locator("form")
     form.get_by_placeholder("Client ID").fill("linkedin-client-id")
     form.get_by_placeholder("Client secret").fill("linkedin-client-secret")
@@ -100,12 +125,15 @@ def test_direct_gmail_setup_callback_and_disconnect(page, live_server, token) ->
 
     card = page.locator('[data-testid="provider-gmail"]')
     assert "Setup needed" in card.inner_text()
-    assert "Add this redirect URI exactly" in card.inner_text()
-    assert "GOOGLE_CLIENT_ID" not in card.inner_text()  # setup steps are plain
+    assert card.locator("form").count() == 0
     calendar = page.locator('[data-testid="provider-calendar"]')
     assert "Google Calendar" in calendar.inner_text()
     assert "Setup needed" in calendar.inner_text()
 
+    card.get_by_role("button", name="Set up").click()
+    card.locator("form").wait_for()
+    assert "Add this redirect URI exactly" in card.inner_text()
+    assert "GOOGLE_CLIENT_ID" not in card.inner_text()  # setup steps are plain
     form = card.locator("form")
     form.get_by_placeholder("Client ID").fill("client-id.apps.googleusercontent.com")
     form.get_by_placeholder("Client secret").fill("client-secret")

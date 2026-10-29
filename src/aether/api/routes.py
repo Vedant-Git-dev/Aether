@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from ..agent.tools import with_plain_calls, with_plain_event
 from ..apps_catalog import CATALOG, recipe_for
+from ..config import is_legacy_composio_server
 from ..connectors.base import Attachment, InboundMessage, classify_attachment
 from ..proactive import DONE
 from ..providers.types import ProviderError
@@ -787,6 +788,7 @@ async def apps_feed(request: Request, token: str | None = None) -> dict:
                 "actions": _actions(s.name),
             }
             for s in config.mcp_servers
+            if not is_legacy_composio_server(s.name)
         ],
         "screen_vision_available": getattr(request.app.state, "screen_vision", None) is not None,
         "contacts_mode": config.contacts.mode,

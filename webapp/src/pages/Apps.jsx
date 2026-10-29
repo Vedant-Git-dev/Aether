@@ -14,13 +14,13 @@ import { assetUrl, ASSET_V } from "../lib/assets.js";
 const CONNECTOR_META = {
   telegram: { imgSrc: assetUrl(`icon-telegram.png?v=${ASSET_V}`), subtitle: "Bot API", permission: "Read, reply, monitor" },
   discord: { imgSrc: assetUrl(`icon-discord.png?v=${ASSET_V}`), subtitle: "Gateway", permission: "Read selected servers" },
-  slack: { iconClass: "slack", subtitle: "Socket mode", permission: "Read, search, draft" },
+  slack: { imgSrc: assetUrl(`icon-slack.png?v=${ASSET_V}`), subtitle: "Socket mode", permission: "Read, search, draft" },
 };
 
 const CATALOG_ICONS = {
   telegram: { imgSrc: assetUrl(`icon-telegram.png?v=${ASSET_V}`) },
   discord: { imgSrc: assetUrl(`icon-discord.png?v=${ASSET_V}`) },
-  slack: { iconClass: "slack" },
+  slack: { imgSrc: assetUrl(`icon-slack.png?v=${ASSET_V}`) },
 };
 
 // an MCP server's display face — by the name its config entry carries
@@ -29,6 +29,10 @@ const SERVER_FACES = {
   mail: { imgSrc: assetUrl(`icon-email.jpg?v=${ASSET_V}`), label: "Email" },
   calendar: { imgSrc: assetUrl(`icon-calendar.png?v=${ASSET_V}`), label: "Calendar" },
   github: { imgSrc: assetUrl(`icon-github.png?v=${ASSET_V}`), label: "GitHub" },
+  drive: { imgSrc: assetUrl(`icon-drive.png?v=${ASSET_V}`), label: "Google Drive" },
+  docs: { imgSrc: assetUrl(`icon-docs.png?v=${ASSET_V}`), label: "Google Docs" },
+  linkedin: { imgSrc: assetUrl(`icon-linkedin.png?v=${ASSET_V}`), label: "LinkedIn" },
+  slack: { imgSrc: assetUrl(`icon-slack.png?v=${ASSET_V}`), label: "Slack" },
   notion: { icon: "apps", label: "Notion" },
 };
 
@@ -38,14 +42,16 @@ const PROVIDER_FACES = {
   gmail: { imgSrc: icon("icon-gmail.png"), label: "Gmail" },
   calendar: { imgSrc: icon("icon-calendar.png"), label: "Calendar" },
   github: { imgSrc: icon("icon-github.png"), label: "GitHub" },
-  drive: { icon: "folder", label: "Google Drive" },
-  docs: { icon: "docs", label: "Google Docs" },
-  linkedin: { icon: "apps", label: "LinkedIn" },
+  drive: { imgSrc: icon("icon-drive.png"), label: "Google Drive" },
+  docs: { imgSrc: icon("icon-docs.png"), label: "Google Docs" },
+  linkedin: { imgSrc: icon("icon-linkedin.png"), label: "LinkedIn" },
 };
 
 function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken, onRefresh }) {
   const toast = useToast();
-  const [setupOpen, setSetupOpen] = useState(Boolean(app.setup_required && !app.connected));
+  // setup details stay closed until the user asks for them — a provider
+  // that needs setup must not open a form just because the page loaded
+  const [setupOpen, setSetupOpen] = useState(false);
   const [tokenOpen, setTokenOpen] = useState(false);
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
@@ -251,7 +257,7 @@ function AvailableCard({ iconFace, name, blurb }) {
     <div className="flex items-center gap-3 rounded-lg border border-line bg-card p-3">
       {iconFace.imgSrc
         ? <img src={iconFace.imgSrc} alt="" className="h-9 w-9 shrink-0 rounded-md object-contain" />
-        : <BrandLogo icon={iconFace.icon} iconClass={iconFace.iconClass} />}
+        : <BrandLogo icon={iconFace.icon} />}
       <div className="min-w-0">
         <div className="text-sm font-medium text-ink">{name}</div>
         {blurb ? <div className="text-xs text-ink-3">{blurb}</div> : null}
@@ -379,7 +385,7 @@ export default function AppsPage() {
     const missingKeys = c.enabled && !c.has_token;
     cards.push({
       key: `c-${c.name}`,
-      logo: <BrandLogo icon={meta.icon} iconClass={meta.iconClass} imgSrc={meta.imgSrc} />,
+      logo: <BrandLogo icon={meta.icon} imgSrc={meta.imgSrc} />,
       name: c.name[0].toUpperCase() + c.name.slice(1),
       subtitle: meta.subtitle,
       enabled: c.enabled,
@@ -393,7 +399,7 @@ export default function AppsPage() {
     const face = SERVER_FACES[s.name.toLowerCase()] || { icon: "apps", label: `MCP: ${s.name}` };
     cards.push({
       key: `s-${s.name}`,
-      logo: <BrandLogo icon={face.icon} iconClass={face.iconClass} imgSrc={face.imgSrc} />,
+      logo: <BrandLogo icon={face.icon} imgSrc={face.imgSrc} />,
       name: face.label,
       subtitle: `MCP server · ${s.transport}`,
       permission: "Tools exposed by this MCP server",
@@ -404,27 +410,6 @@ export default function AppsPage() {
       statusTone: !s.enabled ? "idle" : s.connected ? "ok" : "warn",
     });
   });
-  cards.push({
-    key: "screen-vision",
-    logo: <BrandLogo imgSrc={icon("icon-monitor.png")} />,
-    name: "Screen vision",
-    subtitle: "OCR, perception only",
-    permission: "Screenshots become memory, never actions",
-    enabled: data.screen_vision_available,
-    statusText: data.screen_vision_available ? "Available" : "Unavailable",
-    statusTone: data.screen_vision_available ? "ok" : "idle",
-  });
-  cards.push({
-    key: "contacts",
-    logo: <BrandLogo imgSrc={icon("icon-phone.png")} />,
-    name: "Contact allowlist",
-    subtitle: "Ingestion filter",
-    permission: "Filters senders before they reach memory",
-    enabled: data.contacts_mode === "enforce",
-    statusText: data.contacts_mode,
-    statusTone: data.contacts_mode === "enforce" ? "ok" : "idle",
-  });
-
   const connectedSurfaces = new Set(data.connectors.filter((c) => c.enabled).map((c) => c.name));
   const addable = (data.catalog || []).filter((r) => !connectedSurfaces.has(r.key));
 

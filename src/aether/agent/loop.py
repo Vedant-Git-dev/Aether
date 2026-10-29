@@ -36,7 +36,7 @@ from typing import Any
 from ..authz.approvals import APPROVED, DENIED, Approval, Approvals
 from ..authz.audit import AuditLog, verification_text
 from ..authz.policy import Decision, Policy, params_blob
-from ..config import AppConfig, PollTool
+from ..config import AppConfig, PollTool, is_legacy_composio_server
 from ..config_store import ConfigManager
 from ..config_store import actions_word as _actions_word
 from ..connectors.attachments import AttachmentProcessor, attachments_note
@@ -1213,7 +1213,7 @@ class AgentLoop:
                     lines.append(f"· {name} — not connected — /apps add {key} to connect")
         status = self._tools.mcp_status()
         for server in self._config.mcp_servers:
-            if not server.enabled:
+            if not server.enabled or is_legacy_composio_server(server.name):
                 continue
             if status.get(server.name):
                 count = self._tools.server_action_count(server.name)

@@ -1584,7 +1584,11 @@ def build_app() -> FastAPI:
             telegram=AppContacts(allowlist=[ContactRule(platform="telegram", handle="@sam")]),
         ),
         mcp_servers=[
-            MCPServerConfig(name="mail", transport=TransportConfig(type="http", url="https://x"))
+            MCPServerConfig(name="mail", transport=TransportConfig(type="http", url="https://x")),
+            # a stale pre-cutover entry: the panel must never render it
+            MCPServerConfig(
+                name="composio", transport=TransportConfig(type="http", url="https://hub.test/mcp")
+            ),
         ],
     )
     app.state.config = config

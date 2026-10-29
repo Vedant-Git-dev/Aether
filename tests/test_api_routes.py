@@ -789,6 +789,10 @@ async def test_apps_feed_reports_configured_connectors_and_capabilities() -> Non
         ),
         mcp_servers=[
             MCPServerConfig(name="mail", transport=TransportConfig(type="http", url="https://x")),
+            # the old app hub's entry is ignored after the cutover
+            MCPServerConfig(
+                name="composio", transport=TransportConfig(type="http", url="https://hub.test/mcp")
+            ),
         ],
         contacts=ContactsConfig(mode="enforce"),
     )

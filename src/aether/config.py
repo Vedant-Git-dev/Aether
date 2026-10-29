@@ -169,6 +169,14 @@ class MCPServerConfig(BaseModel):
     enabled: bool = True
 
 
+def is_legacy_composio_server(name: str) -> bool:
+    """The old app hub's MCP entry is ignored after the direct-provider
+    cutover. It is not a user MCP server: keeping it would expose the
+    broker's tools beside the native provider tools and bring the removed
+    card back into the Apps page."""
+    return name.strip().lower() == "composio"
+
+
 class PlatformToggle(BaseModel):
     enabled: bool = False
 
@@ -352,4 +360,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     if not p.is_file():
         return AppConfig()
     data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    return AppConfig.model_validate(data)
+    config = AppConfig.model_validate(data)
+    servers = [s for s in config.mcp_servers if not is_legacy_composio_server(s.name)]
+    if len(servers) == len(config.mcp_servers):
+        return config
+    return config.model_copy(update={"mcp_servers": servers})
