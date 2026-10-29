@@ -1,5 +1,7 @@
 """Tool-use loop tests with scripted providers — no network, no SDK."""
 
+import asyncio
+
 from fakes import CrashingExecutor, FakeExecutor, FakeProvider
 
 from aether.llm.agent import DEFAULT_MAX_ITERATIONS, run_tool_loop
@@ -168,3 +170,83 @@ def test_default_iterations_matches_agent_config() -> None:
     from aether.config import AgentConfig
 
     assert AgentConfig().max_tool_iterations == DEFAULT_MAX_ITERATIONS
+
+
+async def test_calls_in_one_proposal_run_side_by_side() -> None:
+    order: list[str] = []
+
+    async def execute(call: ToolCall) -> ToolResult:
+        order.append(f"start:{call.id}")
+        if call.id == "c1":
+            # c1 holds out until c2 has started — only possible when the
+            # two really run together (bounded, so a regression fails the
+            # order assert below instead of hanging the suite)
+            for _ in range(100):
+                if "start:c2" in order:
+                    break
+                await asyncio.sleep(0.01)
+        order.append(f"end:{call.id}")
+        return ToolResult(tool_call_id=call.id, name=call.name, content="ok")
+
+    provider = FakeProvider(
+        [
+            Turn(
+                tool_calls=[
+                    ToolCall(id="c1", name="search", arguments={"q": "a"}),
+                    ToolCall(id="c2", name="search", arguments={"q": "b"}),
+                ]
+            ),
+            Turn(text="done"),
+        ]
+    )
+
+    final, _ = await run_tool_loop(provider, "sys", [Message.user("go")], [_spec()], execute)
+
+    assert final.text == "done"
+    # the second call began before the first ended — side by side, not queued
+    assert order.index("start:c2") < order.index("end:c1")
+    # the results keep the proposal's own order
+    tool_msg = provider.calls[1][1][-1]
+    results = [b for b in tool_msg.blocks if isinstance(b, ToolResult)]
+    assert [r.tool_call_id for r in results] == ["c1", "c2"]
+
+
+async def test_an_exact_repeat_in_one_proposal_runs_after_its_first() -> None:
+    answered: list[dict] = []
+
+    async def execute(call: ToolCall) -> ToolResult:
+        # the repeat guard every real executor runs: a call identical to
+        # one already answered gets its own refusal, on its own record
+        seen = any(a["name"] == call.name and a["args"] == call.arguments for a in answered)
+        answered.append({"name": call.name, "args": dict(call.arguments)})
+        if seen:
+            return ToolResult(
+                tool_call_id=call.id, name=call.name, content="already did that this turn"
+            )
+        return ToolResult(tool_call_id=call.id, name=call.name, content="did it")
+
+    provider = FakeProvider(
+        [
+            Turn(
+                tool_calls=[
+                    ToolCall(id="c1", name="search", arguments={"q": "x"}),
+                    ToolCall(id="c2", name="search", arguments={"q": "x"}),
+                    ToolCall(id="c3", name="note_entity", arguments={"name": "Y"}),
+                ]
+            ),
+            Turn(text="done"),
+        ]
+    )
+
+    final, _ = await run_tool_loop(
+        provider, "sys", [Message.user("go")], [_spec("search"), _spec("note_entity")], execute
+    )
+
+    assert final.text == "done"
+    # every call reached the executor exactly once — the repeat included,
+    # and only after its first finished
+    assert [a["name"] for a in answered] == ["search", "note_entity", "search"]
+    tool_msg = provider.calls[1][1][-1]
+    results = [b for b in tool_msg.blocks if isinstance(b, ToolResult)]
+    assert [r.tool_call_id for r in results] == ["c1", "c2", "c3"]
+    assert [r.content for r in results] == ["did it", "already did that this turn", "did it"]

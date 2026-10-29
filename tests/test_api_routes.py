@@ -9,7 +9,6 @@ from fakes import (
     FakeAgentSettings,
     FakeApprovals,
     FakeAudit,
-    FakeComposioBridge,
     FakeConfigManager,
     FakeEventStore,
     FakeProactiveStore,
@@ -20,7 +19,6 @@ from fastapi import FastAPI
 from aether.agent.loop import CaptureRequestBox
 from aether.api.routes import router
 from aether.authz.approvals import Approval
-from aether.composio_bridge import ConnectedApp
 from aether.config import (
     AppConfig,
     AuthzConfig,
@@ -54,7 +52,6 @@ class FakeAgent:
         self.calls: list[tuple[int, str]] = []
         self.notified = 0
         self.submitted: list = []
-        self.watched: list[tuple[str, str]] = []
 
     async def decide(self, approval_id: int, decision: str):
         self.calls.append((approval_id, decision))
@@ -67,9 +64,6 @@ class FakeAgent:
 
     def submit_message(self, message) -> None:
         self.submitted.append(message)
-
-    def watch_connect(self, toolkit: str, request_id: str) -> None:
-        self.watched.append((toolkit, request_id))
 
 
 def _approval(approval_id: int = 1, status: str = "approved") -> Approval:
@@ -109,7 +103,7 @@ def _app(
     agent: FakeAgent | None = None,
     config: AppConfig | None = None,
     agent_settings: FakeAgentSettings | None = None,
-    composio: FakeComposioBridge | None = None,
+    provider_runtime=None,
     config_manager: FakeConfigManager | None = None,
     entities=None,
     scheduler=None,
@@ -143,8 +137,8 @@ def _app(
         app.state.agent = agent
     if agent_settings is not None:
         app.state.agent_settings = agent_settings
-    if composio is not None:
-        app.state.composio = composio
+    if provider_runtime is not None:
+        app.state.provider_runtime = provider_runtime
     if config_manager is not None:
         app.state.config_manager = config_manager
     if workspace is not None:
@@ -519,19 +513,27 @@ async def test_contacts_feed_lists_apps_with_their_own_slices() -> None:
     assert apps["gmail"]["allowlist"] == [
         {"platform": "gmail", "handle": "friend@example.com", "list": "app"}
     ]
-    # slack/discord: nothing connected, nothing configured — no cards
+    # discord: nothing connected, nothing configured — no card
     assert "discord" not in apps
-    assert "slack" not in apps
 
 
-async def test_contacts_feed_lists_a_connected_composio_app() -> None:
-    from fakes import FakeComposioBridge
+async def test_contacts_feed_lists_a_connected_direct_provider_app() -> None:
+    class _ProviderFeed:
+        async def feed(self):
+            return {
+                "apps": [
+                    {
+                        "key": "gmail",
+                        "name": "Gmail",
+                        "status": "active",
+                        "identity": "me@example.com",
+                    }
+                ]
+            }
 
-    bridge = FakeComposioBridge(
-        accounts=[ConnectedApp(id="ca_1", toolkit="gmail", status="ACTIVE", identity="")]
-    )
-    config = _contacts_config()
-    async with _client(_app(None, config=config, composio=bridge)) as client:
+    async with _client(
+        _app(None, config=_contacts_config(), provider_runtime=_ProviderFeed())
+    ) as client:
         body = (await client.get("/api/contacts", params={"token": "secret"})).json()
     apps = {a["key"]: a for a in body["apps"]}
     assert apps["gmail"]["connected"] is True
@@ -782,10 +784,13 @@ async def test_apps_feed_reports_configured_connectors_and_capabilities() -> Non
         messaging=MessagingConfig(
             telegram=PlatformToggle(enabled=True),
             discord=PlatformToggle(enabled=False),
-            slack=PlatformToggle(enabled=False),
         ),
         mcp_servers=[
             MCPServerConfig(name="mail", transport=TransportConfig(type="http", url="https://x")),
+            # the old app hub's entry is ignored after the cutover
+            MCPServerConfig(
+                name="composio", transport=TransportConfig(type="http", url="https://hub.test/mcp")
+            ),
         ],
         contacts=ContactsConfig(mode="enforce"),
     )
@@ -802,8 +807,8 @@ async def test_apps_feed_reports_configured_connectors_and_capabilities() -> Non
     assert data["screen_vision_available"] is True
     assert data["contacts_mode"] == "enforce"
     # the catalog rides along so the panel never hardcodes the chat-surface
-    # list — hub apps are /api/connections' job, fetched live
-    assert {c["key"] for c in data["catalog"]} == {"telegram", "discord", "slack"}
+    # list — direct apps come from /api/providers, fetched live
+    assert {c["key"] for c in data["catalog"]} == {"telegram", "discord"}
     assert all(set(c) == {"key", "name", "blurb", "kind"} for c in data["catalog"])
 
 
@@ -1332,85 +1337,6 @@ async def test_workspace_search_feed_finds_entries(tmp_path) -> None:
     assert any("working on Aether" in h["text"] for h in hits)
 
 
-# /api/connections — the app hub, driven from the panel
-# ---------------------------------------------------------------------------
-
-
-async def test_connections_feed_is_token_guarded() -> None:
-    async with _client(_app(None, composio=FakeComposioBridge())) as client:
-        assert (await client.get("/api/connections")).status_code == 401
-        assert (await client.post("/api/connections/gmail/connect")).status_code == 401
-        assert (await client.post("/api/connections/acc-1/disconnect")).status_code == 401
-
-
-async def test_connections_feed_is_503_without_a_bridge_wired() -> None:
-    async with _client(_app(None)) as client:  # no composio on state
-        response = await client.get("/api/connections", params={"token": "secret"})
-        assert response.status_code == 503
-
-
-async def test_connections_feed_answers_empty_and_unconfigured_without_a_key() -> None:
-    app = _app(None, composio=FakeComposioBridge(available=False))
-    async with _client(app) as client:
-        response = await client.get("/api/connections", params={"token": "secret"})
-    assert response.json() == {"configured": False, "connected": [], "toolkits": []}
-
-
-async def test_connections_feed_lists_accounts_and_the_live_catalog() -> None:
-    bridge = FakeComposioBridge(
-        accounts=[ConnectedApp(id="acc-1", toolkit="gmail", status="ACTIVE", identity="me@x.test")]
-    )
-    async with _client(_app(None, composio=bridge)) as client:
-        response = await client.get("/api/connections", params={"token": "secret"})
-    data = response.json()
-    assert data["configured"] is True
-    assert data["connected"] == [
-        {"id": "acc-1", "toolkit": "gmail", "status": "ACTIVE", "identity": "me@x.test"}
-    ]
-    assert data["toolkits"] == [
-        {
-            "slug": "gmail",
-            "name": "Gmail",
-            "logo": "https://logo.test/gmail.png",
-            "description": "your mail",
-        },
-        {"slug": "github", "name": "GitHub", "logo": "", "description": "your code"},
-    ]
-
-
-async def test_connect_returns_the_link_and_the_loop_watches_it() -> None:
-    bridge = FakeComposioBridge()
-    agent = FakeAgent()
-    async with _client(_app(None, composio=bridge, agent=agent)) as client:
-        response = await client.post("/api/connections/gmail/connect", params={"token": "secret"})
-    assert response.json() == {"redirect_url": "https://hub.example.test/connect/gmail"}
-    assert bridge.authorized == ["gmail"]
-    # a panel-driven connect lands in chat exactly like a chat-driven one
-    assert agent.watched == [("gmail", "req-1")]
-
-
-async def test_connect_without_a_key_is_an_honest_503() -> None:
-    app = _app(None, composio=FakeComposioBridge(available=False))
-    async with _client(app) as client:
-        response = await client.post("/api/connections/gmail/connect", params={"token": "secret"})
-    assert response.status_code == 503
-    assert "COMPOSIO_API_KEY" in response.json()["detail"]
-
-
-async def test_disconnect_removes_only_an_account_thats_ours() -> None:
-    bridge = FakeComposioBridge(
-        accounts=[ConnectedApp(id="acc-1", toolkit="gmail", status="ACTIVE", identity="me@x.test")]
-    )
-    async with _client(_app(None, composio=bridge)) as client:
-        response = await client.post(
-            "/api/connections/acc-1/disconnect", params={"token": "secret"}
-        )
-        missing = await client.post("/api/connections/acc-9/disconnect", params={"token": "secret"})
-    assert response.json() == {"disconnected": "gmail", "id": "acc-1"}
-    assert bridge.disconnected == ["acc-1"]
-    assert missing.status_code == 404
-
-
 # ---------------------------------------------------------------------------
 # /api/settings/fields + /api/settings/credentials — the editable surface
 # ---------------------------------------------------------------------------
@@ -1511,9 +1437,6 @@ async def test_settings_feed_carries_groups_kinds_and_apply_notes() -> None:
         "GROQ_API_KEY",
         "TELEGRAM_BOT_TOKEN",
         "DISCORD_BOT_TOKEN",
-        "SLACK_BOT_TOKEN",
-        "SLACK_APP_TOKEN",
-        "COMPOSIO_API_KEY",
         "TAVILY_API_KEY",
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",

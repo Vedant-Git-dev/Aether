@@ -97,7 +97,11 @@ class Cipher:
         return self.decrypt_bytes(blob, aad).decode("utf-8")
 
     def encrypt_json(self, obj: object, aad: str) -> bytes:
-        return self.encrypt_text(json.dumps(obj, ensure_ascii=False, sort_keys=True), aad)
+        # no sort_keys: a dict's own key order is part of what the user
+        # reads back — an approval's fields render in the order the
+        # request carried them, not alphabetized. Digests that need
+        # canonical bytes canonicalize themselves; AEAD needs none.
+        return self.encrypt_text(json.dumps(obj, ensure_ascii=False), aad)
 
     def decrypt_json(self, blob: bytes, aad: str) -> Any:
         """json.loads — whatever shape was encrypted, as loose as it was

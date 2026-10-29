@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, Response
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from . import restart
 from .agent import AgentLoop, CaptureRequestBox, SurfaceFanout, register_native_tools
 from .agent.settings import AgentSettings
+from .agent.tools import describe_full
 from .agent.traces import Traces
 from .api import router as api_router
 from .authz.approvals import Approvals
@@ -21,7 +23,6 @@ from .authz.audit import AuditLog
 from .authz.policy import Policy, PolicyError
 from .chat import ChatHistory, ChatHub
 from .chat.ws import router as chat_router
-from .composio_bridge import ComposioBridge
 from .config import (
     MODEL_BASE,
     MODEL_DEFAULT,
@@ -56,6 +57,11 @@ from .memory.events import EventStore
 from .memory.salience import LLMJudge, Salience
 from .memory.vectors import VectorMemory
 from .proactive import Budget, ProactiveStore, ProactiveWorker
+from .providers.catalog import PROVIDERS
+from .providers.crypto import TokenKeyError, TokenKeyring
+from .providers.oauth import OAuthEngine
+from .providers.runtime import ProviderRuntime
+from .providers.store import ProviderStore
 from .routines import Routines
 from .scheduler import Scheduler, SchedulerWorker
 from .secret_env import EnvResolver
@@ -118,18 +124,30 @@ def create_app(
                 "create a free Neon database and put its connection string in .env."
             )
         cipher = _build_cipher(settings)
+        try:
+            token_keyring = TokenKeyring.from_values(
+                active_key_b64=settings.token_encryption_key,
+                active_id=settings.token_encryption_key_id,
+                previous_key_b64=settings.token_encryption_key_previous,
+                previous_id=settings.token_encryption_key_previous_id,
+            )
+        except TokenKeyError as exc:
+            raise StartupError(f"provider token keyring: {exc}") from exc
+        if token_keyring is None:
+            log.warning(
+                "AETHER_TOKEN_ENCRYPTION_KEY not set — direct provider connections are disabled"
+            )
 
         # --- database ------------------------------------------------------
         pool = await create_pool(settings.database_url)
         applied = await run_migrations(pool)
         log.info("database ready (migrations applied this boot: %s)", applied or "none")
 
-        # --- secrets by name + the app hub ---------------------------------
+        # --- secrets by name ------------------------------------------------
         # keys pasted in the /apps walk (consumed before ingest) live
         # encrypted like everything else; the resolver is how every act
         # reads a key — by name, fresh — so a key added after boot needs no
-        # restart. The Composio bridge rides it: a COMPOSIO_API_KEY pasted
-        # in chat works without a boot.
+        # restart.
         secret_store = SecretStore(pool, cipher)
         env_resolver = EnvResolver(secrets=secret_store)
         app.state.secrets = secret_store
@@ -138,15 +156,6 @@ def create_app(
         # configured key can reach — fetched live per provider, cached by
         # key, so a pasted key lists its models without a restart
         app.state.model_catalog = ModelCatalog(env_resolver)
-        composio = ComposioBridge(env_resolver, secret_store)
-        app.state.composio = composio
-        try:
-            if await composio.ensure():
-                log.info("composio session open — the app hub is live")
-        except Exception:
-            # the hub being down must never keep Aether from booting —
-            # /apps answers honestly and the next connect retries
-            log.exception("composio session couldn't open — apps connect on demand")
 
         # --- chat-made config: rows merge onto the live config, in place ----
         # Before anything reads a section — an authz or allowlist override
@@ -272,6 +281,47 @@ def create_app(
         tools.attach_mail_filter(mail_filter)
         log.info("mcp tools in the namespace: %d", tools.sync_mcp_tools())
         app.state.tools = tools
+
+        # --- direct provider connections -----------------------------------
+        # Tokens live in their own encrypted store, under a keyring separate
+        # from the content key. Without that keyring the runtime still exists
+        # so the panel can say why, but it exposes no actions and stores
+        # nothing.
+        provider_http = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0))
+        provider_store = ProviderStore(pool, token_keyring) if token_keyring is not None else None
+        provider_oauth = (
+            OAuthEngine(
+                store=provider_store,
+                resolver=env_resolver,
+                http=provider_http,
+                audit=audit,
+            )
+            if provider_store is not None
+            else None
+        )
+        provider_runtime = ProviderRuntime(
+            definitions=PROVIDERS,
+            store=provider_store,
+            oauth=provider_oauth,
+            http=provider_http,
+            registry=tools,
+            audit=audit,
+            resolver=env_resolver,
+            config=config,
+            public_base_url=settings.public_url,
+            port=settings.port,
+            secrets=secret_store,
+            approvals=approvals,
+        )
+        if config.providers.enabled and provider_store is not None:
+            try:
+                log.info(
+                    "provider tools in the namespace: %d", await provider_runtime.register_tools()
+                )
+            except Exception:
+                log.exception("provider tool registration failed — continuing")
+        app.state.provider_store = provider_store
+        app.state.provider_runtime = provider_runtime
 
         # --- encrypted media storage ----------------------------------------
         # shared files, screen captures, and later generated images become
@@ -422,7 +472,7 @@ def create_app(
             resolver=env_resolver,
             secret_store=secret_store,
             settings=settings,
-            composio=composio,
+            provider_runtime=provider_runtime,
             transcript=chat_history,
             attachments=app.state.attachments,
             vectors=vectors,
@@ -497,6 +547,7 @@ def create_app(
             on_decision=agent.execute_decision,
             on_inbound=agent.handle_inbound,
             on_task_decision=proactive_worker.decide_task,
+            render_full=describe_full,
             processed=processed_updates,
         )
         surfaces.add_connectors(connectors)
@@ -535,6 +586,7 @@ def create_app(
         for connector in connectors:
             await connector.stop()
         await host.stop()
+        await provider_http.aclose()
         await pool.close()
         log.info("aether stopped")
 

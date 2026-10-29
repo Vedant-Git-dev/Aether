@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -19,7 +18,6 @@ from fakes import (
     FakeAgentSettings,
     FakeApprovals,
     FakeAudit,
-    FakeComposioBridge,
     FakeConfigManager,
     FakeContextBuilder,
     FakeEntities,
@@ -36,7 +34,6 @@ from fakes import (
 )
 
 from aether.agent.loop import (
-    _HUB_RESET_AFTER_SECONDS,
     _MISSING,
     AgentLoop,
     CaptureRequestBox,
@@ -49,7 +46,6 @@ from aether.agent.tools import register_native_tools
 from aether.authz.approvals import APPROVED, DENIED
 from aether.authz.audit import ChainVerification
 from aether.authz.policy import Policy
-from aether.composio_bridge import SERVER_ENTRY
 from aether.config import (
     AgentConfig,
     AppConfig,
@@ -65,6 +61,7 @@ from aether.connectors.registry import ToolRegistry
 from aether.llm.types import ImageBlock, ToolCall, ToolResult, ToolSpec, Turn
 from aether.memory.events import Event, IngestResult
 from aether.memory.vectors import MemoryHit
+from aether.providers.types import ConnectResult, PollResult
 from aether.scheduler.jobs import ScheduledAction
 from aether.secret_env import EnvResolver
 from aether.workspace import Workspace
@@ -102,6 +99,51 @@ def _event(
     )
 
 
+class FakeMailFilter:
+    """MailAllowlist double: records the tool/result pair and rewrites it."""
+
+    def __init__(self, result: str = '{"filtered": true}') -> None:
+        self.result = result
+        self.calls: list[tuple[str, str]] = []
+
+    async def filter_result(self, name: str, result: str) -> str:
+        self.calls.append((name, result))
+        return self.result
+
+
+class FakeProviderRuntime:
+    """ProviderRuntime double: a scripted feed, connect answers, and polls."""
+
+    def __init__(
+        self,
+        *,
+        apps: list[dict] | None = None,
+        connect_results: list[ConnectResult | Exception] | None = None,
+        polls: list[PollResult] | None = None,
+    ) -> None:
+        self.apps = list(apps or [])
+        self.connect_results = list(connect_results or [])
+        self.polls = list(polls or [])
+        self.connect_calls: list[str] = []
+        self.poll_calls = 0
+
+    async def feed(self) -> dict:
+        return {"configured": True, "apps": list(self.apps), "providers": []}
+
+    async def connect(self, app: str) -> ConnectResult:
+        self.connect_calls.append(app)
+        result = self.connect_results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    async def poll_due(self) -> list[PollResult]:
+        self.poll_calls += 1
+        results = list(self.polls)
+        self.polls = []
+        return results
+
+
 class LoopKit:
     """One agent loop wired to every fake, for one test."""
 
@@ -118,6 +160,7 @@ class LoopKit:
         attachments: Any = None,
         vectors: Any = None,
         mail_filter: Any = None,
+        provider_runtime: Any = None,
     ):
         self.tools = ToolRegistry()
         self.events = FakeEventStore()
@@ -154,6 +197,7 @@ class LoopKit:
             attachments=attachments,
             vectors=vectors,
             mail_filter=mail_filter,
+            provider_runtime=provider_runtime,
         )
         if config_manager is not None:
             # the real native config tools, so a /config write goes through
@@ -234,6 +278,37 @@ async def test_a_calls_plain_line_is_recorded_and_never_reaches_the_tool() -> No
     assert kit.audit.entries[-1]["params"] == {"limit": 2}
     assert trace[0]["plain"] == "Checking mail for Sam's reply"
     assert trace[0]["params"] == {"limit": 2}
+
+
+async def test_a_provider_write_parks_with_its_declared_effect() -> None:
+    kit = LoopKit(FakeProvider([]))
+    ran: list[dict] = []
+
+    async def send(params: dict) -> str:
+        ran.append(params)
+        return "sent"
+
+    kit.tools.add_provider(
+        ToolSpec(name="gmail__send_email", description="send"),
+        send,
+        effect="write",
+        source="gmail",
+        auth_mode="oauth",
+    )
+
+    result = await kit.loop._execute(
+        ToolCall(
+            id="t1",
+            name="gmail__send_email",
+            arguments={"to": "sam@example.com", "subject": "hi", "body": "hello"},
+        )
+    )
+
+    assert result.is_error is False
+    assert "held for approval" in result.content
+    assert ran == []
+    assert kit.approvals.created[-1].tool_name == "gmail__send_email"
+    assert kit.approvals.created[-1].rules_matched == "builtin:provider-write"
 
 
 async def test_a_call_without_plain_gets_the_backend_sentence() -> None:
@@ -607,42 +682,6 @@ async def test_the_same_call_is_never_parked_twice_in_one_turn() -> None:
     assert sum("held for approval" in c for c in _held_contents(provider, 2)) == 2
 
 
-def _stub_hub(*, ready: bool) -> Any:
-    """A host-shaped stub holding one connection named like the real hub."""
-    conn = SimpleNamespace(name="composio", ready=ready)
-    return SimpleNamespace(connections=[conn])
-
-
-async def test_a_stale_hub_session_gets_one_fresh_cut() -> None:
-    # a wedged router answers initialize but never tools/list, so the
-    # reconnect loop rides the same dead URL forever — after sustained
-    # unreadiness the watchdog has the bridge cut one fresh session
-    kit = LoopKit(None)
-    bridge = FakeComposioBridge()
-    kit.loop._composio = bridge
-    kit.loop._host = _stub_hub(ready=False)
-
-    await kit.loop._watch_hub()  # the first sighting only arms the timer
-    assert bridge.resets == 0
-
-    kit.loop._hub_unready_since = time.monotonic() - _HUB_RESET_AFTER_SECONDS - 1
-    await kit.loop._watch_hub()
-    assert bridge.resets == 1
-    assert any("fresh session" in s for s in kit.connector.sent)
-
-
-async def test_a_ready_hub_never_resets() -> None:
-    kit = LoopKit(None)
-    bridge = FakeComposioBridge()
-    kit.loop._composio = bridge
-    kit.loop._host = _stub_hub(ready=True)
-
-    kit.loop._hub_unready_since = time.monotonic() - 10_000
-    await kit.loop._watch_hub()
-    assert bridge.resets == 0
-    assert kit.loop._hub_unready_since is None  # the timer clears
-
-
 async def test_the_tick_expires_overdue_approvals() -> None:
     # a pending row past its TTL must never read as waiting — the tick
     # flips it to expired (and the store audits it), so no surface keeps
@@ -667,23 +706,6 @@ async def test_list_pending_never_shows_an_expired_row() -> None:
 
     pending = await kit.approvals.list_pending()
     assert pending == [fresh]
-
-
-async def test_hub_resets_respect_the_cooldown() -> None:
-    # a Composio-side outage won't be fixed by minting sessions — after the
-    # first cut the watchdog leaves it alone for the cooldown
-    kit = LoopKit(None)
-    bridge = FakeComposioBridge()
-    kit.loop._composio = bridge
-    kit.loop._host = _stub_hub(ready=False)
-
-    kit.loop._hub_unready_since = time.monotonic() - 10_000
-    await kit.loop._watch_hub()
-    assert bridge.resets == 1
-
-    kit.loop._hub_unready_since = time.monotonic() - 10_000
-    await kit.loop._watch_hub()
-    assert bridge.resets == 1  # swallowed by the cooldown
 
 
 async def test_the_web_panel_decide_path_carries_out_a_fresh_approval() -> None:
@@ -1402,7 +1424,7 @@ async def test_source_polls_run_ingest_and_audit() -> None:
 async def test_the_poll_path_filters_gmail_reads_through_the_allowlist() -> None:
     # the poll calls the host directly, bypassing the registry — the loop's
     # own mail_filter ref must trim the batch before it is ingested. The
-    # qualified name is the real one the config ships: composio__GMAIL_*
+    # qualified name is the direct provider's: gmail__list_messages
     import json as _json
 
     from aether.config import AppContacts, ContactRule, ContactsConfig
@@ -1424,7 +1446,7 @@ async def test_the_poll_path_filters_gmail_reads_through_the_allowlist() -> None
             },
         }
     )
-    poll_tool = PollTool(tool="GMAIL_FETCH_EMAILS", args={}, every_minutes=5.0)
+    poll_tool = PollTool(tool="list_messages", args={}, every_minutes=5.0)
     calls: list[tuple[str, dict]] = []
 
     async def gmail_call(qualified: str, args: dict) -> str:
@@ -1432,15 +1454,15 @@ async def test_the_poll_path_filters_gmail_reads_through_the_allowlist() -> None
         return batch
 
     kit.loop._host = SimpleNamespace(
-        connections=[SimpleNamespace(name="composio", poll_tools=[poll_tool])],
+        connections=[SimpleNamespace(name="gmail", poll_tools=[poll_tool])],
         call=gmail_call,
     )
-    kit.loop._poll_targets["composio:GMAIL_FETCH_EMAILS:0"] = ("composio", poll_tool)
-    kit.loop._next_poll["composio:GMAIL_FETCH_EMAILS:0"] = datetime.now(UTC)
+    kit.loop._poll_targets["gmail:list_messages:0"] = ("gmail", poll_tool)
+    kit.loop._next_poll["gmail:list_messages:0"] = datetime.now(UTC)
     kit.loop._mail_filter = MailAllowlist(contacts, kit.audit)
 
     await kit.loop._run_due_polls()
-    assert calls == [("composio__GMAIL_FETCH_EMAILS", {})]
+    assert calls == [("gmail__list_messages", {})]
     ingested = kit.events.ingested[-1]
     kept = _json.loads(ingested["payload"]["result"])["data"]["messages"]
     assert [m["subject"] for m in kept] == ["keep"]
@@ -1776,7 +1798,7 @@ async def test_a_why_reply_to_an_unrecorded_message_reaches_the_model() -> None:
     assert kit.connector.sent == ["I'm not sure what you mean"]
 
 
-async def test_a_carried_out_approval_records_where_the_news_landed() -> None:
+async def test_a_carried_out_approval_speaks_after_the_record_is_complete() -> None:
     kit = LoopKit(None)
     kit.add_tool("mail__send_message", result="sent")
     await kit.loop._execute(
@@ -1787,8 +1809,12 @@ async def test_a_carried_out_approval_records_where_the_news_landed() -> None:
 
     await kit.loop.execute_decision(approval.id, APPROVED)
 
+    # the record closes before anyone speaks, and the acknowledgment is a
+    # fresh message (model-written when a provider is wired), so it links
+    # no chat ref back to this trace
     payload = kit.traces.created[-1]["payload"]
-    assert payload["chat_refs"] == {"fake": "m1"}
+    assert "chat_refs" not in payload
+    assert kit.connector.sent[-1].startswith("Sent the email (to a@b.c")
 
 
 async def test_a_routine_fire_records_where_its_ping_landed() -> None:
@@ -1892,12 +1918,11 @@ async def test_config_set_security_parks_for_one_tap() -> None:
     # the card went to the surfaces as one plain question
     presented = kit.connector.approvals_presented[-1]
     assert presented[0] == approval.id
-    # the card shows the question and the rule's own plain words for why
-    # it needs a tap — the spec from the honesty fixes
+    # the card is the ask itself: the question, then the request's own
+    # fields in their own order — never the rule's wording
     assert (
-        presented[1] == "Change my configuration (path messaging.telegram.enabled)?"
-        "\n\n(needs approval — changes who Aether listens to, what it may do, or "
-        "what it's connected to — the user decides that with one tap)"
+        presented[1] == "Change my configuration?"
+        "\n\nOp: set\nPath: messaging.telegram.enabled\nValue: yes"
     )
     # the reply is in the user's own words, never the model-directed wording
     note = kit.connector.sent[-1]
@@ -2016,12 +2041,11 @@ async def test_a_guided_security_walk_parks_for_one_tap() -> None:
     assert approval.params == {"op": "set", "path": "messaging.telegram.enabled", "value": True}
     presented = kit.connector.approvals_presented[-1]
     assert presented[0] == approval.id
-    # the card shows the question and the rule's own plain words for why
-    # it needs a tap — the spec from the honesty fixes
+    # the card is the ask itself: the question, then the request's own
+    # fields in their own order — never the rule's wording
     assert (
-        presented[1] == "Change my configuration (path messaging.telegram.enabled)?"
-        "\n\n(needs approval — changes who Aether listens to, what it may do, or "
-        "what it's connected to — the user decides that with one tap)"
+        presented[1] == "Change my configuration?"
+        "\n\nOp: set\nPath: messaging.telegram.enabled\nValue: yes"
     )
     # the walk relays the park card, then offers the menu again
     note = kit.connector.sent[-1]
@@ -2435,28 +2459,8 @@ async def test_the_tick_announces_a_late_ready_server_once() -> None:
     assert len(kit.connector.sent) == 1  # once per boot, never again
 
 
-async def test_the_composio_hub_joins_and_grows_silently() -> None:
-    """The directive: composio never announces its ups in chat — it speaks
-    only when it's down, and the watchdog owns that side. Joining and
-    growing are housekeeping."""
-    kit = LoopKit(None)
-    host = FakeMcpHost(SimpleNamespace(name="composio", ready=True))
-    kit.tools.attach_mcp(host)
-    kit.loop._host = host
-
-    await kit.loop._tick()
-    assert kit.connector.sent == []  # joined the namespace, said nothing
-    assert kit.tools.has_server("composio")
-
-    # the user approved an app on the hub — growth is quiet too; the
-    # connect flow is what tells them, not the tick
-    hub = host.connections[0]
-    hub.tools = ["act", "gmail_send"]
-    hub.tool_version = 2
-    await kit.loop._tick()
-    assert kit.connector.sent == []
-    assert kit.tools.get("composio__gmail_send") is not None  # callable regardless
-    """The hub promise: an app approved after connect shows up as callable
+async def test_a_ready_server_that_grows_says_so_once() -> None:
+    """The promise: an app approved after connect shows up as callable
     actions — the tick notices the changed tool list, syncs, and says so."""
     kit = LoopKit(None)
     hub = SimpleNamespace(name="hub", ready=True, tools=["act"], tool_version=1)
@@ -2498,87 +2502,6 @@ async def test_a_tool_that_vanished_leaves_the_namespace() -> None:
     assert kit.tools.get("hub__extra") is None  # pruned, not callable
     assert kit.tools.get("hub__act") is not None  # the rest of the hub stayed
     assert kit.connector.sent == []  # quiet — nothing was gained
-
-
-async def test_the_hub_connect_announces_and_asks_the_gates_question(tmp_path) -> None:
-    """The hub transcript end to end: /apps add gmail pastes the hub key
-    once, serves the Connect Link, and the out-of-band waiter announces
-    the connect and asks the gate's question. 'Everything asks first'
-    writes its authz rule through the same executor — and authz being a
-    security root, it parks for the one-tap even from a walk."""
-    provider = FakeProvider([])
-    manager = FakeConfigManager(set_reply="applied.")
-    kit = LoopKit(provider, config_manager=manager)
-    store = FakeSecretStore()
-    kit.loop._resolver = EnvResolver(tmp_path / ".env", secrets=store)  # no key yet
-    kit.loop._secret_store = store
-    kit.loop._composio = FakeComposioBridge()
-
-    kit.loop.submit_message(_msg("/apps add gmail"))
-    await kit.loop._tick()
-    # no hub key yet — the one-time paste comes before any link
-    assert "one key needed (one time — it connects every app)" in kit.connector.sent[-1]
-
-    kit.loop.submit_message(_msg("csk-123"))
-    await kit.loop._tick()
-    assert store.saved == {"COMPOSIO_API_KEY": "csk-123"}
-    link = kit.connector.sent[-1]
-    assert link.startswith("Gmail — last step, let me in:")
-    assert "https://hub.example.test/connect/gmail" in link
-    assert kit.events.ingested == []  # the paste never became memory
-    assert provider.calls == []  # and the model never woke
-    # the first connect pins the composio server entry, origin "walk"
-    assert manager.set_calls == [
-        {
-            "op": "add",
-            "path": "mcp_servers",
-            "value": dict(SERVER_ENTRY),
-            "source": "tool",
-        }
-    ]
-
-    # the click lands — the waiter announces and asks the gate's question
-    while kit.loop._connect_waits:
-        await asyncio.wait(kit.loop._connect_waits)
-    announcement = kit.connector.sent[-1]
-    assert announcement.startswith("gmail connected — gmail@example.test.")
-    assert "what may I do with gmail?" in announcement
-
-    # "everything asks first" → an authz rule — which parks, honestly relayed
-    kit.loop.submit_message(_msg("2"))
-    await kit.loop._tick()
-    assert kit.approvals.created[-1].params == {
-        "op": "add",
-        "path": "authz.rules",
-        "value": {
-            "tool_pattern": "composio__GMAIL_",
-            "decision": "approve",
-            "note": "gmail connected in chat — everything asks first",
-        },
-    }
-    assert "one-tap approval" in kit.connector.sent[-1]
-    assert kit.loop._apps_walk is None  # done — nothing is waiting
-
-
-async def test_a_failed_connect_says_so_in_chat(tmp_path) -> None:
-    """A link that never gets its click doesn't hang the walk or stay
-    silent — the waiter's honest line lands in chat."""
-    kit = LoopKit(None)
-    store = FakeSecretStore()
-    kit.loop._resolver = EnvResolver(tmp_path / ".env", secrets=store)
-    kit.loop._secret_store = store
-    kit.loop._composio = FakeComposioBridge(wait_error=TimeoutError("expired"))
-
-    kit.loop.submit_message(_msg("/apps add gmail"))
-    await kit.loop._tick()
-    kit.loop.submit_message(_msg("csk-123"))
-    await kit.loop._tick()
-    while kit.loop._connect_waits:
-        await asyncio.wait(kit.loop._connect_waits)
-    assert kit.connector.sent[-1] == (
-        "the gmail connection didn't finish — the link may have expired. "
-        "/apps add gmail to try again."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -2669,3 +2592,132 @@ async def test_attachment_processing_failure_never_kills_the_tick() -> None:
     # the tick survived: the message itself became memory, the turn ran
     assert [r["kind"] for r in kit.events.ingested] == ["chat_message"]
     assert provider.calls
+
+
+# ---------------------------------------------------------------------------
+# direct providers: setup in chat, the callback's gate, polls, status
+# ---------------------------------------------------------------------------
+
+
+def _provider_apps() -> list[dict]:
+    return [
+        {
+            "key": "gmail",
+            "name": "Gmail",
+            "provider": "google",
+            "status": "not_connected",
+            "identity": "",
+            "setup_required": True,
+        }
+    ]
+
+
+_PROVIDER_SETUP = ConnectResult(
+    app="gmail",
+    provider="google",
+    setup_required=True,
+    setup_url="https://console.cloud.google.com/apis/credentials",
+    setup_steps=("Enable the Gmail API.",),
+    redirect_uri="https://aether.test/api/oauth/google/callback",
+    client_id_name="GOOGLE_CLIENT_ID",
+    client_secret_name="GOOGLE_CLIENT_SECRET",
+)
+_PROVIDER_LINK = ConnectResult(
+    app="gmail",
+    provider="google",
+    redirect_url="https://accounts.google.com/o/oauth2/v2/auth?state=abc",
+    redirect_uri="https://aether.test/api/oauth/google/callback",
+)
+
+
+async def test_a_direct_provider_setup_paste_connects_without_the_model(tmp_path) -> None:
+    provider = FakeProvider([])  # any model call would fail the test
+    runtime = FakeProviderRuntime(
+        apps=_provider_apps(),
+        connect_results=[_PROVIDER_SETUP, _PROVIDER_LINK],
+    )
+    kit = LoopKit(provider, provider_runtime=runtime)
+    store = FakeSecretStore()
+    kit.loop._resolver = EnvResolver(tmp_path / ".env", secrets=store)
+    kit.loop._secret_store = store
+
+    kit.loop.submit_message(_msg("/apps add gmail"))
+    await kit.loop._tick()
+    assert "paste GOOGLE_CLIENT_ID here" in kit.connector.sent[-1]
+
+    kit.loop.submit_message(_msg("client-id.apps.googleusercontent.com"))
+    await kit.loop._tick()
+    assert store.saved == {"GOOGLE_CLIENT_ID": "client-id.apps.googleusercontent.com"}
+    assert "paste GOOGLE_CLIENT_SECRET here" in kit.connector.sent[-1]
+
+    kit.loop.submit_message(_msg("client-secret"))
+    await kit.loop._tick()
+    assert "open this and approve: https://accounts.google.com" in kit.connector.sent[-1]
+    assert store.saved["GOOGLE_CLIENT_SECRET"] == "client-secret"
+    assert runtime.connect_calls == ["gmail", "gmail"]
+    assert kit.events.ingested == []  # the values never became memory
+    assert provider.calls == []  # and the model never woke
+
+
+async def test_the_direct_provider_callback_asks_the_gates_question() -> None:
+    runtime = FakeProviderRuntime(apps=_provider_apps())
+    kit = LoopKit(
+        FakeProvider([]),
+        config_manager=FakeConfigManager(set_reply="applied."),
+        provider_runtime=runtime,
+    )
+
+    await kit.loop.announce_provider_connection("gmail", "me@example.com")
+    assert "what may I do with gmail?" in kit.connector.sent[-1]
+
+    kit.loop.submit_message(_msg("2"))
+    await kit.loop._tick()
+    assert kit.approvals.created[-1].params["value"]["tool_pattern"] == "gmail__"
+    assert "one-tap approval" in kit.connector.sent[-1]
+    assert kit.loop._apps_walk is None
+
+
+async def test_provider_polls_are_filtered_audited_and_ingested() -> None:
+    mail_filter = FakeMailFilter()
+    runtime = FakeProviderRuntime(
+        polls=[
+            PollResult(
+                app="gmail",
+                tool="gmail__new_mail",
+                payload={"successful": True, "data": {"messages": [{"id": "m1"}]}},
+            )
+        ]
+    )
+    kit = LoopKit(None, provider_runtime=runtime, mail_filter=mail_filter)
+
+    await kit.loop._run_due_provider_polls()
+
+    assert mail_filter.calls
+    assert mail_filter.calls[0][0] == "gmail__new_mail"
+    assert kit.audit.entries[-1]["tool_name"] == "gmail__new_mail"
+    assert kit.audit.entries[-1]["decision"] == "allow"
+    assert kit.events.ingested == [
+        {
+            "source": "gmail",
+            "kind": "poll:new_mail",
+            "payload": {"result": '{"filtered": true}'},
+            "sender": None,
+        }
+    ]
+
+
+async def test_the_status_names_a_connected_direct_provider() -> None:
+    runtime = FakeProviderRuntime(
+        apps=[
+            {
+                "key": "gmail",
+                "name": "Gmail",
+                "status": "active",
+                "identity": "me@example.com",
+                "setup_required": False,
+            }
+        ]
+    )
+    kit = LoopKit(None, provider_runtime=runtime)
+    status = await kit.loop._apps_status()
+    assert "Gmail — me@example.com — connected" in status

@@ -11,16 +11,19 @@ from __future__ import annotations
 
 import hmac
 import logging
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
-from pydantic import BaseModel
+from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, Field
 
 from ..agent.tools import with_plain_calls, with_plain_event
 from ..apps_catalog import CATALOG, recipe_for
-from ..composio_bridge import ComposioNotConfigured
+from ..config import is_legacy_composio_server
 from ..connectors.base import Attachment, InboundMessage, classify_attachment
 from ..proactive import DONE
+from ..providers.types import ProviderError
 from ..settings_catalog import credential_for, settings_feed
 from ..workspace import SecretRejected, WorkspaceEntry, WorkspaceWriteError
 
@@ -367,27 +370,32 @@ async def config_feed(request: Request, token: str | None = None) -> dict:
 
 async def _contacts_state(request: Request) -> dict:
     """The live contacts config, plus the per-app view the page renders:
-    one entry per app that is connected (Composio account or enabled
+    one entry per app that is connected (a direct provider or an enabled
     messaging toggle) or that carries its own list or switch. Each app's
     shown list merges its own slice with any same-platform strays from the
     cross-app bucket, every entry tagged with the list it lives in so
     Remove targets the right one."""
     contacts = request.app.state.config.contacts
-    # connected apps: the Composio accounts (lean call — never toolkits())
-    # plus the enabled messaging toggles; an app with its own list or
-    # switch shows even when disconnected, so nothing configured hides
+    # connected apps: the direct providers plus the enabled messaging
+    # toggles; an app with its own list or switch shows even when
+    # disconnected, so nothing configured hides
     connected: set[str] = set()
-    bridge = getattr(request.app.state, "composio", None)
-    if bridge is not None and await bridge.available():
-        for account in await bridge.accounts():
-            key = account.toolkit.lower()
-            if key in type(contacts).model_fields:
+    runtime = getattr(request.app.state, "provider_runtime", None)
+    if runtime is not None:
+        try:
+            feed = await runtime.feed()
+        except Exception:
+            log.exception("reading direct provider connections failed")
+            feed = {"apps": []}
+        for app in feed.get("apps", []):
+            key = str(app.get("key", "")).lower()
+            if app.get("status") == "active" and key in type(contacts).model_fields:
                 connected.add(key)
     messaging = request.app.state.config.messaging
-    connected |= {p for p in ("telegram", "discord", "slack") if getattr(messaging, p).enabled}
+    connected |= {p for p in ("telegram", "discord") if getattr(messaging, p).enabled}
 
     apps: list[dict] = []
-    for key in ("gmail", "telegram", "discord", "slack"):
+    for key in ("gmail", "telegram", "discord"):
         section = getattr(contacts, key)
         if key not in connected and section.mode is None and not section.allowlist:
             continue
@@ -504,7 +512,7 @@ async def set_contacts_mode(
 def _app_contacts_path(key: str, setting: str) -> str:
     """The manager path for one app's own slice — the key must name an app
     the config model knows, so a stranger in the URL can't mint paths."""
-    if key.lower() not in ("gmail", "telegram", "discord", "slack"):
+    if key.lower() not in ("gmail", "telegram", "discord"):
         raise HTTPException(status_code=404, detail="no app with its own allowlist is named that")
     return f"contacts.{key.lower()}.{setting}"
 
@@ -737,9 +745,9 @@ async def apps_feed(request: Request, token: str | None = None) -> dict:
     toggles (and whether each one's keys are in place), the MCP servers
     with their live connection state, screen-vision availability, and the
     contact allowlist mode. The chat-surface recipes ride along so the
-    panel can show what chat's /apps walk can add — hub apps come from
-    /api/connections instead, fetched live. No edit path — connecting
-    happens in chat, where keys are pasted and consumed."""
+    panel can show what chat's /apps walk can add; direct apps come from
+    /api/providers. No edit path — connecting happens in chat or the
+    provider cards, where keys are pasted and consumed."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
     config = request.app.state.config
@@ -768,7 +776,6 @@ async def apps_feed(request: Request, token: str | None = None) -> dict:
             for name, toggle in (
                 ("telegram", config.messaging.telegram),
                 ("discord", config.messaging.discord),
-                ("slack", config.messaging.slack),
             )
         ],
         "mcp_servers": [
@@ -780,6 +787,7 @@ async def apps_feed(request: Request, token: str | None = None) -> dict:
                 "actions": _actions(s.name),
             }
             for s in config.mcp_servers
+            if not is_legacy_composio_server(s.name)
         ],
         "screen_vision_available": getattr(request.app.state, "screen_vision", None) is not None,
         "contacts_mode": config.contacts.mode,
@@ -787,83 +795,6 @@ async def apps_feed(request: Request, token: str | None = None) -> dict:
             {"key": r.key, "name": r.name, "blurb": r.blurb, "kind": r.kind} for r in CATALOG
         ],
     }
-
-
-# -- the app hub: Composio connections, driven from the panel -----------------------
-
-
-@router.get("/api/connections")
-async def connections_feed(request: Request, token: str | None = None) -> dict:
-    """The app hub, live: every toolkit Composio can connect for this
-    project (the panel searches and filters client-side) and this
-    instance's connected accounts — toolkit, status, identity, never a
-    credential. `configured: false` means no COMPOSIO_API_KEY yet; the
-    shape still answers, empty."""
-    if not _authorized(request, token):
-        raise HTTPException(status_code=401, detail="bad or missing token")
-    bridge = getattr(request.app.state, "composio", None)
-    if bridge is None:
-        raise HTTPException(status_code=503, detail="the app hub isn't wired on this instance")
-    if not await bridge.available():
-        return {"configured": False, "connected": [], "toolkits": []}
-    accounts = await bridge.accounts()
-    toolkits = await bridge.toolkits()
-    return {
-        "configured": True,
-        "connected": [
-            {"id": a.id, "toolkit": a.toolkit, "status": a.status, "identity": a.identity}
-            for a in accounts
-        ],
-        "toolkits": [
-            {"slug": t.slug, "name": t.name, "logo": t.logo, "description": t.description}
-            for t in toolkits
-        ],
-    }
-
-
-@router.post("/api/connections/{toolkit}/connect")
-async def connect_app(request: Request, toolkit: str, token: str | None = None) -> dict:
-    """Start one toolkit's Connect Link — the panel opens the returned URL
-    in a new tab; credentials pass between the user and the hub only. The
-    loop waits out of band and announces in chat, exactly like a
-    chat-driven connect."""
-    if not _authorized(request, token):
-        raise HTTPException(status_code=401, detail="bad or missing token")
-    bridge = getattr(request.app.state, "composio", None)
-    if bridge is None:
-        raise HTTPException(status_code=503, detail="the app hub isn't wired on this instance")
-    try:
-        request_id, url = await bridge.authorize(toolkit)
-    except ComposioNotConfigured:
-        raise HTTPException(
-            status_code=503,
-            detail="no COMPOSIO_API_KEY yet — say /apps add in chat and paste it once",
-        ) from None
-    except Exception:
-        log.exception("connect start failed for %s", toolkit)
-        raise HTTPException(status_code=502, detail="the hub couldn't start that connect") from None
-    agent = getattr(request.app.state, "agent", None)
-    if agent is not None:
-        agent.watch_connect(toolkit, request_id)
-    return {"redirect_url": url}
-
-
-@router.post("/api/connections/{account_id}/disconnect")
-async def disconnect_app(request: Request, account_id: str, token: str | None = None) -> dict:
-    """Remove one connected account — the bridge verifies the id is this
-    instance's own before anything is deleted; 404 when it isn't."""
-    if not _authorized(request, token):
-        raise HTTPException(status_code=401, detail="bad or missing token")
-    bridge = getattr(request.app.state, "composio", None)
-    if bridge is None:
-        raise HTTPException(status_code=503, detail="the app hub isn't wired on this instance")
-    try:
-        removed = await bridge.disconnect(account_id)
-    except ComposioNotConfigured:
-        raise HTTPException(status_code=503, detail="no COMPOSIO_API_KEY set") from None
-    if removed is None:
-        raise HTTPException(status_code=404, detail="no such connected account")
-    return {"disconnected": removed.toolkit, "id": removed.id}
 
 
 @router.get("/api/audit")
@@ -1242,3 +1173,215 @@ async def workbench_transfer_post(
     if not stored:
         raise HTTPException(status_code=404, detail="no such transfer")
     return {"stored": True}
+
+
+# -- direct provider connections ------------------------------------------------
+# The panel and the chat walk both start here. OAuth returns to the callback
+# with a single-use state; the callback is the only route in this file that
+# is not token-guarded, because the browser is the caller and the state is
+# the authentication.
+
+
+class ProviderTokenBody(BaseModel):
+    token: str
+    expires_at: str | None = None
+
+
+class ProviderClientBody(BaseModel):
+    client_id: str
+    client_secret: str
+
+
+class ProviderPickerBody(BaseModel):
+    api_key: str
+    app_id: str
+
+
+class ProviderPickedFile(BaseModel):
+    id: str = ""
+    name: str = ""
+    mime_type: str = ""
+
+
+class ProviderPickedBody(BaseModel):
+    files: list[ProviderPickedFile] = Field(default_factory=list)
+
+
+def _provider_runtime(request: Request):
+    runtime = getattr(request.app.state, "provider_runtime", None)
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="provider connections are not wired")
+    return runtime
+
+
+@router.get("/api/providers")
+async def providers_feed(request: Request, token: str | None = None) -> dict:
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    return await _provider_runtime(request).feed()
+
+
+@router.get("/api/providers/{provider}/setup")
+async def provider_setup(provider: str, request: Request, token: str | None = None) -> dict:
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    try:
+        return await _provider_runtime(request).setup_recipe(provider)
+    except ProviderError as exc:
+        raise HTTPException(status_code=404, detail=exc.plain) from exc
+
+
+@router.put("/api/providers/{provider}/client")
+async def provider_client(
+    provider: str,
+    body: ProviderClientBody,
+    request: Request,
+    token: str | None = None,
+) -> dict:
+    """Write-only client setup. The values are encrypted in the secret
+    store; this response only says whether the provider is configured."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    try:
+        return await _provider_runtime(request).save_client(
+            provider, body.client_id, body.client_secret
+        )
+    except ProviderError as exc:
+        raise HTTPException(status_code=400, detail=exc.plain) from exc
+
+
+@router.get("/api/providers/{provider}/picker")
+async def provider_picker(provider: str, request: Request, token: str | None = None) -> dict:
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    try:
+        return await _provider_runtime(request).picker_recipe(provider)
+    except ProviderError as exc:
+        raise HTTPException(status_code=404, detail=exc.plain) from exc
+
+
+@router.put("/api/providers/{provider}/picker")
+async def provider_picker_setup(
+    provider: str,
+    body: ProviderPickerBody,
+    request: Request,
+    token: str | None = None,
+) -> dict:
+    """Write-only picker setup. The values are public browser identifiers,
+    but the reply never echoes them."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    try:
+        return await _provider_runtime(request).save_picker(provider, body.api_key, body.app_id)
+    except ProviderError as exc:
+        raise HTTPException(status_code=400, detail=exc.plain) from exc
+
+
+@router.post("/api/providers/{app}/picked")
+async def provider_picked(
+    app: str,
+    body: ProviderPickedBody,
+    request: Request,
+    token: str | None = None,
+) -> dict:
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    try:
+        return await _provider_runtime(request).record_picker_selection(
+            app, [file.model_dump() for file in body.files]
+        )
+    except ProviderError as exc:
+        raise HTTPException(status_code=400, detail=exc.plain) from exc
+
+
+@router.post("/api/providers/{app}/connect")
+async def provider_connect(
+    app: str,
+    request: Request,
+    mode: str | None = None,
+    token: str | None = None,
+) -> dict:
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    try:
+        result = await _provider_runtime(request).connect(app, auth_mode=mode)
+    except ProviderError as exc:
+        raise HTTPException(status_code=400, detail=exc.plain) from exc
+    return result.__dict__
+
+
+@router.post("/api/providers/{app}/token")
+async def provider_connect_token(
+    app: str, body: ProviderTokenBody, request: Request, token: str | None = None
+) -> dict:
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    expires_at = None
+    if body.expires_at:
+        try:
+            expires_at = datetime.fromisoformat(body.expires_at)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="that expiry isn't a date") from exc
+    try:
+        connection = await _provider_runtime(request).connect_token(
+            app, body.token.strip(), expires_at=expires_at
+        )
+    except ProviderError as exc:
+        raise HTTPException(status_code=400, detail=exc.plain) from exc
+    agent = getattr(request.app.state, "agent", None)
+    if agent is not None and connection.app:
+        try:
+            await agent.announce_provider_connection(connection.app, connection.account_label)
+        except Exception:
+            log.exception("provider token connection announcement failed")
+    return {
+        "connected": True,
+        "app": app,
+        "identity": connection.account_label,
+    }
+
+
+@router.post("/api/providers/{app}/disconnect")
+async def provider_disconnect(app: str, request: Request, token: str | None = None) -> dict:
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    try:
+        await _provider_runtime(request).disconnect(app)
+    except ProviderError as exc:
+        raise HTTPException(status_code=400, detail=exc.plain) from exc
+    return {"disconnected": True, "app": app}
+
+
+@router.get("/api/oauth/{provider}/callback")
+async def provider_oauth_callback(
+    provider: str,
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+) -> Response:
+    """The browser lands here after consent. The state row is single-use;
+    success redirects to the panel, failure says so in plain words."""
+    if error or not code or not state:
+        return Response(
+            "the sign-in didn't finish — nothing was connected. Open Apps and try again.",
+            status_code=400,
+            media_type="text/plain",
+        )
+    try:
+        connection = await _provider_runtime(request).handle_callback(
+            provider, code=code, state=state
+        )
+    except ProviderError as exc:
+        return Response(
+            f"the sign-in didn't finish — {exc.plain}. Open Apps and try again.",
+            status_code=400,
+            media_type="text/plain",
+        )
+    agent = getattr(request.app.state, "agent", None)
+    if agent is not None and connection.app:
+        try:
+            await agent.announce_provider_connection(connection.app, connection.account_label)
+        except Exception:
+            log.exception("provider connection announcement failed")
+    return RedirectResponse(url="/#/apps", status_code=303)

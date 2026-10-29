@@ -28,7 +28,6 @@ from aether.agent.traces import Trace
 from aether.api import router as api_router
 from aether.authz.approvals import PENDING, Approval
 from aether.chat.ws import router as chat_router
-from aether.composio_bridge import ConnectedApp, ToolkitInfo
 from aether.config import (
     AppConfig,
     AppContacts,
@@ -48,6 +47,7 @@ from aether.connectors.base import InboundMessage
 from aether.memory.entities import Entity, EntityNote
 from aether.memory.events import Event
 from aether.proactive import ProactiveTask
+from aether.providers.types import ConnectResult, ProviderConnection
 from aether.scheduler.jobs import ScheduledAction
 from aether.workspace import WorkspaceEntry
 
@@ -58,7 +58,7 @@ API_TOKEN = "secret"
 _QUIET_HOURS_RE = _re_compile(r"\d{2}:\d{2}-\d{2}:\d{2}")
 
 # the apps that carry their own contacts slice, matching the config model
-_APPS_WITH_OWN_LISTS = ("gmail", "telegram", "discord", "slack")
+_APPS_WITH_OWN_LISTS = ("gmail", "telegram", "discord")
 
 
 class FakeApprovals:
@@ -91,6 +91,119 @@ class FakeApprovals:
                 decided_by=None,
                 rules_matched="user:telegram__send_message",
                 note="one-tap sends",
+            ),
+            # a request with a long body: paragraphs, a numbered list and a
+            # fenced code block — long enough to need the scroll box, and
+            # rich enough to prove the card reads what it carries
+            3: Approval(
+                id=3,
+                tool_name="github__create_issue",
+                params={
+                    "title": "Deploy script fails on the nightly build",
+                    "body": (
+                        "The nightly build has failed three nights in a row, always at "
+                        "the same step.\n"
+                        "\n"
+                        "Steps to reproduce:\n"
+                        "\n"
+                        "1. Wait for the 2am nightly run\n"
+                        "2. Open the deploy log for that run\n"
+                        "3. Watch it stop right after the backup step\n"
+                        "\n"
+                        "The last run printed:\n"
+                        "\n"
+                        "```bash\n"
+                        "deploy: backing up /var/app to /backup\n"
+                        "deploy: ERROR 28: no space left on device\n"
+                        "deploy: rollback aborted, the disk is still full\n"
+                        "```\n"
+                        "\n"
+                        "The backup step keeps every run forever instead of keeping the "
+                        "last seven, so the disk fills in about a week. The retention fix "
+                        "should cap backups at seven nights and delete anything older "
+                        "before the new backup is written. Please assign this to whoever "
+                        "owns the deploy scripts, and link the run history from the "
+                        "alerting page so on-call can tell at a glance whether it "
+                        "happened again."
+                    ),
+                    "labels": ["bug", "infra"],
+                    "assignees": [],
+                },
+                status=PENDING,
+                created_at=now - timedelta(minutes=4),
+                expires_at=now + timedelta(hours=24),
+                decided_at=None,
+                decided_by=None,
+                rules_matched="builtin:risky",
+                note="reaches an external system or is hard to undo",
+            ),
+            # nested structure: attendees list their own labelled fields,
+            # a raw timestamp param, and an empty location
+            4: Approval(
+                id=4,
+                tool_name="calendar__create_event",
+                params={
+                    "title": "Dentist",
+                    "start": "2026-10-28T09:00:00",
+                    "attendees": [
+                        {"name": "Sam Rivera", "email": "sam@example.com"},
+                        {"name": "Priya Nair", "email": "priya@example.com"},
+                    ],
+                    "location": "",
+                    "description": "Bring the referral letter.\nAsk whether the insurance covers the cleaning.",
+                },
+                status=PENDING,
+                created_at=now - timedelta(minutes=1),
+                expires_at=now + timedelta(hours=24),
+                decided_at=None,
+                decided_by=None,
+                rules_matched="builtin:risky",
+                note="reaches an external system or is hard to undo",
+            ),
+            # an unrecognized tool held by the fail-safe, carrying the
+            # shapes the card must read on its own: a path, a link, a diff
+            5: Approval(
+                id=5,
+                tool_name="patch__apply_patch",
+                params={
+                    "path": "scripts/deploy.sh",
+                    "reference": "https://example.com/deploys/rollback-plan",
+                    "patch": (
+                        "diff --git a/scripts/deploy.sh b/scripts/deploy.sh\n"
+                        "--- a/scripts/deploy.sh\n"
+                        "+++ b/scripts/deploy.sh\n"
+                        "@@ -12,4 +12,4 @@\n"
+                        " context line\n"
+                        "-echo deploying the nightly release\n"
+                        "+echo deploying the tagged release\n"
+                    ),
+                },
+                status=PENDING,
+                created_at=now - timedelta(seconds=45),
+                expires_at=now + timedelta(hours=24),
+                decided_at=None,
+                decided_by=None,
+                rules_matched="default:fail-safe",
+                note="unknown tool — held for a human decision",
+            ),
+            # the gmail reply ask from 2026-10-25, byte-faithful to the one
+            # a user actually approved: composio's thread reference is an
+            # opaque token — the card must point at the decision record's
+            # exact copy, never print it
+            6: Approval(
+                id=6,
+                tool_name="composio__GMAIL_REPLY_TO_THREAD",
+                params={
+                    "thread_id": "19c2e6fe0b2f1a34",
+                    "message": "Sounds good — Thursday works.",
+                },
+                status=PENDING,
+                created_at=now - timedelta(seconds=30),
+                expires_at=now + timedelta(hours=24),
+                decided_at=None,
+                decided_by=None,
+                rules_matched="builtin:risky",
+                note="reaches an external system or is hard to undo",
             ),
         }
 
@@ -131,7 +244,7 @@ class FakeAgent:
     def submit_message(self, msg: InboundMessage) -> None:
         pass
 
-    def watch_connect(self, toolkit: str, request_id: str) -> None:
+    async def announce_provider_connection(self, app: str, identity: str = "") -> None:
         pass
 
 
@@ -832,7 +945,6 @@ class FakeConfigManager:
                 "messaging": {
                     "telegram": {"enabled": True},
                     "discord": {"enabled": False},
-                    "slack": {"enabled": False},
                 },
                 "mcp_servers": [{"name": "mail", "enabled": True}],
                 "contacts": {"mode": "enforce"},
@@ -1019,42 +1131,411 @@ class FakeModelCatalog:
         }
 
 
-class FakeHubBridge:
-    """The Composio bridge double: one connected account and a small live
-    catalog, so the apps page shows the hub section, the search, and the
-    connect/disconnect round-trip. Credentials never appear — the connect
-    is just a link."""
+class FakeProviderRuntime:
+    """The direct-provider runtime double: Gmail, Calendar, Drive, and Docs on
+    one Google connection, plus GitHub and LinkedIn, the write-only client
+    setup, a callback that lands connected, and disconnect. The real routes
+    call exactly these methods."""
 
     def __init__(self) -> None:
-        self.account_list = [
-            ConnectedApp(
-                id="acc-gmail", toolkit="gmail", status="ACTIVE", identity="me@example.com"
+        self.client_configured = False
+        self.connected = False
+        self.identity = ""
+        self.github_connected = False
+        self.github_identity = ""
+        self.linkedin_configured = False
+        self.linkedin_connected = False
+        self.linkedin_identity = ""
+        self.picker_configured = False
+        self.picker_api_key = ""
+        self.picker_app_id = ""
+
+    def _app(self) -> dict:
+        return {
+            "key": "gmail",
+            "name": "Gmail",
+            "provider": "google",
+            "connected": self.connected,
+            "status": "active" if self.connected else "not_connected",
+            "identity": self.identity,
+            "auth_mode": "oauth",
+            "scopes": [
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/gmail.compose",
+            ],
+            "actions": 6 if self.connected else 0,
+            "setup_required": not self.client_configured,
+            "setup_url": "https://console.cloud.google.com/apis/credentials",
+            "setup_steps": [
+                "Open Google Cloud Console and create or select a project.",
+                "Enable the Gmail API and Google Calendar API.",
+            ],
+            "redirect_uri": "http://test/api/oauth/google/callback",
+            "last_error": "",
+            "auth_modes": ["oauth"],
+            "default_auth_mode": "oauth",
+            "token_label": "",
+            "token_steps": [],
+            "token_expires": False,
+            "token_url": "",
+        }
+
+    def _calendar_app(self) -> dict:
+        return {
+            "key": "calendar",
+            "name": "Google Calendar",
+            "provider": "google",
+            "connected": self.connected,
+            "status": "active" if self.connected else "not_connected",
+            "identity": self.identity,
+            "auth_mode": "oauth",
+            "scopes": [
+                "https://www.googleapis.com/auth/calendar.readonly",
+                "https://www.googleapis.com/auth/calendar.events",
+            ],
+            "actions": 5 if self.connected else 0,
+            "setup_required": not self.client_configured,
+            "setup_url": "https://console.cloud.google.com/apis/credentials",
+            "setup_steps": [
+                "Open Google Cloud Console and create or select a project.",
+                "Enable the Gmail API and Google Calendar API.",
+            ],
+            "redirect_uri": "http://test/api/oauth/google/callback",
+            "last_error": "",
+            "auth_modes": ["oauth"],
+            "default_auth_mode": "oauth",
+            "token_label": "",
+            "token_steps": [],
+            "token_expires": False,
+            "token_url": "",
+        }
+
+    def _drive_app(self) -> dict:
+        return {
+            "key": "drive",
+            "name": "Google Drive",
+            "provider": "google",
+            "connected": self.connected,
+            "status": "active" if self.connected else "not_connected",
+            "identity": self.identity,
+            "auth_mode": "oauth",
+            "scopes": ["https://www.googleapis.com/auth/drive.file"],
+            "actions": 3 if self.connected else 0,
+            "setup_required": not self.client_configured,
+            "setup_url": "https://console.cloud.google.com/apis/credentials",
+            "setup_steps": [
+                "Open Google Cloud Console and create or select a project.",
+                "Enable the Google Drive API and Google Picker API.",
+            ],
+            "redirect_uri": "http://test/api/oauth/google/callback",
+            "last_error": "",
+            "auth_modes": ["oauth"],
+            "default_auth_mode": "oauth",
+            "token_label": "",
+            "token_steps": [],
+            "token_expires": False,
+            "token_url": "",
+        }
+
+    def _docs_app(self) -> dict:
+        return {
+            **self._drive_app(),
+            "key": "docs",
+            "name": "Google Docs",
+            "actions": 3 if self.connected else 0,
+        }
+
+    def _github_app(self) -> dict:
+        return {
+            "key": "github",
+            "name": "GitHub",
+            "provider": "github",
+            "connected": self.github_connected,
+            "status": "active" if self.github_connected else "not_connected",
+            "identity": self.github_identity,
+            "auth_mode": "token",
+            "scopes": [
+                "Metadata: read-only",
+                "Issues: read and write",
+                "Pull requests: read and write",
+            ],
+            "actions": 8 if self.github_connected else 0,
+            "setup_required": False,
+            "setup_url": "https://github.com/settings/developers",
+            "setup_steps": ["Create a GitHub OAuth App for browser sign-in."],
+            "redirect_uri": "http://test/api/oauth/github/callback",
+            "last_error": "",
+            "auth_modes": ["token", "oauth"],
+            "default_auth_mode": "token",
+            "token_label": "GitHub fine-grained personal access token",
+            "token_steps": [
+                "Open GitHub Settings, Developer settings, Personal access tokens, Fine-grained tokens.",
+                "Select only the repositories Aether may use.",
+                "Grant Metadata read-only, Issues read and write, and Pull requests read and write.",
+            ],
+            "token_expires": True,
+            "token_url": "https://github.com/settings/tokens?type=beta",
+        }
+
+    def _linkedin_app(self) -> dict:
+        return {
+            "key": "linkedin",
+            "name": "LinkedIn",
+            "provider": "linkedin",
+            "connected": self.linkedin_connected,
+            "status": "active" if self.linkedin_connected else "not_connected",
+            "identity": self.linkedin_identity,
+            "auth_mode": "oauth",
+            "scopes": ["openid", "profile", "email", "w_member_social"],
+            "actions": 2 if self.linkedin_connected else 0,
+            "setup_required": not self.linkedin_configured,
+            "setup_url": "https://www.linkedin.com/developers/apps",
+            "setup_steps": [
+                "Open LinkedIn Developers and create an app.",
+                "Request Share on LinkedIn and Sign In with LinkedIn using OpenID Connect.",
+            ],
+            "redirect_uri": "http://test/api/oauth/linkedin/callback",
+            "last_error": "",
+            "auth_modes": ["oauth"],
+            "default_auth_mode": "oauth",
+            "token_label": "",
+            "token_steps": [],
+            "token_expires": False,
+            "token_url": "",
+            "note": (
+                "LinkedIn personal sign-ins last about 60 days. Aether will ask "
+                "you to reconnect when this one expires."
             ),
-        ]
-        self.toolkit_list = [
-            ToolkitInfo(slug="gmail", name="Gmail", logo="", description="your mail"),
-            ToolkitInfo(slug="github", name="GitHub", logo="", description="your code"),
-            ToolkitInfo(slug="notion", name="Notion", logo="", description="your notes"),
-        ]
+        }
 
-    async def available(self) -> bool:
-        return True
+    def _recipe(self, provider: str = "google") -> dict:
+        if provider == "linkedin":
+            app = self._linkedin_app()
+            return {
+                "provider": "linkedin",
+                "name": "LinkedIn",
+                "configured": self.linkedin_configured,
+                "setup_url": app["setup_url"],
+                "setup_steps": app["setup_steps"],
+                "redirect_uri": app["redirect_uri"],
+                "client_id_name": "LINKEDIN_CLIENT_ID",
+                "client_secret_name": "LINKEDIN_CLIENT_SECRET",
+            }
+        app = self._app()
+        return {
+            "provider": "google",
+            "name": "Google",
+            "configured": self.client_configured,
+            "setup_url": app["setup_url"],
+            "setup_steps": app["setup_steps"],
+            "redirect_uri": app["redirect_uri"],
+            "client_id_name": "GOOGLE_CLIENT_ID",
+            "client_secret_name": "GOOGLE_CLIENT_SECRET",
+        }
 
-    async def accounts(self) -> list:
-        return list(self.account_list)
+    async def feed(self) -> dict:
+        return {
+            "configured": True,
+            "apps": [
+                self._app(),
+                self._calendar_app(),
+                self._drive_app(),
+                self._docs_app(),
+                self._github_app(),
+                self._linkedin_app(),
+            ],
+            "providers": [
+                {
+                    "key": "google",
+                    "name": "Google",
+                    "configured": self.client_configured,
+                    "auth_modes": ["oauth"],
+                    "default_auth_mode": "oauth",
+                    "setup_url": "https://console.cloud.google.com/apis/credentials",
+                    "setup_steps": [],
+                    "redirect_uri": "http://test/api/oauth/google/callback",
+                    "client_id_name": "GOOGLE_CLIENT_ID",
+                    "client_secret_name": "GOOGLE_CLIENT_SECRET",
+                },
+                {
+                    "key": "github",
+                    "name": "GitHub",
+                    "configured": True,
+                    "auth_modes": ["token", "oauth"],
+                    "default_auth_mode": "token",
+                    "setup_url": "https://github.com/settings/developers",
+                    "setup_steps": ["Create a GitHub OAuth App for browser sign-in."],
+                    "redirect_uri": "http://test/api/oauth/github/callback",
+                    "client_id_name": "GITHUB_CLIENT_ID",
+                    "client_secret_name": "GITHUB_CLIENT_SECRET",
+                },
+                {
+                    "key": "linkedin",
+                    "name": "LinkedIn",
+                    "configured": self.linkedin_configured,
+                    "auth_modes": ["oauth"],
+                    "default_auth_mode": "oauth",
+                    "setup_url": "https://www.linkedin.com/developers/apps",
+                    "setup_steps": [],
+                    "redirect_uri": "http://test/api/oauth/linkedin/callback",
+                    "client_id_name": "LINKEDIN_CLIENT_ID",
+                    "client_secret_name": "LINKEDIN_CLIENT_SECRET",
+                },
+            ],
+        }
 
-    async def toolkits(self) -> list:
-        return list(self.toolkit_list)
+    async def setup_recipe(self, provider: str) -> dict:
+        return self._recipe(provider)
 
-    async def authorize(self, toolkit: str) -> tuple[str, str]:
-        return f"req-{toolkit}", f"https://hub.example.test/connect/{toolkit}"
+    async def save_client(self, provider: str, client_id: str, client_secret: str) -> dict:
+        assert client_id and client_secret
+        if provider == "linkedin":
+            self.linkedin_configured = True
+        else:
+            self.client_configured = True
+        return self._recipe(provider)
 
-    async def disconnect(self, account_id: str):
-        for app in self.account_list:
-            if app.id == account_id:
-                self.account_list.remove(app)
-                return app
-        return None
+    async def picker_recipe(self, provider: str) -> dict:
+        return {
+            "provider": provider,
+            "configured": bool(
+                self.client_configured and self.picker_api_key and self.picker_app_id
+            ),
+            "client_id": "client-id.apps.googleusercontent.com",
+            "api_key": self.picker_api_key,
+            "app_id": self.picker_app_id,
+            "scope": "https://www.googleapis.com/auth/drive.file",
+            "origin": "http://test",
+            "setup_url": "https://console.cloud.google.com/apis/credentials",
+        }
+
+    async def save_picker(self, provider: str, api_key: str, app_id: str) -> dict:
+        assert api_key and app_id
+        self.picker_api_key = api_key
+        self.picker_app_id = app_id
+        self.picker_configured = True
+        return await self.picker_recipe(provider)
+
+    async def record_picker_selection(self, app: str, files: list[dict]) -> dict:
+        assert app == "drive"
+        return {"selected": files, "count": len(files)}
+
+    async def connect(self, app: str, *, auth_mode: str | None = None) -> ConnectResult:
+        if app == "github":
+            if auth_mode == "oauth":
+                return ConnectResult(
+                    app=app,
+                    provider="github",
+                    redirect_url="https://github.com/login/oauth/authorize?state=e2e",
+                    redirect_uri="http://test/api/oauth/github/callback",
+                )
+            return ConnectResult(
+                app=app,
+                provider="github",
+                token_required=True,
+                setup_steps=(
+                    "Open GitHub Settings, Developer settings, Personal access tokens.",
+                    "Select only the repositories Aether may use.",
+                ),
+            )
+        if app == "linkedin":
+            if not self.linkedin_configured:
+                return ConnectResult(
+                    app=app,
+                    provider="linkedin",
+                    setup_required=True,
+                    setup_url="https://www.linkedin.com/developers/apps",
+                    setup_steps=(
+                        "Open LinkedIn Developers and create an app.",
+                        "Request Share on LinkedIn and Sign In with LinkedIn using OpenID Connect.",
+                    ),
+                    redirect_uri="http://test/api/oauth/linkedin/callback",
+                    client_id_name="LINKEDIN_CLIENT_ID",
+                    client_secret_name="LINKEDIN_CLIENT_SECRET",
+                )
+            return ConnectResult(
+                app=app,
+                provider="linkedin",
+                redirect_url="https://www.linkedin.com/oauth/v2/authorization?state=e2e",
+                redirect_uri="http://test/api/oauth/linkedin/callback",
+            )
+        if not self.client_configured:
+            return ConnectResult(
+                app=app,
+                provider="google",
+                setup_required=True,
+                setup_url="https://console.cloud.google.com/apis/credentials",
+                setup_steps=("Enable the Gmail API and Google Calendar API.",),
+                redirect_uri="http://test/api/oauth/google/callback",
+                client_id_name="GOOGLE_CLIENT_ID",
+                client_secret_name="GOOGLE_CLIENT_SECRET",
+            )
+        return ConnectResult(
+            app=app,
+            provider="google",
+            redirect_url="https://accounts.google.com/o/oauth2/v2/auth?state=e2e",
+            redirect_uri="http://test/api/oauth/google/callback",
+        )
+
+    async def connect_token(self, app: str, token: str, *, expires_at=None) -> ProviderConnection:
+        assert token.startswith("github_pat_")
+        self.github_connected = True
+        self.github_identity = "octocat"
+        return ProviderConnection(
+            provider="github",
+            auth_mode="token",
+            app=app,
+            account_label=self.github_identity,
+            access_token=token,
+            expires_at=expires_at,
+        )
+
+    async def handle_callback(self, provider: str, *, code: str, state: str) -> ProviderConnection:
+        if provider == "github":
+            self.github_connected = True
+            self.github_identity = "octocat"
+            return ProviderConnection(
+                provider="github",
+                auth_mode="oauth",
+                app="github",
+                account_label=self.github_identity,
+                access_token="token",
+            )
+        if provider == "linkedin":
+            self.linkedin_connected = True
+            self.linkedin_identity = "ada@example.com"
+            return ProviderConnection(
+                provider="linkedin",
+                auth_mode="oauth",
+                app="linkedin",
+                account_id="member-1",
+                account_label=self.linkedin_identity,
+                access_token="token",
+            )
+        self.connected = True
+        self.identity = "me@example.com"
+        return ProviderConnection(
+            provider=provider,
+            auth_mode="oauth",
+            app="gmail",
+            account_label=self.identity,
+            access_token="token",
+        )
+
+    async def disconnect(self, app: str) -> None:
+        if app == "github":
+            self.github_connected = False
+            self.github_identity = ""
+            return
+        if app == "linkedin":
+            self.linkedin_connected = False
+            self.linkedin_identity = ""
+            return
+        self.connected = False
+        self.identity = ""
+
+    async def poll_due(self) -> list:
+        return []
 
 
 def build_app() -> FastAPI:
@@ -1088,7 +1569,6 @@ def build_app() -> FastAPI:
         messaging=MessagingConfig(
             telegram=PlatformToggle(enabled=True),
             discord=PlatformToggle(enabled=False),
-            slack=PlatformToggle(enabled=False),
         ),
         contacts=ContactsConfig(
             mode="enforce",
@@ -1102,7 +1582,11 @@ def build_app() -> FastAPI:
             telegram=AppContacts(allowlist=[ContactRule(platform="telegram", handle="@sam")]),
         ),
         mcp_servers=[
-            MCPServerConfig(name="mail", transport=TransportConfig(type="http", url="https://x"))
+            MCPServerConfig(name="mail", transport=TransportConfig(type="http", url="https://x")),
+            # a stale pre-cutover entry: the panel must never render it
+            MCPServerConfig(
+                name="composio", transport=TransportConfig(type="http", url="https://hub.test/mcp")
+            ),
         ],
     )
     app.state.config = config
@@ -1129,7 +1613,7 @@ def build_app() -> FastAPI:
     app.state.secrets = secret_store
     app.state.resolver = FakeResolver(secret_store)
     app.state.model_catalog = FakeModelCatalog()
-    app.state.composio = FakeHubBridge()
+    app.state.provider_runtime = FakeProviderRuntime()
 
     @app.get("/")
     async def index() -> Response:

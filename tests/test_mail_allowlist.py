@@ -33,7 +33,7 @@ def _filter(contacts: ContactsConfig, audit: FakeAudit | None = None) -> MailAll
 async def test_mode_off_leaves_the_inbox_untouched() -> None:
     contacts = ContactsConfig(mode="off")  # the default — no filtering
     raw = _envelope(_msg("Newsletter <noreply@digest.example.com>", subject="newsletter"))
-    out = await _filter(contacts).filter_result("composio__GMAIL_FETCH_EMAILS", raw)
+    out = await _filter(contacts).filter_result("gmail__list_messages", raw)
     assert out == raw
 
 
@@ -41,7 +41,7 @@ async def test_gmail_section_mode_off_lets_everything_through() -> None:
     # the app's own switch overrides the default
     contacts = ContactsConfig(mode="enforce", gmail=AppContacts(mode="off"))
     raw = _envelope(_msg("Newsletter <noreply@digest.example.com>"))
-    assert await _filter(contacts).filter_result("composio__GMAIL_FETCH_EMAILS", raw) == raw
+    assert await _filter(contacts).filter_result("gmail__list_messages", raw) == raw
 
 
 async def test_a_newsletter_from_a_stranger_is_dropped() -> None:
@@ -49,7 +49,7 @@ async def test_a_newsletter_from_a_stranger_is_dropped() -> None:
     audit = FakeAudit()
     out = json.loads(
         await _filter(contacts, audit).filter_result(
-            "composio__GMAIL_FETCH_EMAILS",
+            "gmail__list_messages",
             _envelope(_msg("Newsletter <noreply@digest.example.com>", subject="tips")),
         )
     )
@@ -69,7 +69,7 @@ async def test_an_allowlisted_sender_stays() -> None:
     )
     out = json.loads(
         await _filter(contacts).filter_result(
-            "composio__GMAIL_FETCH_EMAILS",
+            "gmail__list_messages",
             _envelope(
                 _msg("abc123@xyz.com", subject="from the list"),
                 _msg("Newsletter <noreply@digest.example.com>", subject="noise"),
@@ -84,7 +84,7 @@ async def test_an_any_platform_rule_stays() -> None:
     contacts = ContactsConfig(mode="enforce", allowlist=[ContactRule(handle="dhak3212@hdh.com")])
     out = json.loads(
         await _filter(contacts).filter_result(
-            "composio__GMAIL_FETCH_EMAILS", _envelope(_msg("dhak3212@hdh.com"))
+            "gmail__list_messages", _envelope(_msg("dhak3212@hdh.com"))
         )
     )
     assert len(out["data"]["messages"]) == 1
@@ -96,7 +96,7 @@ async def test_self_to_self_mail_stays() -> None:
     contacts = ContactsConfig(mode="enforce")
     out = json.loads(
         await _filter(contacts).filter_result(
-            "composio__GMAIL_FETCH_EMAILS",
+            "gmail__list_messages",
             _envelope(_msg("abc@xyz.com", to="abc@xyz.com", subject="to myself")),
         )
     )
@@ -109,7 +109,7 @@ async def test_mail_sent_to_an_allowlisted_person_stays() -> None:
     )
     out = json.loads(
         await _filter(contacts).filter_result(
-            "composio__GMAIL_FETCH_EMAILS",
+            "gmail__list_messages",
             _envelope(
                 # abc@xyz.com to def@efg.com — the recipient is on the list
                 _msg("abc@xyz.com", to="def@efg.com", subject="to a friend"),
@@ -127,7 +127,7 @@ async def test_display_name_and_bare_addresses_both_parse() -> None:
     )
     out = json.loads(
         await _filter(contacts).filter_result(
-            "composio__GMAIL_FETCH_EMAILS",
+            "gmail__list_messages",
             _envelope(
                 _msg("Friendo <friend@example.com>", subject="angled"),
                 _msg("friend@example.com", subject="bare"),
@@ -144,7 +144,7 @@ async def test_multi_recipient_to_matches_one_allowlisted() -> None:
     )
     out = json.loads(
         await _filter(contacts).filter_result(
-            "composio__GMAIL_FETCH_EMAILS",
+            "gmail__list_messages",
             _envelope(_msg("me@example.com", to="def@efg.com, other@elsewhere.net")),
         )
     )
@@ -155,7 +155,7 @@ async def test_no_messages_dropped_means_no_audit_row() -> None:
     contacts = ContactsConfig(mode="off")
     audit = FakeAudit()
     await _filter(contacts, audit).filter_result(
-        "composio__GMAIL_FETCH_EMAILS", _envelope(_msg("anyone@example.com"))
+        "gmail__list_messages", _envelope(_msg("anyone@example.com"))
     )
     assert audit.entries == []
 
@@ -163,17 +163,17 @@ async def test_no_messages_dropped_means_no_audit_row() -> None:
 async def test_non_gmail_names_and_unreadable_results_pass_through() -> None:
     contacts = ContactsConfig(mode="enforce")
     f = _filter(contacts)
-    assert await f.filter_result("composio__NOTION_SEARCH", "whatever") == "whatever"
-    assert await f.filter_result("composio__GMAIL_WHO_AM_I", "not json") == "not json"
+    assert await f.filter_result("notion__search", "whatever") == "whatever"
+    assert await f.filter_result("gmail__get_profile", "not json") == "not json"
     # an envelope without a messages array — nothing to walk, untouched
     who = json.dumps({"successful": True, "data": {"email": "me@example.com"}})
-    assert await f.filter_result("composio__GMAIL_WHO_AM_I", who) == who
+    assert await f.filter_result("gmail__get_profile", who) == who
 
 
 async def test_unknown_message_shapes_are_never_destroyed() -> None:
     contacts = ContactsConfig(mode="enforce")
     raw = _envelope({"unexpected": ["shape"]})
-    assert await _filter(contacts).filter_result("composio__GMAIL_FETCH_EMAILS", raw) == raw
+    assert await _filter(contacts).filter_result("gmail__list_messages", raw) == raw
 
 
 async def test_filtered_results_say_so_in_the_same_words_every_turn() -> None:
@@ -187,7 +187,7 @@ async def test_filtered_results_say_so_in_the_same_words_every_turn() -> None:
 
     with_drops = json.loads(
         await f.filter_result(
-            "composio__GMAIL_FETCH_EMAILS",
+            "gmail__list_messages",
             _envelope(
                 _msg("friend@example.com", subject="kept"),
                 _msg("stranger@elsewhere.net", subject="dropped"),
@@ -195,12 +195,12 @@ async def test_filtered_results_say_so_in_the_same_words_every_turn() -> None:
         )
     )
     assert with_drops["data"]["allowlist_note"] == (
-        "these results are filtered by the Gmail allowlist — 1 message not on it were left out"
+        "these results are filtered by the Gmail allowlist — 1 message not on it was left out"
     )
 
     all_kept = json.loads(
         await f.filter_result(
-            "composio__GMAIL_FETCH_EMAILS",
+            "gmail__list_messages",
             _envelope(_msg("friend@example.com", subject="kept")),
         )
     )
@@ -213,7 +213,7 @@ async def test_plural_drops_read_plurally() -> None:
     contacts = ContactsConfig(mode="enforce")
     out = json.loads(
         await _filter(contacts).filter_result(
-            "composio__GMAIL_FETCH_EMAILS",
+            "gmail__list_messages",
             _envelope(
                 _msg("a@b.c", subject="one"),
                 _msg("x@y.z", subject="two"),
@@ -229,6 +229,44 @@ async def test_an_off_allowlist_never_claims_its_results_are_filtered() -> None:
     # lie — the inbox really is the whole truth when the switch is off
     contacts = ContactsConfig(mode="enforce", gmail=AppContacts(mode="off"))
     out = await _filter(contacts).filter_result(
-        "composio__GMAIL_FETCH_EMAILS", _envelope(_msg("stranger@elsewhere.net"))
+        "gmail__list_messages", _envelope(_msg("stranger@elsewhere.net"))
     )
     assert "allowlist_note" not in out
+
+
+async def test_a_from_field_is_judged_like_sender() -> None:
+    contacts = ContactsConfig(
+        mode="enforce",
+        gmail=AppContacts(allowlist=[ContactRule(platform="gmail", handle="friend@example.com")]),
+    )
+    raw = json.dumps(
+        {
+            "successful": True,
+            "data": {
+                "messages": [
+                    {"from": "Friend <friend@example.com>", "subject": "kept"},
+                    {"from": "stranger@elsewhere.net", "subject": "dropped"},
+                ]
+            },
+        }
+    )
+    out = json.loads(await _filter(contacts).filter_result("gmail__list_messages", raw))
+    assert [m["subject"] for m in out["data"]["messages"]] == ["kept"]
+
+
+async def test_the_direct_gmail_tool_rides_the_same_filter() -> None:
+    contacts = ContactsConfig(
+        mode="enforce",
+        gmail=AppContacts(allowlist=[ContactRule(platform="gmail", handle="abc123@xyz.com")]),
+    )
+    out = json.loads(
+        await _filter(contacts).filter_result(
+            "gmail__list_messages",
+            _envelope(
+                _msg("abc123@xyz.com", subject="from the list"),
+                _msg("stranger@elsewhere.net", subject="noise"),
+            ),
+        )
+    )
+    assert [m["subject"] for m in out["data"]["messages"]] == ["from the list"]
+    assert out["data"]["allowlist_note"].endswith(" — 1 message not on it was left out")

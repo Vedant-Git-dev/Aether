@@ -2,13 +2,14 @@
 themselves.
 
 ingest() drops non-allowlisted senders before storage, but a bulk read
-(`composio__GMAIL_FETCH_EMAILS` — the model's own calls and the 5-minute
-poll) answers with a whole inbox at once, senderless from ingest's point
-of view. This filter sits on the tool-result paths instead: it walks the
-returned message batch and keeps only what the user's Gmail list and the
-cross-app bucket allow — mail from an allowlisted sender, mail the user
-sent to an allowlisted person, and self-addressed mail (from me to me),
-which needs no knowledge of the account's own address to recognize.
+(`gmail__list_messages` — the model's own calls and the 5-minute poll)
+answers with a whole inbox at once, senderless from ingest's point of
+view. This filter sits on the
+tool-result paths instead: it walks the returned message batch and keeps
+only what the user's Gmail list and the cross-app bucket allow — mail from
+an allowlisted sender, mail the user sent to an allowlisted person, and
+self-addressed mail (from me to me), which needs no knowledge of the
+account's own address to recognize.
 
 Drops are silent to Aether — the model never sees the removed messages —
 and the only trace is one audit row naming the count. Sender addresses
@@ -57,7 +58,7 @@ class MailAllowlist:
     async def filter_result(self, name: str, result: str) -> str:
         """One choke point for every execution path. Non-gmail calls and
         results we can't read pass through untouched."""
-        if not name.startswith("composio__GMAIL_"):
+        if not name.startswith("gmail__"):
             return result
         try:
             envelope = json.loads(result)
@@ -87,7 +88,8 @@ class MailAllowlist:
         # instead of results that look complete when they aren't
         note = "these results are filtered by the Gmail allowlist"
         if dropped:
-            note += f" — {dropped} message{'' if dropped == 1 else 's'} not on it were left out"
+            verb = "was" if dropped == 1 else "were"
+            note += f" — {dropped} message{'' if dropped == 1 else 's'} not on it {verb} left out"
             await self._audit.append(
                 actor="system",
                 tool_name=name,
@@ -117,8 +119,8 @@ class MailAllowlist:
         person; everything else goes."""
         if not isinstance(message, dict):
             return True  # an unknown shape is never silently destroyed
-        sender_addrs = _addresses(message.get("sender"))
-        to_addrs = _addresses(message.get("to"))
+        sender_addrs = _addresses(message.get("sender") or message.get("from"))
+        to_addrs = _addresses(message.get("to") or message.get("recipient"))
         if not sender_addrs and not to_addrs:
             return True  # nothing to judge by — a shape we don't model yet
         if any(s in to_addrs for s in sender_addrs):

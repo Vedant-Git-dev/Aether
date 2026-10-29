@@ -27,6 +27,18 @@ class Settings(BaseSettings):
     )
 
     encryption_key: str = Field(default="", validation_alias="AETHER_ENCRYPTION_KEY")
+    # provider tokens use their own keyring so they can be rotated without
+    # re-encrypting the content key's data
+    token_encryption_key: str = Field(default="", validation_alias="AETHER_TOKEN_ENCRYPTION_KEY")
+    token_encryption_key_id: str = Field(
+        default="", validation_alias="AETHER_TOKEN_ENCRYPTION_KEY_ID"
+    )
+    token_encryption_key_previous: str = Field(
+        default="", validation_alias="AETHER_TOKEN_ENCRYPTION_KEY_PREVIOUS"
+    )
+    token_encryption_key_previous_id: str = Field(
+        default="", validation_alias="AETHER_TOKEN_ENCRYPTION_KEY_PREVIOUS_ID"
+    )
     api_token: str = Field(default="change-me", validation_alias="AETHER_TOKEN")
     dev_ephemeral_key: bool = Field(default=False, validation_alias="AETHER_DEV_EPHEMERAL_KEY")
 
@@ -42,13 +54,6 @@ class Settings(BaseSettings):
     # Messaging connectors
     telegram_bot_token: str = ""
     discord_bot_token: str = ""
-    slack_bot_token: str = ""
-    slack_app_token: str = ""
-
-    # Composio — the one connection hub for external apps (gmail, github,
-    # notion, ...). Boot reads this; the /apps walk's paste lands in the
-    # encrypted store and the bridge resolves it fresh from there.
-    composio_api_key: str = ""
 
     # this deployment's public address (https://your-app.onrender.com) —
     # where externally-hosted flows would call back; reserved for a future
@@ -162,6 +167,14 @@ class MCPServerConfig(BaseModel):
     enabled: bool = True
 
 
+def is_legacy_composio_server(name: str) -> bool:
+    """The old app hub's MCP entry is ignored after the direct-provider
+    cutover. It is not a user MCP server: keeping it would expose the
+    broker's tools beside the native provider tools and bring the removed
+    card back into the Apps page."""
+    return name.strip().lower() == "composio"
+
+
 class PlatformToggle(BaseModel):
     enabled: bool = False
 
@@ -169,7 +182,6 @@ class PlatformToggle(BaseModel):
 class MessagingConfig(BaseModel):
     telegram: PlatformToggle = Field(default_factory=PlatformToggle)
     discord: PlatformToggle = Field(default_factory=PlatformToggle)
-    slack: PlatformToggle = Field(default_factory=PlatformToggle)
 
 
 class ContactRule(BaseModel):
@@ -218,7 +230,6 @@ class ContactsConfig(BaseModel):
     gmail: AppContacts = Field(default_factory=AppContacts)
     telegram: AppContacts = Field(default_factory=AppContacts)
     discord: AppContacts = Field(default_factory=AppContacts)
-    slack: AppContacts = Field(default_factory=AppContacts)
 
 
 class AuthzRule(BaseModel):
@@ -304,6 +315,20 @@ class MediaConfig(BaseModel):
     max_prompt_chars: int = 500
 
 
+class ProviderAppConfig(BaseModel):
+    """One direct provider app's local settings."""
+
+    poll_minutes: float = 5.0
+
+
+class ProvidersConfig(BaseModel):
+    """Direct provider connections. The token key is a secret and lives in
+    Settings; this section carries only behavior knobs."""
+
+    enabled: bool = True
+    gmail: ProviderAppConfig = Field(default_factory=ProviderAppConfig)
+
+
 class AppConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
@@ -316,6 +341,7 @@ class AppConfig(BaseModel):
     proactive: ProactiveConfig = Field(default_factory=ProactiveConfig)
     workbench: WorkbenchConfig = Field(default_factory=WorkbenchConfig)
     media: MediaConfig = Field(default_factory=MediaConfig)
+    providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:
@@ -330,4 +356,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     if not p.is_file():
         return AppConfig()
     data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    return AppConfig.model_validate(data)
+    config = AppConfig.model_validate(data)
+    servers = [s for s in config.mcp_servers if not is_legacy_composio_server(s.name)]
+    if len(servers) == len(config.mcp_servers):
+        return config
+    return config.model_copy(update={"mcp_servers": servers})

@@ -65,7 +65,6 @@ def test_normalize_handle_forms() -> None:
     # platform handles embed their platform
     assert normalize_handle("telegram", "@vedant") == "telegram:vedant"
     assert normalize_handle("discord", "@vedant") == "discord:vedant"
-    assert normalize_handle("slack", "U123ABC") == "slack:u123abc"
     assert normalize_handle("telegram", "") == ""
 
 
@@ -182,7 +181,7 @@ def test_candidate_score_signals() -> None:
         >= 80
     )
     # unrelated -> weak
-    assert candidate_score(PersonRef("telegram", "@alpha"), PersonRef("slack", "U999")) < 50
+    assert candidate_score(PersonRef("telegram", "@alpha"), PersonRef("discord", "U999")) < 50
 
 
 # ---------------------------------------------------------------------------

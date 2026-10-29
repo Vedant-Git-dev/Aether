@@ -35,8 +35,9 @@ _TYPE_NAMES = {
 
 
 # the keys the genai Schema model declares (a subset — $schema and the
-# draft-07 combiners Composio ships are rejected outright). Module-level:
-# the recursion below touches every node of every tool on every call.
+# draft-07 combiners some MCP servers ship are rejected outright).
+# Module-level: the recursion below touches every node of every tool on
+# every call.
 _SCHEMA_KEYS = frozenset(
     {
         "type",
@@ -62,8 +63,8 @@ _SCHEMA_PAYLOAD_KEYS = frozenset({"default", "enum", "example"})
 
 def _schema_to_gemini(schema: Any) -> Any:
     """Recursively uppercase `type` names and drop keys the SDK's Schema
-    model doesn't declare — Composio's draft-07 schemas carry $schema and
-    other combiners the genai SDK rejects outright."""
+    model doesn't declare — some MCP servers' draft-07 schemas carry
+    $schema and other combiners the genai SDK rejects outright."""
     if isinstance(schema, dict):
         out: dict[str, Any] = {}
         for key, value in schema.items():

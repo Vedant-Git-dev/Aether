@@ -151,7 +151,7 @@ fact, get the record.
 **What it shows**: the chain badge and the replay delivered where you
 already are — deterministic, plain words, no model woken.
 
-1. In any enabled chat app (Telegram, Discord, Slack — or the web chat),
+1. In any enabled chat app (Telegram, Discord — or the web chat),
    send `/verify`. The answer is code, not the model — no tokens, no
    ingest, no new trace:
    > 🛡️ decision record: 1,247 decisions, chain intact — every entry
@@ -160,8 +160,8 @@ already are — deterministic, plain words, no model woken.
    A natural-language ask works too — *"can anyone tamper with your
    logs?"* — the model has a `verify_integrity` tool for exactly that.
 2. Reply **why?** to a message Aether sent you — a routine ping, an
-   approval nudge, a carried-out call (Telegram, Discord, or a Slack
-   thread). Your reply's platform id links it back to the trace that
+   approval nudge, a carried-out call (Telegram or Discord). Your reply's
+   platform id links it back to the trace that
    produced the message, and the record answers:
    > 🧵 that message, from the record (trace #57):
    > Your routine 'billing' fired.
@@ -335,7 +335,7 @@ config diff. No `.env` editing, no leaving chat.
    trying, I'll tell you the moment it's up" — and the moment it does, the
    same unprompted ✅ from step 1 arrives.
 
-   (The messaging apps — telegram, discord, slack — walk the same way: the
+   (The messaging apps — telegram and discord — walk the same way: the
    recipe hands you the BotFather or developer-console link, the token
    pastes once, and the reply is "stored — switching telegram on now." If
    the token isn't in yet, the status says so — "telegram — on — no token

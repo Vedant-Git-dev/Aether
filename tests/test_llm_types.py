@@ -303,7 +303,7 @@ def test_gemini_schema_uppercases_type_names() -> None:
 
 
 def test_gemini_schema_strips_what_the_sdk_forbids() -> None:
-    # Composio tools ship draft-07 schemas — $schema, $ref and friends make
+    # Some MCP tools ship draft-07 schemas — $schema, $ref and friends make
     # the genai SDK's Schema model reject the whole request
     schema = {
         "$schema": "http://json-schema.org/draft-07/schema#",

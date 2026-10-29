@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 from aether.agent.traces import Trace
 from aether.authz.approvals import PENDING, Approval
@@ -858,106 +857,6 @@ class FakeConfigManager:
         return self.effective_payload
 
 
-class FakeComposioBridge:
-    """ComposioBridge double: scripted catalog, accounts, and authorize
-    answers — no SDK, no network. `wait_and_enable` returns a fresh ACTIVE
-    account (or raises the scripted error); `disconnect` removes only ids
-    the fake holds, the way the real one verifies ownership."""
-
-    def __init__(
-        self,
-        *,
-        toolkits: list | None = None,
-        accounts: list | None = None,
-        available: bool = True,
-        authorize_url: str = "https://hub.example.test/connect",
-        authorize_error: Exception | None = None,
-        wait_error: Exception | None = None,
-    ) -> None:
-        from aether.composio_bridge import ToolkitInfo
-
-        self.toolkit_list = list(
-            toolkits
-            if toolkits is not None
-            else [
-                ToolkitInfo(
-                    slug="gmail",
-                    name="Gmail",
-                    logo="https://logo.test/gmail.png",
-                    description="your mail",
-                ),
-                ToolkitInfo(slug="github", name="GitHub", logo="", description="your code"),
-            ]
-        )
-        self.account_list = list(accounts or [])
-        self._available = available
-        self._authorize_url = authorize_url
-        self._authorize_error = authorize_error
-        self._wait_error = wait_error
-        self.authorized: list[str] = []
-        self.disconnected: list[str] = []
-        self.resets = 0
-        self._requests = 0
-
-    async def available(self) -> bool:
-        return self._available
-
-    async def ensure(self) -> bool:
-        return self._available
-
-    async def reset_session(self) -> bool:
-        self.resets += 1
-        return self._available
-
-    async def accounts(self) -> list:
-        return list(self.account_list)
-
-    async def toolkits(self) -> list:
-        return list(self.toolkit_list)
-
-    async def find_toolkits(self, query: str, limit: int = 5) -> list:
-        needle = query.strip().lower()
-        exact = [t for t in self.toolkit_list if needle in (t.slug.lower(), t.name.lower())]
-        if exact:
-            return exact[:1]
-        return [
-            t for t in self.toolkit_list if needle in t.slug.lower() or needle in t.name.lower()
-        ][:limit]
-
-    async def authorize(self, toolkit: str) -> tuple[str, str]:
-        from aether.composio_bridge import ComposioNotConfigured
-
-        if not self._available:
-            raise ComposioNotConfigured("no key in the fake")
-        if self._authorize_error is not None:
-            raise self._authorize_error
-        self.authorized.append(toolkit)
-        self._requests += 1
-        return f"req-{self._requests}", f"{self._authorize_url}/{toolkit}"
-
-    async def wait_and_enable(self, toolkit: str, request_id: str, timeout: float = 0):
-        from aether.composio_bridge import ConnectedApp
-
-        if self._wait_error is not None:
-            raise self._wait_error
-        app = ConnectedApp(
-            id=f"acc-{toolkit}",
-            toolkit=toolkit,
-            status="ACTIVE",
-            identity=f"{toolkit}@example.test",
-        )
-        self.account_list.append(app)
-        return app
-
-    async def disconnect(self, account_id: str):
-        for app in self.account_list:
-            if app.id == account_id:
-                self.account_list.remove(app)
-                self.disconnected.append(account_id)
-                return app
-        return None
-
-
 class FakeSecretStore:
     """SecretStore double: in-memory dict, the get/set/names surface so
     connector and bridge tests run with no database."""
@@ -973,46 +872,6 @@ class FakeSecretStore:
 
     async def names(self) -> set[str]:
         return set(self.secrets)
-
-
-class FakeComposioSession:
-    """Composio session double: records allowlist updates and authorize
-    calls, answers canned requests or errors — no Composio SDK, no network."""
-
-    def __init__(
-        self,
-        *,
-        authorize_result: object | None = None,
-        authorize_error: Exception | None = None,
-        update_error: Exception | None = None,
-        session_id: str = "fake-session-id",
-        mcp_url: str = "https://mcp.composio.dev/fake",
-        mcp_key: str = "fake-mcp-key",
-    ) -> None:
-        self.session_id = session_id
-        self.mcp = type("MCP", (), {"url": mcp_url, "headers": {"x-api-key": mcp_key}})()
-        self.authorize_result = authorize_result
-        self.authorize_error = authorize_error
-        self.update_error = update_error
-        self.update_calls: list[dict[str, Any]] = []
-        self.authorize_calls: list[str] = []
-
-    def update(self, **kwargs: Any) -> None:
-        self.update_calls.append(kwargs)
-        if self.update_error is not None:
-            raise self.update_error
-
-    def authorize(self, toolkit: str) -> Any:
-        self.authorize_calls.append(toolkit)
-        if self.authorize_error is not None:
-            raise self.authorize_error
-        if self.authorize_result is not None:
-            return self.authorize_result
-        return type(
-            "Request",
-            (),
-            {"id": f"req-{toolkit}", "redirect_url": f"https://hub.example.test/{toolkit}"},
-        )()
 
 
 class FakeProactiveStore:

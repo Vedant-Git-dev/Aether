@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple
@@ -142,7 +143,6 @@ _ACTION_WORDS: dict[str, ActionWords] = {
     "gmail": ActionWords("Send the email", "sending an email", "sent the email"),
     "telegram": ActionWords("Send the message", "sending a message", "sent the message"),
     "discord": ActionWords("Send the message", "sending a message", "sent the message"),
-    "slack": ActionWords("Send the message", "sending a message", "sent the message"),
     "whatsapp": ActionWords("Send the message", "sending a message", "sent the message"),
     "calendar": ActionWords(
         "Make the calendar change", "a calendar action", "made the calendar change"
@@ -151,9 +151,111 @@ _ACTION_WORDS: dict[str, ActionWords] = {
         "Make the calendar change", "a calendar action", "made the calendar change"
     ),
     "github": ActionWords("Make the github change", "a github action", "made the github change"),
+    "drive": ActionWords("Make the Drive change", "a Drive action", "made the Drive change"),
+    "docs": ActionWords("Make the Docs change", "a Docs action", "made the Docs change"),
+    "linkedin": ActionWords(
+        "Publish the LinkedIn post",
+        "publishing the LinkedIn post",
+        "published the LinkedIn post",
+    ),
     "notion": ActionWords("Update notion", "a notion update", "updated notion"),
     "linear": ActionWords("Make the linear change", "a linear action", "made the linear change"),
     "payments": ActionWords("Send the payment", "a payment", "sent the payment"),
+}
+
+# Provider actions whose name alone would read as the wrong act. The app's
+# default words are still the fallback; these are the explicit overrides.
+_PROVIDER_ACTION_WORDS: dict[tuple[str, str], ActionWords] = {
+    ("gmail", "list_messages"): ActionWords(
+        "Check the mail", "checking the mail", "checked the mail"
+    ),
+    ("gmail", "get_message"): ActionWords("Read the email", "reading the email", "read the email"),
+    ("gmail", "send_email"): ActionWords("Send the email", "sending the email", "sent the email"),
+    ("gmail", "create_draft"): ActionWords(
+        "Draft the email", "drafting the email", "drafted the email"
+    ),
+    ("gmail", "send_draft"): ActionWords("Send the draft", "sending the draft", "sent the draft"),
+    ("gmail", "get_profile"): ActionWords(
+        "Check the connected gmail account",
+        "checking the connected gmail account",
+        "checked the connected gmail account",
+    ),
+    ("calendar", "list_events"): ActionWords(
+        "Check the calendar", "checking the calendar", "checked the calendar"
+    ),
+    ("calendar", "create_event"): ActionWords(
+        "Create the event", "creating the event", "created the event"
+    ),
+    ("calendar", "update_event"): ActionWords(
+        "Update the event", "updating the event", "updated the event"
+    ),
+    ("calendar", "delete_event"): ActionWords(
+        "Delete the event", "deleting the event", "deleted the event"
+    ),
+    ("calendar", "freebusy"): ActionWords(
+        "Check availability", "checking availability", "checked availability"
+    ),
+    ("github", "list_issues"): ActionWords(
+        "Check the GitHub issues", "checking the GitHub issues", "checked the GitHub issues"
+    ),
+    ("github", "get_issue"): ActionWords(
+        "Read the GitHub issue", "reading the GitHub issue", "read the GitHub issue"
+    ),
+    ("github", "create_issue"): ActionWords(
+        "Open the GitHub issue", "opening the GitHub issue", "opened the GitHub issue"
+    ),
+    ("github", "comment_on_issue"): ActionWords(
+        "Comment on the GitHub issue",
+        "commenting on the GitHub issue",
+        "commented on the GitHub issue",
+    ),
+    ("github", "list_pull_requests"): ActionWords(
+        "Check the pull requests",
+        "checking the pull requests",
+        "checked the pull requests",
+    ),
+    ("github", "get_pull_request"): ActionWords(
+        "Read the pull request", "reading the pull request", "read the pull request"
+    ),
+    ("github", "comment_on_pull_request"): ActionWords(
+        "Comment on the pull request",
+        "commenting on the pull request",
+        "commented on the pull request",
+    ),
+    ("github", "list_notifications"): ActionWords(
+        "Check GitHub notifications",
+        "checking GitHub notifications",
+        "checked GitHub notifications",
+    ),
+    ("github", "search"): ActionWords("Search GitHub", "searching GitHub", "searched GitHub"),
+    ("drive", "list_files"): ActionWords(
+        "Check the Drive files", "checking the Drive files", "checked the Drive files"
+    ),
+    ("drive", "get_file"): ActionWords(
+        "Read the Drive file", "reading the Drive file", "read the Drive file"
+    ),
+    ("drive", "create_folder"): ActionWords(
+        "Create the Drive folder", "creating the Drive folder", "created the Drive folder"
+    ),
+    ("docs", "create_document"): ActionWords(
+        "Create the document", "creating the document", "created the document"
+    ),
+    ("docs", "read_document"): ActionWords(
+        "Read the document", "reading the document", "read the document"
+    ),
+    ("docs", "append_text"): ActionWords(
+        "Add to the document", "adding to the document", "added to the document"
+    ),
+    ("linkedin", "get_profile"): ActionWords(
+        "Check the LinkedIn account",
+        "checking the LinkedIn account",
+        "checked the LinkedIn account",
+    ),
+    ("linkedin", "create_post"): ActionWords(
+        "Publish the LinkedIn post",
+        "publishing the LinkedIn post",
+        "published the LinkedIn post",
+    ),
 }
 
 _NATIVE_WORDS: dict[str, ActionWords] = {
@@ -234,7 +336,10 @@ _NATIVE_WORDS: dict[str, ActionWords] = {
 }
 
 # the few parameters worth putting in front of the user, keyed to the
-# label they read under — everything else stays in the decision record
+# label they read under — everything else stays in the decision record.
+# An internal id is never one of these: "chat 8977329495" tells a user
+# nothing, so a handle a person reads (chat_ref) carries the preview and
+# the id stays a reference
 _SALIENT_PARAMS: tuple[tuple[str, str], ...] = (
     ("to", "to"),
     ("recipient", "to"),
@@ -242,8 +347,6 @@ _SALIENT_PARAMS: tuple[tuple[str, str], ...] = (
     ("recipient_email", "to"),
     ("email", "to"),
     ("channel", "channel"),
-    ("channel_id", "channel"),
-    ("chat_id", "chat"),
     ("chat_ref", "to"),
     ("username", "username"),
     ("title", "title"),
@@ -255,6 +358,8 @@ _SALIENT_PARAMS: tuple[tuple[str, str], ...] = (
     ("description", "description"),
     ("file_name", "file"),
     ("path", "path"),
+    ("repo", "in"),
+    ("number", "number"),
 )
 
 # a body is a preview, not a paste: one line, clipped, so the card shows
@@ -267,9 +372,9 @@ def _action_words(name: str) -> ActionWords:
     server, sep, tool = name.partition("__")
     if sep:
         lowered = tool.lower()
-        # a composio tool carries its toolkit as the name's prefix —
-        # composio__GMAIL_SEND_EMAIL reads as gmail, never as "composio";
-        # the verb checks below run on the action that follows the toolkit
+        # legacy Composio names stay readable in old traces: the toolkit is
+        # the name's prefix, so composio__GMAIL_SEND_EMAIL reads as gmail,
+        # never as "composio"; no new call is routed this way
         if server == "composio":
             app, _, action = lowered.partition("_")
         else:
@@ -278,6 +383,10 @@ def _action_words(name: str) -> ActionWords:
         if action == "who_am_i":
             account = f"the connected {app} account"
             return ActionWords(f"Check {account}", f"checking {account}", f"checked {account}")
+        if server != "composio":
+            provider_words = _PROVIDER_ACTION_WORDS.get((app, action))
+            if provider_words is not None:
+                return provider_words
         # a read-like tool must never read as a send — "I went ahead with
         # sending an email" about listing mail would be a lie
         read_like = ("list", "search", "get", "read", "find", "check", "query", "fetch")
@@ -326,19 +435,11 @@ def _salient_context(params: Any) -> str:
     return ", ".join(bits)
 
 
-def describe_ask(name: str, params: Any = None) -> str:
-    """The approval question exactly as the user reads it — "Send the
-    email (to rahul@gmail.com, subject hello)?" Never the raw tool name,
-    never a JSON dump; the decision record keeps the exact call."""
-    ask = _action_words(name).ask
-    ctx = _salient_context(params)
-    return f"{ask} ({ctx})?" if ctx else f"{ask}?"
-
-
 def describe_outcome(name: str, params: Any = None) -> str:
-    """The after-run chat message — "Sent the email (to rahul@gmail.com)."
-    The result stated plainly, with no status ceremony around it; the exact
-    tool output stays in the decision record."""
+    """The plain done sentence — "Sent the email (to rahul@gmail.com)."
+    The activity record's `plain` line for a completed act, and the
+    fallback chat line when no reasoning provider is wired; with one, the
+    model's own reply is what the user hears."""
     done = _action_words(name).done
     ctx = _salient_context(params)
     text = f"{done} ({ctx})" if ctx else done
@@ -355,8 +456,9 @@ def describe_denied(name: str, params: Any = None) -> str:
 
 
 def describe_dismissed(name: str, params: Any = None) -> str:
-    """The chat acknowledgment when the user taps Deny — "Okay — not
-    sending an email (to rahul@gmail.com)." A plain okay, not a report."""
+    """The fallback chat line when a denial arrives with no reasoning
+    provider wired — "Okay — not sending an email (to rahul@gmail.com)."
+    With one, the model's own reply acknowledges the denial instead."""
     doing = _action_words(name).doing
     ctx = _salient_context(params)
     return f"Okay — not {doing} ({ctx})." if ctx else f"Okay — not {doing}."
@@ -370,6 +472,194 @@ def describe_call(name: str, params: Any = None) -> str:
     ctx = _salient_context(params)
     text = f"{doing} ({ctx})" if ctx else doing
     return text[0].upper() + text[1:]
+
+
+# a value reads as a date in words only when it carries this shape —
+# anything else is shown exactly as the tool sent it
+_ISO_DATETIME = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
+
+
+def _readable_datetime(text: str) -> str:
+    """A datetime-shaped value in plain words — "Oct 28, 2026, 9:00 AM" —
+    with the offset kept when the value carried one, so an instant never
+    changes meaning in translation. A shape Python can't parse returns
+    untouched; a value is never mangled on its way to the user."""
+    if not _ISO_DATETIME.match(text):
+        return text
+    try:
+        when = datetime.fromisoformat(text)
+    except ValueError:
+        return text
+    hour = when.strftime("%I").lstrip("0") or "12"
+    stamp = f"{when:%b} {when.day}, {when.year}, {hour}:{when:%M} {when:%p}"
+    offset = when.utcoffset()
+    if offset is None:
+        return stamp
+    if not offset:
+        return f"{stamp} (UTC)"
+    minutes = abs(int(offset.total_seconds()) // 60)
+    sign = "+" if offset.total_seconds() >= 0 else "-"
+    return f"{stamp} (UTC{sign}{minutes // 60:02d}:{minutes % 60:02d})"
+
+
+def _full_label(key: str) -> str:
+    """A key as its field's own plain name — underscores read as spaces and
+    the first letter stands up, the same words the panel's card uses."""
+    plain = key.replace("_", " ")
+    return plain[:1].upper() + plain[1:]
+
+
+# where the ask's preview of a long text stops: whole leading lines while
+# both budgets hold, then a clean stop at the line edge. No ellipsis
+# character anywhere — the preview reads as the text's own opening, and
+# the complete version is one tap away
+_PREVIEW_CHARS = 240
+_PREVIEW_LINES = 8
+
+
+def _preview_lines(lines: list[str]) -> list[str]:
+    if len(lines) <= _PREVIEW_LINES and sum(len(line) for line in lines) <= _PREVIEW_CHARS:
+        return lines
+    kept: list[str] = []
+    total = 0
+    for line in lines:
+        if len(kept) >= _PREVIEW_LINES or total + len(line) > _PREVIEW_CHARS:
+            break
+        kept.append(line)
+        total += len(line)
+    if kept:
+        return kept
+    # one line longer than the whole budget: the leading words that fit,
+    # stopping at the last space so nothing reads cut mid-word
+    head = lines[0][:_PREVIEW_CHARS]
+    cut = head.rfind(" ")
+    return [head[:cut] if cut > 0 else head]
+
+
+def _full_scalar_lines(value: Any, *, complete: bool = True) -> list[str]:
+    """A leaf value as its own lines: a date in plain words, yes/no for a
+    flag, "(empty)" for a blank, everything else as it is. In the ask a
+    long text previews its leading lines instead of reciting; the complete
+    lines are what the full text and the record carry."""
+    if isinstance(value, bool):
+        return ["yes" if value else "no"]
+    if value is None:
+        return ["(empty)"]
+    text = _readable_datetime(value) if isinstance(value, str) else str(value)
+    lines = text.splitlines() or ["(empty)"]
+    return lines if complete else _preview_lines(lines)
+
+
+def _full_value(value: Any, indent: str, *, complete: bool = True) -> list[str]:
+    """A value alone as plain lines, wherever it sits: a dict labels its
+    own fields, a list numbers its items, and an empty one says so."""
+    if isinstance(value, dict):
+        entries = [(k, v) for k, v in value.items() if not k.startswith("_")]
+        if not entries:
+            return [f"{indent}(empty)"]
+        out: list[str] = []
+        for k, v in entries:
+            out += _full_field(k, v, indent, complete=complete)
+        return out
+    if isinstance(value, (list, tuple)):
+        if not len(value):
+            return [f"{indent}(empty)"]
+        out: list[str] = []
+        for i, item in enumerate(value, 1):
+            marker = f"{i}. "
+            pad = " " * len(marker)
+            if isinstance(item, dict):
+                entries = [(k, v) for k, v in item.items() if not k.startswith("_")]
+                if not entries:
+                    out.append(f"{indent}{marker}(empty)")
+                    continue
+                for j, (k, v) in enumerate(entries):
+                    lines = _full_field(k, v, "", complete=complete)
+                    out.append(f"{indent}{marker if j == 0 else pad}{lines[0]}")
+                    out += [f"{indent}{pad}{line}" for line in lines[1:]]
+            elif isinstance(item, (list, tuple)):
+                out.append(f"{indent}{marker}")
+                out += _full_value(item, indent + "    ", complete=complete)
+            else:
+                lines = _full_scalar_lines(item, complete=complete)
+                out.append(f"{indent}{marker}{lines[0]}")
+                out += [f"{indent}{pad}{line}" for line in lines[1:]]
+        return out
+    return [f"{indent}{_full_scalar_lines(value, complete=complete)[0]}"]
+
+
+# what a field that names an internal reference reads as — the token
+# points at a record somewhere else (a gmail thread, a stored file), and
+# words a decision is made from never include it
+_REFERENCE_NOTE = "(kept in the decision record)"
+
+
+def _is_reference(key: str, value: Any) -> bool:
+    """True when a field's key names an internal reference — "thread_id",
+    "media_id", a plain "id" — and it carries something. The token is
+    meaningless to a human decision, so the full text points at the
+    decision record's exact copy instead of printing it; an empty one is a
+    blank like any other and still reads "(empty)"."""
+    if key != "id" and not key.endswith("_id"):
+        return False
+    return value not in (None, "", [], {})
+
+
+def _full_field(key: str, value: Any, indent: str, *, complete: bool = True) -> list[str]:
+    """One field as plain lines: the label in its own words, then everything
+    the field carried. A scalar rides the label's line; a value with lines
+    of its own keeps them raw, so a body or a patch copies clean; anything
+    bigger indents beneath. An internal reference reads as where its exact
+    value lives, never as its token. Nothing clips, nothing drops."""
+    head = f"{indent}{_full_label(key)}: "
+    if _is_reference(key, value):
+        return [head + _REFERENCE_NOTE]
+    if isinstance(value, (dict, list, tuple)):
+        if not len(value):
+            return [head + "(empty)"]  # an empty collection is a "nothing", like a blank
+        return [head.rstrip(), *_full_value(value, indent + "  ", complete=complete)]
+    lines = _full_scalar_lines(value, complete=complete)
+    if len(lines) == 1:
+        return [head + lines[0]]
+    return [head.rstrip(), *lines]
+
+
+def _compose_ask(name: str, params: Any, *, complete: bool) -> str:
+    """The ask as its own fields: the action as a question, then every
+    field the request carried in the request's own order, each under its
+    own plain label. One layout behind both faces of a decision — the
+    question previews long text so the chat stays short, the full text
+    carries everything, so the "read the full text" tap never switches to
+    a different view of what was decided on."""
+    lines = [f"{_action_words(name).ask}?"]
+    if isinstance(params, dict):
+        entries = [(k, v) for k, v in params.items() if not k.startswith("_")]
+    else:
+        entries = []  # no fields at all — a "nothing" the text says plainly
+    if not entries:
+        return "\n".join([*lines, "", "(empty)"])
+    lines.append("")
+    for k, v in entries:
+        lines += _full_field(k, v, "", complete=complete)
+    return "\n".join(lines)
+
+
+def describe_ask(name: str, params: Any = None) -> str:
+    """The approval question exactly as the user reads it: the action as a
+    question, then the request's own fields in their own order — a long
+    text previews its leading lines and the complete version is one tap
+    away. Never the raw tool name, never a JSON dump; the decision record
+    keeps the exact call."""
+    return _compose_ask(name, params, complete=False)
+
+
+def describe_full(name: str, params: Any = None, note: str = "") -> str:
+    """The whole ask behind the "read the full text" tap: the same title,
+    the same labels, the same order as the approval question, with every
+    field complete — a decision is made on the whole request, never on a
+    technical view of it. The gate's `note` is wiring, not part of what
+    the user reads."""
+    return _compose_ask(name, params, complete=True)
 
 
 def plain_outcome(name: str, params: Any, kind: str) -> str:
@@ -1412,9 +1702,9 @@ def register_native_tools(
             _spec(
                 "send_chat_message",
                 "Push a message to the user's chat surfaces mid-turn "
-                "(Telegram, Discord, Slack, web chat — whichever are "
-                "enabled). Your end-of-turn reply is delivered "
-                "automatically — never use this to answer or to repeat it.",
+                "(Telegram, Discord, web chat — whichever are enabled). "
+                "Your end-of-turn reply is delivered automatically — never "
+                "use this to answer or to repeat it.",
                 {"text": {"type": "string", "description": "the message"}},
                 ["text"],
             ),

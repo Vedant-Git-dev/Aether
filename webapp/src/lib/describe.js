@@ -121,7 +121,8 @@ const APP_NAMES = {
   gmail: "Email", mail: "Email", email: "Email", outlook: "Email",
   calendar: "Calendar", gcal: "Calendar",
   slack: "Slack", telegram: "Telegram", discord: "Discord", whatsapp: "WhatsApp", teams: "Teams",
-  github: "GitHub", drive: "Files", filesystem: "Files", fs: "Files",
+  github: "GitHub", drive: "Drive", docs: "Docs", linkedin: "LinkedIn",
+  filesystem: "Files", fs: "Files",
   phone: "Phone (SMS)", sms: "Phone (SMS)", call: "Phone call",
   memory: "Aether's memory",
 };
@@ -140,7 +141,8 @@ const NOUNS = { email: "email", emails: "email", mail: "email", message: "messag
   channel: "channels", channels: "channels", contact: "contacts", contacts: "contacts" };
 
 const DEFAULT_NOUN = { Email: "email", Calendar: "events", Slack: "messages", Telegram: "messages",
-  Discord: "messages", WhatsApp: "messages", Teams: "messages", GitHub: "issues", Files: "files" };
+  Discord: "messages", WhatsApp: "messages", Teams: "messages", GitHub: "issues", Files: "files",
+  Drive: "files", Docs: "documents" };
 
 const NATIVE_TOOLS = {
   memory_search: "Searching memory",
@@ -167,9 +169,42 @@ const NATIVE_TOOLS = {
 const EXTRA_SOURCES = { screen: "Screen", web: "Web", user: "You", agent: "Aether" };
 
 // action idioms the verb/noun tables can't phrase — keyed by the
-// post-composio-shift action, lowercase ("who_am_i" from GMAIL_WHO_AM_I)
+// provider action, lowercase ("who_am_i" from GMAIL_WHO_AM_I)
 const ACTION_IDIOMS = {
   who_am_i: (appName) => `Checking the connected ${appName ? `${appName} ` : ""}account`,
+};
+
+// direct provider actions whose name alone would read as the wrong act;
+// composio keeps its own older fallback (the backend supplies `plain` for
+// every live row, so this only matters for legacy rows)
+const PROVIDER_ACTION_IDIOMS = {
+  list_messages: (appName) => `Checking ${appName && appName !== "Email" ? appName : "the mail"}`,
+  get_message: (appName) => `Reading an email${appName && appName !== "Email" ? ` in ${appName}` : ""}`,
+  send_email: (appName) => `Sending an email${appName && appName !== "Email" ? ` from ${appName}` : ""}`,
+  create_draft: (appName) => `Drafting an email${appName && appName !== "Email" ? ` in ${appName}` : ""}`,
+  send_draft: (appName) => `Sending a draft${appName && appName !== "Email" ? ` from ${appName}` : ""}`,
+  get_profile: (appName) => `Checking the connected ${appName ? `${appName} ` : ""}account`,
+  list_events: () => "Checking the calendar",
+  create_event: () => "Creating the event",
+  update_event: () => "Updating the event",
+  delete_event: () => "Deleting the event",
+  freebusy: () => "Checking availability",
+  list_issues: () => "Checking the GitHub issues",
+  get_issue: () => "Reading the GitHub issue",
+  create_issue: () => "Opening the GitHub issue",
+  comment_on_issue: () => "Commenting on the GitHub issue",
+  list_pull_requests: () => "Checking the pull requests",
+  get_pull_request: () => "Reading the pull request",
+  comment_on_pull_request: () => "Commenting on the pull request",
+  list_notifications: () => "Checking GitHub notifications",
+  search: (appName) => `Searching ${appName || "GitHub"}`,
+  list_files: () => "Checking the Drive files",
+  get_file: () => "Reading the Drive file",
+  create_folder: () => "Creating the Drive folder",
+  create_document: () => "Creating the document",
+  read_document: () => "Reading the document",
+  append_text: () => "Adding to the document",
+  create_post: () => "Publishing the LinkedIn post",
 };
 
 export function appLabel(source) {
@@ -198,6 +233,8 @@ const PARAM_LABELS = {
   subject: "Subject", title: "Title", body: "Message", text: "Message", message: "Message", content: "Message",
   start: "When", when: "When", run_at: "When", end: "Until", date: "Date", location: "Where",
   attendees: "People", amount: "Amount", note: "Note", query: "Looking for",
+  repo: "Repository", number: "Number", state: "State", labels: "Labels",
+  assignees: "People", head: "From", base: "Into", draft: "Draft", milestone: "Milestone",
 };
 
 export function friendlyValue(value) {
@@ -406,10 +443,11 @@ function cleanPattern(pattern) {
 function describeName(name) {
   const wildcard = /[.*+?\[\]]/;
   let [app, action] = name.includes("__") ? name.split("__") : ["", name];
+  const direct = app !== "composio";
   // composio actions are UPPER_SNAKE with the toolkit as the first word —
   // composio__GMAIL_SEND_EMAIL reads as gmail, never as "composio" (mirrors
   // _action_words in src/aether/agent/tools.py)
-  if (app === "composio" && action) {
+  if (!direct && action) {
     const [toolkit, ...rest] = action.toLowerCase().split("_");
     app = toolkit;
     action = rest.join("_");
@@ -418,7 +456,8 @@ function describeName(name) {
   if (!action || wildcard.test(action) && !/[a-z]{3,}/i.test(action.replace(/[.*+?\[\]]/g, ""))) {
     return appName ? `Anything in ${appName}` : "Any action";
   }
-  const idiom = ACTION_IDIOMS[action.toLowerCase()];
+  const idiom = ACTION_IDIOMS[action.toLowerCase()]
+    || (direct ? PROVIDER_ACTION_IDIOMS[action.toLowerCase()] : null);
   if (idiom) return idiom(appName);
   const words = action.replace(/[.*+?\[\]]/g, " ").toLowerCase().split(/[_\s]+/).filter(Boolean);
   const verbHit = words.map((w) => VERBS.find(([re]) => re.test(w))).find(Boolean);
@@ -495,3 +534,108 @@ export const BUILTIN_PLAIN = {
   "builtin:oauth-consent": ["Connecting an app by signing in", "The sign-in you completed on the provider's own screen serves as your approval."],
   "default:fail-safe": ["Unrecognized actions", "An action Aether does not recognize is held for your approval before it runs."],
 };
+
+// --- the approval card: rendered from the request's own shape -------------
+//
+// Nothing in this section knows any particular kind of request. Labels
+// come from the request's own keys, formats from what the content itself
+// is, and the summary from the request's own fields — a request shape
+// nobody has seen yet renders the same way, with no code change.
+
+// the request's own key, read as a label — underscores become spaces and
+// the first letter comes up. Whatever a future request calls its fields,
+// they label themselves; there is no mapping to keep in sync.
+export function fieldLabel(key) {
+  const words = String(key).replace(/_+/g, " ").trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : "(empty)";
+}
+
+// a timestamp-shaped string reads as the date it names — a raw ISO value
+// never reaches the screen (the same shape friendlyValue transcribes)
+export function readableDate(text) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(String(text))) return "";
+  const when = new Date(text);
+  return Number.isNaN(when.getTime())
+    ? ""
+    : when.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+// a string that is itself a serialized object or list unpacks into one —
+// raw JSON never reaches the screen, but nothing is dropped either
+export function structuredValue(value) {
+  if (typeof value !== "string") return null;
+  const s = value.trim();
+  if (!(s.startsWith("{") || s.startsWith("["))) return null;
+  try {
+    const parsed = JSON.parse(s);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// ```-fenced spans split a text into code and prose; the language tag on
+// the opening fence is dropped. An unclosed fence makes the rest code —
+// the text is never swallowed by a missing marker.
+export function splitFences(text) {
+  const segments = [];
+  let rest = String(text);
+  while (rest) {
+    const open = rest.indexOf("```");
+    if (open === -1) {
+      segments.push({ code: false, text: rest });
+      break;
+    }
+    if (open > 0) segments.push({ code: false, text: rest.slice(0, open) });
+    const after = rest.slice(open + 3);
+    const close = after.indexOf("```");
+    const block = close === -1 ? after : after.slice(0, close);
+    const nl = block.indexOf("\n");
+    // the block's first line is the info string ("bash") when it spans
+    // lines — drop it; a single-line block is the code itself
+    segments.push({ code: true, text: nl === -1 ? block : block.slice(nl + 1) });
+    if (close === -1) break;
+    rest = after.slice(close + 3);
+  }
+  return segments.filter((s) => s.text !== "");
+}
+
+// whole-value shape detectors — a value's display comes from what the
+// value itself is, never from the field that carried it
+export function isUrl(text) {
+  return /^https?:\/\/\S+$/i.test(String(text));
+}
+
+export function isPath(text) {
+  const s = String(text);
+  if (!s || /\s/.test(s)) return false;
+  if (/^[A-Za-z]:[\\/]/.test(s)) return true;
+  if (s.startsWith("/") || s.startsWith("~/") || /^\.{1,2}\//.test(s)) return true;
+  return s.includes("/") && !s.includes("://") && !/[?#]/.test(s);
+}
+
+export function isDiff(text) {
+  const s = String(text);
+  return s.startsWith("diff --git ") || (/^--- /m.test(s) && /^\+\+\+ /m.test(s));
+}
+
+// a field whose key names an internal reference — "thread_id", "media_id",
+// a plain "id" — carries a token that points at a record elsewhere, not
+// words a decision can be made from. This is the one value rule keyed to
+// the field rather than the content: an opaque token is indistinguishable
+// from any other string until its key names it. The card points at the
+// decision record's exact copy instead of printing the token.
+export function isIdKey(key) {
+  const k = String(key);
+  return k === "id" || k.endsWith("_id");
+}
+
+// true when a value carries anything — an empty id is still just "(empty)"
+export function hasContent(value) {
+  if (value === null || value === undefined || value === "") return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return true;
+}
+
+export const ID_REFERRAL = "(kept in the decision record)";

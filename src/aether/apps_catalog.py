@@ -5,11 +5,10 @@ A recipe is everything the /apps walk needs to connect a chat surface
 without the user going looking for any of it: where to click (exact
 links, numbered steps), what to paste (one ask per key, by name only —
 values are handed over in chat and consumed before ingest), and the
-messaging toggle to write. External apps (gmail, github, notion, …) are
-NOT here: they connect through Composio, whose own toolkit catalog is
-fetched live by the bridge — Aether keeps no per-app list of someone
-else's ecosystem. Anything that speaks MCP directly gets the generic
-walk ("something else"), whose server fragments reference keys by name
+messaging toggle to write. Direct provider apps (gmail, calendar, drive,
+docs, github, linkedin) are defined in `aether.providers` and start their
+own sign-in. Anything that speaks MCP directly gets the generic walk
+("something else"), whose server fragments reference keys by name
 (`$NAME`), expanded at open time by the resolver, so the pinned config
 copy never carries a secret value either.
 """
@@ -71,26 +70,6 @@ CATALOG: tuple[AppRecipe, ...] = (
             "application — under Bot, Reset Token copies its token",
         ),
         asks=("paste the token here — I'll take it from there.",),
-    ),
-    AppRecipe(
-        key="slack",
-        name="slack",
-        blurb="talk to me there",
-        kind="messaging",
-        apply_path="messaging.slack.enabled",
-        env_names=("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
-        keys_line="two tokens needed:",
-        stake="your workspace",
-        steps=(
-            "open https://api.slack.com/apps and create an app — under OAuth & "
-            "Permissions, Install to Workspace copies the bot token (xoxb…)",
-            "under Basic Info, App-Level Tokens generates the app token "
-            "(xapp…) with the connections:write scope",
-        ),
-        asks=(
-            "paste the bot token (xoxb…) here — I'll take it from there.",
-            "now the app token (xapp…) — paste it here.",
-        ),
     ),
 )
 

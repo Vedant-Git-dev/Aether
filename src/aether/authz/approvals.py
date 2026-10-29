@@ -190,6 +190,25 @@ class Approvals:
             outcome="executed after approval",
         )
 
+    async def fail_pending_matching(self, tool_prefix: str, reason: str) -> int:
+        """Fail every still-pending approval for one app. Used when a
+        provider connection is revoked or needs reconnecting: an approval
+        for a tool that no longer exists must not keep offering a run."""
+        rows = await self._pool.fetch(
+            "UPDATE pending_approvals SET status = 'failed', media_id = NULL"
+            " WHERE status = 'pending' AND left(tool_name, length($1)) = $1"
+            " RETURNING id, tool_name",
+            tool_prefix,
+        )
+        for row in rows:
+            await self._audit.append(
+                actor="system",
+                tool_name=row["tool_name"],
+                decision="info",
+                outcome=reason,
+            )
+        return len(rows)
+
     async def mark_failed(self, approval_id: int) -> None:
         """Flip an approved call to failed — the carried-out run couldn't
         happen, and a broken approval must not linger as if it still owed

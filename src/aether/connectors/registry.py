@@ -99,28 +99,10 @@ def _tokens(text: str) -> set[str]:
 @dataclass(frozen=True)
 class RegisteredTool:
     spec: ToolSpec
-    kind: Literal["native", "mcp"]
+    kind: Literal["native", "mcp", "provider"]
     handler: NativeHandler | None = None
-
-
-def _gmail_body_breaks(name: str, params: dict[str, Any]) -> dict[str, Any]:
-    """The deterministic fix for email line breaks at the MCP boundary.
-
-    Composio's Gmail actions carry an is_html flag — as HTML, a body written
-    with plain \\n newlines renders as one collapsed line, and a doubly
-    escaped \\n shows up as literal text. Whatever the model wrote, the
-    line breaks must survive: unescape, then \\n becomes <br> with is_html
-    set. Idempotent, so the approval path's re-execution is a no-op."""
-    if not name.startswith("composio__GMAIL_"):
-        return params
-    body = params.get("body")
-    if not isinstance(body, str) or ("\\n" not in body and "\n" not in body):
-        return params
-    return {
-        **params,
-        "body": body.replace("\\n", "\n").replace("\n", "<br>"),
-        "is_html": True,
-    }
+    effect: Literal["read", "write", "destructive"] | None = None
+    auth_mode: Literal["oauth", "token"] | None = None
 
 
 class ToolRegistry:
@@ -141,6 +123,37 @@ class ToolRegistry:
             log.warning("mcp tool %s is shadowed by a native tool of the same name", spec.name)
             return
         self._tools[spec.name] = RegisteredTool(spec, "native", handler)
+
+    def add_provider(
+        self,
+        spec: ToolSpec,
+        handler: NativeHandler,
+        *,
+        effect: Literal["read", "write", "destructive"],
+        source: str,
+        auth_mode: Literal["oauth", "token"],
+    ) -> None:
+        """Register one direct-provider action.
+
+        Provider tools carry the effect the provider declared, so the gate
+        can be explicit instead of guessing from a verb in the name. A
+        native tool of the same name wins; a provider app must never shadow
+        Aether's own tools.
+        """
+        existing = self._tools.get(spec.name)
+        if existing is not None:
+            log.warning("provider tool %s is shadowed by an existing tool", spec.name)
+            return
+        if spec.source != source:
+            spec = ToolSpec(
+                name=spec.name,
+                description=spec.description,
+                input_schema=spec.input_schema,
+                source=source,
+            )
+        self._tools[spec.name] = RegisteredTool(
+            spec, "provider", handler, effect=effect, auth_mode=auth_mode
+        )
 
     def attach_mcp(self, host: MCPHost) -> None:
         self._mcp_host = host
@@ -191,9 +204,10 @@ class ToolRegistry:
     def gated_specs(self, text: str = "", unlocked: set[str] | None = None) -> list[ToolSpec]:
         """Token-frugal tool list: every native tool, plus the MCP tools
         whose names match words in the trigger text or that a search_tools
-        call unlocked this turn. Composio ships ~60 schemas per server;
-        passing all of them on every call is what blows the free-tier input
-        quota, so the model only sees the apps this turn actually mentions."""
+        call unlocked this turn. A busy MCP server can ship dozens of
+        schemas; passing all of them on every call is what blows the
+        free-tier input quota, so the model only sees the apps this turn
+        actually mentions."""
         unlocked = unlocked or set()
         specs: list[ToolSpec] = []
         words = _tokens(text)
@@ -273,6 +287,39 @@ class ToolRegistry:
             log.info("dropped %d tool(s) from mcp server %r", len(names), server)
         return len(names)
 
+    def drop_app(self, app: str) -> int:
+        """Remove every direct-provider tool an app contributed."""
+        names = [
+            name
+            for name, tool in self._tools.items()
+            if tool.kind == "provider" and tool.spec.source == app
+        ]
+        for name in names:
+            del self._tools[name]
+        if names:
+            log.info("dropped %d provider tool(s) from %r", len(names), app)
+        return len(names)
+
+    def drop_provider_tools(self) -> int:
+        names = [name for name, tool in self._tools.items() if tool.kind == "provider"]
+        for name in names:
+            del self._tools[name]
+        return len(names)
+
+    def provider_apps(self) -> list[str]:
+        seen: set[str] = set()
+        for tool in self._tools.values():
+            if tool.kind == "provider":
+                seen.add(tool.spec.source)
+        return sorted(seen)
+
+    def provider_action_count(self, app: str) -> int:
+        return sum(
+            1
+            for tool in self._tools.values()
+            if tool.kind == "provider" and tool.spec.source == app
+        )
+
     def __len__(self) -> int:
         return len(self._tools)
 
@@ -283,9 +330,15 @@ class ToolRegistry:
         if tool.kind == "native":
             assert tool.handler is not None
             return _stringify(await tool.handler(params or {}))
+        if tool.kind == "provider":
+            assert tool.handler is not None
+            result = _stringify(await tool.handler(params or {}))
+            if self._mail_filter is not None:
+                result = await self._mail_filter.filter_result(name, result)
+            return result
         if self._mcp_host is None:
             raise UnknownToolError(f"mcp tool {name} has no host to route through")
-        result = await self._mcp_host.call(name, _gmail_body_breaks(name, params or {}))
+        result = await self._mcp_host.call(name, params or {})
         if self._mail_filter is not None:
             result = await self._mail_filter.filter_result(name, result)
         return result

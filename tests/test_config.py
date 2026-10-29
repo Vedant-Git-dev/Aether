@@ -34,6 +34,20 @@ def test_example_yaml_parses_and_matches_defaults() -> None:
     assert cfg.workspace.encrypted is True
 
 
+def test_legacy_composio_server_is_ignored(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "mcp_servers:\n"
+        "  - name: composio\n"
+        "    transport: {type: http, url: 'https://hub.example.test/mcp'}\n"
+        "  - name: weather\n"
+        "    transport: {type: stdio, command: npx, args: ['-y', 'mcp-weather']}\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(path)
+    assert [server.name for server in cfg.mcp_servers] == ["weather"]
+
+
 def test_mcp_server_config_shape() -> None:
     cfg = AppConfig.model_validate(
         {
@@ -89,8 +103,6 @@ def test_settings_reads_the_documented_env_names(monkeypatch) -> None:
         "OLLAMA_BASE_URL",
         "TELEGRAM_BOT_TOKEN",
         "DISCORD_BOT_TOKEN",
-        "SLACK_BOT_TOKEN",
-        "SLACK_APP_TOKEN",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AETHER_ENCRYPTION_KEY", "key")

@@ -24,7 +24,8 @@ _TABLES = (
     "entity_notes, chat_messages, scheduled_actions, routines, decision_traces, "
     "config_overrides, oauth_tokens, app_secrets, memory_chunks, daily_counters, "
     "workbench_transfers, workbench_minutes, proactive_tasks, media_blobs, "
-    "processed_updates"
+    "processed_updates, provider_connections, provider_oauth_states, "
+    "provider_sync_state"
 )
 
 

@@ -295,6 +295,105 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     assert page.locator('[data-testid="contact-row"]').count() == 1
 
 
+def test_approval_cards_show_the_full_ask(page, live_server, token) -> None:
+    # The pending card renders everything the request carries, from its
+    # own shape: labels come from the request's own keys, the format from
+    # the content itself, long text scrolls and expands instead of
+    # cutting, and a decision applies to exactly what is on screen.
+    page.add_init_script(f"localStorage.setItem('aether_token', '{token}')")
+    page.goto(f"{live_server}/#/attention")
+    page.wait_for_selector('[data-testid="approval-card"]')
+    page.wait_for_timeout(500)
+    cards = page.locator('[data-testid="approval-card"]')
+    assert cards.count() == 6
+
+    # each card names the action in plain words, then shows the request's
+    # own fields in its own order — no separate summary line repeats them
+    mail = cards.nth(0)
+    mail_text = mail.inner_text()
+    assert "Sending messages on Email" in mail_text
+    assert "To" in mail_text and "sam@example.com" in mail_text
+
+    issue = cards.nth(2)
+    issue_text = issue.inner_text()
+    assert "Opening the GitHub issue" in issue_text
+    assert "Title" in issue_text and "Deploy script fails on the nightly build" in issue_text
+
+    event = cards.nth(3)
+    event_text = event.inner_text()
+    assert "Creating the event" in event_text
+    assert "Title" in event_text and "Dentist" in event_text
+
+    patch = cards.nth(4)
+    patch_text = patch.inner_text()
+    assert "Apply patch in Patch" in patch_text
+    assert "Path" in patch_text and "scripts/deploy.sh" in patch_text
+
+    # a long issue body previews its opening; its end is one tap away,
+    # the box says its size out loud, and the whole read stays in place
+    assert "no space left on device" not in issue_text
+    assert "whether it happened again" not in issue_text
+    expand = issue.locator('[data-testid="approval-expand"]')
+    assert expand.inner_text().strip() == "Read full text"
+    assert (
+        issue.locator('[data-testid="approval-text-size"]')
+        .inner_text()
+        .strip()
+        .endswith("characters")
+    )
+    expand.click()
+    page.wait_for_timeout(100)
+    assert issue.locator('[data-testid="approval-expand"]').inner_text().strip() == "Show less"
+    issue_text = issue.inner_text()
+    assert "no space left on device" in issue_text
+    assert "whether it happened again" in issue_text
+
+    # fenced code renders as a code block with the fence markers gone, a
+    # list of items numbers itself, and an empty field says so
+    assert "```" not in issue_text
+    assert issue.locator('[data-testid="approval-code"]').count() == 1
+    assert issue.locator('[data-testid="approval-items"]').count() == 1
+    assert "(empty)" in issue_text
+    expand.click()
+    page.wait_for_timeout(100)
+    assert issue.locator('[data-testid="approval-expand"]').inner_text().strip() == "Read full text"
+
+    # the calendar row: a timestamp reads as a date, attendees number
+    # their own labelled fields, an empty string says so
+    assert "Oct 28, 2026" in event_text
+    assert "2026-10-28T09:00:00" not in event_text
+    assert "Sam Rivera" in event_text and "priya@example.com" in event_text
+    assert "(empty)" in event_text
+
+    # the unrecognized tool: a path reads in monospace, a link stays a
+    # link, and a diff keeps its shape with both sides readable
+    assert patch.locator('[data-testid="approval-path"]').count() == 1
+    assert patch.locator("a").count() == 1
+    assert patch.locator("a").get_attribute("href") == "https://example.com/deploys/rollback-plan"
+    assert patch.locator('[data-testid="approval-diff"]').count() == 1
+    assert "deploying the nightly release" in patch_text
+    assert "deploying the tagged release" in patch_text
+
+    # the gmail reply: the card names the action and its own fields; the
+    # thread it answers is an internal reference pointing at the decision
+    # record's exact copy, and the raw token never reaches the screen
+    reply = cards.nth(5)
+    reply_text = reply.inner_text()
+    assert "Replying to email" in reply_text
+    assert "Message" in reply_text and "Sounds good — Thursday works." in reply_text
+    assert "Thread id" in reply_text
+    assert "(kept in the decision record)" in reply_text
+    assert reply.locator('[data-testid="approval-reference"]').count() == 1
+    assert "19c2e6fe0b2f1a34" not in page.locator("body").inner_text()
+
+    # the decision buttons ride below the capped content, always in view
+    assert patch.locator('[data-testid="approve"]').count() == 1
+    assert patch.locator('[data-testid="deny"]').count() == 1
+
+    # and the whole page still speaks plainly
+    _scan(page.locator("body").inner_text(), "attention (full asks)")
+
+
 def test_model_fields_are_pickers_over_the_live_catalog(page, live_server, token) -> None:
     # the six model knobs are dropdowns over the fetched catalog: no
     # free-text entry remains, both configured providers list in one

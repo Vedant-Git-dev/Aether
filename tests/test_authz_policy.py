@@ -16,7 +16,7 @@ def test_read_only_tools_are_allowed() -> None:
         "mail__list_unread",
         "calendar__get_events",
         "web__fetch_page",
-        "slack__find_messages",
+        "discord__find_messages",
         "telegram__get_me",
         "gmail__search_emails",
         "notion__query_database",
@@ -121,7 +121,7 @@ def test_risky_tools_require_approval() -> None:
         "payments__pay_invoice",
         "calendar__create_event",
         "mail__book_flight",
-        "slack__post_message",
+        "discord__post_message",
         "github__transfer_repo",
         "zoom__invite_user",
         "twitter__publish_tweet",
@@ -261,7 +261,6 @@ def test_set_config_security_paths_require_approval() -> None:
     for path in (
         "messaging.telegram.enabled",
         "messaging.discord.enabled",
-        "messaging.slack.enabled",
         "contacts.mode",
         "contacts.allowlist",
         "authz.rules",
@@ -406,24 +405,24 @@ def test_origin_never_touches_any_other_tool() -> None:
     assert ruling.matched_rule == "builtin:risky"
 
 
-# -- Composio's UPPER_SNAKE tool names classify by the same verbs --------------------
+# -- uppercase MCP tool names classify by the same verbs ---------------------------
 
 
-def test_upper_snake_hub_tools_hit_the_same_verb_ladder() -> None:
-    """composio__GMAIL_SEND_EMAIL is a send in any case — without the
-    lowercase pass every hub tool would park at fail-safe, and a destructive
-    one would slip past the risky list."""
+def test_upper_snake_mcp_tools_hit_the_same_verb_ladder() -> None:
+    """A verb is a verb whatever its case — without the lowercase pass an
+    uppercase MCP tool would park at fail-safe, and a destructive one
+    could slip past the risky list."""
     policy = Policy([])
-    send = policy.classify("composio__GMAIL_SEND_EMAIL", {"to": "a@b.c"})
+    send = policy.classify("MAIL_SEND_EMAIL", {"to": "a@b.c"})
     assert send.decision is Decision.REQUIRE_APPROVAL
     assert send.matched_rule == "builtin:risky"
-    delete = policy.classify("composio__GITHUB_DELETE_REPOSITORY")
+    delete = policy.classify("GITHUB_DELETE_REPOSITORY")
     assert delete.matched_rule == "builtin:risky"
-    fetch = policy.classify("composio__GMAIL_FETCH_EMAILS")
+    fetch = policy.classify("MAIL__FETCH_EMAILS")
     assert fetch.decision is Decision.ALLOW
     assert fetch.matched_rule == "builtin:read-only"
     # case-insensitivity must not invent verbs: no 'send' in RESEND-style
     # compounds, no 'book' in 'FACEBOOK'
-    assert policy.classify("composio__FACEBOOK_GET_USER").matched_rule == "builtin:read-only"
-    parked = policy.classify("composio__LINEAR_UPDATE_ISSUE")
+    assert policy.classify("MCP__GET_FACEBOOK_USER").matched_rule == "builtin:read-only"
+    parked = policy.classify("LINEAR_UPDATE_ISSUE")
     assert parked.matched_rule == "default:fail-safe"  # unknown verb — held, honestly

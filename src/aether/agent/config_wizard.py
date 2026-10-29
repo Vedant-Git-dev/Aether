@@ -126,7 +126,7 @@ def _messaging_settings() -> tuple[_Setting, ...]:
             f"whether I speak on {platform}",
             f"turn {platform} on or off? (currently {{cur}})",
         )
-        for platform in ("telegram", "discord", "slack")
+        for platform in ("telegram", "discord")
     )
 
 
@@ -624,7 +624,7 @@ class ConfigWizard:
         if pick == 1:
             if self._list_kind == "allowlist":
                 self._stage = "al_platform"
-                return "which platform? (telegram, discord, slack — or * for any)"
+                return "which platform? (telegram, discord — or * for any)"
             self._stage = "az_pattern"
             return (
                 "which tool calls does it cover? (a pattern, like telegram__send or .*__delete.*)"
@@ -653,7 +653,7 @@ class ConfigWizard:
     def _answer_al_platform(self, text: str) -> str:
         token = text.strip()
         if not token or " " in token:
-            return "just the platform — telegram, discord, slack, or * for any"
+            return "just the platform — telegram, discord, or * for any"
         self._pending["platform"] = token.lower()
         self._stage = "al_handle"
         return "what's their handle?"

@@ -28,7 +28,6 @@ import contextlib
 import json
 import logging
 import secrets
-import time
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -37,8 +36,7 @@ from typing import Any
 from ..authz.approvals import APPROVED, DENIED, Approval, Approvals
 from ..authz.audit import AuditLog, verification_text
 from ..authz.policy import Decision, Policy, params_blob
-from ..composio_bridge import SERVER_ENTRY, SERVER_NAME, ComposioBridge
-from ..config import AppConfig, PollTool
+from ..config import AppConfig, PollTool, is_legacy_composio_server
 from ..config_store import ConfigManager
 from ..config_store import actions_word as _actions_word
 from ..connectors.attachments import AttachmentProcessor, attachments_note
@@ -53,6 +51,7 @@ from ..connectors.mail_allowlist import MailAllowlist
 from ..connectors.mcp_host import MCPHost
 from ..connectors.registry import ToolRegistry
 from ..llm.agent import run_tool_loop
+from ..llm.base import Provider
 from ..llm.registry import ProviderRegistry
 from ..llm.types import PLAIN_PARAM, Message, ToolCall, ToolResult, ToolSpec
 from ..memory.context import ContextBuilder
@@ -60,6 +59,8 @@ from ..memory.entities import Sender
 from ..memory.events import Event, EventStore
 from ..memory.salience import Salience
 from ..memory.vectors import MemoryHit, VectorMemory
+from ..providers.runtime import ProviderRuntime
+from ..providers.types import ConnectResult, ProviderError, ProviderNotConfigured
 from ..restart import pending as restart_pending
 from ..routines import Routines, trigger_matches
 from ..scheduler.jobs import ScheduledAction, Scheduler
@@ -87,18 +88,6 @@ log = logging.getLogger("aether.agent")
 
 _MAX_OBSERVATIONS = 20
 
-# Hub watchdog: a connection hub (composio) whose session exists but whose
-# endpoint has stopped answering tools/list flaps in a reconnect loop
-# forever — sessions.use still succeeds for it, so the bridge's reuse path
-# never escapes. After this much continuous unreadiness, the loop cuts one
-# fresh session (the host's next reconnect re-resolves the $NAME refs onto
-# it), then leaves it alone for the cooldown; a few fruitless resets per
-# boot mean the outage is Composio's, not the session's, and the normal
-# reconnect loop is what rides it out.
-_HUB_RESET_AFTER_SECONDS = 90.0  # boot grace + a few backoff cycles
-_HUB_RESET_COOLDOWN_SECONDS = 600.0
-_HUB_MAX_RESETS_PER_BOOT = 3
-
 # History windowing (token control): a turn's prompt is capped at this many
 # messages — the context block and the newest triggers always stay, the
 # oldest middle entries fall off first. The tool loop's own back-and-forth
@@ -116,6 +105,22 @@ _TRANSCRIPT_MESSAGES = 20
 # runs longer refreshes it at this cadence — one fire at turn start would
 # go dark while the work is still honest.
 TYPING_REFRESH_SECONDS = 4.5
+
+
+# the instruction behind the one reply a decision gets: a single exchange
+# with no tools, so the answer can only ever be words — the model cannot
+# turn an acknowledgment into a retry or a new proposal. The ask rides
+# exactly as the user read it on the card, so the reply speaks about the
+# same request they decided on.
+def _decision_ack_instruction(ask: str, outcome: str) -> str:
+    return (
+        "The user just decided on an action you proposed. Send one short "
+        "plain reply in your own voice — it is the only message you send "
+        "about this, and you cannot run or propose anything now, so never "
+        "promise a further step.\n\n"
+        f"The request, exactly as the user read it:\n\n{ask}\n\n"
+        f"What happened:\n{outcome}"
+    )
 
 
 def _window_history(messages: list[Message], keep_head: int = 1) -> list[Message]:
@@ -152,7 +157,6 @@ POLL_FAILURES_BEFORE_DOWN = 2
 _PLATFORM_TOKENS = {
     "telegram": ("TELEGRAM_BOT_TOKEN",),
     "discord": ("DISCORD_BOT_TOKEN",),
-    "slack": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
 }
 
 
@@ -433,7 +437,7 @@ class AgentLoop:
         resolver: EnvResolver | None = None,
         secret_store: SecretStore | None = None,
         settings: Any = None,
-        composio: ComposioBridge | None = None,
+        provider_runtime: ProviderRuntime | None = None,
         transcript: Any = None,
         attachments: AttachmentProcessor | None = None,
         vectors: VectorMemory | None = None,
@@ -441,6 +445,9 @@ class AgentLoop:
         media: Any = None,
     ) -> None:
         self._providers = providers
+        # the in-flight reply to a decision, if the model is writing one —
+        # tests await it; a live loop just lets it land
+        self._decision_reply: asyncio.Task[None] | None = None
         self._tools = tools
         self._policy = policy
         self._approvals = approvals
@@ -461,7 +468,7 @@ class AgentLoop:
         self._resolver = resolver
         self._secret_store = secret_store
         self._settings = settings
-        self._composio = composio
+        self._provider_runtime = provider_runtime
         # the cross-surface transcript (chat_messages) — both directions,
         # read back each turn as conversation memory
         self._transcript = transcript
@@ -489,19 +496,14 @@ class AgentLoop:
         # mcp servers whose "I'll tell you the moment it's up" was already
         # said this boot — a flapping server never announces twice
         self._announced_ready: set[str] = set()
-        # the tool_version each server's namespace was last synced at — a
-        # connection hub grows as the user approves apps, and this is how a
-        # tick notices without diffing full tool lists every time
+        # the tool_version each server's namespace was last synced at — an
+        # MCP server can grow or shrink at runtime, and this is how a tick
+        # notices without diffing full tool lists every time
         self._synced_tool_versions: dict[str, int] = {}
-        # in-flight Connect Link waits — tracked so a completed task is
-        # never garbage-collected mid-flight
-        self._connect_waits: set[asyncio.Task[None]] = set()
-        # hub watchdog state: when the composio connection first went
-        # unready (monotonic), when a session reset last ran, and how many
-        # this boot — see _watch_hub
-        self._hub_unready_since: float | None = None
-        self._hub_last_reset: float | None = None
-        self._hub_resets = 0
+        # salience scorers moved off the reply path — same tracking (a
+        # completed task is never garbage-collected mid-flight), and this
+        # set is what stop() waits out
+        self._scoring_tasks: set[asyncio.Task[None]] = set()
 
         self._queue: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._woken = asyncio.Event()
@@ -543,6 +545,12 @@ class AgentLoop:
         if task is not None:
             with contextlib.suppress(TimeoutError, asyncio.CancelledError):
                 await asyncio.wait_for(task, timeout=10)
+        # scorers a recent tick spawned get the same bounded grace — a tick
+        # that ingested an event owes it a score, and nothing retries
+        # salience, so they are waited out rather than cancelled
+        if self._scoring_tasks:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait(set(self._scoring_tasks), timeout=10)
 
     async def _backfill_loop(self) -> None:
         """Index the events that predate vector memory (or lost a race with
@@ -677,21 +685,41 @@ class AgentLoop:
                 await asyncio.wait_for(self._woken.wait(), timeout=self._config.agent.tick_seconds)
             self._woken.clear()
 
+    def _spawn_scoring(self, event_id: int) -> None:
+        """Score one event on a background task — the salience judge is a
+        whole LLM turn, and words a user is waiting on must never queue
+        behind it. A failure is logged, never raised into the tick."""
+
+        async def _score() -> None:
+            try:
+                await self._salience.score_event(event_id)
+            except Exception:
+                log.exception("background salience scoring failed for event %s", event_id)
+
+        task = asyncio.create_task(_score(), name=f"salience-score-{event_id}")
+        self._scoring_tasks.add(task)
+        task.add_done_callback(self._scoring_tasks.discard)
+
     async def _tick(self) -> None:
         anchor = self._last_event_id
 
-        # (a) due source polls first, so their results are observed this tick
-        await self._run_due_polls()
+        # (a) due source polls first, so their results are observed this
+        # tick — unless someone is waiting on a reply: a message never
+        # queues behind the feeds. When one is queued the polls defer to
+        # this tick's tail (past the turn, or the quiet return below);
+        # their own notify() wakes the next tick to observe what they
+        # found
+        polled = False
+        if self._queue.empty():
+            await self._run_due_polls()
+            await self._run_due_provider_polls()
+            polled = True
 
         # (a2) a server that answered late joins the namespace here —
         # keeping the "the moment it's up" promise is the tick's own job
         await self._reconcile_mcp()
 
-        # (a3) a hub whose endpoint has gone stale never gets ready on its
-        # own — the watchdog cuts it a fresh session
-        await self._watch_hub()
-
-        # (a4) pending approvals past their TTL flip to expired and are
+        # (a3) pending approvals past their TTL flip to expired and are
         # audited — without this they'd sit as 'pending' forever, and every
         # pending-approvals reader would keep offering dead decisions
         if self._approvals is not None:
@@ -730,7 +758,9 @@ class AgentLoop:
                 sender=Sender(platform=message.surface, handle=message.handle),
             )
             if result.stored and result.event_id is not None:
-                await self._salience.score_event(result.event_id)
+                # the judge leaves the reply path here — scored beside the
+                # turn instead of in front of it
+                self._spawn_scoring(result.event_id)
                 self._last_event_id = max(self._last_event_id, result.event_id)
             if result.reason == "filtered:contacts":
                 log.info(
@@ -775,7 +805,18 @@ class AgentLoop:
         observations = await self._events.list_since(anchor, limit=_MAX_OBSERVATIONS)
         for event in observations:
             self._last_event_id = max(self._last_event_id, event.id)
-            await self._salience.score_event(event.id)
+        if messages:
+            # a reply is waiting — the scoring spawns beside the turn; the
+            # verdicts land moments later and the next reader (recall,
+            # later turns) sees them
+            for event in observations:
+                self._spawn_scoring(event.id)
+        else:
+            # nobody spoke, so the turn ahead is unprompted and its
+            # interruption budget reads these very scores — they stay
+            # inline, fresh when urgent is computed
+            for event in observations:
+                await self._salience.score_event(event.id)
 
         # (c2) standing triggers the user taught — deterministic matching
         # over the same observations, before any LLM is involved
@@ -790,9 +831,25 @@ class AgentLoop:
             await self._surfaces.send_to_user("While it was quiet:\n\n" + "\n\n".join(held))
 
         if not messages and not observations:
-            return  # a quiet tick: no LLM turn, no tokens spent
+            # a quiet tick: no LLM turn, no tokens spent — but the polls a
+            # queued message deferred still run before the tick closes
+            if not polled:
+                await self._run_due_polls()
+                await self._run_due_provider_polls()
+            return
 
         await self._turn(messages, observations)
+
+        # the polls the waiting message deferred — after the reply, never
+        # before it
+        if not polled:
+            await self._run_due_polls()
+            await self._run_due_provider_polls()
+
+        # a tick that never suspended (a provider-less turn, say) still
+        # lets the scorers it spawned take their first step here, so none
+        # is left pending at loop close
+        await asyncio.sleep(0)
 
     # -- the deterministic chat vocabulary ---------------------------------------
 
@@ -847,7 +904,6 @@ class AgentLoop:
             else:
                 reply = await self._apps_walk.start()
             await self._surfaces.send_to_user(reply)
-            self._maybe_spawn_connect_waiter()
             if not self._apps_walk.alive:
                 self._apps_walk = None
             return True
@@ -861,7 +917,6 @@ class AgentLoop:
                     # the walk let go of the message — it's normal chat
                     self._apps_walk = None
                     return False
-                self._maybe_spawn_connect_waiter()
                 if not walk.alive:
                     self._apps_walk = None  # done, or goodbye — nothing is waiting
                 await self._surfaces.send_to_user(reply)
@@ -1120,38 +1175,44 @@ class AgentLoop:
     async def _apps_status(self) -> str:
         """What's connected, honestly — the same render at bare /apps and
         after a connect. A messaging surface that's on without its token
-        says so; a hub app names its identity (or its non-active status);
-        an mcp server counts its actions when it has answered and makes
-        the promise when it hasn't. The footer is the gate, in one line —
-        connection status and what Aether may do are separate truths."""
+        says so; a direct provider app names its identity (or its
+        non-active status); an mcp server counts its actions when it has
+        answered and makes the promise when it hasn't. The footer is the
+        gate, in one line — connection status and what Aether may do are
+        separate truths."""
         names = await self._env_names()
         lines: list[str] = []
         messaging = self._config.messaging
-        for platform in ("telegram", "discord", "slack"):
+        for platform in ("telegram", "discord"):
             if not getattr(messaging, platform).enabled:
                 continue
             if all(name in names for name in _PLATFORM_TOKENS[platform]):
                 lines.append(f"· {platform} — on")
             else:
                 lines.append(f"· {platform} — on — no token yet")
-        if self._composio is not None:
+        if self._provider_runtime is not None:
             try:
-                apps = await self._composio.accounts()
+                feed = await self._provider_runtime.feed()
             except Exception:
-                log.exception("reading the hub's connected apps failed")
-                apps = []
-            for app in apps:
-                if app.status == "ACTIVE":
-                    who = f" — {app.identity}" if app.identity else ""
-                    lines.append(f"· {app.toolkit}{who} — connected")
+                log.exception("reading direct provider connections failed")
+                feed = {"apps": []}
+            for app in feed.get("apps", []):
+                key = str(app.get("key", ""))
+                name = str(app.get("name", key))
+                status = str(app.get("status", "not_connected"))
+                who = str(app.get("identity", ""))
+                if status == "active":
+                    suffix = f" — {who}" if who else ""
+                    lines.append(f"· {name}{suffix} — connected")
+                elif status == "reauth_required":
+                    lines.append(f"· {name} — needs reconnecting — /apps add {key} to reconnect")
+                elif app.get("setup_required"):
+                    lines.append(f"· {name} — not connected — finish the {name} setup first")
                 else:
-                    lines.append(
-                        f"· {app.toolkit} — {app.status.lower()} — "
-                        f"/apps add {app.toolkit} to reconnect"
-                    )
+                    lines.append(f"· {name} — not connected — /apps add {key} to connect")
         status = self._tools.mcp_status()
         for server in self._config.mcp_servers:
-            if not server.enabled:
+            if not server.enabled or is_legacy_composio_server(server.name):
                 continue
             if status.get(server.name):
                 count = self._tools.server_action_count(server.name)
@@ -1165,100 +1226,54 @@ class AgentLoop:
 
     def _new_apps_wizard(self) -> AppsWizard:
         """Every walk wires the same loop functions — the connect command
-        path and the background waiter's permissions walk alike."""
+        path and the callback's permissions walk alike."""
         return AppsWizard(
             apply=self._apply_config,
             status=self._apps_status,
             env_names=self._env_names,
             save_secret=self._store_secret,
-            find_toolkits=self._find_toolkits,
-            authorize=self._authorize_composio,
+            provider_apps=self._provider_apps,
+            connect_provider=self._connect_provider_reply,
         )
 
-    async def _find_toolkits(self, query: str) -> list[tuple[str, str]]:
-        """The hub's live catalog, fuzzy-matched — [] when there's no hub
-        wired, which the walk reads as 'nothing by that name'."""
-        if self._composio is None:
+    async def _provider_apps(self) -> list[tuple[str, str]]:
+        if self._provider_runtime is None:
             return []
         try:
-            found = await self._composio.find_toolkits(query)
+            feed = await self._provider_runtime.feed()
         except Exception:
-            log.exception("toolkit lookup failed")
+            log.exception("reading direct provider apps failed")
             return []
-        return [(t.slug, t.name) for t in found]
+        return [
+            (str(app.get("key", "")), str(app.get("name", "")))
+            for app in feed.get("apps", [])
+            if app.get("key")
+        ]
 
-    async def _authorize_composio(self, toolkit: str) -> tuple[str, str] | None:
-        """Start one app's Connect Link. The first connect also pins the
-        composio mcp_servers entry — the walk's pick is the approval, so
-        it rides origin "walk" through the same executor; a user rule that
-        parks it anyway gets its card relayed and the link still served
-        (the tools arrive when the one-tap lands)."""
-        bridge = self._composio
-        if bridge is None:
-            return None
-        try:
-            entry = next((s for s in self._config.mcp_servers if s.name == SERVER_NAME), None)
-            reply = ""
-            if entry is None:
-                reply = await self._apply_config(
-                    "add", "mcp_servers", dict(SERVER_ENTRY), origin="walk"
-                )
-            elif not entry.enabled:
-                reply = await self._apply_config(
-                    "set", f"mcp_servers.{SERVER_NAME}.enabled", True, origin="walk"
-                )
-            # the held-for-approval reply must reach the user directly —
-            # checked by its stable words, never by a symbol
-            if "held for your one-tap approval" in reply:
-                await self._surfaces.send_to_user(reply)
-            return await bridge.authorize(toolkit)
-        except Exception:
-            log.exception("starting the %s connect failed", toolkit)
-            return None
-
-    def _maybe_spawn_connect_waiter(self) -> None:
-        """The walk just served a Connect Link — wait for the click out of
-        band so the user isn't stuck watching. The walk hands over
-        (toolkit, request id) exactly once."""
-        walk = self._apps_walk
-        if walk is None or walk.pending_connect is None:
-            return
-        toolkit, request_id = walk.pending_connect
-        walk.pending_connect = None
-        self.watch_connect(toolkit, request_id)
-
-    def watch_connect(self, toolkit: str, request_id: str) -> None:
-        """A Connect Link waiting on its click — from the chat walk or the
-        web panel alike; the same out-of-band wait, the same announcement."""
-        if self._composio is None:
-            return
-        task = asyncio.create_task(
-            self._wait_for_connect(toolkit, request_id), name="composio-connect"
-        )
-        self._connect_waits.add(task)
-        task.add_done_callback(self._connect_waits.discard)
-
-    async def _wait_for_connect(self, toolkit: str, request_id: str) -> None:
-        """The out-of-band half of a Connect Link: block until the click
-        lands (or the link dies), then ask the gate's question — what may
-        Aether do with the new app. Solicited by the user's own click, so
-        the answer never waits out quiet hours."""
-        bridge = self._composio
-        assert bridge is not None
-        try:
-            app = await bridge.wait_and_enable(toolkit, request_id)
-        except Exception:
-            log.exception("the %s connect never completed", toolkit)
-            await self._surfaces.send_to_user(
-                f"the {toolkit} connection didn't finish — the link may "
-                f"have expired. /apps add {toolkit} to try again."
+    async def _connect_provider_reply(self, app_key: str) -> ConnectResult:
+        """Start one direct-provider sign-in from chat. The wizard owns the
+        setup recipe and the paste asks; this only returns the provider's
+        answer or raises a plain ProviderError."""
+        runtime = self._provider_runtime
+        if runtime is None:
+            raise ProviderNotConfigured(
+                "direct app connections aren't wired on this instance — "
+                "set AETHER_TOKEN_ENCRYPTION_KEY and AETHER_TOKEN_ENCRYPTION_KEY_ID, "
+                "then restart."
             )
-            return
+        return await runtime.connect(app_key)
+
+    async def announce_provider_connection(self, app_key: str, identity: str = "") -> None:
+        """The OAuth callback landed — move the walk to the gate's question:
+        what may Aether do with this app. The answer writes an authz rule
+        with the direct provider prefix."""
         walk = self._apps_walk
         if walk is None or not walk.alive:
             walk = self._new_apps_wizard()
             self._apps_walk = walk
-        await self._surfaces.send_to_user(walk.enter_permissions(app.toolkit, app.identity))
+        await self._surfaces.send_to_user(
+            walk.enter_permissions(app_key, identity, prefix=f"{app_key}__")
+        )
 
     async def _try_explain_reply(self, message: InboundMessage) -> bool:
         """A reply that is just 'why?' (or 'explain') about one of my own
@@ -1361,6 +1376,41 @@ class AgentLoop:
             if ingest.stored:
                 self.notify()
 
+    async def _run_due_provider_polls(self) -> None:
+        """Run due direct-provider polls (Gmail history, later others).
+
+        The provider runtime owns the cursor and the schedule; this path
+        owns the same audit row and event ingest the MCP polls use. Gmail
+        results still pass the allowlist before the model can see them.
+        """
+        if self._provider_runtime is None:
+            return
+        try:
+            results = await self._provider_runtime.poll_due()
+        except Exception:
+            log.exception("provider polling failed — continuing")
+            return
+        for result in results:
+            text = json.dumps(result.payload, ensure_ascii=False, default=str)
+            if self._mail_filter is not None:
+                text = await self._mail_filter.filter_result(result.tool, text)
+            await self._audit.append(
+                actor="scheduler",
+                tool_name=result.tool,
+                decision="allow",
+                rules_matched="provider:poll",
+                params={},
+                outcome="provider poll",
+            )
+            kind = result.tool.split("__", 1)[-1]
+            ingest = await self._events.ingest(
+                source=result.app,
+                kind=f"poll:{kind}",
+                payload={"result": text[:4000]},
+            )
+            if ingest.stored:
+                self.notify()
+
     # -- the late-ready reconcile ---------------------------------------------------
 
     async def _reconcile_mcp(self) -> None:
@@ -1372,12 +1422,7 @@ class AgentLoop:
         but missing from the namespace is synced in, and its coming-up is
         said out loud — once per boot, so a flapping server never
         announces twice. A ready server whose tool list changed since the
-        last sync — a connection hub the user approved new apps on — is
-        re-synced and its new actions announced the same way.
-
-        One exception: the composio hub never announces its ups. Its tools
-        arriving or growing is housekeeping, not news — it speaks only
-        when it's down, which the watchdog below already does."""
+        last sync is re-synced and its new actions announced the same way."""
         if self._host is None:
             return
         versions: dict[str, int] = {}
@@ -1402,8 +1447,6 @@ class AgentLoop:
         self._tools.sync_mcp_tools()
         for name in sorted(late):
             self._synced_tool_versions[name] = versions[name]
-            if name == SERVER_NAME:
-                continue  # the hub joins silently — see the docstring
             if name in self._announced_ready:
                 continue
             self._announced_ready.add(name)
@@ -1416,57 +1459,10 @@ class AgentLoop:
             await self._surfaces.send_to_user(note)
         for name in sorted(changed):
             self._synced_tool_versions[name] = versions[name]
-            if name == SERVER_NAME:
-                continue  # hub growth is said by the connect flow, not here
             gained = self._tools.server_action_count(name) - before[name]
             if gained > 0:
                 word = "action" if gained == 1 else "actions"
                 await self._surfaces.send_to_user(f"{name} — {gained} new {word} in my vocabulary")
-
-    # -- the hub watchdog ---------------------------------------------------------
-
-    async def _watch_hub(self) -> None:
-        """A hub session can go stale in a way the reuse path can't see:
-        the router still answers initialize and sessions.use, but tools/list
-        comes back as a dead stream, so the connection flaps in a reconnect
-        loop on the same URL forever. Sustained unreadiness → the bridge
-        cuts one fresh session; the host re-resolves the $NAME refs onto it
-        at its next reconnect, and the reconcile above announces the tools
-        when they land. Cooldown + per-boot cap: if resets don't fix it,
-        the outage is Composio's and only its own recovery ends it."""
-        if self._composio is None or self._host is None:
-            return
-        conn = next((c for c in self._host.connections if c.name == SERVER_NAME), None)
-        if conn is None or conn.ready:
-            self._hub_unready_since = None
-            return
-        now = time.monotonic()
-        if self._hub_unready_since is None:
-            self._hub_unready_since = now
-            return
-        if now - self._hub_unready_since < _HUB_RESET_AFTER_SECONDS:
-            return
-        if (
-            self._hub_last_reset is not None
-            and now - self._hub_last_reset < _HUB_RESET_COOLDOWN_SECONDS
-        ):
-            return
-        if self._hub_resets >= _HUB_MAX_RESETS_PER_BOOT:
-            return
-        self._hub_resets += 1
-        self._hub_last_reset = now
-        self._hub_unready_since = None
-        try:
-            reset = await self._composio.reset_session()
-        except Exception:
-            log.warning("hub session reset failed", exc_info=True)
-            return
-        if reset:
-            log.info("composio endpoint stale — cut a fresh session")
-            await self._surfaces.send_to_user(
-                "composio's endpoint stopped answering, so I've cut a fresh "
-                "session — its tools rejoin in a few seconds."
-            )
 
     # -- routines ---------------------------------------------------------------
 
@@ -2087,7 +2083,16 @@ class AgentLoop:
                 {k: v for k, v in call.arguments.items() if k != PLAIN_PARAM},
                 plain=str(plain),
             )
-        ruling = self._policy.classify(call.name, call.arguments, origin=origin)
+        ruling = self._policy.classify(
+            call.name,
+            call.arguments,
+            origin=origin,
+            effect=(
+                self._tools.get(call.name).effect
+                if self._tools.get(call.name) is not None
+                else None
+            ),
+        )
 
         if ruling.decision is Decision.DENY:
             seq = await self._audit.append(
@@ -2148,6 +2153,23 @@ class AgentLoop:
                     is_error=True,
                 )
                 self._note_call(trace, call, result, ruling=ruling)
+                return result
+            except ProviderError as exc:
+                seq = await self._audit.append(
+                    actor="agent",
+                    tool_name=call.name,
+                    decision="error",
+                    rules_matched=ruling.matched_rule,
+                    params=call.arguments,
+                    outcome=exc.plain,
+                )
+                result = ToolResult(
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=exc.plain,
+                    is_error=True,
+                )
+                self._note_call(trace, call, result, ruling=ruling, audit_seq=seq)
                 return result
             seq = await self._audit.append(
                 actor="agent",
@@ -2264,11 +2286,10 @@ class AgentLoop:
             rules_matched=ruling.matched_rule,
             note=ruling.reason,
         )
-        # the card says what is asked, the details worth seeing, and why it
-        # needs a tap — the rule's own plain words, never its id
+        # the card is the ask itself — the action as a question, then the
+        # request's own fields in their own order; the gate's reason is
+        # wiring the user never reads
         ask = describe_ask(call.name, call.arguments)
-        if ruling.reason:
-            ask = f"{ask}\n\n(needs approval — {ruling.reason})"
         await self._surfaces.present_approval(approval.id, ask)
         result = ToolResult(
             tool_call_id=call.id,
@@ -2304,11 +2325,16 @@ class AgentLoop:
 
     async def _carry_out(self, approval: Approval) -> None:
         if approval.status == DENIED:
-            await self._surfaces.send_to_user(
-                describe_dismissed(approval.tool_name, approval.params)
-            )
             log.info("approval %s denied — nothing ran", approval.id)
             await self._remember_outcome(approval, "action_denied", "denied by the user")
+            await self._acknowledge_decision(
+                approval,
+                outcome=(
+                    "The user denied it — nothing ran. Acknowledge the denial in "
+                    "your own words; do not argue the case for the action."
+                ),
+                fallback=describe_dismissed(approval.tool_name, approval.params),
+            )
             return
         trace: dict[str, Any] = {
             "approval_id": approval.id,
@@ -2326,7 +2352,12 @@ class AgentLoop:
             await self._approvals.mark_failed(approval.id)
             trace["result"] = str(exc)
             trace["is_error"] = True
-            trace["chat_refs"] = await self._surfaces.send_to_user(
+            outcome = (
+                "The user approved it, but it could not run — "
+                f"{self._plain_unavailable(approval.tool_name)}. Tell them plainly "
+                "it did not happen."
+            )
+            fallback = (
                 f"the approved action couldn't run — {self._plain_unavailable(approval.tool_name)}"
             )
         except ConnectorUnavailableError as exc:
@@ -2334,15 +2365,35 @@ class AgentLoop:
             await self._approvals.mark_failed(approval.id)
             trace["result"] = str(exc)
             trace["is_error"] = True
-            trace["chat_refs"] = await self._surfaces.send_to_user(
+            outcome = (
+                "The user approved it, but it could not run — "
+                f"{self._plain_unresponsive(approval.tool_name)}. Tell them plainly "
+                "it did not happen."
+            )
+            fallback = (
                 f"the approved action couldn't run — {self._plain_unresponsive(approval.tool_name)}"
             )
+        except ProviderError as exc:
+            log.warning("approved provider call %s can't run: %s", approval.tool_name, exc)
+            await self._approvals.mark_failed(approval.id)
+            trace["result"] = exc.plain
+            trace["is_error"] = True
+            outcome = (
+                "The user approved it, but it could not run — "
+                f"{exc.plain}. Tell them plainly it did not happen."
+            )
+            fallback = f"the approved action couldn't run — {exc.plain}"
         except Exception as exc:
             log.exception("approved call %s failed to run", approval.tool_name)
             await self._approvals.mark_failed(approval.id)
             trace["result"] = str(exc)
             trace["is_error"] = True
-            trace["chat_refs"] = await self._surfaces.send_to_user(
+            outcome = (
+                "The user approved it, but it failed unexpectedly — say so plainly "
+                "and give the reason in your own words. The error that came back: "
+                f"{exc}"
+            )
+            fallback = (
                 "the approved action couldn't run — it failed unexpectedly. "
                 "The decision record has exactly what happened."
             )
@@ -2359,7 +2410,12 @@ class AgentLoop:
                 )
                 trace["result"] = result
                 trace["is_error"] = True
-                trace["chat_refs"] = await self._surfaces.send_to_user(
+                outcome = (
+                    "The user approved it, but the service reported an error, so it "
+                    "was not completed — say so plainly and give the reason in your "
+                    f"own words. The service's error: {flat}"
+                )
+                fallback = (
                     "the approved action didn't go through — the service reported "
                     "an error, so it was not completed. The decision record has "
                     "exactly what happened."
@@ -2369,11 +2425,10 @@ class AgentLoop:
                 log.info("approval %s executed", approval.id)
                 trace["result"] = result
                 trace["is_error"] = False
+                outcome = f"The user approved it and it ran. The action's own report: {result}"
                 # plain words only — the exact result stays in the decision
                 # record and the trace; a raw dump never reaches the user
-                trace["chat_refs"] = await self._surfaces.send_to_user(
-                    describe_outcome(approval.tool_name, approval.params)
-                )
+                fallback = describe_outcome(approval.tool_name, approval.params)
         await self._remember_outcome(
             approval,
             "action_failed" if trace["is_error"] else "action_done",
@@ -2384,6 +2439,47 @@ class AgentLoop:
             label=f"approval #{approval.id} — {approval.tool_name}",
             payload=trace,
         )
+        # the record is complete — only now does anyone speak
+        await self._acknowledge_decision(approval, outcome=outcome, fallback=fallback)
+
+    async def _acknowledge_decision(self, approval: Approval, outcome: str, fallback: str) -> None:
+        """One reply about the decision the user just made. With a
+        reasoning provider it is the model's own line — what ran, what
+        failed with its real reason, or the denial — and the call is
+        spawned rather than inline, so the tap that decided returns as
+        fast as it always did. Without a provider, or when the turn dies
+        or comes back empty, the plain fallback line lands instead: a
+        user who just acted never gets silence."""
+        provider = self._providers.for_role("reasoning") if self._providers else None
+        if provider is None:
+            await self._surfaces.send_to_user(fallback)
+            return
+        self._decision_reply = asyncio.create_task(
+            self._model_acknowledgment(provider, approval, outcome, fallback)
+        )
+
+    async def _model_acknowledgment(
+        self, provider: Provider, approval: Approval, outcome: str, fallback: str
+    ) -> None:
+        """The spawned exchange behind _acknowledge_decision: one
+        complete() under the turn ceiling, no tools, then the reply
+        straight to the user's chat surfaces — the same direct path the
+        turn's own replies take, so quiet hours never swallow it."""
+        ask = describe_ask(approval.tool_name, approval.params)
+        try:
+            turn = await asyncio.wait_for(
+                provider.complete(
+                    await self._system_prompt(),
+                    [Message.user(_decision_ack_instruction(ask, outcome))],
+                    [],
+                ),
+                timeout=self._config.agent.turn_timeout_seconds,
+            )
+            text = (turn.text or "").strip()
+        except Exception:
+            log.exception("the reply to a decision failed — falling back to plain words")
+            text = ""
+        await self._surfaces.send_to_user(text or fallback)
 
     async def _remember_outcome(self, approval: Approval, kind: str, detail: str) -> None:
         """Close the loop in memory. The model's only picture of past turns

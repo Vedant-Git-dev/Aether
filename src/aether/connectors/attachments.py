@@ -11,6 +11,7 @@ filtered sender's files are never seen.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import logging
@@ -221,30 +222,37 @@ class AttachmentProcessor:
         self._frames = frames
 
     async def process(self, message: InboundMessage) -> list[AttachmentResult]:
-        out: list[AttachmentResult] = []
-        for attachment in message.attachments:
-            role = (
-                attachment.kind if attachment.kind in ("image", "audio", "video") else "reasoning"
+        """Every attachment in one message climbs its ladder at the same
+        time — a burst of files never queues behind its slowest member,
+        and the results keep the message's own order whatever finished
+        first."""
+        return list(
+            await asyncio.gather(
+                *(self._process_one(attachment, message) for attachment in message.attachments)
             )
-            provider = self._providers.for_role(role)
-            log.info(
-                "attachment %s (%s) from chat %s message %s — %s model: %s",
-                attachment.kind,
-                attachment.filename,
-                message.chat_ref,
-                message.message_id or "?",
-                role,
-                provider.model if provider is not None else "none",
-            )
-            if attachment.kind == "image":
-                out.append(await self._image(attachment, message))
-            elif attachment.kind == "audio":
-                out.append(await self._audio(attachment, message))
-            elif attachment.kind == "video":
-                out.append(await self._video(attachment, message))
-            else:
-                out.append(await self._doc(attachment, message))
-        return out
+        )
+
+    async def _process_one(
+        self, attachment: Attachment, message: InboundMessage
+    ) -> AttachmentResult:
+        role = attachment.kind if attachment.kind in ("image", "audio", "video") else "reasoning"
+        provider = self._providers.for_role(role)
+        log.info(
+            "attachment %s (%s) from chat %s message %s — %s model: %s",
+            attachment.kind,
+            attachment.filename,
+            message.chat_ref,
+            message.message_id or "?",
+            role,
+            provider.model if provider is not None else "none",
+        )
+        if attachment.kind == "image":
+            return await self._image(attachment, message)
+        if attachment.kind == "audio":
+            return await self._audio(attachment, message)
+        if attachment.kind == "video":
+            return await self._video(attachment, message)
+        return await self._doc(attachment, message)
 
     def capabilities_note(self) -> str:
         """The resolved senses for the system prompt — see senses_text."""

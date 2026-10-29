@@ -15,28 +15,29 @@ from types import SimpleNamespace
 from typing import Any
 
 import discord
-import httpx
 import pytest
 from fakes import FakeApprovals, FakeSurfaceConnector
 from telegram import Chat, Message, Update
 from telegram.error import Conflict, NetworkError
 
 from aether.agent.loop import SurfaceFanout
+from aether.agent.tools import describe_full
 from aether.authz.approvals import APPROVED, DENIED
 from aether.config import AppConfig, MessagingConfig, PlatformToggle, Settings
 from aether.connectors import build_messaging_connectors
-from aether.connectors.base import InboundMessage, MessagingConnector
-from aether.connectors.discord import ApprovalView, DiscordConnector
-from aether.connectors.slack import (
-    APPROVE_ACTION,
-    DENY_ACTION,
-    TASK_ACTION,
-    SlackConnector,
-    approval_blocks,
-    event_to_inbound,
-    result_blocks,
+from aether.connectors.base import InboundMessage, MessagingConnector, split_message
+from aether.connectors.discord import (
+    MESSAGE_CAP_CHARS as DISCORD_MESSAGE_CAP_CHARS,
 )
-from aether.connectors.telegram import CAPTION_CAP_CHARS, SEND_ATTEMPTS, TelegramConnector
+from aether.connectors.discord import ApprovalView, DiscordConnector
+from aether.connectors.telegram import (
+    CAPTION_CAP_CHARS,
+    SEND_ATTEMPTS,
+    TelegramConnector,
+)
+from aether.connectors.telegram import (
+    MESSAGE_CAP_CHARS as TELEGRAM_MESSAGE_CAP_CHARS,
+)
 
 # ---------------------------------------------------------------------------
 # shared decide/inbound plumbing (base class)
@@ -90,19 +91,18 @@ def _settings(**kwargs) -> Settings:
     return Settings.without_env_file(**kwargs)
 
 
-def _config(telegram=False, discord_=False, slack=False) -> AppConfig:
+def _config(telegram=False, discord_=False) -> AppConfig:
     return AppConfig(
         messaging=MessagingConfig(
             telegram=PlatformToggle(enabled=telegram),
             discord=PlatformToggle(enabled=discord_),
-            slack=PlatformToggle(enabled=slack),
         )
     )
 
 
 def test_factory_skips_half_configured_surfaces() -> None:
-    settings = _settings(telegram_bot_token="tg-token")  # discord/slack tokens missing
-    built = build_messaging_connectors(settings, _config(telegram=True, discord_=True, slack=True))
+    settings = _settings(telegram_bot_token="tg-token")  # discord token missing
+    built = build_messaging_connectors(settings, _config(telegram=True, discord_=True))
     assert [c.name for c in built] == ["telegram"]
 
 
@@ -110,16 +110,36 @@ def test_factory_builds_each_surface_when_fully_configured() -> None:
     settings = _settings(
         telegram_bot_token="tg",
         discord_bot_token="dc",
-        slack_bot_token="xoxb-",
-        slack_app_token="xoxp-",
     )
-    built = build_messaging_connectors(settings, _config(telegram=True, discord_=True, slack=True))
-    assert [c.name for c in built] == ["telegram", "discord", "slack"]
+    built = build_messaging_connectors(settings, _config(telegram=True, discord_=True))
+    assert [c.name for c in built] == ["telegram", "discord"]
 
 
 def test_factory_with_everything_off_builds_nothing() -> None:
     settings = _settings(telegram_bot_token="tg")
     assert build_messaging_connectors(settings, _config()) == []
+
+
+def test_factory_wires_the_full_text_reader_where_it_belongs() -> None:
+    settings = _settings(
+        telegram_bot_token="tg",
+        discord_bot_token="dc",
+    )
+    built = build_messaging_connectors(
+        settings, _config(telegram=True, discord_=True), render_full=describe_full
+    )
+    by_name = {connector.name: connector for connector in built}
+    assert by_name["telegram"]._render_full is describe_full
+    assert by_name["discord"]._render_full is describe_full
+
+
+def test_split_message_breaks_on_lines_and_loses_nothing() -> None:
+    # whole lines stay whole when they fit, a line too long for any
+    # message is hard-cut, and no character is lost either way
+    assert split_message("short", 20) == ["short"]
+    assert split_message("x" * 50, 20) == ["x" * 20, "x" * 20, "x" * 10]
+    three_lines = "a" * 10 + "\n" + "b" * 10 + "\n" + "c" * 30
+    assert split_message(three_lines, 20) == ["a" * 10, "b" * 10, "c" * 20, "c" * 10]
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +284,12 @@ def _tg_update(
 
 
 async def _started_telegram(
-    approvals=None, decisions=None, inbound=None, task_decisions=None, processed=None
+    approvals=None,
+    decisions=None,
+    inbound=None,
+    task_decisions=None,
+    processed=None,
+    render_full=None,
 ):
     app = FakeTelegramApp()
     factory_calls: list[str] = []
@@ -279,6 +304,7 @@ async def _started_telegram(
         on_decision=decisions,
         on_inbound=inbound,
         on_task_decision=task_decisions,
+        render_full=render_full,
         processed=processed,
         app_factory=factory,
     )
@@ -510,6 +536,121 @@ async def test_telegram_button_press_on_an_unknown_approval_says_so() -> None:
     assert answered == ["that request could not be found."]
 
 
+async def test_telegram_the_read_button_sends_the_whole_ask() -> None:
+    """The preview in the question hints; the full text is one tap away.
+    Reading never decides anything — the Approve/Deny buttons stay on the
+    message, and everything the request carried lands in the chat where
+    the tap happened."""
+    approvals = FakeApprovals()
+    connector, app = await _started_telegram(approvals=approvals, render_full=describe_full)
+    await app.handlers[0].callback(_tg_update("hi"), None)  # establish the reply target
+    parked = await approvals.create(
+        tool_name="mail__send_message",
+        params={"to": "a@b.c", "body": "the whole message body"},
+        note="reaches an external system",
+    )
+    await connector.present_approval(parked.id, "send it?")
+    keyboard = app.bot.sent[-1]["reply_markup"].inline_keyboard
+    assert [b.callback_data for row in keyboard for b in row] == [
+        f"aether:approve:{parked.id}",
+        f"aether:deny:{parked.id}",
+        f"aether:read:{parked.id}",
+    ]
+
+    answered: list[str | None] = []
+    cleared: list[bool] = []
+
+    async def answer(text: str | None = None) -> None:
+        answered.append(text)
+
+    async def edit_message_reply_markup(reply_markup=None) -> None:
+        cleared.append(reply_markup is None)
+
+    button_handler = app.handlers[1].callback
+    update = SimpleNamespace(
+        callback_query=SimpleNamespace(
+            data=f"aether:read:{parked.id}",
+            answer=answer,
+            edit_message_reply_markup=edit_message_reply_markup,
+        )
+    )
+    await button_handler(update, None)
+
+    # a read is not a decision: the tap answers silently and the buttons
+    # on the question are never retired
+    assert answered == [None]
+    assert cleared == []
+    # the complete ask in the same shape as the question — every field
+    # once, and no gate reason riding along
+    text = app.bot.sent[-1]["text"]
+    assert text == "Send the email?\n\nTo: a@b.c\nBody: the whole message body"
+    assert app.bot.sent[-1]["reply_markup"] is None
+
+
+async def test_telegram_a_long_full_text_arrives_in_whole_messages() -> None:
+    # a full ask can outgrow Telegram's message cap — it arrives in as
+    # many messages as its length needs, each within the cap, and no
+    # line is lost to the cutting
+    approvals = FakeApprovals()
+    connector, app = await _started_telegram(approvals=approvals, render_full=describe_full)
+    await app.handlers[0].callback(_tg_update("hi"), None)
+    lines = [f"line {i:02d} " + "y" * 110 for i in range(40)]
+    parked = await approvals.create(
+        tool_name="mail__send_message", params={"to": "a@b.c", "body": "\n".join(lines)}
+    )
+    await connector.present_approval(parked.id, "send it?")
+
+    async def answer(text: str | None = None) -> None:
+        pass
+
+    async def edit_message_reply_markup(reply_markup=None) -> None:
+        pass
+
+    button_handler = app.handlers[1].callback
+    update = SimpleNamespace(
+        callback_query=SimpleNamespace(
+            data=f"aether:read:{parked.id}",
+            answer=answer,
+            edit_message_reply_markup=edit_message_reply_markup,
+        )
+    )
+    await button_handler(update, None)
+
+    sent_after_the_ask = app.bot.sent[1:]  # [0] is the question itself
+    assert len(sent_after_the_ask) > 1  # the length needed more than one
+    assert all(len(m["text"]) <= TELEGRAM_MESSAGE_CAP_CHARS for m in sent_after_the_ask)
+    carried = "\n".join(m["text"] for m in sent_after_the_ask)
+    assert all(line in carried for line in lines)  # every line arrived
+
+
+async def test_telegram_a_stale_read_gets_the_same_words_as_a_stale_decide() -> None:
+    approvals = FakeApprovals()
+    connector, app = await _started_telegram(approvals=approvals, render_full=describe_full)
+    await app.handlers[0].callback(_tg_update("hi"), None)
+
+    answered: list[str | None] = []
+    cleared: list[bool] = []
+
+    async def answer(text: str | None = None) -> None:
+        answered.append(text)
+
+    async def edit_message_reply_markup(reply_markup=None) -> None:
+        cleared.append(reply_markup is None)
+
+    button_handler = app.handlers[1].callback
+    update = SimpleNamespace(
+        callback_query=SimpleNamespace(
+            data="aether:read:999",
+            answer=answer,
+            edit_message_reply_markup=edit_message_reply_markup,
+        )
+    )
+    await button_handler(update, None)
+    assert answered == ["that request could not be found."]
+    assert cleared == []  # the buttons on the message are still there
+    assert app.bot.sent == []  # nothing was sent — there is nothing to read
+
+
 def _tg_button_update(data: str, answered: list, cleared: list | None = None):
     async def answer(text: str | None = None) -> None:
         answered.append(text)
@@ -731,7 +872,9 @@ def _dc_message(text: str, *, dm: bool = True, bot: bool = False, reply_to=None)
     )
 
 
-async def _started_discord(approvals=None, decisions=None, inbound=None, task_decisions=None):
+async def _started_discord(
+    approvals=None, decisions=None, inbound=None, task_decisions=None, render_full=None
+):
     bot = SimpleNamespace(
         events={},
         started_with=None,
@@ -758,6 +901,7 @@ async def _started_discord(approvals=None, decisions=None, inbound=None, task_de
         on_decision=decisions,
         on_inbound=inbound,
         on_task_decision=task_decisions,
+        render_full=render_full,
         bot_factory=lambda: bot,
     )
     await connector.start()
@@ -864,6 +1008,88 @@ async def test_discord_approval_view_gives_feedback_on_a_stale_or_expired_tap() 
     assert edits[-1]["content"] == "that approval has expired."
 
 
+class FakeInteraction:
+    """A tapped button's interaction: the first message goes out through
+    the response, anything after it through the followup — the shapes the
+    read button sends the full text with."""
+
+    def __init__(self) -> None:
+        self.sent: list[str | None] = []
+
+        async def send_message(content=None, **kwargs) -> None:
+            self.sent.append(content)
+
+        async def followup_send(content=None, **kwargs) -> None:
+            self.sent.append(content)
+
+        self.response = SimpleNamespace(send_message=send_message)
+        self.followup = SimpleNamespace(send=followup_send)
+
+
+async def test_discord_the_read_button_sends_the_whole_ask() -> None:
+    """The preview in the question hints; the full text is one tap away,
+    as its own message — and a read never retires the decision buttons."""
+    approvals = FakeApprovals()
+    connector, _ = await _started_discord(approvals=approvals, render_full=describe_full)
+    await connector.on_message(_dc_message("hi"))
+    parked = await approvals.create(
+        tool_name="mail__send_message",
+        params={"to": "a@b.c", "body": "the whole message body"},
+        note="reaches an external system",
+    )
+    await connector.present_approval(parked.id, "send it?")
+    view = connector._channel.sent[-1]["view"]
+    assert isinstance(view, ApprovalView)
+    assert len(view.children) == 3
+    read_button = view.children[-1]
+    assert read_button.label == "Read the full text"
+
+    interaction = FakeInteraction()
+    await read_button.callback(interaction)
+
+    assert len(interaction.sent) == 1  # a short ask fits one message
+    # the complete ask in the same shape as the question — every field
+    # once, and no gate reason riding along
+    assert interaction.sent[0] == "Send the email?\n\nTo: a@b.c\nBody: the whole message body"
+    # reading never disables anything — Approve and Deny stay one tap away
+    assert all(not getattr(child, "disabled", False) for child in view.children)
+
+
+async def test_discord_a_long_full_text_arrives_in_whole_messages() -> None:
+    approvals = FakeApprovals()
+    connector, _ = await _started_discord(approvals=approvals, render_full=describe_full)
+    await connector.on_message(_dc_message("hi"))
+    lines = [f"line {i:02d} " + "y" * 110 for i in range(40)]
+    parked = await approvals.create(
+        tool_name="mail__send_message", params={"to": "a@b.c", "body": "\n".join(lines)}
+    )
+    await connector.present_approval(parked.id, "send it?")
+    view = connector._channel.sent[-1]["view"]
+    read_button = view.children[-1]
+
+    interaction = FakeInteraction()
+    await read_button.callback(interaction)
+
+    assert len(interaction.sent) > 1  # Discord's cap needed more than one
+    assert all(len(text) <= DISCORD_MESSAGE_CAP_CHARS for text in interaction.sent)
+    carried = "\n".join(interaction.sent)
+    assert all(line in carried for line in lines)  # every line arrived
+
+
+async def test_discord_a_stale_read_gets_a_note_not_silence() -> None:
+    approvals = FakeApprovals()
+    connector, _ = await _started_discord(approvals=approvals, render_full=describe_full)
+    await connector.on_message(_dc_message("hi"))
+    await connector.present_approval(999, "send it?")  # no such row anywhere
+    view = connector._channel.sent[-1]["view"]
+    read_button = view.children[-1]
+
+    interaction = FakeInteraction()
+    await read_button.callback(interaction)
+
+    assert interaction.sent == ["that request could not be found."]
+
+
 async def test_discord_disabled_never_builds_a_bot() -> None:
     def factory():
         raise AssertionError("must not be called")
@@ -923,339 +1149,6 @@ async def test_discord_a_stale_verdict_tap_gets_a_note_not_silence() -> None:
         SimpleNamespace(response=SimpleNamespace(edit_message=edit_message))
     )
     assert edits == [{"content": "that task was already decided.", "view": view}]
-
-
-# ---------------------------------------------------------------------------
-# slack (fake AsyncApp + socket handler)
-# ---------------------------------------------------------------------------
-
-
-class FakeSlackClient:
-    def __init__(self) -> None:
-        self.posted: list[dict] = []
-        self.updated: list[dict] = []
-        self.uploads: list[dict] = []
-
-    async def chat_postMessage(self, channel: str, text: str, blocks=None) -> dict:
-        self.posted.append({"channel": channel, "text": text, "blocks": blocks})
-        # the way slack answers a send — the ts that links a why? back
-        return {"ts": f"1758000000.{len(self.posted):06d}"}
-
-    async def chat_update(self, channel: str, ts: str, text: str, blocks=None) -> None:
-        self.updated.append({"channel": channel, "ts": ts, "text": text, "blocks": blocks})
-
-    async def files_upload_v2(
-        self, channel: str, file: bytes, filename: str, initial_comment: str
-    ) -> dict:
-        self.uploads.append(
-            {
-                "channel": channel,
-                "file": file,
-                "filename": filename,
-                "initial_comment": initial_comment,
-            }
-        )
-        return {"ok": True}
-
-
-class FakeSlackApp:
-    def __init__(self) -> None:
-        self.listeners: dict[str, object] = {}
-        self.client = FakeSlackClient()
-
-    def event(self, name: str):
-        def register(fn):
-            self.listeners[name] = fn
-            return fn
-
-        return register
-
-    def action(self, action_id: str):
-        def register(fn):
-            self.listeners[action_id] = fn
-            return fn
-
-        return register
-
-
-class FakeSlackSocket:
-    def __init__(self) -> None:
-        self.connected = False
-
-    async def connect_async(self) -> None:
-        self.connected = True
-
-    async def disconnect_async(self) -> None:
-        self.connected = False
-
-
-def test_slack_event_to_inbound_filters() -> None:
-    good = {"channel_type": "im", "user": "U123", "text": "hello", "channel": "D1"}
-    assert event_to_inbound(good) == InboundMessage("slack", "U123", "hello", "D1")
-    # channel noise, bot chatter, and empty events never reach the agent
-    assert event_to_inbound({**good, "channel_type": "channel"}) is None
-    assert event_to_inbound({**good, "subtype": "bot_message"}) is None
-    assert event_to_inbound({**good, "bot_id": "B1"}) is None
-    assert event_to_inbound({**good, "text": ""}) is None
-    assert event_to_inbound({}) is None
-
-
-def test_slack_a_thread_reply_carries_what_it_answers() -> None:
-    good = {"channel_type": "im", "user": "U123", "text": "hello", "channel": "D1"}
-    # a thread reply points at the message it answers — that id is what
-    # links a why? back to the trace that produced it
-    assert event_to_inbound({**good, "thread_ts": "123.400"}) == InboundMessage(
-        "slack", "U123", "hello", "D1", reply_to_id="123.400"
-    )
-
-
-def test_slack_approval_blocks_carry_action_ids_and_values() -> None:
-    blocks = approval_blocks(11, "dm the team")
-    assert blocks[0]["text"]["text"] == "dm the team"
-    elements = blocks[1]["elements"]
-    assert [(e["action_id"], e["value"]) for e in elements] == [
-        (APPROVE_ACTION, "11"),
-        (DENY_ACTION, "11"),
-    ]
-
-
-async def _started_slack(approvals=None, decisions=None, inbound=None, task_decisions=None):
-    app = FakeSlackApp()
-    socket = FakeSlackSocket()
-    connector = SlackConnector(
-        bot_token="xoxb-t",
-        app_token="xoxp-a",
-        approvals=approvals,
-        on_decision=decisions,
-        on_inbound=inbound,
-        on_task_decision=task_decisions,
-        app_factory=lambda token: app,
-        socket_factory=lambda a, tok: socket,
-    )
-    await connector.start()
-    assert socket.connected
-    assert set(app.listeners) == {"message", APPROVE_ACTION, DENY_ACTION, TASK_ACTION}
-    return connector, app, socket
-
-
-async def test_slack_inbound_dm_reaches_the_handler_and_replies_work() -> None:
-    received: list[InboundMessage] = []
-
-    async def inbound(message: InboundMessage) -> None:
-        received.append(message)
-
-    connector, app, _ = await _started_slack(inbound=inbound)
-    await app.listeners["message"](
-        {"channel_type": "im", "user": "U123", "text": "status?", "channel": "D1"},
-        None,
-        app.client,
-    )
-    await app.listeners["message"](
-        {"channel_type": "channel", "user": "U123", "text": "noise", "channel": "C9"},
-        None,
-        app.client,
-    )
-    assert received == [InboundMessage("slack", "U123", "status?", "D1")]
-
-    await connector.send_to_user("all quiet")
-    assert app.client.posted[-1] == {"channel": "D1", "text": "all quiet", "blocks": None}
-
-    await connector.present_approval(4, "dm the team")
-    posted = app.client.posted[-1]
-    assert posted["blocks"][1]["elements"][0]["action_id"] == APPROVE_ACTION
-
-
-async def test_slack_send_answers_with_the_message_ts() -> None:
-    async def inbound(message: InboundMessage) -> None:
-        pass
-
-    connector, app, _ = await _started_slack(inbound=inbound)
-    await app.listeners["message"](
-        {"channel_type": "im", "user": "U123", "text": "hi", "channel": "D1"},
-        None,
-        app.client,
-    )
-
-    ref = await connector.send_to_user("the deploy finished")
-
-    assert ref == "1758000000.000001"
-
-
-async def test_slack_button_flow_decides_and_updates_the_message() -> None:
-    approvals = FakeApprovals()
-    decisions: list[tuple[int, str]] = []
-
-    async def on_decision(approval_id: int, decision: str) -> None:
-        decisions.append((approval_id, decision))
-
-    connector, app, _ = await _started_slack(approvals=approvals, decisions=on_decision)
-    acked: list[bool] = []
-
-    async def ack() -> None:
-        acked.append(True)
-
-    body = {
-        "actions": [{"value": "12"}],
-        "channel": {"id": "D1"},
-        "message": {
-            "ts": "123.456",
-            "text": "dm the team?",
-            "blocks": [
-                {"type": "section", "text": {"type": "mrkdwn", "text": "dm the team?"}},
-                {"type": "actions", "block_id": "aether:12"},
-            ],
-        },
-    }
-    await app.listeners[DENY_ACTION](ack, body, app.client)
-    assert approvals.calls == [(12, DENIED)]
-    assert decisions == [(12, DENIED)]
-    assert acked == [True]
-    # the tap retires the buttons and keeps the question — the outcome
-    # message is the acknowledgment, never an "Approval denied: handled." edit
-    updated = app.client.updated[-1]
-    assert updated["text"] == "dm the team?"
-    assert [b["type"] for b in updated["blocks"]] == ["section"]
-
-    # garbage payloads are logged and dropped, never raised
-    await app.listeners[APPROVE_ACTION](ack, {"actions": [{"value": "oops"}]}, app.client)
-    assert approvals.calls == [(12, DENIED)]
-
-
-async def test_slack_button_flow_gives_feedback_on_a_stale_or_expired_tap() -> None:
-    approvals = FakeApprovals()
-    connector, app, _ = await _started_slack(approvals=approvals)
-
-    async def ack() -> None:
-        pass
-
-    def _body(approval_id: int) -> dict:
-        return {
-            "actions": [{"value": str(approval_id)}],
-            "channel": {"id": "D1"},
-            "message": {
-                "ts": "123.456",
-                "text": "dm the team?",
-                "blocks": [
-                    {"type": "section", "text": {"type": "mrkdwn", "text": "dm the team?"}},
-                    {"type": "actions", "block_id": f"aether:{approval_id}"},
-                ],
-            },
-        }
-
-    parked = await approvals.create(tool_name="mail__send_message", params={"to": "a@b.c"})
-    await app.listeners[APPROVE_ACTION](ack, _body(parked.id), app.client)
-    fresh = app.client.updated[-1]
-    assert [b["type"] for b in fresh["blocks"]] == ["section"]  # no note on a fresh decision
-
-    # a double tap on the same (now-decided) approval adds a small note
-    await app.listeners[APPROVE_ACTION](ack, _body(parked.id), app.client)
-    stale = app.client.updated[-1]
-    assert stale["blocks"][-1] == {
-        "type": "context",
-        "elements": [{"type": "mrkdwn", "text": "_that request was already decided._"}],
-    }
-
-    # a fresh approval whose TTL already passed reads as expired
-    expired = await approvals.create(tool_name="mail__send_message", params={"to": "b@c.d"})
-    expired.expires_at = datetime.now(UTC) - timedelta(seconds=1)
-    await app.listeners[APPROVE_ACTION](ack, _body(expired.id), app.client)
-    expired_update = app.client.updated[-1]
-    assert expired_update["blocks"][-1]["elements"][0]["text"] == "_that approval has expired._"
-
-
-async def test_slack_without_both_tokens_stays_down() -> None:
-    connector = SlackConnector(
-        bot_token="xoxb", app_token="", app_factory=None, socket_factory=None
-    )
-    await connector.start()
-    assert connector._app is None
-    await connector.stop()
-
-
-def test_slack_result_blocks_carry_one_action_id_and_verb_values() -> None:
-    blocks = result_blocks(12, "the digest, in plain words", ("approve", "discard"))
-    assert blocks[0]["text"]["text"] == "the digest, in plain words"
-    elements = blocks[1]["elements"]
-    # one action id for every verdict — the value carries "verb:task id"
-    assert [(e["action_id"], e["value"]) for e in elements] == [
-        (TASK_ACTION, "approve:12"),
-        (TASK_ACTION, "discard:12"),
-    ]
-    assert [e["style"] for e in elements] == ["primary", "danger"]
-
-
-async def test_slack_result_flow_posts_and_a_verdict_retires_the_buttons() -> None:
-    verdicts: list[tuple[int, str]] = []
-
-    async def on_task_decision(task_id: int, verb: str) -> str | None:
-        verdicts.append((task_id, verb))
-        return None
-
-    connector, app, _ = await _started_slack(task_decisions=on_task_decision)
-    await app.listeners["message"](
-        {"channel_type": "im", "user": "U123", "text": "hi", "channel": "D1"},
-        None,
-        app.client,
-    )
-
-    await connector.present_result(12, "the digest, in plain words", ("approve", "discard"))
-    posted = app.client.posted[-1]
-    assert posted["text"] == "the digest, in plain words"
-    assert posted["blocks"][1]["elements"][0]["value"] == "approve:12"
-
-    acked: list[bool] = []
-
-    async def ack() -> None:
-        acked.append(True)
-
-    body = {
-        "actions": [{"value": "discard:12"}],
-        "channel": {"id": "D1"},
-        "message": {
-            "ts": "123.456",
-            "text": "the digest, in plain words",
-            "blocks": posted["blocks"],
-        },
-    }
-    await app.listeners[TASK_ACTION](ack, body, app.client)
-    assert verdicts == [(12, "discard")]
-    assert acked == [True]
-    updated = app.client.updated[-1]
-    assert [b["type"] for b in updated["blocks"]] == ["section"]  # buttons retired, no note
-
-    # an odd verb or payload is logged and dropped, never raised
-    await app.listeners[TASK_ACTION](ack, {"actions": [{"value": "explode:12"}]}, app.client)
-    await app.listeners[TASK_ACTION](ack, {"actions": [{"value": "oops"}]}, app.client)
-    assert verdicts == [(12, "discard")]
-
-
-async def test_slack_a_stale_task_verdict_gets_a_small_note() -> None:
-    async def on_task_decision(task_id: int, verb: str) -> str | None:
-        return "that task was already decided."
-
-    connector, app, _ = await _started_slack(task_decisions=on_task_decision)
-
-    async def ack() -> None:
-        pass
-
-    body = {
-        "actions": [{"value": "revise:7"}],
-        "channel": {"id": "D1"},
-        "message": {
-            "ts": "123.456",
-            "text": "the digest",
-            "blocks": [
-                {"type": "section", "text": {"type": "mrkdwn", "text": "the digest"}},
-                {"type": "actions"},
-            ],
-        },
-    }
-    await app.listeners[TASK_ACTION](ack, body, app.client)
-    updated = app.client.updated[-1]
-    assert updated["blocks"][-1] == {
-        "type": "context",
-        "elements": [{"type": "mrkdwn", "text": "_that task was already decided._"}],
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -1635,126 +1528,6 @@ async def test_discord_download_cap_is_exact_at_the_boundary(monkeypatch) -> Non
     assert received[-1].attachments == ()
 
 
-def _slack_file_event() -> dict:
-    return {
-        "channel_type": "im",
-        "user": "U123",
-        "channel": "D1",
-        "subtype": "file_share",
-        "files": [
-            {"id": "F1", "name": "notes.md", "mimetype": "text/markdown", "size": 5},
-        ],
-    }
-
-
-def test_slack_a_file_share_event_with_bytes_carries_the_attachment() -> None:
-    inbound = event_to_inbound(_slack_file_event(), {"F1": b"hello"})
-    assert inbound is not None
-    assert inbound.attachments == (Attachment("doc", "notes.md", "text/markdown", b"hello"),)
-
-
-def test_slack_a_file_without_its_bytes_still_flows_without_it() -> None:
-    inbound = event_to_inbound(_slack_file_event(), {})
-    assert inbound is not None
-    assert inbound.attachments == ()
-
-
-def test_slack_odd_file_events_are_filtered() -> None:
-    assert event_to_inbound({**_slack_file_event(), "bot_id": "B1"}, {"F1": b"x"}) is None
-    no_files = _slack_file_event()
-    no_files.pop("files")
-    assert event_to_inbound(no_files) is None
-
-
-async def test_slack_the_connector_downloads_and_emits() -> None:
-    received: list[InboundMessage] = []
-
-    async def inbound(message: InboundMessage) -> None:
-        received.append(message)
-
-    connector, app, _ = await _started_slack(inbound=inbound)
-
-    async def fake_download(files):
-        return {"F1": b"hello"}
-
-    connector._download_files = fake_download  # noqa: B010
-    await app.listeners["message"](_slack_file_event(), None, app.client)
-    assert received == [
-        InboundMessage(
-            surface="slack",
-            handle="U123",
-            text="",
-            chat_ref="D1",
-            attachments=(Attachment("doc", "notes.md", "text/markdown", b"hello"),),
-        )
-    ]
-
-
-def _patch_slack_http(monkeypatch, payload: bytes, *, fail: bool = False) -> None:
-    """Routes slack.py's real httpx.AsyncClient through a MockTransport, so
-    _download_files' actual streaming code runs end to end against a
-    canned response instead of the network."""
-
-    async def handler(request: httpx.Request) -> httpx.Response:
-        if fail:
-            raise httpx.ConnectError("boom", request=request)
-        return httpx.Response(200, content=payload)
-
-    transport = httpx.MockTransport(handler)
-    real_async_client = httpx.AsyncClient
-
-    def client_factory(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
-        kwargs["transport"] = transport
-        return real_async_client(*args, **kwargs)
-
-    monkeypatch.setattr("aether.connectors.slack.httpx.AsyncClient", client_factory)
-
-
-async def test_slack_missing_or_lying_size_metadata_does_not_bypass_the_cap(monkeypatch) -> None:
-    """A Slack file (e.g. an externally-shared one) can report size as 0 or
-    omit it — the actual streamed bytes are what gets checked."""
-    monkeypatch.setattr("aether.connectors.slack.MAX_ATTACHMENT_BYTES", 10)
-    connector, _, _ = await _started_slack()
-    oversized = b"x" * 11
-
-    for size in (None, 0, 5):  # missing, zero, and an undercounted report
-        _patch_slack_http(monkeypatch, oversized)
-        out = await connector._download_files(
-            [{"id": "F1", "name": "big.bin", "url_private_download": "https://x/f", "size": size}]
-        )
-        assert out == {}, f"size={size} must not bypass the cap"
-
-
-async def test_slack_download_cap_is_exact_at_the_boundary(monkeypatch) -> None:
-    monkeypatch.setattr("aether.connectors.slack.MAX_ATTACHMENT_BYTES", 10)
-    connector, _, _ = await _started_slack()
-
-    _patch_slack_http(monkeypatch, b"x" * 10)
-    at_cap = await connector._download_files(
-        [{"id": "F1", "name": "f", "url_private_download": "https://x/f", "size": 10}]
-    )
-    assert at_cap == {"F1": b"x" * 10}
-
-    _patch_slack_http(monkeypatch, b"x" * 11)
-    over_cap = await connector._download_files(
-        [{"id": "F1", "name": "f", "url_private_download": "https://x/f", "size": 11}]
-    )
-    assert over_cap == {}
-
-
-async def test_slack_an_interrupted_download_is_skipped_and_nothing_partial_kept(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr("aether.connectors.slack.MAX_ATTACHMENT_BYTES", 10)
-    connector, _, _ = await _started_slack()
-    _patch_slack_http(monkeypatch, b"irrelevant", fail=True)
-
-    out = await connector._download_files(
-        [{"id": "F1", "name": "f", "url_private_download": "https://x/f", "size": 5}]
-    )
-    assert out == {}
-
-
 # ---------------------------------------------------------------------------
 # media out — the attachment-capable send paths (Build F)
 # ---------------------------------------------------------------------------
@@ -1887,64 +1660,6 @@ async def test_discord_an_upload_over_the_cap_is_refused_honestly(monkeypatch) -
     sent = connector._channel.sent[-1]
     assert sent["file"] is None
     assert sent["content"] == "here it is\n\n(the file is too big for Discord and was not sent)"
-
-
-async def test_slack_a_file_sends_with_the_words_as_its_initial_comment() -> None:
-    connector, app, _ = await _started_slack()
-    await app.listeners["message"](
-        {"channel_type": "im", "user": "U123", "text": "hi", "channel": "D1"},
-        None,
-        app.client,
-    )
-
-    ref = await connector.send_to_user("here is the chart", attachment=_image_attachment())
-
-    assert app.client.uploads == [
-        {
-            "channel": "D1",
-            "file": _PNG,
-            "filename": "chart.png",
-            "initial_comment": "here is the chart",
-        }
-    ]
-    assert app.client.posted == []  # the words rode the file, no double send
-    # a file share has no ts — the send happened, it just can't be linked
-    assert ref is None
-
-
-async def test_slack_an_approval_file_is_followed_by_the_button_message() -> None:
-    connector, app, _ = await _started_slack()
-    await app.listeners["message"](
-        {"channel_type": "im", "user": "U123", "text": "hi", "channel": "D1"},
-        None,
-        app.client,
-    )
-
-    await connector.present_approval(7, "send the chart?", attachment=_image_attachment())
-
-    # files carry no blocks — the ask rides the file, the one-tap buttons
-    # follow in a plain message so the verdict stays one tap
-    assert app.client.uploads[-1]["initial_comment"] == "send the chart?"
-    posted = app.client.posted[-1]
-    assert posted["text"] == "send the chart?"
-    assert posted["blocks"] == approval_blocks(7, "send the chart?")
-
-
-async def test_slack_a_result_file_is_followed_by_the_verdict_buttons() -> None:
-    connector, app, _ = await _started_slack()
-    await app.listeners["message"](
-        {"channel_type": "im", "user": "U123", "text": "hi", "channel": "D1"},
-        None,
-        app.client,
-    )
-
-    await connector.present_result(
-        3, "the captioned video", ("approve", "discard"), attachment=_image_attachment()
-    )
-
-    assert app.client.uploads[-1]["initial_comment"] == "the captioned video"
-    posted = app.client.posted[-1]
-    assert posted["blocks"] == result_blocks(3, "the captioned video", ("approve", "discard"))
 
 
 # ---------------------------------------------------------------------------
