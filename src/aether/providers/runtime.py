@@ -125,7 +125,6 @@ class ProviderRuntime:
             log.exception("could not load provider connections")
             return 0
         added = 0
-        added_apps: set[str] = set()
         for _app_key, (provider, app) in self._apps.items():
             connection = connections.get(provider.key)
             if connection is None or connection.status != "active":
@@ -145,28 +144,6 @@ class ProviderRuntime:
                     auth_mode=connection.auth_mode,
                 )
                 added += 1
-                added_apps.add(app.key)
-        if "gmail" in added_apps:
-            # direct Gmail owns the name now; the hub's copy must not appear
-            # beside it, or the model has two ways to send the same mail.
-            self._registry.suppress_mcp_prefix("composio__GMAIL_")
-        if "calendar" in added_apps:
-            # same rule for Calendar; Composio has used both spellings.
-            self._registry.suppress_mcp_prefix("composio__GOOGLECALENDAR_")
-            self._registry.suppress_mcp_prefix("composio__GOOGLE_CALENDAR_")
-        if "github" in added_apps:
-            # direct GitHub owns the namespace; the hub's copy would offer
-            # a second, broader credential for the same actions.
-            self._registry.suppress_mcp_prefix("composio__GITHUB_")
-        if "drive" in added_apps:
-            # Drive and Docs share the hub's Google Drive toolkit. Suppress
-            # both spellings so the direct, file-scoped tools are the only
-            # route to the same files.
-            self._registry.suppress_mcp_prefix("composio__GOOGLEDRIVE_")
-            self._registry.suppress_mcp_prefix("composio__GOOGLE_DRIVE_")
-        if "docs" in added_apps:
-            self._registry.suppress_mcp_prefix("composio__GOOGLEDOCS_")
-            self._registry.suppress_mcp_prefix("composio__GOOGLE_DOCS_")
         return added
 
     def _handler(self, provider: ProviderDefinition, app: AppDefinition, tool_key: str):

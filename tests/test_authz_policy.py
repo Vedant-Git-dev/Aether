@@ -406,24 +406,24 @@ def test_origin_never_touches_any_other_tool() -> None:
     assert ruling.matched_rule == "builtin:risky"
 
 
-# -- Composio's UPPER_SNAKE tool names classify by the same verbs --------------------
+# -- uppercase MCP tool names classify by the same verbs ---------------------------
 
 
-def test_upper_snake_hub_tools_hit_the_same_verb_ladder() -> None:
-    """composio__GMAIL_SEND_EMAIL is a send in any case — without the
-    lowercase pass every hub tool would park at fail-safe, and a destructive
-    one would slip past the risky list."""
+def test_upper_snake_mcp_tools_hit_the_same_verb_ladder() -> None:
+    """A verb is a verb whatever its case — without the lowercase pass an
+    uppercase MCP tool would park at fail-safe, and a destructive one
+    could slip past the risky list."""
     policy = Policy([])
-    send = policy.classify("composio__GMAIL_SEND_EMAIL", {"to": "a@b.c"})
+    send = policy.classify("MAIL_SEND_EMAIL", {"to": "a@b.c"})
     assert send.decision is Decision.REQUIRE_APPROVAL
     assert send.matched_rule == "builtin:risky"
-    delete = policy.classify("composio__GITHUB_DELETE_REPOSITORY")
+    delete = policy.classify("GITHUB_DELETE_REPOSITORY")
     assert delete.matched_rule == "builtin:risky"
-    fetch = policy.classify("composio__GMAIL_FETCH_EMAILS")
+    fetch = policy.classify("MAIL__FETCH_EMAILS")
     assert fetch.decision is Decision.ALLOW
     assert fetch.matched_rule == "builtin:read-only"
     # case-insensitivity must not invent verbs: no 'send' in RESEND-style
     # compounds, no 'book' in 'FACEBOOK'
-    assert policy.classify("composio__FACEBOOK_GET_USER").matched_rule == "builtin:read-only"
-    parked = policy.classify("composio__LINEAR_UPDATE_ISSUE")
+    assert policy.classify("MCP__GET_FACEBOOK_USER").matched_rule == "builtin:read-only"
+    parked = policy.classify("LINEAR_UPDATE_ISSUE")
     assert parked.matched_rule == "default:fail-safe"  # unknown verb — held, honestly

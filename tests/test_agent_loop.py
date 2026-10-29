@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -19,7 +18,6 @@ from fakes import (
     FakeAgentSettings,
     FakeApprovals,
     FakeAudit,
-    FakeComposioBridge,
     FakeConfigManager,
     FakeContextBuilder,
     FakeEntities,
@@ -36,7 +34,6 @@ from fakes import (
 )
 
 from aether.agent.loop import (
-    _HUB_RESET_AFTER_SECONDS,
     _MISSING,
     AgentLoop,
     CaptureRequestBox,
@@ -49,7 +46,6 @@ from aether.agent.tools import register_native_tools
 from aether.authz.approvals import APPROVED, DENIED
 from aether.authz.audit import ChainVerification
 from aether.authz.policy import Policy
-from aether.composio_bridge import SERVER_ENTRY
 from aether.config import (
     AgentConfig,
     AppConfig,
@@ -686,42 +682,6 @@ async def test_the_same_call_is_never_parked_twice_in_one_turn() -> None:
     assert sum("held for approval" in c for c in _held_contents(provider, 2)) == 2
 
 
-def _stub_hub(*, ready: bool) -> Any:
-    """A host-shaped stub holding one connection named like the real hub."""
-    conn = SimpleNamespace(name="composio", ready=ready)
-    return SimpleNamespace(connections=[conn])
-
-
-async def test_a_stale_hub_session_gets_one_fresh_cut() -> None:
-    # a wedged router answers initialize but never tools/list, so the
-    # reconnect loop rides the same dead URL forever — after sustained
-    # unreadiness the watchdog has the bridge cut one fresh session
-    kit = LoopKit(None)
-    bridge = FakeComposioBridge()
-    kit.loop._composio = bridge
-    kit.loop._host = _stub_hub(ready=False)
-
-    await kit.loop._watch_hub()  # the first sighting only arms the timer
-    assert bridge.resets == 0
-
-    kit.loop._hub_unready_since = time.monotonic() - _HUB_RESET_AFTER_SECONDS - 1
-    await kit.loop._watch_hub()
-    assert bridge.resets == 1
-    assert any("fresh session" in s for s in kit.connector.sent)
-
-
-async def test_a_ready_hub_never_resets() -> None:
-    kit = LoopKit(None)
-    bridge = FakeComposioBridge()
-    kit.loop._composio = bridge
-    kit.loop._host = _stub_hub(ready=True)
-
-    kit.loop._hub_unready_since = time.monotonic() - 10_000
-    await kit.loop._watch_hub()
-    assert bridge.resets == 0
-    assert kit.loop._hub_unready_since is None  # the timer clears
-
-
 async def test_the_tick_expires_overdue_approvals() -> None:
     # a pending row past its TTL must never read as waiting — the tick
     # flips it to expired (and the store audits it), so no surface keeps
@@ -746,23 +706,6 @@ async def test_list_pending_never_shows_an_expired_row() -> None:
 
     pending = await kit.approvals.list_pending()
     assert pending == [fresh]
-
-
-async def test_hub_resets_respect_the_cooldown() -> None:
-    # a Composio-side outage won't be fixed by minting sessions — after the
-    # first cut the watchdog leaves it alone for the cooldown
-    kit = LoopKit(None)
-    bridge = FakeComposioBridge()
-    kit.loop._composio = bridge
-    kit.loop._host = _stub_hub(ready=False)
-
-    kit.loop._hub_unready_since = time.monotonic() - 10_000
-    await kit.loop._watch_hub()
-    assert bridge.resets == 1
-
-    kit.loop._hub_unready_since = time.monotonic() - 10_000
-    await kit.loop._watch_hub()
-    assert bridge.resets == 1  # swallowed by the cooldown
 
 
 async def test_the_web_panel_decide_path_carries_out_a_fresh_approval() -> None:
@@ -1481,7 +1424,7 @@ async def test_source_polls_run_ingest_and_audit() -> None:
 async def test_the_poll_path_filters_gmail_reads_through_the_allowlist() -> None:
     # the poll calls the host directly, bypassing the registry — the loop's
     # own mail_filter ref must trim the batch before it is ingested. The
-    # qualified name is the real one the config ships: composio__GMAIL_*
+    # qualified name is the direct provider's: gmail__list_messages
     import json as _json
 
     from aether.config import AppContacts, ContactRule, ContactsConfig
@@ -1503,7 +1446,7 @@ async def test_the_poll_path_filters_gmail_reads_through_the_allowlist() -> None
             },
         }
     )
-    poll_tool = PollTool(tool="GMAIL_FETCH_EMAILS", args={}, every_minutes=5.0)
+    poll_tool = PollTool(tool="list_messages", args={}, every_minutes=5.0)
     calls: list[tuple[str, dict]] = []
 
     async def gmail_call(qualified: str, args: dict) -> str:
@@ -1511,15 +1454,15 @@ async def test_the_poll_path_filters_gmail_reads_through_the_allowlist() -> None
         return batch
 
     kit.loop._host = SimpleNamespace(
-        connections=[SimpleNamespace(name="composio", poll_tools=[poll_tool])],
+        connections=[SimpleNamespace(name="gmail", poll_tools=[poll_tool])],
         call=gmail_call,
     )
-    kit.loop._poll_targets["composio:GMAIL_FETCH_EMAILS:0"] = ("composio", poll_tool)
-    kit.loop._next_poll["composio:GMAIL_FETCH_EMAILS:0"] = datetime.now(UTC)
+    kit.loop._poll_targets["gmail:list_messages:0"] = ("gmail", poll_tool)
+    kit.loop._next_poll["gmail:list_messages:0"] = datetime.now(UTC)
     kit.loop._mail_filter = MailAllowlist(contacts, kit.audit)
 
     await kit.loop._run_due_polls()
-    assert calls == [("composio__GMAIL_FETCH_EMAILS", {})]
+    assert calls == [("gmail__list_messages", {})]
     ingested = kit.events.ingested[-1]
     kept = _json.loads(ingested["payload"]["result"])["data"]["messages"]
     assert [m["subject"] for m in kept] == ["keep"]
@@ -2516,28 +2459,8 @@ async def test_the_tick_announces_a_late_ready_server_once() -> None:
     assert len(kit.connector.sent) == 1  # once per boot, never again
 
 
-async def test_the_composio_hub_joins_and_grows_silently() -> None:
-    """The directive: composio never announces its ups in chat — it speaks
-    only when it's down, and the watchdog owns that side. Joining and
-    growing are housekeeping."""
-    kit = LoopKit(None)
-    host = FakeMcpHost(SimpleNamespace(name="composio", ready=True))
-    kit.tools.attach_mcp(host)
-    kit.loop._host = host
-
-    await kit.loop._tick()
-    assert kit.connector.sent == []  # joined the namespace, said nothing
-    assert kit.tools.has_server("composio")
-
-    # the user approved an app on the hub — growth is quiet too; the
-    # connect flow is what tells them, not the tick
-    hub = host.connections[0]
-    hub.tools = ["act", "gmail_send"]
-    hub.tool_version = 2
-    await kit.loop._tick()
-    assert kit.connector.sent == []
-    assert kit.tools.get("composio__gmail_send") is not None  # callable regardless
-    """The hub promise: an app approved after connect shows up as callable
+async def test_a_ready_server_that_grows_says_so_once() -> None:
+    """The promise: an app approved after connect shows up as callable
     actions — the tick notices the changed tool list, syncs, and says so."""
     kit = LoopKit(None)
     hub = SimpleNamespace(name="hub", ready=True, tools=["act"], tool_version=1)
@@ -2579,87 +2502,6 @@ async def test_a_tool_that_vanished_leaves_the_namespace() -> None:
     assert kit.tools.get("hub__extra") is None  # pruned, not callable
     assert kit.tools.get("hub__act") is not None  # the rest of the hub stayed
     assert kit.connector.sent == []  # quiet — nothing was gained
-
-
-async def test_the_hub_connect_announces_and_asks_the_gates_question(tmp_path) -> None:
-    """The hub transcript end to end: /apps add gmail pastes the hub key
-    once, serves the Connect Link, and the out-of-band waiter announces
-    the connect and asks the gate's question. 'Everything asks first'
-    writes its authz rule through the same executor — and authz being a
-    security root, it parks for the one-tap even from a walk."""
-    provider = FakeProvider([])
-    manager = FakeConfigManager(set_reply="applied.")
-    kit = LoopKit(provider, config_manager=manager)
-    store = FakeSecretStore()
-    kit.loop._resolver = EnvResolver(tmp_path / ".env", secrets=store)  # no key yet
-    kit.loop._secret_store = store
-    kit.loop._composio = FakeComposioBridge()
-
-    kit.loop.submit_message(_msg("/apps add gmail"))
-    await kit.loop._tick()
-    # no hub key yet — the one-time paste comes before any link
-    assert "one key needed (one time — it connects every app)" in kit.connector.sent[-1]
-
-    kit.loop.submit_message(_msg("csk-123"))
-    await kit.loop._tick()
-    assert store.saved == {"COMPOSIO_API_KEY": "csk-123"}
-    link = kit.connector.sent[-1]
-    assert link.startswith("Gmail — last step, let me in:")
-    assert "https://hub.example.test/connect/gmail" in link
-    assert kit.events.ingested == []  # the paste never became memory
-    assert provider.calls == []  # and the model never woke
-    # the first connect pins the composio server entry, origin "walk"
-    assert manager.set_calls == [
-        {
-            "op": "add",
-            "path": "mcp_servers",
-            "value": dict(SERVER_ENTRY),
-            "source": "tool",
-        }
-    ]
-
-    # the click lands — the waiter announces and asks the gate's question
-    while kit.loop._connect_waits:
-        await asyncio.wait(kit.loop._connect_waits)
-    announcement = kit.connector.sent[-1]
-    assert announcement.startswith("gmail connected — gmail@example.test.")
-    assert "what may I do with gmail?" in announcement
-
-    # "everything asks first" → an authz rule — which parks, honestly relayed
-    kit.loop.submit_message(_msg("2"))
-    await kit.loop._tick()
-    assert kit.approvals.created[-1].params == {
-        "op": "add",
-        "path": "authz.rules",
-        "value": {
-            "tool_pattern": "composio__GMAIL_",
-            "decision": "approve",
-            "note": "gmail connected in chat — everything asks first",
-        },
-    }
-    assert "one-tap approval" in kit.connector.sent[-1]
-    assert kit.loop._apps_walk is None  # done — nothing is waiting
-
-
-async def test_a_failed_connect_says_so_in_chat(tmp_path) -> None:
-    """A link that never gets its click doesn't hang the walk or stay
-    silent — the waiter's honest line lands in chat."""
-    kit = LoopKit(None)
-    store = FakeSecretStore()
-    kit.loop._resolver = EnvResolver(tmp_path / ".env", secrets=store)
-    kit.loop._secret_store = store
-    kit.loop._composio = FakeComposioBridge(wait_error=TimeoutError("expired"))
-
-    kit.loop.submit_message(_msg("/apps add gmail"))
-    await kit.loop._tick()
-    kit.loop.submit_message(_msg("csk-123"))
-    await kit.loop._tick()
-    while kit.loop._connect_waits:
-        await asyncio.wait(kit.loop._connect_waits)
-    assert kit.connector.sent[-1] == (
-        "the gmail connection didn't finish — the link may have expired. "
-        "/apps add gmail to try again."
-    )
 
 
 # ---------------------------------------------------------------------------

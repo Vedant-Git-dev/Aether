@@ -132,24 +132,3 @@ def test_github_tools_appear_for_github_words() -> None:
         s.name for s in registry.gated_specs("github notifications")
     ]
     assert "github__search" in [s.name for s in registry.gated_specs("search github")]
-
-
-def test_suppressing_a_prefix_removes_the_hub_copy() -> None:
-    class FakeHost:
-        def tool_specs(self):
-            return [
-                ToolSpec(
-                    name="composio__GMAIL_SEND_EMAIL",
-                    description="Send mail through the hub",
-                    source="composio",
-                )
-            ]
-
-    registry = ToolRegistry()
-    registry.attach_mcp(FakeHost())
-    registry.sync_mcp_tools()
-    assert registry.get("composio__GMAIL_SEND_EMAIL") is not None
-    assert registry.suppress_mcp_prefix("composio__GMAIL_") == 1
-    assert registry.get("composio__GMAIL_SEND_EMAIL") is None
-    registry.sync_mcp_tools()
-    assert registry.get("composio__GMAIL_SEND_EMAIL") is None

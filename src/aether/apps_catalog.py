@@ -5,11 +5,10 @@ A recipe is everything the /apps walk needs to connect a chat surface
 without the user going looking for any of it: where to click (exact
 links, numbered steps), what to paste (one ask per key, by name only —
 values are handed over in chat and consumed before ingest), and the
-messaging toggle to write. External apps (gmail, github, notion, …) are
-NOT here: they connect through Composio, whose own toolkit catalog is
-fetched live by the bridge — Aether keeps no per-app list of someone
-else's ecosystem. Anything that speaks MCP directly gets the generic
-walk ("something else"), whose server fragments reference keys by name
+messaging toggle to write. Direct provider apps (gmail, calendar, drive,
+docs, github, linkedin) are defined in `aether.providers` and start their
+own sign-in. Anything that speaks MCP directly gets the generic walk
+("something else"), whose server fragments reference keys by name
 (`$NAME`), expanded at open time by the resolver, so the pinned config
 copy never carries a secret value either.
 """

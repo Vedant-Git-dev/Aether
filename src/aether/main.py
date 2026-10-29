@@ -23,7 +23,6 @@ from .authz.audit import AuditLog
 from .authz.policy import Policy, PolicyError
 from .chat import ChatHistory, ChatHub
 from .chat.ws import router as chat_router
-from .composio_bridge import ComposioBridge
 from .config import (
     MODEL_BASE,
     MODEL_DEFAULT,
@@ -144,12 +143,11 @@ def create_app(
         applied = await run_migrations(pool)
         log.info("database ready (migrations applied this boot: %s)", applied or "none")
 
-        # --- secrets by name + the app hub ---------------------------------
+        # --- secrets by name ------------------------------------------------
         # keys pasted in the /apps walk (consumed before ingest) live
         # encrypted like everything else; the resolver is how every act
         # reads a key — by name, fresh — so a key added after boot needs no
-        # restart. The Composio bridge rides it: a COMPOSIO_API_KEY pasted
-        # in chat works without a boot.
+        # restart.
         secret_store = SecretStore(pool, cipher)
         env_resolver = EnvResolver(secrets=secret_store)
         app.state.secrets = secret_store
@@ -158,15 +156,6 @@ def create_app(
         # configured key can reach — fetched live per provider, cached by
         # key, so a pasted key lists its models without a restart
         app.state.model_catalog = ModelCatalog(env_resolver)
-        composio = ComposioBridge(env_resolver, secret_store)
-        app.state.composio = composio
-        try:
-            if await composio.ensure():
-                log.info("composio session open — the app hub is live")
-        except Exception:
-            # the hub being down must never keep Aether from booting —
-            # /apps answers honestly and the next connect retries
-            log.exception("composio session couldn't open — apps connect on demand")
 
         # --- chat-made config: rows merge onto the live config, in place ----
         # Before anything reads a section — an authz or allowlist override
@@ -483,7 +472,6 @@ def create_app(
             resolver=env_resolver,
             secret_store=secret_store,
             settings=settings,
-            composio=composio,
             provider_runtime=provider_runtime,
             transcript=chat_history,
             attachments=app.state.attachments,

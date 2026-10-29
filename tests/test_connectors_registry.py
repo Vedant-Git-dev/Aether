@@ -102,7 +102,7 @@ class GmailHost(FakeHost):
 
     def __init__(self, batch: str) -> None:
         super().__init__(
-            [ToolSpec(name="composio__GMAIL_FETCH_EMAILS", description="mail", source="composio")]
+            [ToolSpec(name="gmail__list_messages", description="mail", source="gmail")]
         )
         self.batch = batch
 
@@ -138,7 +138,7 @@ async def test_attached_mail_filter_trims_mcp_gmail_results() -> None:
     registry.attach_mail_filter(MailAllowlist(contacts, FakeAudit()))
     registry.sync_mcp_tools()
 
-    out = json.loads(await registry.execute("composio__GMAIL_FETCH_EMAILS", {}))
+    out = json.loads(await registry.execute("gmail__list_messages", {}))
     assert [m["subject"] for m in out["data"]["messages"]] == ["keep"]
 
 
@@ -149,7 +149,7 @@ async def test_no_filter_attached_leaves_results_untouched() -> None:
     registry = ToolRegistry()
     registry.attach_mcp(GmailHost(batch))
     registry.sync_mcp_tools()
-    out = json.loads(await registry.execute("composio__GMAIL_FETCH_EMAILS", {}))
+    out = json.loads(await registry.execute("gmail__list_messages", {}))
     assert len(out["data"]["messages"]) == 1
 
 
@@ -166,55 +166,7 @@ async def test_mcp_tool_without_host_is_an_error() -> None:
         await registry.execute("srv__x", {})
 
 
-def _gmail_registry() -> tuple[ToolRegistry, FakeHost]:
-    registry = ToolRegistry()
-    host = FakeHost(
-        [ToolSpec(name="composio__GMAIL_SEND_EMAIL", description="send", source="composio")]
-    )
-    registry.attach_mcp(host)
-    registry.sync_mcp_tools()
-    return registry, host
-
-
-async def test_gmail_bodies_get_html_line_breaks() -> None:
-    # a model-written body carries line breaks as \n — as HTML that renders
-    # as one collapsed line, so the boundary converts and flags it
-    registry, host = _gmail_registry()
-    await registry.execute(
-        "composio__GMAIL_SEND_EMAIL",
-        {"recipient_email": "a@b.c", "body": "hi\nthis is mail\n", "is_html": True},
-    )
-    assert host.calls[0][1]["body"] == "hi<br>this is mail<br>"
-    assert host.calls[0][1]["is_html"] is True
-
-
-async def test_a_doubly_escaped_newline_is_fixed_the_same_way() -> None:
-    # the other failure shape: a literal backslash-n lands in the body and
-    # shows up in the email as text — unescaped first, then converted
-    registry, host = _gmail_registry()
-    await registry.execute(
-        "composio__GMAIL_SEND_EMAIL", {"recipient_email": "a@b.c", "body": "hi\\nthis is mail"}
-    )
-    assert host.calls[0][1]["body"] == "hi<br>this is mail"
-    assert host.calls[0][1]["is_html"] is True
-
-
-async def test_the_transform_is_idempotent() -> None:
-    # the approval path re-executes stored params — the second pass must be a no-op
-    registry, host = _gmail_registry()
-    await registry.execute("composio__GMAIL_SEND_EMAIL", {"body": "hi<br>there", "is_html": True})
-    assert host.calls[0][1] == {"body": "hi<br>there", "is_html": True}
-
-
-async def test_bodies_without_newlines_pass_through_untouched() -> None:
-    registry, host = _gmail_registry()
-    await registry.execute("composio__GMAIL_SEND_EMAIL", {"body": "one line", "is_html": False})
-    assert host.calls[0][1] == {"body": "one line", "is_html": False}
-
-
 async def test_non_gmail_mcp_tools_are_untouched() -> None:
-    # <br> would be wrong in a plain-text or mrkdwn surface — the fix is
-    # gmail-shaped on purpose
     registry = ToolRegistry()
     host = FakeHost([ToolSpec(name="mail__send_message", description="send", source="mail")])
     registry.attach_mcp(host)

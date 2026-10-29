@@ -29,11 +29,9 @@ provider's own declaration is more precise than a name, and a missing or
 unknown effect still falls through to the fail-safe. Provider reads run;
 provider writes and destructive actions park.
 
-The verb ladders (5 and 6) run against the lowercased tool name: Composio
-names its tools UPPER_SNAKE (composio__GMAIL_SEND_EMAIL), and a verb is a
-verb in either case — without it every hub tool would park at fail-safe.
-A composio tool's name is TOOLKIT_ACTION (gmail is metadata, send_email is
-the act), so the hub's tools are classified on the action part alone.
+The verb ladders (5 and 6) run against the lowercased tool name: a verb is
+a verb in either case. Provider tools carry an explicit effect from their
+definition, so this heuristic is the fallback for MCP and native names.
 
 The fail-safe direction matters: an unknown tool can never run silently —
 the worst case is an extra approval tap, never an unreviewed action.
@@ -210,13 +208,7 @@ class Policy:
                 "image generation — the prompt reaches the provider and the "
                 "result is a stored file; sending it anywhere still waits for approval",
             )
-        lowered = tool_name.lower()  # Composio's UPPER_SNAKE names classify by the same verbs
-        if lowered.startswith("composio__"):
-            # composio names are TOOLKIT_ACTION — the toolkit segment is
-            # metadata; classify on the action alone (gmail_fetch_emails
-            # reads as a fetch, gmail_send_email as a send)
-            action = lowered.split("__", 1)[1]
-            lowered = action.split("_", 1)[-1] if "_" in action else action
+        lowered = tool_name.lower()  # a verb is a verb whatever its case
         if _RISKY.search(lowered):
             return Ruling(
                 Decision.REQUIRE_APPROVAL,

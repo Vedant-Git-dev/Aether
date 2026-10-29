@@ -57,11 +57,6 @@ class Settings(BaseSettings):
     slack_bot_token: str = ""
     slack_app_token: str = ""
 
-    # Composio — the one connection hub for external apps (gmail, github,
-    # notion, ...). Boot reads this; the /apps walk's paste lands in the
-    # encrypted store and the bridge resolves it fresh from there.
-    composio_api_key: str = ""
-
     # this deployment's public address (https://your-app.onrender.com) —
     # where externally-hosted flows would call back; reserved for a future
     # webhook ingress, nothing reads it today

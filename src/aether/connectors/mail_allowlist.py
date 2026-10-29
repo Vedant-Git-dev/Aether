@@ -2,9 +2,9 @@
 themselves.
 
 ingest() drops non-allowlisted senders before storage, but a bulk read
-(`composio__GMAIL_FETCH_EMAILS` or the direct `gmail__list_messages` — the
-model's own calls and the 5-minute poll) answers with a whole inbox at
-once, senderless from ingest's point of view. This filter sits on the
+(`gmail__list_messages` — the model's own calls and the 5-minute poll)
+answers with a whole inbox at once, senderless from ingest's point of
+view. This filter sits on the
 tool-result paths instead: it walks the returned message batch and keeps
 only what the user's Gmail list and the cross-app bucket allow — mail from
 an allowlisted sender, mail the user sent to an allowlisted person, and
@@ -58,7 +58,7 @@ class MailAllowlist:
     async def filter_result(self, name: str, result: str) -> str:
         """One choke point for every execution path. Non-gmail calls and
         results we can't read pass through untouched."""
-        if not (name.startswith("composio__GMAIL_") or name.startswith("gmail__")):
+        if not name.startswith("gmail__"):
             return result
         try:
             envelope = json.loads(result)

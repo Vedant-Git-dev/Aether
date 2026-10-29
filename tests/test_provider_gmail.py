@@ -12,7 +12,6 @@ from fakes import FakeAudit
 
 from aether.config import AppConfig
 from aether.connectors.registry import ToolRegistry
-from aether.llm.types import ToolSpec
 from aether.providers.google import (
     GMAIL_COMPOSE,
     GMAIL_READ,
@@ -267,20 +266,7 @@ async def test_the_gmail_tool_runs_through_the_runtime_with_a_bearer_token() -> 
             )
         return httpx.Response(404)
 
-    class _HubHost:
-        def tool_specs(self):
-            return [
-                ToolSpec(
-                    name="composio__GMAIL_SEND_EMAIL",
-                    description="Send mail through the hub",
-                    source="composio",
-                )
-            ]
-
     registry = ToolRegistry()
-    registry.attach_mcp(_HubHost())  # type: ignore[arg-type]
-    registry.sync_mcp_tools()
-    assert registry.get("composio__GMAIL_SEND_EMAIL") is not None
     runtime = ProviderRuntime(
         definitions=[GOOGLE_PROVIDER],
         store=_RuntimeStore(connection),  # type: ignore[arg-type]
@@ -293,7 +279,6 @@ async def test_the_gmail_tool_runs_through_the_runtime_with_a_bearer_token() -> 
         public_base_url="https://aether.test",
     )
     assert await runtime.register_tools() == 6
-    assert registry.get("composio__GMAIL_SEND_EMAIL") is None
     result = json.loads(await registry.execute("gmail__list_messages", {"max_results": 1}))
     assert result["data"]["messages"][0]["subject"] == "Hi"
     assert seen[0] == ("GET", "/gmail/v1/users/me/messages", "Bearer access")

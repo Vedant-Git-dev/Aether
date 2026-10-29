@@ -188,7 +188,7 @@ async def test_followups_run_sends_the_reminder_to_chat_when_no_send_is_known() 
 
 async def test_followups_run_parks_an_external_reply_for_approval() -> None:
     executor = ScriptedExecutor(
-        {"composio__GMAIL_SEND_EMAIL": "held for approval (#9) — the user has been asked"}
+        {"gmail__send_email": "held for approval (#9) — the user has been asked"}
     )
     task = _task(
         {
@@ -203,8 +203,8 @@ async def test_followups_run_parks_an_external_reply_for_approval() -> None:
     assert outcome.refused is False  # parked is asked, not refused
     assert outcome.approval_id == 9  # which staged action the Approve tap carries out
     (call,) = executor.calls
-    assert call.name == "composio__GMAIL_SEND_EMAIL"
-    assert call.arguments["recipient"] == "mike@example.com"
+    assert call.name == "gmail__send_email"
+    assert call.arguments["to"] == "mike@example.com"
 
 
 def test_held_approval_reads_the_parked_id_from_a_reply() -> None:

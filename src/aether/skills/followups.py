@@ -25,7 +25,7 @@ _MARKERS = ("i'll", "i will", "remind", "follow up", "get back")
 # the one send this example knows by name — the codebase's own
 # documented app action. Surfaces without a known send fall back to a
 # reminder in the user's own chat, which never leaves Aether.
-_REPLY_TOOLS = {"gmail": "composio__GMAIL_SEND_EMAIL"}
+_REPLY_TOOLS = {"gmail": "gmail__send_email"}
 
 
 def _text_of(payload: Any) -> str:
@@ -101,7 +101,7 @@ class FollowupsSkill:
                 id=f"task-{task.id}",
                 name=tool,
                 arguments={
-                    "recipient": str(detail["address"]),
+                    "to": str(detail["address"]),
                     "subject": "following up",
                     "body": draft,
                 },

@@ -373,9 +373,9 @@ def _action_words(name: str) -> ActionWords:
     server, sep, tool = name.partition("__")
     if sep:
         lowered = tool.lower()
-        # a composio tool carries its toolkit as the name's prefix —
-        # composio__GMAIL_SEND_EMAIL reads as gmail, never as "composio";
-        # the verb checks below run on the action that follows the toolkit
+        # legacy Composio names stay readable in old traces: the toolkit is
+        # the name's prefix, so composio__GMAIL_SEND_EMAIL reads as gmail,
+        # never as "composio"; no new call is routed this way
         if server == "composio":
             app, _, action = lowered.partition("_")
         else:

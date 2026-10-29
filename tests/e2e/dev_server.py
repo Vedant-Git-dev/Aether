@@ -28,7 +28,6 @@ from aether.agent.traces import Trace
 from aether.api import router as api_router
 from aether.authz.approvals import PENDING, Approval
 from aether.chat.ws import router as chat_router
-from aether.composio_bridge import ConnectedApp, ToolkitInfo
 from aether.config import (
     AppConfig,
     AppContacts,
@@ -243,9 +242,6 @@ class FakeAgent:
         pass
 
     def submit_message(self, msg: InboundMessage) -> None:
-        pass
-
-    def watch_connect(self, toolkit: str, request_id: str) -> None:
         pass
 
     async def announce_provider_connection(self, app: str, identity: str = "") -> None:
@@ -1136,44 +1132,6 @@ class FakeModelCatalog:
         }
 
 
-class FakeHubBridge:
-    """The Composio bridge double: one connected account and a small live
-    catalog, so the apps page shows the hub section, the search, and the
-    connect/disconnect round-trip. Credentials never appear — the connect
-    is just a link."""
-
-    def __init__(self) -> None:
-        self.account_list = [
-            ConnectedApp(
-                id="acc-gmail", toolkit="gmail", status="ACTIVE", identity="me@example.com"
-            ),
-        ]
-        self.toolkit_list = [
-            ToolkitInfo(slug="gmail", name="Gmail", logo="", description="your mail"),
-            ToolkitInfo(slug="github", name="GitHub", logo="", description="your code"),
-            ToolkitInfo(slug="notion", name="Notion", logo="", description="your notes"),
-        ]
-
-    async def available(self) -> bool:
-        return True
-
-    async def accounts(self) -> list:
-        return list(self.account_list)
-
-    async def toolkits(self) -> list:
-        return list(self.toolkit_list)
-
-    async def authorize(self, toolkit: str) -> tuple[str, str]:
-        return f"req-{toolkit}", f"https://hub.example.test/connect/{toolkit}"
-
-    async def disconnect(self, account_id: str):
-        for app in self.account_list:
-            if app.id == account_id:
-                self.account_list.remove(app)
-                return app
-        return None
-
-
 class FakeProviderRuntime:
     """The direct-provider runtime double: Gmail, Calendar, Drive, and Docs on
     one Google connection, plus GitHub and LinkedIn, the write-only client
@@ -1653,7 +1611,6 @@ def build_app() -> FastAPI:
     app.state.secrets = secret_store
     app.state.resolver = FakeResolver(secret_store)
     app.state.model_catalog = FakeModelCatalog()
-    app.state.composio = FakeHubBridge()
     app.state.provider_runtime = FakeProviderRuntime()
 
     @app.get("/")

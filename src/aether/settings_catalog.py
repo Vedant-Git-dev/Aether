@@ -405,12 +405,6 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
         platform="slack",
     ),
     CredentialSpec(
-        name="COMPOSIO_API_KEY",
-        label="App hub key",
-        hint="One key for the app hub — email, code repos, notes and more. "
-        "The Apps page connects each one.",
-    ),
-    CredentialSpec(
         name="TAVILY_API_KEY",
         label="Web search key",
         hint="Lets Aether search the web. Without it, web search says "

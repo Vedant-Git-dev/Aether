@@ -105,26 +105,6 @@ class RegisteredTool:
     auth_mode: Literal["oauth", "token"] | None = None
 
 
-def _gmail_body_breaks(name: str, params: dict[str, Any]) -> dict[str, Any]:
-    """The deterministic fix for email line breaks at the MCP boundary.
-
-    Composio's Gmail actions carry an is_html flag — as HTML, a body written
-    with plain \\n newlines renders as one collapsed line, and a doubly
-    escaped \\n shows up as literal text. Whatever the model wrote, the
-    line breaks must survive: unescape, then \\n becomes <br> with is_html
-    set. Idempotent, so the approval path's re-execution is a no-op."""
-    if not name.startswith("composio__GMAIL_"):
-        return params
-    body = params.get("body")
-    if not isinstance(body, str) or ("\\n" not in body and "\n" not in body):
-        return params
-    return {
-        **params,
-        "body": body.replace("\\n", "\n").replace("\n", "<br>"),
-        "is_html": True,
-    }
-
-
 class ToolRegistry:
     """Everything the model can call, under one flat set of names."""
 
@@ -132,7 +112,6 @@ class ToolRegistry:
         self._tools: dict[str, RegisteredTool] = {}
         self._mcp_host: MCPHost | None = None
         self._mail_filter: MailAllowlist | None = None
-        self._suppressed_mcp_prefixes: set[str] = set()
 
     # -- registration ----------------------------------------------------------
 
@@ -195,8 +174,6 @@ class ToolRegistry:
         added = 0
         reported: dict[str, set[str]] = {}
         for spec in self._mcp_host.tool_specs():
-            if any(spec.name.startswith(prefix) for prefix in self._suppressed_mcp_prefixes):
-                continue
             reported.setdefault(spec.source, set()).add(spec.name)
             existing = self._tools.get(spec.name)
             if existing is not None:
@@ -227,9 +204,10 @@ class ToolRegistry:
     def gated_specs(self, text: str = "", unlocked: set[str] | None = None) -> list[ToolSpec]:
         """Token-frugal tool list: every native tool, plus the MCP tools
         whose names match words in the trigger text or that a search_tools
-        call unlocked this turn. Composio ships ~60 schemas per server;
-        passing all of them on every call is what blows the free-tier input
-        quota, so the model only sees the apps this turn actually mentions."""
+        call unlocked this turn. A busy MCP server can ship dozens of
+        schemas; passing all of them on every call is what blows the
+        free-tier input quota, so the model only sees the apps this turn
+        actually mentions."""
         unlocked = unlocked or set()
         specs: list[ToolSpec] = []
         words = _tokens(text)
@@ -292,22 +270,6 @@ class ToolRegistry:
     def server_action_count(self, server: str) -> int:
         """How many of the namespace's actions come from this server."""
         return sum(1 for t in self._tools.values() if t.kind == "mcp" and t.spec.source == server)
-
-    def suppress_mcp_prefix(self, prefix: str) -> int:
-        """Never expose MCP tools under this prefix again — used when a
-        direct provider takes over an app the hub also offers. Existing
-        tools leave the namespace now; sync_mcp_tools skips them later."""
-        self._suppressed_mcp_prefixes.add(prefix)
-        names = [
-            name
-            for name, tool in self._tools.items()
-            if tool.kind == "mcp" and name.startswith(prefix)
-        ]
-        for name in names:
-            del self._tools[name]
-        if names:
-            log.info("suppressed %d mcp tool(s) under %r", len(names), prefix)
-        return len(names)
 
     def drop_server(self, server: str) -> int:
         """Remove every tool an MCP server contributed. The other half of
@@ -376,7 +338,7 @@ class ToolRegistry:
             return result
         if self._mcp_host is None:
             raise UnknownToolError(f"mcp tool {name} has no host to route through")
-        result = await self._mcp_host.call(name, _gmail_body_breaks(name, params or {}))
+        result = await self._mcp_host.call(name, params or {})
         if self._mail_filter is not None:
             result = await self._mail_filter.filter_result(name, result)
         return result

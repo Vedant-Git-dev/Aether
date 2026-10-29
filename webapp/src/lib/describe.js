@@ -169,7 +169,7 @@ const NATIVE_TOOLS = {
 const EXTRA_SOURCES = { screen: "Screen", web: "Web", user: "You", agent: "Aether" };
 
 // action idioms the verb/noun tables can't phrase — keyed by the
-// post-composio-shift action, lowercase ("who_am_i" from GMAIL_WHO_AM_I)
+// provider action, lowercase ("who_am_i" from GMAIL_WHO_AM_I)
 const ACTION_IDIOMS = {
   who_am_i: (appName) => `Checking the connected ${appName ? `${appName} ` : ""}account`,
 };
