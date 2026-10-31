@@ -957,3 +957,16 @@ async def test_ollama_vision_is_hidden_under_other_providers() -> None:
     live.llm.provider = "ollama"
     manager, _, _ = _manager(live=live)
     assert "ollama_vision" in await manager.show("llm")
+
+
+async def test_nvidia_vision_is_hidden_under_other_providers() -> None:
+    # the same rule for the NIM flag — it speaks for NVIDIA alone
+    live = AppConfig()
+    live.llm.provider = "gemini"
+    manager, _, _ = _manager(live=live)
+    assert "nvidia_vision" not in await manager.show("llm")
+    live.llm.provider = "nvidia"
+    manager, _, _ = _manager(live=live)
+    section = await manager.show("llm")
+    assert "nvidia_vision" in section
+    assert "ollama_vision" not in section

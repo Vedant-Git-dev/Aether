@@ -11,6 +11,9 @@ provider's API answers to, so an id may itself contain slashes
 ("openai/gpt/gpt-5.6" is OpenAI with the id "gpt/gpt-5.6"). A bare id
 routes through the global llm.provider, the legacy spelling; the
 sentinel words ("off", "default", "base") name meanings, never models.
+NVIDIA NIM ids carry a vendor slash of their own
+("meta/llama-3.1-405b-instruct"), so under llm.provider nvidia a prefix
+that names no known provider is read as part of the id.
 
 Perception is per-medium: image, audio, and video are separate roles,
 each set by a knob — off (default), "default"/"base" (the main model
@@ -60,17 +63,40 @@ def _split(model: str) -> tuple[str, str]:
     return provider, rest
 
 
+_PROVIDER_NAMES = ("anthropic", "openai", "gemini", "ollama", "nvidia")
+
+
+def _route(model: str, fallback: str) -> tuple[str, str]:
+    """(provider, model id) for a stored model value.
+
+    A prefix that names a known provider routes there. Under NVIDIA the
+    first segment may instead belong to the model id itself — NIM ids
+    carry a vendor slash ("meta/llama-3.1-405b-instruct") — so a value
+    whose prefix is no known provider is read as the id, whole. Under
+    every other provider an unknown prefix stays the typo it looks like.
+    """
+    provider, model_id = _split(model)
+    if not provider:
+        return fallback, model_id
+    if provider in _PROVIDER_NAMES:
+        return provider, model_id
+    if fallback == "nvidia":
+        return "nvidia", model
+    raise ProviderError(
+        f"unknown provider in model name: {provider!r} — expected one of "
+        "anthropic, openai, gemini, ollama, nvidia"
+    )
+
+
 def resolve_provider(model: str, fallback: str) -> str:
     """The provider a stored model value routes through — its own prefix,
     or the global one for a bare legacy id."""
-    provider, _ = _split(model)
-    return provider or fallback
+    provider, _ = _route(model, fallback)
+    return provider
 
 
 def _build(settings: Settings, llm: LLMConfig, model: str, vision_capable: bool) -> Provider:
-    provider, model_id = _split(model)
-    if not provider:
-        provider = llm.provider
+    provider, model_id = _route(model, llm.provider)
     if provider == "anthropic":
         return AnthropicProvider.build(settings.anthropic_api_key, model_id, llm.max_tokens)
     if provider == "openai":
@@ -81,17 +107,18 @@ def _build(settings: Settings, llm: LLMConfig, model: str, vision_capable: bool)
         return OllamaProvider.build(
             settings.ollama_base_url, model_id, llm.max_tokens, supports_vision=vision_capable
         )
-    
-    if llm.provider == "nvidia":
+    if provider == "nvidia":
         return NvidiaProvider.build(
             settings.nvidia_api_key,
-            model,
+            model_id,
             llm.max_tokens,
             supports_vision=vision_capable,
             base_url=settings.nvidia_base_url,
         )
-    
-    raise ProviderError(f"unknown llm.provider: {llm.provider!r}")
+    raise ProviderError(
+        f"unknown provider in model name: {provider!r} — expected one of "
+        "anthropic, openai, gemini, ollama, nvidia"
+    )
 
 
 class ProviderRegistry:
@@ -108,12 +135,16 @@ class ProviderRegistry:
     @classmethod
     def from_config(cls, settings: Settings, llm: LLMConfig) -> ProviderRegistry:
         # Whether the default instance can see images. For hosted providers
-        # that's inherent; for Ollama it depends entirely on the model the
-        # user pulled, so it's an explicit config flag — keyed off the
-        # provider the main model actually routes through, prefix or not.
-        default_vision = (
-            llm.ollama_vision if resolve_provider(llm.model, llm.provider) == "ollama" else True
-        )
+        # that's inherent; for Ollama and NVIDIA NIM it depends entirely on
+        # the model chosen, so each is an explicit config flag — keyed off
+        # the provider the main model actually routes through, prefix or not.
+        main_provider = resolve_provider(llm.model, llm.provider)
+        if main_provider == "ollama":
+            default_vision = llm.ollama_vision
+        elif main_provider == "nvidia":
+            default_vision = llm.nvidia_vision
+        else:
+            default_vision = True
         default = _build(settings, llm, llm.model, default_vision)
 
         providers: dict[str, Provider | None] = {

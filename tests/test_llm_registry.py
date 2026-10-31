@@ -152,39 +152,67 @@ def test_ollama_vision_never_gates_a_hosted_provider() -> None:
     assert registry.for_role("image").supports_vision is True
 
 
-def test_vision_role_none_for_nvidia_without_vision_support() -> None:
+def test_nvidia_ids_with_a_vendor_slash_route_through_the_global_provider() -> None:
+    # NIM ids carry their own slash ("meta/llama-…"); under
+    # llm.provider nvidia the whole value is the id, not a prefix
     registry = ProviderRegistry.from_config(
         _settings(nvidia_api_key="nvapi-test"),
         LLMConfig(provider="nvidia", model="meta/llama-3.1-405b-instruct"),
     )
-    assert registry.for_role("reasoning") is not None
-    assert registry.for_role("vision") is None
+    reasoning = registry.for_role("reasoning")
+    assert isinstance(reasoning, NvidiaProvider)
+    assert reasoning.model == "meta/llama-3.1-405b-instruct"
 
 
-def test_nvidia_vision_flag_and_explicit_vision_model() -> None:
-    # The config flag opts the default model into vision.
+def test_a_prefixed_nvidia_model_keeps_its_vendor_slash() -> None:
+    registry = ProviderRegistry.from_config(
+        _settings(nvidia_api_key="nvapi-test", anthropic_api_key="k"),
+        LLMConfig(provider="anthropic", model="nvidia/meta/llama-3.1-405b-instruct"),
+    )
+    reasoning = registry.for_role("reasoning")
+    assert isinstance(reasoning, NvidiaProvider)
+    assert reasoning.model == "meta/llama-3.1-405b-instruct"
+
+
+def test_nvidia_vision_flag_gates_the_base_provider() -> None:
+    # The flag is the user's own claim about the chosen NIM model — with
+    # a "base" image knob it decides whether the base provider may see.
     flagged = ProviderRegistry.from_config(
         _settings(nvidia_api_key="nvapi-test"),
         LLMConfig(
-            provider="nvidia", model="meta/llama-3.2-90b-vision-instruct", nvidia_vision=True
+            provider="nvidia",
+            model="meta/llama-3.2-90b-vision-instruct",
+            nvidia_vision=True,
+            image_model="base",
         ),
     )
-    assert flagged.for_role("vision") is flagged.for_role("reasoning")
+    assert flagged.for_role("image") is flagged.for_role("reasoning")
+    assert flagged.for_role("image").supports_vision is True
+    unflagged = ProviderRegistry.from_config(
+        _settings(nvidia_api_key="nvapi-test"),
+        LLMConfig(
+            provider="nvidia",
+            model="meta/llama-3.2-90b-vision-instruct",
+            image_model="base",
+        ),
+    )
+    assert unflagged.for_role("reasoning").supports_vision is False
 
-    # An explicit vision_model is trusted to accept images.
-    explicit = ProviderRegistry.from_config(
+
+def test_a_prefixed_nvidia_image_model_is_trusted_to_see() -> None:
+    registry = ProviderRegistry.from_config(
         _settings(nvidia_api_key="nvapi-test"),
         LLMConfig(
             provider="nvidia",
             model="meta/llama-3.1-405b-instruct",
-            vision_model="meta/llama-3.2-90b-vision-instruct",
+            image_model="nvidia/meta/llama-3.2-90b-vision-instruct",
         ),
     )
-    vision = explicit.for_role("vision")
-    assert vision is not None
-    assert vision is not explicit.for_role("reasoning")
-    assert vision.model == "meta/llama-3.2-90b-vision-instruct"
-    assert vision.supports_vision is True
+    image = registry.for_role("image")
+    assert image is not None
+    assert image is not registry.for_role("reasoning")
+    assert image.model == "meta/llama-3.2-90b-vision-instruct"
+    assert image.supports_vision is True
 
 
 def test_unknown_role_falls_back_to_reasoning() -> None:

@@ -591,6 +591,7 @@ def create_app(
             await connector.stop()
         await host.stop()
         await web_client.aclose()
+        await provider_http.aclose()
         await pool.close()
         log.info("aether stopped")
 

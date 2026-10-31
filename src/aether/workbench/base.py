@@ -168,3 +168,8 @@ def validate_names(spec: JobSpec) -> None:
     for name in spec.files:
         if not SAFE_NAME.fullmatch(name):
             raise WorkbenchError(f"a job file ({name!r}) isn't a plain file name — not run.")
+    for name in spec.binary_files:
+        if not SAFE_NAME.fullmatch(name):
+            raise WorkbenchError(f"a job file ({name!r}) isn't a plain file name — not run.")
+        if name in spec.files:
+            raise WorkbenchError(f"the job's text and binary files both claim {name!r} — not run.")

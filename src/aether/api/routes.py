@@ -24,7 +24,7 @@ from ..config import is_legacy_composio_server
 from ..connectors.base import Attachment, InboundMessage, classify_attachment
 from ..proactive import DONE
 from ..providers.types import ProviderError
-from ..settings_catalog import credential_for, settings_feed, ALL_FIELD_PATHS
+from ..settings_catalog import ALL_FIELD_PATHS, credential_for, settings_feed
 from ..workspace import SecretRejected, WorkspaceEntry, WorkspaceWriteError
 
 log = logging.getLogger("aether.api")

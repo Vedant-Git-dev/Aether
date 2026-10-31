@@ -38,8 +38,7 @@ from typing import Any, Protocol
 
 from ..authz.approvals import DENIED
 from ..config import AppConfig
-from ..connectors.base import Attachment
-from ..connectors.base import TASK_VERDICTS
+from ..connectors.base import TASK_VERDICTS, Attachment
 from ..counters import today
 from ..llm.types import ToolCall
 from .budget import Budget

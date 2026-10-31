@@ -155,7 +155,11 @@ class VercelWorkbench:
                             *(
                                 box.fs.write_text(f"{_WORKDIR}/{name}", content)
                                 for name, content in spec.files.items()
-                            )
+                            ),
+                            *(
+                                box.fs.write_bytes(f"{_WORKDIR}/{name}", data)
+                                for name, data in spec.binary_files.items()
+                            ),
                         )
                         result = await box.run_process(
                             "python",

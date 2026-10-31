@@ -155,7 +155,11 @@ class ModalWorkbench:
                             *(
                                 sandbox.filesystem.write_text.aio(content, f"{_WORKDIR}/{name}")
                                 for name, content in spec.files.items()
-                            )
+                            ),
+                            *(
+                                sandbox.filesystem.write_bytes.aio(data, f"{_WORKDIR}/{name}")
+                                for name, data in spec.binary_files.items()
+                            ),
                         )
                         proc = await sandbox.exec.aio(
                             "python",
