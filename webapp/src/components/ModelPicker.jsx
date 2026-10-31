@@ -48,13 +48,15 @@ export default function ModelPicker({
   );
   const knownFull = new Set(allModels.map((m) => m.full));
   const isSentinel = sentinels.some((s) => s.value === selected.value);
-  // a legacy bare id — typed before the dropdown existed — is still an
-  // available model when a provider serves it; only what no key reaches
-  // is "not in the available models", and a sentinel never is
+  // a bare id — typed before the dropdown existed — is still an available
+  // model when a provider serves it; only what no key reaches is "not in
+  // the available models", and a sentinel never is. NVIDIA vendor ids carry
+  // their own slash ("meta/llama-…"), so a slash is not disqualifying: a
+  // prefixed value is already covered by knownFull above, and a bare one
+  // matches the provider's raw id here.
   const known =
     knownFull.has(selected.value) ||
     (!isSentinel &&
-      !selected.value.includes("/") &&
       (models?.providers || []).some((g) => g.models.includes(selected.value)));
   const hasList = allModels.length > 0;
   const unknown = selected.value && !isSentinel && !known;
