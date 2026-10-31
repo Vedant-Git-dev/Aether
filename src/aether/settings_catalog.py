@@ -27,7 +27,7 @@ from typing import Any, Literal, get_args, get_origin
 from pydantic import BaseModel
 
 from .config import MODEL_DEFAULT, MODEL_OFF, AppConfig
-from .config_store import _apply_note
+from .config_store import apply_note
 
 
 @dataclass(frozen=True)
@@ -503,7 +503,7 @@ def _field_feed(config: AppConfig, spec: FieldSpec, changed: set[str]) -> dict:
         sentinels = [
             {"value": word, "label": _SENTINEL_LABELS[word]} for word in _MODEL_SENTINELS[spec.path]
         ]
-    note = spec.note or _apply_note(spec.path).removeprefix(" — ")
+    note = spec.note or apply_note(spec.path).removeprefix(" — ")
     return {
         "path": spec.path,
         "label": spec.label,

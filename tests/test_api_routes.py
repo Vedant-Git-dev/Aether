@@ -1417,11 +1417,9 @@ async def test_settings_feed_carries_groups_kinds_and_apply_notes() -> None:
     # service in front now, and the key itself stays for chat's bare ids
     assert "llm.provider" not in by_path
     # kind and choices come from the model's own annotations
-    provider = by_path["llm.provider"]
-    assert provider["kind"] == "choice"
-    assert provider["choices"] == ["anthropic", "openai", "gemini", "ollama", "nvidia"]
     assert by_path["llm.max_tokens"]["kind"] == "number"
     assert by_path["llm.ollama_vision"]["kind"] == "toggle"
+    assert by_path["llm.nvidia_vision"]["kind"] == "toggle"
     assert by_path["agent.quiet_hours"]["kind"] == "text"
     assert by_path["agent.quiet_hours"]["none_ok"] is True
     # the messaging toggles enumerate from the live config

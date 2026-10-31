@@ -24,6 +24,7 @@ llm:
   # OpenAI:  provider: openai,  model: gpt-5.1
   # Gemini:  provider: gemini,  model: gemini-2.5-pro
   # Ollama:  provider: ollama,  model: llama3.3   (needs OLLAMA_BASE_URL in .env)
+  # NVIDIA:  provider: nvidia,  model: meta/llama-3.1-405b-instruct   (needs NVIDIA_API_KEY in .env)
   # perception models, one per medium — tri-state: empty (default) means
   # that medium is off, "base" means the main model takes it, or a model
   # name routes that medium to its own model. What the chosen model truly
