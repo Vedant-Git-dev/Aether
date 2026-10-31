@@ -16,10 +16,11 @@ const NAV_ITEMS = [
   ["settings", "Settings"],
 ];
 
-export default function Sidebar({ page, collapsed, navOpen, attentionCount, onCollapse }) {
+export default function Sidebar({ page, collapsed, navOpen, attentionCount, onCollapse, onNavigate }) {
   return (
     <aside
-      className={`fixed inset-y-0 left-0 z-40 w-64 flex-col border-r border-line bg-surface
+      className={`aether-chrome fixed inset-y-0 left-0 z-40 w-64 flex-col border-r border-[var(--aether-hairline)]
+        max-[900px]:shadow-2xl
         min-[901px]:sticky min-[901px]:top-0 min-[901px]:h-screen min-[901px]:flex
         ${collapsed ? "min-[901px]:w-14" : "min-[901px]:w-60"} ${navOpen ? "flex" : "hidden"}`}
       aria-label="Primary"
@@ -28,7 +29,7 @@ export default function Sidebar({ page, collapsed, navOpen, attentionCount, onCo
         <img
           src={assetUrl(`aether-mark.jpg?v=${ASSET_V}`)}
           alt="Aether"
-          className="h-9 w-9 rounded-md object-cover"
+          className="h-9 w-9 rounded-[7px] object-cover shadow-[var(--aether-raise)]"
         />
         {!collapsed && (
           <div className="min-[901px]:block">
@@ -38,23 +39,24 @@ export default function Sidebar({ page, collapsed, navOpen, attentionCount, onCo
         )}
       </div>
 
-      <div className={`px-3.5 pb-1 text-[11px] font-medium tracking-wide text-ink-3 uppercase ${collapsed ? "min-[901px]:hidden" : ""}`}>
+      <div className={`px-3.5 pb-1 text-[10.5px] font-semibold tracking-[0.11em] text-ink-3 uppercase ${collapsed ? "min-[901px]:hidden" : ""}`}>
         Mission control
       </div>
 
-      <nav className="flex-1 overflow-y-auto px-2">
+      <nav className="settings-scroll flex-1 overflow-y-auto px-2">
         {NAV_ITEMS.map(([id, label]) => {
           const active = page === id;
           return (
             <a
               key={id}
               href={`#/${id}`}
+              onClick={onNavigate}
               aria-current={active ? "page" : undefined}
-              className={`flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm
+              className={`flex items-center gap-2.5 rounded-[7px] px-2.5 py-2 text-[13px] font-medium
                 ${collapsed ? "min-[901px]:justify-center min-[901px]:px-0" : ""}
-                ${active ? "bg-subtle font-medium text-ink" : "text-ink-2 hover:bg-subtle hover:text-ink"}`}
+                ${active ? "aether-nav-active text-ink" : "text-ink-2 hover:bg-subtle hover:text-ink"}`}
             >
-              <Icon name={id} className="h-4.5 w-4.5 shrink-0" />
+              <Icon name={id} className="h-4.5 w-4.5 shrink-0 opacity-80" />
               <span className={`min-w-0 truncate ${collapsed ? "min-[901px]:hidden" : ""}`}>{label}</span>
               {id === "attention" && attentionCount > 0 && (
                 <span className={`ml-auto pl-1 text-sm font-medium text-warning ${collapsed ? "min-[901px]:hidden" : ""}`}>
@@ -66,15 +68,15 @@ export default function Sidebar({ page, collapsed, navOpen, attentionCount, onCo
         })}
       </nav>
 
-      <div className="border-t border-line p-2">
+      <div className="border-t border-[var(--aether-hairline)] p-2">
         <button
           type="button"
           onClick={onCollapse}
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          className="hidden min-[901px]:flex min-[901px]:w-full min-[901px]:items-center min-[901px]:justify-center rounded-md px-2.5 py-2 text-ink-3 hover:bg-subtle hover:text-ink"
+          className="hidden min-[901px]:flex min-[901px]:w-full min-[901px]:items-center min-[901px]:justify-center rounded-[7px] px-2.5 py-2 text-ink-3 hover:bg-subtle hover:text-ink"
         >
-          <Icon name="collapse" className="h-4.5 w-4.5" />
+          <Icon name={collapsed ? "menu" : "collapse"} className="h-4.5 w-4.5" />
         </button>
       </div>
     </aside>

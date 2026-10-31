@@ -81,18 +81,19 @@ export default function TasksPage() {
         <Card><NoToken /></Card>
       ) : (
         <>
-          <div className="mb-3 flex flex-wrap gap-1.5">
+          <div className="aether-toolbar mb-4 inline-flex flex-wrap gap-1 p-1">
             {TASK_STATUSES.map((status) => (
               <button
                 key={status}
                 type="button"
+                data-active={filter === status ? "1" : "0"}
                 onClick={() => setFilter(status)}
-                className={`rounded-md border px-3 py-1.5 text-sm capitalize
-                  ${filter === status
-                    ? "border-accent bg-subtle font-medium text-ink"
-                    : "border-line-strong bg-card text-ink-2 hover:bg-subtle"}`}
+                className="aether-tab capitalize"
               >
-                {status} <span className="text-ink-3">({count(status)})</span>
+                {status}
+                <span className="text-[11px] font-normal tabular-nums text-ink-3">
+                  ({count(status)})
+                </span>
               </button>
             ))}
           </div>
@@ -100,7 +101,7 @@ export default function TasksPage() {
             {error ? (
               <EmptyState title="Could not load tasks." sub={error} />
             ) : tasks === null ? (
-              <div className="px-4 py-6 text-sm text-ink-3">Loading…</div>
+              <div className="px-4 py-10 text-center text-[13px] text-ink-3">Loading…</div>
             ) : tasks.length === 0 ? (
               <EmptyState
                 title="Nothing scheduled."
@@ -109,7 +110,7 @@ export default function TasksPage() {
             ) : visible.length === 0 ? (
               <EmptyState title="No tasks in this state." sub="Try a different tab above." />
             ) : (
-              <table className="w-full text-sm">
+              <table className="w-full min-w-[640px] text-sm">
                 <thead>
                   <tr className="border-b border-line text-left text-xs text-ink-3">
                     <th className="px-3 py-2 font-medium">Label</th>
@@ -126,9 +127,9 @@ export default function TasksPage() {
                       className="cursor-default border-b border-line last:border-b-0 hover:bg-subtle"
                     >
                       <td className="px-3 py-2 text-ink">{t.label}</td>
-                      <td className="px-3 py-2 font-mono text-xs text-ink-2">{fmtTime(t.run_at)}</td>
-                      <td className={`px-3 py-2 font-medium capitalize ${statusColor(t.status)}`}>{t.status}</td>
-                      <td className="px-3 py-2 font-mono text-xs text-ink-3">{fmtTime(t.created_at)}</td>
+                      <td className="whitespace-nowrap px-3 py-2 font-mono text-[11px] text-ink-2">{fmtTime(t.run_at)}</td>
+                      <td className={`whitespace-nowrap px-3 py-2 font-medium capitalize ${statusColor(t.status)}`}>{t.status}</td>
+                      <td className="whitespace-nowrap px-3 py-2 font-mono text-[11px] text-ink-3">{fmtTime(t.created_at)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -136,19 +137,19 @@ export default function TasksPage() {
             )}
           </Card>
 
-          <SectionLabel className="mt-6 mb-2">Background work</SectionLabel>
+          <SectionLabel className="mt-7 mb-2">Background work</SectionLabel>
           <Card className="overflow-x-auto" data-testid="proactive-card">
             {proactiveError ? (
               <EmptyState title="Could not load background work." sub={proactiveError} />
             ) : proactive === null ? (
-              <div className="px-4 py-6 text-sm text-ink-3">Loading…</div>
+              <div className="px-4 py-10 text-center text-[13px] text-ink-3">Loading…</div>
             ) : proactive.length === 0 ? (
               <EmptyState
                 title="No background work yet."
                 sub="Results from Aether's background worker will appear here, waiting for your call."
               />
             ) : (
-              <table className="w-full text-sm">
+              <table className="w-full min-w-[840px] text-sm">
                 <thead>
                   <tr className="border-b border-line text-left text-xs text-ink-3">
                     <th className="px-3 py-2 font-medium">Task</th>
@@ -168,7 +169,7 @@ export default function TasksPage() {
                     >
                       <td className="px-3 py-2 text-ink">{t.label}</td>
                       <td className="px-3 py-2 text-ink-2">{describeSkill(t.skill)}</td>
-                      <td className={`px-3 py-2 font-medium capitalize ${statusColor(t.status)}`}>{t.status}</td>
+                      <td className={`whitespace-nowrap px-3 py-2 font-medium capitalize ${statusColor(t.status)}`}>{t.status}</td>
                       <td className="max-w-sm px-3 py-2 text-xs text-ink-2">{plainText(t.result)}</td>
                       <td className="px-3 py-2">
                         {t.feedback ? (
@@ -199,7 +200,7 @@ export default function TasksPage() {
                           </div>
                         )}
                       </td>
-                      <td className="px-3 py-2 font-mono text-xs text-ink-3">{fmtTime(t.created_at)}</td>
+                      <td className="whitespace-nowrap px-3 py-2 font-mono text-[11px] text-ink-3">{fmtTime(t.created_at)}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -7,7 +7,7 @@ import { statusColor } from "../lib/status.js";
 
 function CallRow({ c }) {
   return (
-    <div data-testid="trace-call" className="mt-2.5 rounded-md border border-line bg-card px-3 py-2.5">
+    <div data-testid="trace-call" className="aether-inset mt-2.5 px-3 py-2.5">
       <div className="flex items-baseline justify-between gap-3">
         {/* the recorded plain sentence (the model's own, or the backend's
             vocabulary) — scrubbed, since model text is untrusted; the raw
@@ -106,7 +106,7 @@ export default function TraceDetail({ t }) {
 
       {Array.isArray(p.reasoning) && p.reasoning.length > 0 && (
         <>
-          <div className="mt-4 text-xs font-medium tracking-wide text-ink-3 uppercase">What it thought</div>
+          <div className="surface-head mt-4">What it thought</div>
           {/* the loop can repeat a line across steps — collapse consecutive dupes */}
           {p.reasoning.filter((r, i) => i === 0 || r !== p.reasoning[i - 1]).map((r, i) => (
             <div key={i} className="mt-1 text-xs text-ink-2">{plainText(r)}</div>
@@ -116,7 +116,7 @@ export default function TraceDetail({ t }) {
 
       {p.reply && (
         <>
-          <div className="mt-4 text-xs font-medium tracking-wide text-ink-3 uppercase">What it answered</div>
+          <div className="surface-head mt-4">What it answered</div>
           <div className="mt-1 text-sm text-ink-2">{plainText(p.reply)}</div>
         </>
       )}

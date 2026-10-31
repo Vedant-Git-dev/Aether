@@ -1135,6 +1135,11 @@ class FakeModelCatalog:
                     ],
                     "error": "",
                 },
+                {
+                    "provider": "ollama",
+                    "models": [],
+                    "error": "couldn't be reached — its models are left out this time",
+                },
             ],
         }
 

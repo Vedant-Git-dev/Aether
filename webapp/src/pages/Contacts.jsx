@@ -89,9 +89,9 @@ function AppCard({ app, defaultMode, busy, write, jsonOpts }) {
   };
 
   return (
-    <Card className="mb-4 p-4" data-testid={`app-card-${app.key}`}>
+    <Card className="p-5" data-testid={`app-card-${app.key}`}>
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold text-ink">
+        <h2 className="text-[13px] font-semibold text-ink">
           {appTitle(app.key)}
           {app.connected ? null : <span className="ml-2 text-xs font-normal text-ink-3">not connected</span>}
         </h2>
@@ -224,7 +224,7 @@ export default function ContactsPage() {
   };
 
   return (
-    <div className="max-w-3xl">
+    <div>
       <PageHead
         eyebrow="Privacy"
         title="Contacts"
@@ -238,108 +238,114 @@ export default function ContactsPage() {
         <div className="py-2 text-sm text-ink-3">Loading…</div>
       ) : (
         <>
-          {(state.apps || []).map((app) => (
-            <AppCard
-              key={app.key}
-              app={app}
-              defaultMode={state.mode}
-              busy={busy}
-              write={write}
-              jsonOpts={jsonOpts}
-            />
-          ))}
-
-          <Card className="mb-4 p-4">
-            <h2 className="mb-2 text-sm font-semibold text-ink">The default, for every app without its own switch</h2>
-            <p className="mb-3 text-xs text-ink-2" data-testid="contacts-mode-text">
-              {MODE_TEXT[state.mode]}
-            </p>
-            <Select
-              data-testid="contacts-mode"
-              value={state.mode}
-              disabled={busy}
-              onChange={(e) => setMode(e.target.value)}
-            >
-              <option value="enforce">Only the people on the list</option>
-              <option value="off">Everyone</option>
-            </Select>
-          </Card>
-
-          <Card className="mb-4 p-4">
-            <h2 className="mb-2 text-sm font-semibold text-ink">Any platform</h2>
-            <p className="mb-3 text-xs text-ink-2">
-              These people count on every app — Gmail, Discord, Telegram —
-              wherever they match.
-            </p>
-            {state.allowlist.length === 0 ? (
-              <EmptyState
-                title="No one is on the list yet"
-                sub={state.mode === "enforce"
-                  ? "While filtering is on, nobody at all can reach Aether."
-                  : "Add people below so the list is ready when filtering comes on."}
-              />
-            ) : (
-              <ul className="divide-y divide-line">
-                {state.allowlist.map((entry) => (
-                  <li
-                    key={`${entry.platform}/${entry.handle}`}
-                    data-testid="contact-row"
-                    className="flex items-center justify-between gap-3 py-2.5"
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate text-sm text-ink">
-                        {personName(entry.platform, entry.handle)}
-                      </div>
-                      <div className="text-xs text-ink-3">
-                        {platformLabel(entry.platform)} · {entry.handle}
-                      </div>
-                    </div>
-                    <Button
-                      data-testid="contact-remove"
-                      disabled={busy}
-                      onClick={() => remove(entry)}
-                    >
-                      Remove
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-
-          <Card className="p-4">
-            <h2 className="mb-2 text-sm font-semibold text-ink">Add someone on any platform</h2>
-            <p className="mb-3 text-xs text-ink-2">
-              Handles match the way they arrive: @name for chat apps, a phone
-              number for SMS or WhatsApp, an email address for mail. "Any
-              platform" matches the same handle everywhere.
-            </p>
-            <div className="flex flex-wrap gap-2">
-              <Select
-                data-testid="contact-platform"
-                value={platform}
-                disabled={busy}
-                onChange={(e) => setPlatform(e.target.value)}
-              >
-                {PLATFORMS.map(([value, label]) => (
-                  <option key={value} value={value}>{label}</option>
-                ))}
-              </Select>
-              <Field
-                data-testid="contact-handle"
-                type="text"
-                placeholder="e.g. @friend or +91…"
-                value={handle}
-                disabled={busy}
-                onChange={(e) => setHandle(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") add(); }}
-                className="min-w-0 flex-1"
-              />
-              <Button kind="primary" data-testid="contact-add" disabled={busy} onClick={add}>
-                Add
-              </Button>
+          <div className="grid gap-4 xl:grid-cols-2 xl:items-start">
+            <div className="flex min-w-0 flex-col gap-4">
+              {(state.apps || []).map((app) => (
+                <AppCard
+                  key={app.key}
+                  app={app}
+                  defaultMode={state.mode}
+                  busy={busy}
+                  write={write}
+                  jsonOpts={jsonOpts}
+                />
+              ))}
             </div>
-          </Card>
+
+            <div className="flex min-w-0 flex-col gap-4">
+              <Card className="p-5">
+                <h2 className="mb-2 text-[13px] font-semibold text-ink">The default, for every app without its own switch</h2>
+                <p className="mb-3 text-[12px] leading-relaxed text-ink-2" data-testid="contacts-mode-text">
+                  {MODE_TEXT[state.mode]}
+                </p>
+                <Select
+                  data-testid="contacts-mode"
+                  value={state.mode}
+                  disabled={busy}
+                  onChange={(e) => setMode(e.target.value)}
+                >
+                  <option value="enforce">Only the people on the list</option>
+                  <option value="off">Everyone</option>
+                </Select>
+              </Card>
+
+              <Card className="p-5">
+                <h2 className="mb-2 text-[13px] font-semibold text-ink">Any platform</h2>
+                <p className="mb-3 text-[12px] leading-relaxed text-ink-2">
+                  These people count on every app — Gmail, Discord, Telegram —
+                  wherever they match.
+                </p>
+                {state.allowlist.length === 0 ? (
+                  <EmptyState
+                    title="No one is on the list yet"
+                    sub={state.mode === "enforce"
+                      ? "While filtering is on, nobody at all can reach Aether."
+                      : "Add people below so the list is ready when filtering comes on."}
+                  />
+                ) : (
+                  <ul className="divide-y divide-line">
+                    {state.allowlist.map((entry) => (
+                      <li
+                        key={`${entry.platform}/${entry.handle}`}
+                        data-testid="contact-row"
+                        className="flex items-center justify-between gap-3 py-2.5"
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate text-[13px] text-ink">
+                            {personName(entry.platform, entry.handle)}
+                          </div>
+                          <div className="text-[11.5px] text-ink-3">
+                            {platformLabel(entry.platform)} · {entry.handle}
+                          </div>
+                        </div>
+                        <Button
+                          data-testid="contact-remove"
+                          disabled={busy}
+                          onClick={() => remove(entry)}
+                        >
+                          Remove
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Card>
+
+              <Card className="p-5">
+                <h2 className="mb-2 text-[13px] font-semibold text-ink">Add someone on any platform</h2>
+                <p className="mb-3 text-[12px] leading-relaxed text-ink-2">
+                  Handles match the way they arrive: @name for chat apps, a phone
+                  number for SMS or WhatsApp, an email address for mail. "Any
+                  platform" matches the same handle everywhere.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Select
+                    data-testid="contact-platform"
+                    value={platform}
+                    disabled={busy}
+                    onChange={(e) => setPlatform(e.target.value)}
+                  >
+                    {PLATFORMS.map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </Select>
+                  <Field
+                    data-testid="contact-handle"
+                    type="text"
+                    placeholder="e.g. @friend or +91…"
+                    value={handle}
+                    disabled={busy}
+                    onChange={(e) => setHandle(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") add(); }}
+                    className="min-w-0 flex-1"
+                  />
+                  <Button kind="primary" data-testid="contact-add" disabled={busy} onClick={add}>
+                    Add
+                  </Button>
+                </div>
+              </Card>
+            </div>
+          </div>
         </>
       )}
     </div>

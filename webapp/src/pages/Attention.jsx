@@ -28,26 +28,28 @@ function PolicyAside() {
   if (!data) return <Card className="p-4"><div className="py-4 text-sm text-ink-3">Loading policy…</div></Card>;
 
   return (
-    <Card className="h-fit p-4">
-      <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-ink">
-        <Icon name="shield" className="h-4 w-4 text-ink-2" />
+    <Card className="h-fit p-5">
+      <h2 className="flex items-center gap-2.5 text-[13px] font-semibold text-ink">
+        <span className="aether-inset grid h-7 w-7 shrink-0 place-items-center rounded-[7px]">
+          <Icon name="shield" className="h-4 w-4 text-ink-2" />
+        </span>
         Approval policy
       </h2>
-      <p className="text-sm text-ink-2">
+      <p className="mt-3 text-[13px] leading-relaxed text-ink-2">
         Reading happens on its own. Anything that sends, changes or deletes something waits
         here for your approval.
       </p>
-      <div className="mt-4 space-y-2 text-sm">
-        <div className="flex justify-between">
+      <div className="mt-4 text-[13px]">
+        <div className="aether-row flex justify-between py-2">
           <span className="text-ink-3">Your own rules</span>
-          <span className="font-medium text-ink">{data.rules.length}</span>
+          <span className="font-medium tabular-nums text-ink">{data.rules.length}</span>
         </div>
-        <div className="flex justify-between">
+        <div className="flex justify-between py-2">
           <span className="text-ink-3">Requests expire after</span>
-          <span className="font-medium text-ink">{data.approval_ttl_hours} hours</span>
+          <span className="font-medium tabular-nums text-ink">{data.approval_ttl_hours} hours</span>
         </div>
       </div>
-      <a href="#/policy" className="mt-4 inline-flex items-center gap-1 text-sm text-accent hover:underline">
+      <a href="#/policy" className="mt-4 inline-flex items-center gap-1 text-[13px] text-accent hover:underline">
         View full policy <Icon name="arrow" className="h-3.5 w-3.5" />
       </a>
     </Card>
@@ -68,7 +70,7 @@ export default function AttentionPage() {
         title="Attention Required"
         sub="Actions Aether wants to take that are awaiting your approval first."
       />
-      <div className="grid items-start gap-4 lg:grid-cols-[1fr_260px]">
+      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
         <div>
           {!hasToken() ? (
             <Card><NoToken /></Card>
@@ -80,7 +82,7 @@ export default function AttentionPage() {
               />
             </Card>
           ) : (
-            <Card>
+            <Card className="overflow-hidden">
               {approvals.map((a) => (
                 <ApprovalCard key={a.id} a={a} ui={approvalUi[a.id] || {}} onDecide={decide} />
               ))}
@@ -89,11 +91,11 @@ export default function AttentionPage() {
 
           {hasToken() && settled.length > 0 && (
             <>
-              <SectionLabel className="mt-5 mb-2">Recently decided</SectionLabel>
-              <Card>
+              <SectionLabel className="mt-6 mb-2">Recently decided</SectionLabel>
+              <Card className="overflow-hidden">
                 {settled.map((e) => (
-                  <div key={e.seq} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-line px-4 py-2.5 text-sm last:border-b-0">
-                    <span className="font-mono text-xs text-ink-3">{fmtTime(e.at)}</span>
+                  <div key={e.seq} className="aether-row flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-2.5 text-sm">
+                    <span className="font-mono text-[11px] text-ink-3">{fmtTime(e.at)}</span>
                     <span className="text-ink-2">{describeTool(e.tool)}</span>
                     <span className="text-ink-3">{describeOutcome(e.outcome)}</span>
                   </div>

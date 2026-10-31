@@ -78,7 +78,7 @@ function DiffBlock({ text }) {
   return (
     <pre
       data-testid="approval-diff"
-      className="overflow-x-auto rounded-md bg-subtle p-2 font-mono text-xs leading-5"
+      className="aether-inset overflow-x-auto p-2 font-mono text-xs leading-5"
     >
       {text.split("\n").map((line, i) => (
         <span
@@ -117,7 +117,7 @@ function TextValue({ text }) {
     return (
       <code
         data-testid="approval-path"
-        className="inline-block break-all rounded bg-subtle px-1.5 py-0.5 font-mono text-[13px] text-ink-2"
+        className="inline-block break-all rounded-[5px] bg-subtle px-1.5 py-0.5 font-mono text-[13px] text-ink-2"
       >
         {text}
       </code>
@@ -133,7 +133,7 @@ function TextValue({ text }) {
           <pre
             key={i}
             data-testid="approval-code"
-            className="my-1 overflow-x-auto rounded-md bg-subtle p-2 font-mono text-xs leading-5 text-ink-2"
+            className="aether-inset my-1 overflow-x-auto p-2 font-mono text-xs leading-5 text-ink-2"
           >
             {seg.text}
           </pre>
@@ -200,7 +200,7 @@ export default function ApprovalCard({ a, ui, onDecide }) {
   const entries = Object.entries(a.params || {}).filter(([k]) => !k.startsWith("_"));
 
   return (
-    <div data-testid="approval-card" className="border-b border-line p-4 last:border-b-0">
+    <div data-testid="approval-card" className="border-b border-[var(--aether-hairline)] p-4 last:border-b-0 sm:p-5">
       <div className="flex items-start justify-between gap-3">
         <span data-testid="approval-tool" className="text-sm font-medium text-ink">
           {describeTool(a.tool_name)}

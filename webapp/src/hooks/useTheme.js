@@ -1,46 +1,90 @@
 import { useCallback, useEffect, useState } from "react";
 
 const THEME_KEY = "aether_theme";
+const THEME_EVENT = "aether:theme";
 
 export function currentTheme() {
   return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
 }
 
-function applyTheme(t, persist) {
-  document.documentElement.dataset.theme = t;
-  if (persist) {
-    try { localStorage.setItem(THEME_KEY, t); } catch { /* private mode */ }
+// "system" is a real preference, not an absence: choosing it keeps following
+// the OS until the user picks a side explicitly.
+export function currentPreference() {
+  try {
+    const saved = localStorage.getItem(THEME_KEY);
+    if (saved === "light" || saved === "dark" || saved === "system") return saved;
+  } catch {
+    /* private mode */
   }
-  const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.content = t === "dark" ? "#17181a" : "#f7f7f8";
+  return "system";
 }
 
-// The pre-paint script in index.html sets data-theme before first paint; this
-// hook keeps the toggle button, the meta theme-color and (optionally) the
-// saved preference in sync with it. Follows the system theme only until the
-// user picks one explicitly — same contract as the old panel.
+function systemTheme() {
+  try {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  } catch {
+    return "light";
+  }
+}
+
+function paint(theme) {
+  document.documentElement.dataset.theme = theme;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = theme === "dark" ? "#111318" : "#f4f5f8";
+}
+
+// Applies a preference, stores it, and tells every other useTheme instance
+// (the topbar and the settings page both own one) before returning the
+// resolved light/dark value.
+function applyPreference(preference, persist) {
+  const theme = preference === "system" ? systemTheme() : preference;
+  paint(theme);
+  if (persist) {
+    try {
+      localStorage.setItem(THEME_KEY, preference);
+    } catch {
+      /* private mode */
+    }
+  }
+  window.dispatchEvent(
+    new CustomEvent(THEME_EVENT, { detail: { preference, theme } })
+  );
+  return theme;
+}
+
 export function useTheme() {
+  const [preference, setPreferenceState] = useState(currentPreference);
   const [theme, setTheme] = useState(currentTheme);
 
   useEffect(() => {
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = (e) => {
-      let saved = null;
-      try { saved = localStorage.getItem(THEME_KEY); } catch { /* private mode */ }
-      if (saved !== "light" && saved !== "dark") {
-        applyTheme(e.matches ? "dark" : "light", false);
-        setTheme(e.matches ? "dark" : "light");
-      }
+    const onSystemChange = () => {
+      if (currentPreference() !== "system") return;
+      const next = systemTheme();
+      paint(next);
+      setTheme(next);
     };
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
+    const onTheme = (event) => {
+      setPreferenceState(event.detail.preference);
+      setTheme(event.detail.theme);
+    };
+    mq.addEventListener("change", onSystemChange);
+    window.addEventListener(THEME_EVENT, onTheme);
+    return () => {
+      mq.removeEventListener("change", onSystemChange);
+      window.removeEventListener(THEME_EVENT, onTheme);
+    };
+  }, []);
+
+  const setPreference = useCallback((next) => {
+    const resolved = applyPreference(next, true);
+    setPreferenceState(next);
+    setTheme(resolved);
   }, []);
 
   const toggle = useCallback(() => {
-    const next = currentTheme() === "dark" ? "light" : "dark";
-    applyTheme(next, true);
-    setTheme(next);
-  }, []);
+    setPreference(currentTheme() === "dark" ? "light" : "dark");
+  }, [setPreference]);
 
-  return { theme, toggle };
+  return { theme, preference, setPreference, toggle };
 }

@@ -37,7 +37,13 @@ export default function App() {
   const { approvals } = useData();
   const route = useHashRoute(Object.keys(PAGES));
   const [collapsed, setCollapsed] = useState(() => {
-    try { return localStorage.getItem(COLLAPSE_KEY) === "1"; } catch { return false; }
+    // the rail starts quiet; the bottom control opens it when needed
+    try {
+      const saved = localStorage.getItem(COLLAPSE_KEY);
+      return saved === null ? true : saved === "1";
+    } catch {
+      return true;
+    }
   });
   const [navOpen, setNavOpen] = useState(false);
 
@@ -88,10 +94,16 @@ export default function App() {
         navOpen={navOpen}
         attentionCount={attentionCount}
         onCollapse={toggleCollapse}
+        onNavigate={() => setNavOpen(false)}
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar title={title} attentionCount={attentionCount} onMenu={() => setNavOpen(true)} />
-        <main data-testid="page" className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 min-[901px]:px-6">
+        <main
+          data-testid="page"
+          className={`mx-auto w-full flex-1 px-4 pb-12 pt-6 min-[901px]:px-6 ${
+            route === "settings" ? "max-w-none" : "max-w-[1680px]"
+          }`}
+        >
           <Page />
         </main>
       </div>

@@ -190,7 +190,7 @@ export default function GooglePicker({ app, onSelected }) {
   }
 
   return (
-    <div className="rounded-md border border-line bg-subtle p-3" data-testid="drive-picker">
+    <div className="aether-inset p-3" data-testid="drive-picker">
       <div className="text-xs text-ink-2">
         Choose the Google Docs Aether may read and append to. Access is limited to
         the files you pick.
