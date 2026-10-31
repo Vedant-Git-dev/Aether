@@ -130,16 +130,6 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
                 label="Response limit",
                 hint="The most one reply can run to.",
             ),
-            FieldSpec(
-                path="llm.ollama_vision",
-                label="Local vision",
-                hint="Whether the local setup's model can read images.",
-            ),
-            FieldSpec(
-                path="llm.nvidia_vision",
-                label="NVIDIA vision",
-                hint="Whether the chosen NVIDIA NIM model can read images.",
-            ),
         ),
     ),
     GroupSpec(

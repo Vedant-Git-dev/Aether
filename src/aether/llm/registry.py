@@ -134,17 +134,16 @@ class ProviderRegistry:
 
     @classmethod
     def from_config(cls, settings: Settings, llm: LLMConfig) -> ProviderRegistry:
-        # Whether the default instance can see images. For hosted providers
-        # that's inherent; for Ollama and NVIDIA NIM it depends entirely on
-        # the model chosen, so each is an explicit config flag — keyed off
-        # the provider the main model actually routes through, prefix or not.
+        # Whether the default instance can see images. Hosted providers are
+        # inherently vision-capable; a local model's vision is declared by
+        # the capability knob itself — routing image_model to "base" is the
+        # user saying their main model reads images. No per-provider flag:
+        # the image field is the one place the choice lives.
         main_provider = resolve_provider(llm.model, llm.provider)
-        if main_provider == "ollama":
-            default_vision = llm.ollama_vision
-        elif main_provider == "nvidia":
-            default_vision = llm.nvidia_vision
-        else:
-            default_vision = True
+        default_vision = main_provider in ("anthropic", "openai", "gemini") or llm.image_model in (
+            BASE,
+            DEFAULT,
+        )
         default = _build(settings, llm, llm.model, default_vision)
 
         providers: dict[str, Provider | None] = {

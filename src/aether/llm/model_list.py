@@ -37,14 +37,18 @@ _PROVIDER_SECRETS: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "ollama": "OLLAMA_BASE_URL",
+    "nvidia": "NVIDIA_API_KEY",
 }
+
+# NIM's OpenAI-compatible endpoint — the same default the adapter uses
+_DEFAULT_NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
 # the plain words a failed fetch carries — the provider's name rides with
 # the group in the feed, so the note itself stays generic
 _FETCH_ERROR = "couldn't be reached — its models are left out this time"
 
 
-def _default_client(provider: str, secret: str) -> Any:
+def _default_client(provider: str, secret: str, base_url: str | None = None) -> Any:
     """The same SDK client the provider's own adapter builds — one list
     call, nothing else, so the dropdown and the chat wire can't disagree
     about what a key reaches."""
@@ -57,6 +61,8 @@ def _default_client(provider: str, secret: str) -> Any:
     if provider == "ollama":
         # Ollama ignores the api key; the OpenAI SDK requires one to exist.
         return AsyncOpenAI(base_url=secret, api_key="ollama")
+    if provider == "nvidia":
+        return AsyncOpenAI(base_url=base_url or _DEFAULT_NVIDIA_BASE_URL, api_key=secret)
     raise ValueError(f"unknown provider: {provider}")
 
 
@@ -81,6 +87,7 @@ _FETCHERS = {
     "anthropic": _fetch_anthropic,
     "openai": _fetch_openai_style,
     "ollama": _fetch_openai_style,
+    "nvidia": _fetch_openai_style,
     "gemini": _fetch_gemini,
 }
 
@@ -96,9 +103,16 @@ class ModelCatalog:
     """Per-provider model lists with a by-key cache. One instance lives on
     app.state; the Settings endpoint asks it for the whole feed."""
 
-    def __init__(self, resolver: Any, *, client_for: Any = _default_client) -> None:
+    def __init__(
+        self,
+        resolver: Any,
+        *,
+        client_for: Any = _default_client,
+        base_urls: dict[str, str] | None = None,
+    ) -> None:
         self._resolver = resolver
         self._client_for = client_for
+        self._base_urls = base_urls or {}
         # provider -> (the key the list was fetched with, the models). The
         # key lives here only to be compared against the next resolve —
         # never logged, never returned.
@@ -126,7 +140,7 @@ class ModelCatalog:
                     models = cached[1]
                 else:
                     try:
-                        client = self._client_for(provider, secret)
+                        client = self._client_for(provider, secret, self._base_urls.get(provider))
                         models = await _FETCHERS[provider](client)
                     except Exception:
                         # never the key in the log — the traceback of these

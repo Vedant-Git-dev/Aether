@@ -1156,13 +1156,6 @@ class ConfigManager:
         section_live = getattr(self._live, name)
         section_base = getattr(self._base, name)
         for field in type(section_live).model_fields:
-            if name == "llm" and field == "ollama_vision" and section_live.provider != "ollama":
-                # ollama_vision only governs Ollama — showing it under
-                # another provider reads as a real setting and misleads
-                continue
-            if name == "llm" and field == "nvidia_vision" and section_live.provider != "nvidia":
-                # same rule for nvidia_vision: it speaks for NIM alone
-                continue
             live_v = getattr(section_live, field)
             base_v = getattr(section_base, field)
             if isinstance(live_v, list):

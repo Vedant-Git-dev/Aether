@@ -1418,8 +1418,10 @@ async def test_settings_feed_carries_groups_kinds_and_apply_notes() -> None:
     assert "llm.provider" not in by_path
     # kind and choices come from the model's own annotations
     assert by_path["llm.max_tokens"]["kind"] == "number"
-    assert by_path["llm.ollama_vision"]["kind"] == "toggle"
-    assert by_path["llm.nvidia_vision"]["kind"] == "toggle"
+    # capabilities are model fields, not per-provider toggles
+    assert by_path["llm.image_model"]["kind"] == "model"
+    assert "llm.ollama_vision" not in by_path
+    assert "llm.nvidia_vision" not in by_path
     assert by_path["agent.quiet_hours"]["kind"] == "text"
     assert by_path["agent.quiet_hours"]["none_ok"] is True
     # the messaging toggles enumerate from the live config

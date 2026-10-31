@@ -1873,7 +1873,6 @@ def register_native_tools(
                         "salience.rate_cap_per_hour, llm.provider, llm.model, "
                         "llm.image_model, llm.audio_model, llm.video_model, "
                         "llm.salience_model, llm.max_tokens, "
-                        "llm.ollama_vision, llm.nvidia_vision, "
                         "messaging.<platform>.enabled, "
                         "contacts.mode, contacts.allowlist, authz.rules, "
                         "authz.approval_ttl_hours, mcp_servers, "

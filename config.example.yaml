@@ -27,17 +27,18 @@ llm:
   # NVIDIA:  provider: nvidia,  model: meta/llama-3.1-405b-instruct   (needs NVIDIA_API_KEY in .env)
   # perception models, one per medium — tri-state: empty (default) means
   # that medium is off, "base" means the main model takes it, or a model
-  # name routes that medium to its own model. What the chosen model truly
-  # accepts is discovered at call time: video falls back to frames pulled
-  # by a cloud sandbox and read by the image model, audio falls back to
-  # transcription, and the agent says plainly when nothing is set.
+  # name routes that medium to its own model. Each field pools every
+  # provider's models, named with the provider in front
+  # ("ollama/qwen2.5vl:7b", "nvidia/meta/llama-3.2-90b-vision-instruct").
+  # What the chosen model truly accepts is discovered at call time: video
+  # falls back to frames pulled by a cloud sandbox and read by the image
+  # model, audio falls back to transcription, and the agent says plainly
+  # when nothing is set.
   image_model:                   # reads images; empty leaves images unseen
   audio_model:                   # listens to audio; empty leaves transcription only
   video_model:                   # watches video; empty falls back to frames
   salience_model:                # optional cheaper model for the salience judge
   embedding_model: gemini-embedding-001  # free on the Gemini API key; none = no semantic search
-  ollama_vision: false            # ollama only: true if the pulled model accepts images
-  nvidia_vision: false            # nvidia only: true if the chosen NIM model accepts images
   max_tokens: 16000
 
 agent:

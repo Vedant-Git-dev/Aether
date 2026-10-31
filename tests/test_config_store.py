@@ -943,30 +943,16 @@ async def test_the_dropdowns_stored_forms_round_trip() -> None:
     assert "salience gemini/gemini-2.5-flash" in overview
 
 
-async def test_ollama_vision_is_hidden_under_other_providers() -> None:
-    # the flag governs Ollama alone — under Gemini its raw copy reads as
-    # a real setting and fed the bot's wrong self-diagnosis, so it isn't
-    # shown at all when the provider isn't Ollama
-    live = AppConfig()
-    live.llm.provider = "gemini"
-    manager, _, _ = _manager(live=live)
-
-    section = await manager.show("llm")
-    assert "ollama_vision" not in section
-    # under Ollama it stays — a real setting the user actually owns
-    live.llm.provider = "ollama"
-    manager, _, _ = _manager(live=live)
-    assert "ollama_vision" in await manager.show("llm")
-
-
-async def test_nvidia_vision_is_hidden_under_other_providers() -> None:
-    # the same rule for the NIM flag — it speaks for NVIDIA alone
-    live = AppConfig()
-    live.llm.provider = "gemini"
-    manager, _, _ = _manager(live=live)
-    assert "nvidia_vision" not in await manager.show("llm")
-    live.llm.provider = "nvidia"
-    manager, _, _ = _manager(live=live)
-    section = await manager.show("llm")
-    assert "nvidia_vision" in section
-    assert "ollama_vision" not in section
+async def test_capability_fields_are_the_only_vision_configuration() -> None:
+    # no per-provider flags at all — every provider shares the same
+    # capability fields, whichever provider is live
+    for provider in ("gemini", "ollama", "nvidia"):
+        live = AppConfig()
+        live.llm.provider = provider
+        manager, _, _ = _manager(live=live)
+        section = await manager.show("llm")
+        assert "ollama_vision" not in section
+        assert "nvidia_vision" not in section
+        assert "image_model" in section
+        assert "audio_model" in section
+        assert "video_model" in section
