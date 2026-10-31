@@ -214,6 +214,24 @@ async def test_nvidia_lists_through_its_openai_style_endpoint() -> None:
     assert seen_base == ["https://integrate.api.nvidia.com/v1"]
 
 
+async def test_an_unreachable_provider_logs_one_plain_line(caplog) -> None:
+    # an Ollama address with no server is ordinary, not a crash — the
+    # feed carries the inline note and the log stays one line, no traceback
+    calls: list[str] = []
+    catalog = ModelCatalog(
+        FakeResolver({"OPENAI_API_KEY": "sk-o"}),
+        client_for=_client_for({"openai": RuntimeError("down")}, calls),
+    )
+    with caplog.at_level(logging.WARNING, logger="aether.llm.model_list"):
+        feed = await catalog.feed()
+    assert feed["providers"][0]["error"]
+    notices = [r for r in caplog.records if "didn't answer" in r.getMessage()]
+    assert len(notices) == 1
+    assert notices[0].exc_info is None
+    assert "RuntimeError" in notices[0].getMessage()
+    assert "down" not in notices[0].getMessage()  # no exception text, no key
+
+
 async def test_a_key_value_never_rides_the_feed_or_the_log(caplog) -> None:
     calls: list[str] = []
     secret = "sk-never-echo-this"

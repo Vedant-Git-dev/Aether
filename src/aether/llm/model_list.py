@@ -142,13 +142,16 @@ class ModelCatalog:
                     try:
                         client = self._client_for(provider, secret, self._base_urls.get(provider))
                         models = await _FETCHERS[provider](client)
-                    except Exception:
-                        # never the key in the log — the traceback of these
-                        # SDKs carries the request, not the auth material
+                    except Exception as exc:
+                        # a provider that isn't running is ordinary (an
+                        # Ollama address with no server is the usual one) —
+                        # one plain line, no traceback and no exception text
+                        # (an auth error's message can echo the key); the
+                        # feed already carries the inline note.
                         log.warning(
-                            "models list for %s didn't answer — leaving it out this time",
+                            "models list for %s didn't answer (%s) — leaving it out this time",
                             provider,
-                            exc_info=True,
+                            type(exc).__name__,
                         )
                         providers.append(
                             {"provider": provider, "models": [], "error": _FETCH_ERROR}

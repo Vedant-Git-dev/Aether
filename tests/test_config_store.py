@@ -114,6 +114,24 @@ async def test_boot_merge_mutates_in_place_keeping_section_identity() -> None:
     assert live.salience.threshold == 5.0
 
 
+async def test_a_stale_composio_row_never_reaches_the_live_config() -> None:
+    # the direct-provider cutover retired the app hub; an old whole-list
+    # row may still name it, but boot keeps the row and ignores the entry
+    live = AppConfig(mcp_servers=[MCPServerConfig(name="mail")])
+    rows = {"mcp_servers": [{"name": "mail"}, {"name": "composio"}]}
+    manager, _, _ = _manager(rows=rows, live=live)
+
+    assert await manager.bootstrap() == 1
+    assert [s.name for s in live.mcp_servers] == ["mail"]
+
+
+async def test_composio_cannot_be_added_back_from_chat() -> None:
+    manager, _, live = _manager()
+    reply = await manager.set(op="add", path="mcp_servers", value={"name": "composio"})
+    assert "retired app hub" in reply
+    assert live.mcp_servers == []
+
+
 async def test_boot_merge_composes_item_rows_after_the_list_root() -> None:
     live = AppConfig(mcp_servers=[MCPServerConfig(name="mail")])
     rows = {

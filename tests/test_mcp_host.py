@@ -107,6 +107,20 @@ async def test_disabled_servers_never_spawn() -> None:
     await host.stop()
 
 
+def test_the_retired_app_hub_never_gets_a_connection() -> None:
+    # a stale row or hand-written entry named composio is not a user MCP
+    # server — the host filters it whatever the config source
+    host = MCPHost([_stub_config(name="composio"), _stub_config(name="mail")])
+    assert [c.name for c in host.connections] == ["mail"]
+
+
+async def test_apply_servers_ignores_the_retired_app_hub() -> None:
+    host = MCPHost([])
+    diff = await host.apply_servers([_stub_config(name="composio")])
+    assert diff == {"started": [], "stopped": []}
+    assert host.connections == []
+
+
 async def test_dead_server_is_reported_not_raised() -> None:
     host = MCPHost(
         [
