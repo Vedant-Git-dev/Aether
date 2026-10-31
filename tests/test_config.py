@@ -101,6 +101,8 @@ def test_settings_reads_the_documented_env_names(monkeypatch) -> None:
         "OPENAI_API_KEY",
         "GEMINI_API_KEY",
         "OLLAMA_BASE_URL",
+        "NVIDIA_API_KEY",
+        "NVIDIA_BASE_URL",
         "TELEGRAM_BOT_TOKEN",
         "DISCORD_BOT_TOKEN",
     ):

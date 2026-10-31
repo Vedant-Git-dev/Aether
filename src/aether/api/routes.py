@@ -24,7 +24,7 @@ from ..config import is_legacy_composio_server
 from ..connectors.base import Attachment, InboundMessage, classify_attachment
 from ..proactive import DONE
 from ..providers.types import ProviderError
-from ..settings_catalog import credential_for, settings_feed
+from ..settings_catalog import credential_for, settings_feed, ALL_FIELD_PATHS
 from ..workspace import SecretRejected, WorkspaceEntry, WorkspaceWriteError
 
 log = logging.getLogger("aether.api")
@@ -602,11 +602,12 @@ async def _settings_state(request: Request) -> dict:
     return settings_feed(request.app.state.config, changed, known)
 
 
-async def _known_setting(request: Request, path: str) -> None:
+def _known_setting(path: str) -> None:
     """The path must name a field the catalog knows — a stranger in the URL
-    can't mint a ConfigManager path the page never offered."""
-    feed = await _settings_state(request)
-    if path not in {f["path"] for g in feed["groups"] for f in g["fields"]}:
+    can't mint a ConfigManager path the page never offered. Checked against
+    the static catalog, not a freshly rebuilt feed — the live feed only
+    needs building once, after the write, for the response."""
+    if path not in ALL_FIELD_PATHS:
         raise HTTPException(status_code=404, detail="that isn't a setting the page knows")
 
 
@@ -628,7 +629,7 @@ async def set_setting(
     note otherwise) rides back as the page's toast."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
-    await _known_setting(request, path)
+    _known_setting(path)
     reply, feed = await _panel_config_write(
         request, op="set", path=path, value=body.value, refresh=_settings_state
     )
@@ -641,7 +642,7 @@ async def reset_setting(path: str, request: Request, token: str | None = None) -
     '/config reset' makes."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
-    await _known_setting(request, path)
+    _known_setting(path)
     reply, feed = await _panel_config_write(
         request, op="reset", path=path, value=None, refresh=_settings_state
     )

@@ -35,7 +35,7 @@ class FieldSpec:
     path: str  # the ConfigManager path — also the field's identity everywhere
     label: str  # how it reads on the page
     hint: str  # one plain sentence: what the setting does
-    note: str = ""  # when it bites, when _apply_note has nothing
+    note: str = ""  # when it bites, when apply_note has nothing
     none_ok: bool = False  # text fields where empty means "not set"
     model: bool = False  # a model picker: the feed names its sentinel choices
 
@@ -134,6 +134,11 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
                 path="llm.ollama_vision",
                 label="Local vision",
                 hint="Whether the local setup's model can read images.",
+            ),
+            FieldSpec(
+                path="llm.nvidia_vision",
+                label="NVIDIA vision",
+                hint="Whether the chosen NVIDIA NIM model can read images.",
             ),
         ),
     ),
@@ -350,6 +355,13 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
     ),
 )
 
+# every path the page can write — a static set, so checking whether a path
+# is one of them never needs to rebuild the live feed (that's an effective()
+# read plus settings_feed()'s own walk over every group) just to answer yes/no
+ALL_FIELD_PATHS: frozenset[str] = frozenset(
+    field.path for group in SETTINGS_GROUPS for field in group.fields
+)
+
 
 @dataclass(frozen=True)
 class CredentialSpec:
@@ -379,6 +391,11 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
         name="GROQ_API_KEY",
         label="Voice transcription key",
         hint="Groq's free key — with it, Aether reads the voice notes you send.",
+    ),
+    CredentialSpec(
+        name="NVIDIA_API_KEY",
+        label="Provider API key",
+        hint="Needed when the provider is set to the matching one.",
     ),
     CredentialSpec(
         name="TELEGRAM_BOT_TOKEN",

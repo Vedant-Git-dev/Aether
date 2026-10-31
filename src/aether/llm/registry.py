@@ -33,6 +33,7 @@ from ..config import (
 from .anthropic_provider import AnthropicProvider
 from .base import Provider, ProviderError
 from .gemini_provider import GeminiProvider
+from .nvidia_provider import NvidiaProvider
 from .ollama_provider import OllamaProvider
 from .openai_provider import OpenAIProvider
 
@@ -80,10 +81,17 @@ def _build(settings: Settings, llm: LLMConfig, model: str, vision_capable: bool)
         return OllamaProvider.build(
             settings.ollama_base_url, model_id, llm.max_tokens, supports_vision=vision_capable
         )
-    raise ProviderError(
-        f"unknown provider in model name: {provider!r} — expected one of "
-        "anthropic, openai, gemini, ollama"
-    )
+    
+    if llm.provider == "nvidia":
+        return NvidiaProvider.build(
+            settings.nvidia_api_key,
+            model,
+            llm.max_tokens,
+            supports_vision=vision_capable,
+            base_url=settings.nvidia_base_url,
+        )
+    
+    raise ProviderError(f"unknown llm.provider: {llm.provider!r}")
 
 
 class ProviderRegistry:

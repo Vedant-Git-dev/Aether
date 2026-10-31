@@ -25,7 +25,7 @@ from aether.proactive.worker import READ_TOOLS, read_only
 from aether.skills import FollowupsSkill, MediaSkill, ResearchSkill, build_skills
 from aether.skills.base import held_approval
 from aether.skills.research import _week
-from aether.web import _NOT_CONNECTED
+from aether.web import NOT_CONNECTED
 from aether.workbench.base import (
     BACKGROUND,
     LABEL,
@@ -269,7 +269,7 @@ async def test_research_run_searches_and_keeps_the_digest() -> None:
 
 
 async def test_research_run_never_saves_a_search_that_did_not_happen() -> None:
-    executor = ScriptedExecutor({"web_search": _NOT_CONNECTED})
+    executor = ScriptedExecutor({"web_search": NOT_CONNECTED})
     task = _task({"topic": "vertical farming"}, skill="research")
     with pytest.raises(RuntimeError):
         await ResearchSkill().run(task, None, executor)

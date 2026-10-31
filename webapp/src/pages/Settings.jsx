@@ -10,6 +10,7 @@ import { Card, Field, Select, Toggle, Button } from "../components/ui.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import { useToast } from "../components/Toasts.jsx";
 import { api, token, hasToken } from "../lib/api.js";
+import { useBusyAction } from "../lib/busy.js";
 import { fmtTime } from "../lib/format.js";
 import { friendlyValue, describeProfileSource } from "../lib/describe.js";
 
@@ -338,28 +339,26 @@ export default function SettingsPage() {
 function ProfileCard() {
   const [profile, setProfile] = useState(null);
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState({}); // entry id -> a keep in flight
+  const [busy, runBusy] = useBusyAction(); // entry id -> a keep in flight
   const [status, setStatus] = useState({ text: "", bad: false });
 
   const load = () => api("/api/profile").then(setProfile).catch((err) => setError(err.message));
   useEffect(() => { load(); }, []);
 
-  const keep = async (id) => {
-    setBusy((b) => ({ ...b, [id]: true }));
-    try {
-      const d = await api("/api/profile/confirm", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ids: [id] }),
-      });
-      // zero means it was no longer pending — a stale tap confirms nothing
-      setStatus({ text: d.confirmed ? "Noted." : "that one isn't waiting anymore", bad: false });
-      load();
-    } catch (err) {
-      setStatus({ text: err.message, bad: true });
-    } finally {
-      setBusy((b) => ({ ...b, [id]: false }));
-    }
-  };
+  const keep = (id) =>
+    runBusy(id, true, async () => {
+      try {
+        const d = await api("/api/profile/confirm", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ids: [id] }),
+        });
+        // zero means it was no longer pending — a stale tap confirms nothing
+        setStatus({ text: d.confirmed ? "Noted." : "that one isn't waiting anymore", bad: false });
+        load();
+      } catch (err) {
+        setStatus({ text: err.message, bad: true });
+      }
+    });
 
   return (
     <Card className="mb-4 p-4" data-testid="profile-card">

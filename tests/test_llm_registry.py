@@ -6,6 +6,7 @@ from aether.config import LLMConfig, Settings
 from aether.llm.anthropic_provider import AnthropicProvider
 from aether.llm.base import Provider, ProviderError
 from aether.llm.gemini_provider import GeminiProvider
+from aether.llm.nvidia_provider import NvidiaProvider
 from aether.llm.ollama_provider import OllamaProvider
 from aether.llm.openai_provider import OpenAIProvider
 from aether.llm.registry import ProviderRegistry
@@ -22,6 +23,7 @@ def test_registry_builds_each_configured_provider() -> None:
         ("openai", OpenAIProvider, {"openai_api_key": "sk-test"}),
         ("gemini", GeminiProvider, {"gemini_api_key": "test"}),
         ("ollama", OllamaProvider, {}),
+        ("nvidia", NvidiaProvider, {"nvidia_api_key": "nvapi-test"}),
     ]
     for provider_name, cls, settings_kwargs in cases:
         registry = ProviderRegistry.from_config(
@@ -39,6 +41,7 @@ def test_missing_api_key_error_names_the_variable() -> None:
         ("anthropic", "ANTHROPIC_API_KEY"),
         ("openai", "OPENAI_API_KEY"),
         ("gemini", "GEMINI_API_KEY"),
+        ("nvidia", "NVIDIA_API_KEY"),
     ]:
         with pytest.raises(ProviderError, match=env_var):
             ProviderRegistry.from_config(_settings(), LLMConfig(provider=provider_name))
@@ -147,6 +150,41 @@ def test_ollama_vision_never_gates_a_hosted_provider() -> None:
     for role in ("image", "audio", "video"):
         assert registry.for_role(role) is registry.for_role("reasoning")
     assert registry.for_role("image").supports_vision is True
+
+
+def test_vision_role_none_for_nvidia_without_vision_support() -> None:
+    registry = ProviderRegistry.from_config(
+        _settings(nvidia_api_key="nvapi-test"),
+        LLMConfig(provider="nvidia", model="meta/llama-3.1-405b-instruct"),
+    )
+    assert registry.for_role("reasoning") is not None
+    assert registry.for_role("vision") is None
+
+
+def test_nvidia_vision_flag_and_explicit_vision_model() -> None:
+    # The config flag opts the default model into vision.
+    flagged = ProviderRegistry.from_config(
+        _settings(nvidia_api_key="nvapi-test"),
+        LLMConfig(
+            provider="nvidia", model="meta/llama-3.2-90b-vision-instruct", nvidia_vision=True
+        ),
+    )
+    assert flagged.for_role("vision") is flagged.for_role("reasoning")
+
+    # An explicit vision_model is trusted to accept images.
+    explicit = ProviderRegistry.from_config(
+        _settings(nvidia_api_key="nvapi-test"),
+        LLMConfig(
+            provider="nvidia",
+            model="meta/llama-3.1-405b-instruct",
+            vision_model="meta/llama-3.2-90b-vision-instruct",
+        ),
+    )
+    vision = explicit.for_role("vision")
+    assert vision is not None
+    assert vision is not explicit.for_role("reasoning")
+    assert vision.model == "meta/llama-3.2-90b-vision-instruct"
+    assert vision.supports_vision is True
 
 
 def test_unknown_role_falls_back_to_reasoning() -> None:

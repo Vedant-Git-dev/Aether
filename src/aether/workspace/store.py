@@ -749,14 +749,14 @@ class Workspace:
         """One file, sealed as an AES-256-GCM blob when a cipher is set.
         Raises WorkspaceWriteError when the disk refuses — never silently
         drops a write."""
-        data = (
-            _ENC_MAGIC + self.cipher.encrypt_text(content, _aad(name))
-            if self.cipher is not None
-            else content.encode("utf-8")
-        )
         try:
+            data = (
+                _ENC_MAGIC + self.cipher.encrypt_text(content, _aad(name))
+                if self.cipher is not None
+                else content.encode("utf-8")
+            )
             path.write_bytes(data)
-        except OSError as exc:
+        except (OSError, CryptoError) as exc:
             log.warning("could not write workspace file %s (%s)", path, exc)
             raise WorkspaceWriteError(f"could not write {path.name}: {exc}") from exc
 

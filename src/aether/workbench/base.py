@@ -24,8 +24,14 @@ sensitive, a missing latency class as background) do the rest.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+# a flat file name — no paths, no shell metacharacters, nothing that could
+# climb out of a job's directory. Every adapter holds the same rule, so one
+# spec is safe to hand to any of them.
+SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 # the meta keys a spec carries — the vocabulary `accepts` reads
 SENSITIVITY = "sensitivity"
@@ -144,3 +150,21 @@ def script_digest(spec: JobSpec) -> str:
     """The script's content digest — the only form the audit record ever
     carries. The full text stays encrypted in the task's own row."""
     return hashlib.sha256(spec.script_text.encode("utf-8")).hexdigest()
+
+
+def clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def validate_names(spec: JobSpec) -> None:
+    """Names a spec may carry: flat, plain, and boring — the same rule
+    every adapter holds, so one spec is safe to hand to any provider."""
+    if not SAFE_NAME.fullmatch(spec.script_name):
+        raise WorkbenchError(
+            f"the job's script name ({spec.script_name!r}) isn't a plain file name — not run."
+        )
+    if spec.script_name not in spec.files:
+        raise WorkbenchError("the job's script wasn't among its files — not run.")
+    for name in spec.files:
+        if not SAFE_NAME.fullmatch(name):
+            raise WorkbenchError(f"a job file ({name!r}) isn't a plain file name — not run.")

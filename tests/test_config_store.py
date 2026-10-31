@@ -661,7 +661,15 @@ async def test_messaging_change_diffs_the_connectors_live(monkeypatch) -> None:
     discord = FakeSurfaceConnector("discord")
     seen: list[dict] = []
 
-    def fake_factory(settings, config, *, approvals=None, on_decision=None, on_inbound=None):
+    def fake_factory(
+        settings,
+        config,
+        *,
+        approvals=None,
+        on_decision=None,
+        on_inbound=None,
+        on_task_decision=None,
+    ):
         seen.append(
             {
                 "config_is_live": config is live,
@@ -816,7 +824,15 @@ async def test_a_same_value_messaging_write_still_reconciles(tmp_path, monkeypat
 
     builds: list[Settings] = []
 
-    def fake_factory(settings, config, *, approvals=None, on_decision=None, on_inbound=None):
+    def fake_factory(
+        settings,
+        config,
+        *,
+        approvals=None,
+        on_decision=None,
+        on_inbound=None,
+        on_task_decision=None,
+    ):
         builds.append(settings)
         return []
 

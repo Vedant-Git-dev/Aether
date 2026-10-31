@@ -190,7 +190,7 @@ flowchart TD
 ### Flexibility
 
 - **Bring your own model.** Claude (Anthropic API), OpenAI, Google Gemini,
-  or a local Ollama model. Switching is one line of config.
+  NVIDIA NIM, or a local Ollama model. Switching is one line of config.
 
 ## Policy example
 
@@ -222,7 +222,7 @@ flowchart TB
     subgraph AE["Aether: single always-on process"]
         Chat["Chat surfaces<br/>Web UI (WebSocket), Telegram, Discord"]
         Loop["Agent loop<br/>reason → act → observe, continuous"]
-        LLM["LLM layer<br/>Claude / OpenAI / Gemini / Ollama"]
+        LLM["LLM layer<br/>Claude / OpenAI / Gemini / Ollama / NVIDIA NIM"]
         Conn["Connector registry<br/>native + MCP tools"]
         Mem["Memory store<br/>encrypted (AES-256-GCM), deduplicated, entity-resolved"]
         Authz["Authz + audit<br/>deterministic policy, one-tap approvals, hash chain"]

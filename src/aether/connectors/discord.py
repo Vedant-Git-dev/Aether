@@ -16,6 +16,7 @@ import discord
 from ..authz.approvals import APPROVED, DENIED
 from .attachments import MAX_ATTACHMENT_BYTES, actual_size_exceeds_cap, reported_size_exceeds_cap
 from .base import (
+    TASK_VERDICT_LABELS,
     ApprovalDecider,
     Attachment,
     DecisionCallback,
@@ -105,7 +106,7 @@ class ResultView(discord.ui.View):
     task actually offers — in-memory like the approval buttons, so a
     restart's tasks surface in the web panel instead."""
 
-    _LABELS = {"approve": "Approve", "revise": "Revise", "discard": "Discard"}
+    _LABELS = TASK_VERDICT_LABELS
     _STYLES = {
         "approve": discord.ButtonStyle.green,
         "revise": discord.ButtonStyle.secondary,

@@ -67,7 +67,7 @@ from .scheduler import Scheduler, SchedulerWorker
 from .secret_env import EnvResolver
 from .secret_store import SecretStore
 from .skills import build_skills
-from .web import WebTools
+from .web import WebTools, build_client
 from .workbench import Workbench, ordered
 from .workbench import run as run_workbench
 from .workbench.base import JobLimits, JobResult, JobSpec
@@ -180,7 +180,10 @@ def create_app(
         # a key pasted after boot connects without a restart.
         counters = DailyCounters(pool)
         app.state.counters = counters
-        web_tools = WebTools(resolver=env_resolver, counters=counters, config=config)
+        web_client = build_client()
+        web_tools = WebTools(
+            resolver=env_resolver, counters=counters, config=config, client=web_client
+        )
         app.state.web = web_tools
 
         # --- the workbench: where a job runs when it must not run here ----
@@ -564,6 +567,7 @@ def create_app(
             host=host,
             approvals=approvals,
             resolver=env_resolver,
+            on_task_decision=proactive_worker.decide_task,
         )
 
         worker = SchedulerWorker(scheduler, agent.execute_scheduled)
@@ -586,7 +590,7 @@ def create_app(
         for connector in connectors:
             await connector.stop()
         await host.stop()
-        await provider_http.aclose()
+        await web_client.aclose()
         await pool.close()
         log.info("aether stopped")
 
