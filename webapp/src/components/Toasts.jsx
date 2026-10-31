@@ -29,7 +29,7 @@ export function ToastProvider({ children }) {
           <div
             key={t.id}
             data-testid="toast"
-            className={`rounded-md border border-line-strong bg-card px-3.5 py-2.5 text-sm ${
+            className={`aether-popover px-3.5 py-2.5 text-sm ${
               t.kind === "err" ? "border-l-danger border-l-2" : "border-l-success border-l-2"
             }`}
           >

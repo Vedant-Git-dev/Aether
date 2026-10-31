@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import MediaBlock from "../components/MediaBlock.jsx";
 import PageHead from "../components/PageHead.jsx";
-import { Card, Field, Select } from "../components/ui.jsx";
+import { Card, Field, Select, Toggle } from "../components/ui.jsx";
 import EmptyState, { NoToken } from "../components/EmptyState.jsx";
 import { useData } from "../store.jsx";
 import { hasToken } from "../lib/api.js";
@@ -45,11 +45,12 @@ export default function ActivityPage() {
         <Card><NoToken /></Card>
       ) : (
         <>
-          <div className="mb-3 flex flex-wrap items-center gap-2">
+          <div className="aether-toolbar mb-4 flex flex-wrap items-center gap-2 px-3 py-2.5">
             <Select
               data-testid="filter-source"
               value={source}
               onChange={(e) => setSource(e.target.value)}
+              className="min-w-[132px]"
             >
               <option value="">All apps</option>
               {sources.map((s) => <option key={s} value={s}>{appLabel(s)}</option>)}
@@ -59,19 +60,17 @@ export default function ActivityPage() {
               placeholder="Search activity"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
+              className="min-w-[180px] flex-1 sm:max-w-xs"
             />
-            <label className="flex items-center gap-1.5 text-xs text-ink-2">
-              <input
-                type="checkbox"
-                checked={salientOnly}
-                onChange={(e) => setSalientOnly(e.target.checked)}
-                className="accent-[var(--color-accent)]"
-              />
-              Important only
-            </label>
+            <Toggle
+              className="ml-auto"
+              label="Important only"
+              checked={salientOnly}
+              onChange={(e) => setSalientOnly(e.target.checked)}
+            />
           </div>
 
-          <Card>
+          <Card className="overflow-hidden">
             {events.length === 0 ? (
               <EmptyState
                 title="No activity yet."
@@ -87,15 +86,17 @@ export default function ActivityPage() {
                   <div
                     key={e.id}
                     data-testid="event-row"
-                    className="flex gap-3 border-b border-line px-4 py-2.5 last:border-b-0"
+                    className="aether-row flex gap-3 px-4 py-3"
                   >
-                    <span className="shrink-0 font-mono text-xs leading-5 text-ink-3">{fmtTime(e.at)}</span>
+                    <span className="w-[86px] shrink-0 whitespace-nowrap font-mono text-[10.5px] leading-5 text-ink-3">
+                      {fmtTime(e.at)}
+                    </span>
                     <div className="min-w-0">
-                      <div className={`text-sm text-ink ${e.memorable ? "font-medium" : ""}`}>
+                      <div className={`text-sm leading-5 text-ink ${e.memorable ? "font-medium" : ""}`}>
                         <span className="text-ink-3">{appLabel(e.source)} · </span>
                         {title}
                       </div>
-                      {detail ? <div className="mt-0.5 text-xs text-ink-3">{detail}</div> : null}
+                      {detail ? <div className="mt-0.5 text-xs leading-relaxed text-ink-3">{detail}</div> : null}
                       {mediaId ? <MediaBlock mediaId={mediaId} /> : null}
                     </div>
                   </div>

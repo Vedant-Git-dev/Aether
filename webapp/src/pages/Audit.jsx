@@ -40,26 +40,35 @@ export default function AuditPage() {
       ) : (
         <>
           {chain && (
-            <Card className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 p-4">
-              <span className="flex items-center gap-2">
-                <Icon name="shield" className={`h-4.5 w-4.5 ${chain.ok ? "text-success" : "text-danger"}`} />
-                <span className={`text-sm font-medium ${chain.ok ? "text-success" : "text-danger"}`}>
+            <Card className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 p-4">
+              <span className="flex items-center gap-2.5">
+                <span className="aether-inset grid h-8 w-8 shrink-0 place-items-center rounded-[8px]">
+                  <Icon
+                    name="shield"
+                    className={`h-4 w-4 ${chain.ok ? "text-success" : "text-danger"}`}
+                  />
+                </span>
+                <span className={`text-[13px] font-medium ${chain.ok ? "text-success" : "text-danger"}`}>
                   {chain.ok ? "Chain integrity verified" : "Chain integrity broken"}
                 </span>
               </span>
-              <span className="text-xs text-ink-2">
+              <span className="text-[12px] text-ink-2">
                 {chain.ok
                   ? `All ${chain.entries} record${chain.entries === 1 ? "" : "s"} are valid.`
                   : `Broken at #${chain.first_bad_seq}: ${chain.problem || "mismatch"}`}
               </span>
-              <span className="ml-auto flex items-center gap-1.5 text-xs text-ink-3">
+              <span className="ml-auto flex items-center gap-1.5 text-[11.5px] text-ink-3">
                 head hash <code className="font-mono text-ink-2">{shortHash(chain.head_hash)}</code>
               </span>
             </Card>
           )}
 
-          <div className="mb-3 flex flex-wrap gap-2">
-            <Select value={decisionFilter} onChange={(e) => setDecisionFilter(e.target.value)}>
+          <div className="aether-toolbar mb-4 flex flex-wrap items-center gap-2 px-3 py-2.5">
+            <Select
+              value={decisionFilter}
+              onChange={(e) => setDecisionFilter(e.target.value)}
+              className="min-w-[172px]"
+            >
               <option value="">All decisions</option>
               <option value="allow">Allowed</option>
               <option value="approve">Held for approval</option>
@@ -72,6 +81,7 @@ export default function AuditPage() {
               placeholder="Search actions"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
+              className="min-w-[180px] flex-1 sm:max-w-xs"
             />
           </div>
 
@@ -84,7 +94,7 @@ export default function AuditPage() {
             ) : rows.length === 0 ? (
               <EmptyState title="No entries match these filters." />
             ) : (
-              <table className="w-full text-sm">
+              <table className="w-full min-w-[1040px] text-sm">
                 <thead>
                   <tr className="border-b border-line text-left text-xs text-ink-3">
                     <th className="px-3 py-2 font-medium">Seq</th>
@@ -104,16 +114,16 @@ export default function AuditPage() {
                       onClick={() => toast(`#${e.seq} · ${describeTool(e.tool)}`)}
                       className="cursor-default border-b border-line last:border-b-0 hover:bg-subtle"
                     >
-                      <td className="px-3 py-2 font-mono text-xs text-ink-3">#{e.seq}</td>
-                      <td className="px-3 py-2 font-mono text-xs text-ink-3">{fmtTime(e.at)}</td>
-                      <td className="px-3 py-2 text-ink-2">{ACTOR_LABELS[e.actor] || humanize(e.actor)}</td>
+                      <td className="whitespace-nowrap px-3 py-2 font-mono text-[11px] text-ink-3">#{e.seq}</td>
+                      <td className="whitespace-nowrap px-3 py-2 font-mono text-[11px] text-ink-3">{fmtTime(e.at)}</td>
+                      <td className="whitespace-nowrap px-3 py-2 text-ink-2">{ACTOR_LABELS[e.actor] || humanize(e.actor)}</td>
                       <td className="px-3 py-2 text-ink">{describeTool(e.tool)}</td>
-                      <td className={`px-3 py-2 font-medium ${statusColor(e.decision)}`}>
+                      <td className={`whitespace-nowrap px-3 py-2 font-medium ${statusColor(e.decision)}`}>
                         {AUDIT_DECISIONS[e.decision] || humanize(e.decision)}
                       </td>
                       <td className="px-3 py-2 text-xs text-ink-3">{describeRule(e.rules_matched)}</td>
                       <td className="px-3 py-2 text-xs text-ink-2">{describeOutcome(e.outcome)}</td>
-                      <td className="px-3 py-2 font-mono text-xs text-ink-3">{shortHash(e.hash)}</td>
+                      <td className="whitespace-nowrap px-3 py-2 font-mono text-[11px] text-ink-3">{shortHash(e.hash)}</td>
                     </tr>
                   ))}
                 </tbody>

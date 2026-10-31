@@ -122,7 +122,7 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken,
     <Card className="flex flex-col gap-3 p-4" data-testid={`provider-${app.key}`}>
       <div className="flex items-center gap-3">
         {face.imgSrc
-          ? <img src={face.imgSrc} alt="" className="h-9 w-9 shrink-0 rounded-md object-contain" />
+          ? <img src={face.imgSrc} alt="" className="h-9 w-9 shrink-0 rounded-[7px] object-contain" />
           : <BrandLogo icon={face.icon} />}
         <div className="min-w-0">
           <div role="heading" className="text-sm font-semibold text-ink">{app.name}</div>
@@ -130,13 +130,13 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken,
             {app.auth_mode === "token" ? "Token connection" : "Browser sign-in"}
           </p>
         </div>
-        <span className={`ml-auto text-xs font-medium ${statusTone === "ok" ? "text-success" : statusTone === "warn" ? "text-warning" : "text-ink-3"}`}>
+        <span className={`ml-auto text-right text-[11.5px] font-medium ${statusTone === "ok" ? "text-success" : statusTone === "warn" ? "text-warning" : "text-ink-3"}`}>
           {statusText}
         </span>
       </div>
 
       {setupOpen ? (
-        <form className="flex flex-col gap-2 rounded-md border border-line bg-subtle p-3" onSubmit={saveClient}>
+        <form className="aether-inset flex flex-col gap-2 p-3" onSubmit={saveClient}>
           <div className="text-xs text-ink-2">
             Finish the provider setup once, then connect.
           </div>
@@ -175,7 +175,7 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken,
       ) : null}
 
       {tokenOpen ? (
-        <form className="flex flex-col gap-2 rounded-md border border-line bg-subtle p-3" onSubmit={saveToken}>
+        <form className="aether-inset flex flex-col gap-2 p-3" onSubmit={saveToken}>
           <div className="text-xs text-ink-2">Paste the token. It is stored encrypted and never shown again.</div>
           {app.token_url ? (
             <a className="text-xs text-accent hover:underline" href={app.token_url} target="_blank" rel="noreferrer">
@@ -251,16 +251,16 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken,
 
 function AvailableCard({ iconFace, name, blurb }) {
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-line bg-card p-3">
+    <Card className="flex items-center gap-3 p-3.5">
       {iconFace.imgSrc
-        ? <img src={iconFace.imgSrc} alt="" className="h-9 w-9 shrink-0 rounded-md object-contain" />
+        ? <img src={iconFace.imgSrc} alt="" className="h-9 w-9 shrink-0 rounded-[7px] object-contain" />
         : <BrandLogo icon={iconFace.icon} />}
       <div className="min-w-0">
-        <div className="text-sm font-medium text-ink">{name}</div>
-        {blurb ? <div className="text-xs text-ink-3">{blurb}</div> : null}
-        <div className="mt-0.5 text-xs text-ink-3">Connect with /apps in chat</div>
+        <div className="text-[13px] font-medium text-ink">{name}</div>
+        {blurb ? <div className="text-[11.5px] text-ink-3">{blurb}</div> : null}
+        <div className="mt-0.5 text-[11px] text-ink-3">Connect with /apps in chat</div>
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -376,19 +376,19 @@ export default function AppsPage() {
   }
 
   const cards = [];
-  // native messaging surfaces — "on" honestly means the keys are in place
-  data.connectors.forEach((c) => {
+  // Connected services only lists surfaces that are actually on. An off
+  // surface belongs in Chat surfaces below, never in both places at once.
+  data.connectors.filter((c) => c.enabled).forEach((c) => {
     const meta = CONNECTOR_META[c.name] || { icon: "apps", subtitle: "Messaging connector", permission: "Read, reply" };
-    const missingKeys = c.enabled && !c.has_token;
     cards.push({
       key: `c-${c.name}`,
       logo: <BrandLogo icon={meta.icon} imgSrc={meta.imgSrc} />,
       name: c.name[0].toUpperCase() + c.name.slice(1),
       subtitle: meta.subtitle,
-      enabled: c.enabled,
+      enabled: true,
       permission: meta.permission,
-      statusText: !c.enabled ? "Disabled" : missingKeys ? "On — no token yet" : "On",
-      statusTone: !c.enabled ? "idle" : missingKeys ? "warn" : "ok",
+      statusText: c.has_token ? "On" : "On — no token yet",
+      statusTone: c.has_token ? "ok" : "warn",
     });
   });
   // MCP servers with the host's live verdict — up and answering, or not yet
@@ -419,7 +419,7 @@ export default function AppsPage() {
         Connected services
         <span className="ml-2 font-normal normal-case text-ink-3">{cards.length} configured</span>
       </SectionLabel>
-      <div className="mb-6 grid gap-3 sm:grid-cols-2">
+      <div className="mb-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {cards.map((c) => (
           <IntegrationCard key={c.key} data-testid={`integration-${c.key}`} {...c} />
         ))}
@@ -431,21 +431,21 @@ export default function AppsPage() {
           Aether owns the sign-in and the tokens for these apps
         </span>
       </SectionLabel>
-      <div className="mb-6">
+      <div className="mb-7">
         {providers === undefined ? (
-          <Card className="p-4"><div className="text-sm text-ink-3">Loading direct apps…</div></Card>
+          <Card className="p-5"><div className="text-[13px] text-ink-3">Loading direct apps…</div></Card>
         ) : providers === null ? (
-          <Card className="p-4">
-            <div className="text-sm text-ink-3">Direct app connections aren't wired on this instance.</div>
+          <Card className="p-5">
+            <div className="text-[13px] text-ink-3">Direct app connections aren't wired on this instance.</div>
           </Card>
         ) : providers.apps.length === 0 ? (
-          <Card className="p-4">
-            <div className="text-sm text-ink-3">
+          <Card className="p-5">
+            <div className="text-[13px] text-ink-3">
               No direct apps are configured yet. Add a provider definition to make one available here.
             </div>
           </Card>
         ) : (
-          <div data-testid="provider-grid" className="grid gap-3 sm:grid-cols-2">
+          <div data-testid="provider-grid" className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
             {providers.apps.map((app) => (
               <ProviderCard
                 key={app.key}
@@ -468,7 +468,7 @@ export default function AppsPage() {
         </span>
       </SectionLabel>
       {addable.length ? (
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {addable.map((r) => (
             <AvailableCard
               key={r.key}

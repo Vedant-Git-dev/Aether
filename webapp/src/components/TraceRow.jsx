@@ -18,22 +18,24 @@ function traceLabel(t) {
 
 export default function TraceRow({ t, open, detail, onToggle }) {
   return (
-    <div data-testid="trace-row" data-open={open ? "1" : "0"} className="border-b border-line last:border-b-0">
+    <div data-testid="trace-row" data-open={open ? "1" : "0"} className="border-b border-[var(--aether-hairline)] last:border-b-0">
       <button
         type="button"
         data-testid="trace-head"
         onClick={() => onToggle(t.id)}
         aria-expanded={open ? "true" : "false"}
-        className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-subtle"
+        className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors ${
+          open ? "bg-subtle/45" : "hover:bg-subtle/60"
+        }`}
       >
-        <span className="shrink-0 font-mono text-xs text-ink-3">{fmtTime(t.at)}</span>
-        <span className="shrink-0 text-xs text-ink-3">{TRACE_KINDS[t.kind] || humanize(t.kind)}</span>
+        <span className="w-[86px] shrink-0 whitespace-nowrap font-mono text-[10.5px] text-ink-3">{fmtTime(t.at)}</span>
+        <span className="shrink-0 text-[11.5px] text-ink-3">{TRACE_KINDS[t.kind] || humanize(t.kind)}</span>
         <span className="min-w-0 flex-1 truncate text-sm text-ink">{traceLabel(t)}</span>
-        <Icon name="arrow" className={`h-3.5 w-3.5 shrink-0 text-ink-3 ${open ? "rotate-90" : ""}`} />
+        <Icon name="arrow" className={`h-3.5 w-3.5 shrink-0 text-ink-3 transition-transform ${open ? "rotate-90" : ""}`} />
       </button>
       {open && (
-        <div className="border-t border-line bg-subtle/40 px-4 py-3">
-          {detail ? <TraceDetail t={detail} /> : <div className="text-sm text-ink-3">Loading…</div>}
+        <div className="border-t border-[var(--aether-hairline)] bg-subtle/30 px-4 py-4">
+          {detail ? <TraceDetail t={detail} /> : <div className="text-[13px] text-ink-3">Loading…</div>}
         </div>
       )}
     </div>

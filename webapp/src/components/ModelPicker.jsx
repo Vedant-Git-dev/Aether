@@ -2,11 +2,13 @@
 //
 // Everything it renders comes from the two backend feeds — the field's
 // own spec (its sentinel choices, plain-worded by the backend) and the
-// model catalog (grouped per provider, failures as inline notes). A saved
-// value the catalog doesn't know is kept, shown as selected, and said so
+// reachable slice of the model catalog (grouped per provider; a provider
+// that is not up is left out, never shown as a dead group). A saved value
+// the catalog doesn't know is kept, shown as selected, and said so
 // plainly — never silently reset. No free-text entry anywhere: every
 // choice is a value the backend named.
 import { useEffect, useRef, useState } from "react";
+import Icon from "./Icon.jsx";
 import { Button, Field } from "./ui.jsx";
 
 // how a stored value reads in the picker: the sentinel words map to their
@@ -41,9 +43,14 @@ export default function ModelPicker({
   const sentinels = field.sentinels || [];
   const selected = optionFor(draft, sentinels);
 
-  // every model the catalog reached, in the provider-prefixed display
-  // form — also the membership test for "is the saved value still known"
-  const allModels = (models?.providers || []).flatMap((g) =>
+  // Every reachable provider's models, in the provider-prefixed display
+  // form — also the membership test for "is the saved value still known".
+  // Providers that are not up are left out entirely: their name and an
+  // error line are not a setting a person can choose from.
+  const providers = (models?.providers || []).filter(
+    (group) => !group.error && group.models.length > 0
+  );
+  const allModels = providers.flatMap((g) =>
     g.models.map((id) => ({ full: `${g.provider}/${id}` }))
   );
   const knownFull = new Set(allModels.map((m) => m.full));
@@ -57,7 +64,7 @@ export default function ModelPicker({
   const known =
     knownFull.has(selected.value) ||
     (!isSentinel &&
-      (models?.providers || []).some((g) => g.models.includes(selected.value)));
+      providers.some((g) => g.models.includes(selected.value)));
   const hasList = allModels.length > 0;
   const unknown = selected.value && !isSentinel && !known;
 
@@ -94,31 +101,32 @@ export default function ModelPicker({
   const modelHits = allModels.filter((m) => matches(m.full));
 
   return (
-    <div className="relative" ref={boxRef}>
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          data-testid={`settings-field-${field.path}`}
-          disabled={disabled}
-          onClick={() => setOpen((o) => !o)}
-          className="w-44 truncate rounded-md border border-line-strong bg-card px-3 py-1.5 text-left text-sm text-ink disabled:opacity-50"
-        >
+    <div className="relative flex w-full flex-col items-end gap-1 sm:w-auto" ref={boxRef}>
+      <button
+        type="button"
+        data-testid={`settings-field-${field.path}`}
+        disabled={disabled}
+        onClick={() => setOpen((o) => !o)}
+        className="quiet-field relative flex w-full items-center justify-center px-2.5 py-1.5 text-center text-[13px] text-ink disabled:opacity-50 sm:w-[232px]"
+      >
+        <span className="min-w-0 max-w-full truncate px-5">
           {selected.label || <span className="text-ink-3">pick a model</span>}
-        </button>
-        {unknown && hasList && (
-          <span
-            data-testid={`settings-model-unknown-${field.path}`}
-            className="text-xs text-ink-3"
-          >
-            not in the available models — kept as saved
-          </span>
-        )}
-      </div>
+        </span>
+        <Icon name="chevron" className="absolute right-2 h-3.5 w-3.5 shrink-0 text-ink-3" />
+      </button>
+      {unknown && hasList && (
+        <span
+          data-testid={`settings-model-unknown-${field.path}`}
+          className="max-w-full text-center text-[11px] leading-snug text-ink-3 sm:max-w-[232px]"
+        >
+          not in the available models — kept as saved
+        </span>
+      )}
 
       {open && (
         <div
           data-testid={`settings-model-list-${field.path}`}
-          className="absolute z-10 mt-1 max-h-72 w-80 overflow-y-auto rounded-md border border-line-strong bg-card p-2"
+          className="aether-popover absolute left-0 right-auto top-full z-10 mt-1 max-h-72 w-full max-w-[calc(100vw-2rem)] overflow-y-auto p-2 sm:left-auto sm:right-0 sm:w-80"
         >
           <Field
             data-testid={`settings-model-search-${field.path}`}
@@ -126,6 +134,13 @@ export default function ModelPicker({
             placeholder="filter models"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setOpen(false);
+                setFilter("");
+              }
+            }}
+            autoFocus
             className="mb-2 w-full"
           />
 
@@ -166,36 +181,40 @@ export default function ModelPicker({
                   <span className="font-sans text-ink-3"> — not in the available models</span>
                 </button>
               )}
-              {(models.providers || []).map((g) => (
+              {providers.map((g) => (
                 <div key={g.provider} className="mt-1">
                   <div className="px-2 py-1 text-xs font-medium tracking-wide text-ink-3 uppercase">
                     {g.provider}
                   </div>
-                  {g.error ? (
-                    <div className="px-2 py-1 text-xs text-ink-3">{g.error}</div>
-                  ) : (
-                    g.models
-                      .map((id) => `${g.provider}/${id}`)
-                      .filter((full) => matches(full))
-                      .map((full) => (
-                        <button
-                          type="button"
-                          key={full}
-                          data-testid={`settings-model-option-${full}`}
-                          onClick={() => choose(full)}
-                          className={`block w-full truncate rounded px-2 py-1 text-left font-mono text-sm hover:bg-subtle ${
-                            selected.value === full ? "text-accent" : "text-ink"
-                          }`}
-                        >
-                          {full}
-                        </button>
-                      ))
-                  )}
+                  {g.models
+                    .map((id) => `${g.provider}/${id}`)
+                    .filter((full) => matches(full))
+                    .map((full) => (
+                      <button
+                        type="button"
+                        key={full}
+                        data-testid={`settings-model-option-${full}`}
+                        onClick={() => choose(full)}
+                        className={`block w-full truncate rounded px-2 py-1 text-left font-mono text-sm hover:bg-subtle ${
+                          selected.value === full ? "text-accent" : "text-ink"
+                        }`}
+                      >
+                        {full}
+                      </button>
+                    ))}
                 </div>
               ))}
-              {modelHits.length === 0 && sentinelHits.length === 0 && !unknown && (
-                <div className="px-2 py-1 text-sm text-ink-3">Nothing matches that filter.</div>
+              {providers.length === 0 && sentinelHits.length === 0 && !unknown && (
+                <div className="px-2 py-1 text-sm text-ink-3">
+                  No provider could be reached right now. Refresh the list when one is back.
+                </div>
               )}
+              {providers.length > 0 &&
+                modelHits.length === 0 &&
+                sentinelHits.length === 0 &&
+                !unknown && (
+                  <div className="px-2 py-1 text-sm text-ink-3">Nothing matches that filter.</div>
+                )}
             </>
           )}
 

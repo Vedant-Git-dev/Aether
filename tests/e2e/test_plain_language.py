@@ -10,6 +10,7 @@ loudly instead of shipping.
 
 from __future__ import annotations
 
+import json
 import re
 
 import pytest
@@ -190,8 +191,10 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     page.goto(f"{live_server}/#/settings")
     page.wait_for_timeout(800)
     text = page.locator("body").inner_text()
-    assert '"warm and a little informal"' not in text
-    assert "warm and a little informal" in text
+    # no changed badges, reset links, or changed-values summary remain
+    assert "Changed from config.yaml" not in text
+    assert "Back to config.yaml" not in text
+    assert "warm and a little informal" not in text
 
     # the editable surface renders from the backend's feed: the model
     # group says it restarts, and every control carries its effective value;
@@ -199,19 +202,35 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     # own service in front
     assert "Saving one of these restarts Aether itself" in text
     assert page.locator('[data-testid="settings-field-llm.provider"]').count() == 0
+    # the retired composio entry is ignored at boot and by the host, so it
+    # must not appear as a live app server in settings either
+    assert page.locator('[data-testid="settings-field-mcp_servers.composio.enabled"]').count() == 0
+    assert page.locator('[data-testid="settings-field-mcp_servers.mail.enabled"]').count() == 1
     assert page.locator('[data-testid="settings-field-agent.tick_seconds"]').input_value() == "30"
 
-    # a number edit round-trips through the config manager and earns the
-    # changed marker and its way back
+    # single-line fields and selects read centered, not shoved to one edge
+    for path in ("agent.tick_seconds", "agent.quiet_hours", "llm.model"):
+        assert (
+            page.locator(f'[data-testid="settings-field-{path}"]').evaluate(
+                "el => getComputedStyle(el).textAlign"
+            )
+            == "center"
+        )
+    workbench = page.locator('[data-testid="settings-field-workbench.provider"]')
+    assert workbench.evaluate("el => getComputedStyle(el).textAlign") == "center"
+    assert workbench.evaluate("el => getComputedStyle(el).textAlignLast") == "center"
+
+    # a number edit round-trips through the config manager; no changed
+    # badge or reset link returns — the row stays a plain control
     page.fill('[data-testid="settings-field-agent.tick_seconds"]', "15")
     page.click('[data-testid="settings-save-agent.tick_seconds"]')
     page.wait_for_timeout(500)
     assert page.locator('[data-testid="settings-field-agent.tick_seconds"]').input_value() == "15"
-    assert page.locator('[data-testid="settings-reset-agent.tick_seconds"]').count() == 1
-    page.click('[data-testid="settings-reset-agent.tick_seconds"]')
+    assert page.locator('[data-testid="settings-reset-agent.tick_seconds"]').count() == 0
+    page.fill('[data-testid="settings-field-agent.tick_seconds"]', "30")
+    page.click('[data-testid="settings-save-agent.tick_seconds"]')
     page.wait_for_timeout(500)
     assert page.locator('[data-testid="settings-field-agent.tick_seconds"]').input_value() == "30"
-    assert page.locator('[data-testid="settings-reset-agent.tick_seconds"]').count() == 0
 
     # a bad quiet window refuses in the backend's own plain words, inline
     page.fill('[data-testid="settings-field-agent.quiet_hours"]', "banana")
@@ -293,6 +312,46 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     rows.nth(1).locator('[data-testid="contact-remove"]').click()
     page.wait_for_timeout(500)
     assert page.locator('[data-testid="contact-row"]').count() == 1
+
+
+def test_empty_surface_sections_stay_clean(page, live_server, token) -> None:
+    # A service group with nothing in it is one plain line, not a header-only
+    # table, a zero badge, or a "0 of 0 on" footer.
+    page.add_init_script(f"localStorage.setItem('aether_token', '{token}')")
+
+    def empty_groups(route):
+        response = route.fetch()
+        data = response.json()
+        for group in data.get("groups", []):
+            if group.get("key") in ("messaging", "mcp_servers"):
+                group["fields"] = []
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(data),
+        )
+
+    page.route("**/api/settings/fields", empty_groups)
+    page.goto(f"{live_server}/#/settings")
+    page.wait_for_timeout(800)
+
+    for key, message in (
+        ("mcp_servers", "No app servers are set up yet."),
+        ("messaging", "No chat surfaces are connected yet."),
+    ):
+        page.click(f'[data-testid="settings-nav-{key}"]')
+        page.wait_for_timeout(400)
+        section = page.locator(f'[data-settings-section="{key}"]')
+        text = section.inner_text()
+        assert message in text
+        assert "SERVICE" not in text
+        assert "0 of 0 on" not in text
+        assert "0 on" not in text
+        assert section.locator(".surface-head").count() == 0
+        assert section.locator('[data-testid^="settings-field-"]').count() == 0
+        assert (
+            page.locator(f'[data-testid="settings-nav-{key}"]').get_attribute("data-active") == "1"
+        )
 
 
 def test_approval_cards_show_the_full_ask(page, live_server, token) -> None:
@@ -453,6 +512,14 @@ def test_model_fields_are_pickers_over_the_live_catalog(page, live_server, token
     page.click('[data-testid="settings-field-llm.model"]')
     page.wait_for_selector('[data-testid="settings-model-list-llm.model"]')
     model_list = page.locator('[data-testid="settings-model-list-llm.model"]')
+    # clicking the box lands in the filter: typing searches immediately
+    assert page.locator('[data-testid="settings-model-search-llm.model"]').evaluate(
+        "el => el === document.activeElement"
+    )
+    # a provider that is not up is left out entirely, not shown as a dead
+    # group with its error text
+    assert "OLLAMA" not in model_list.inner_text()
+    assert "couldn't be reached" not in model_list.inner_text()
     assert "ANTHROPIC" in model_list.inner_text()
     assert "GEMINI" in model_list.inner_text()
     assert "NVIDIA" in model_list.inner_text()
@@ -515,7 +582,7 @@ def test_model_fields_are_pickers_over_the_live_catalog(page, live_server, token
     )
 
     # picking a model stores the full prefixed form and saves it — the
-    # trigger keeps reading it, the change is marked, the note is gone
+    # trigger keeps reading it, no reset link appears, the note is gone
     page.click('[data-testid="settings-model-option-gemini/gemini-2.5-flash"]')
     assert (
         page.locator('[data-testid="settings-field-llm.model"]').inner_text().strip()
@@ -527,7 +594,7 @@ def test_model_fields_are_pickers_over_the_live_catalog(page, live_server, token
         page.locator('[data-testid="settings-field-llm.model"]').inner_text().strip()
         == "gemini/gemini-2.5-flash"
     )
-    assert page.locator('[data-testid="settings-reset-llm.model"]').count() == 1
+    assert page.locator('[data-testid="settings-reset-llm.model"]').count() == 0
     assert page.locator('[data-testid="settings-model-unknown-llm.model"]').count() == 0
 
     # a perception knob offers both its meanings, and picking one stores
@@ -580,8 +647,8 @@ def test_model_fields_are_pickers_over_the_live_catalog(page, live_server, token
     salience_list = page.locator('[data-testid="settings-model-list-llm.salience_model"]')
     assert salience_list.locator('[data-testid="settings-model-option-default"]').count() == 1
     assert salience_list.locator('[data-testid="settings-model-option-off"]').count() == 1
-    # close the open dropdown (its trigger toggles) and clear the sticky
-    # header before the next one — the open list overlays the row below
+    # close the open dropdown (its trigger toggles) before the next one —
+    # the open list overlays the rows below
     page.click('[data-testid="settings-field-llm.salience_model"]')
     page.wait_for_selector(
         '[data-testid="settings-model-list-llm.salience_model"]', state="detached"

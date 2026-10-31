@@ -45,7 +45,7 @@ export default function MediaBlock({ mediaId }) {
         data-testid="media-image"
         src={url}
         alt=""
-        className="mt-1.5 max-h-56 rounded-lg border border-line"
+        className="mt-1.5 max-h-56 rounded-[8px] border border-[var(--aether-hairline)]"
       />
     );
   }
@@ -55,7 +55,7 @@ export default function MediaBlock({ mediaId }) {
         data-testid="media-video"
         controls
         src={url}
-        className="mt-1.5 max-h-64 w-full max-w-md rounded-lg border border-line"
+        className="mt-1.5 max-h-64 w-full max-w-md rounded-[8px] border border-[var(--aether-hairline)]"
       />
     );
   }

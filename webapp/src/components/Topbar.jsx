@@ -9,20 +9,20 @@ export default function Topbar({ title, attentionCount, onMenu }) {
   const themeLabel = theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
 
   return (
-    <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-line bg-surface px-4 py-3 min-[901px]:px-6">
+    <header className="aether-chrome sticky top-0 z-30 flex items-center gap-3 border-b border-[var(--aether-hairline)] px-4 py-3 min-[901px]:px-6">
       <button
         type="button"
         onClick={onMenu}
         aria-label="Open navigation"
-        className="rounded-md border border-line-strong bg-card p-1.5 text-ink-2 hover:bg-subtle max-[900px]:flex min-[901px]:hidden"
+        className="rounded-[7px] border border-[var(--aether-hairline)] bg-card/70 p-1.5 text-ink-2 hover:bg-subtle hover:text-ink max-[900px]:flex min-[901px]:hidden"
       >
         <Icon name="menu" className="h-4 w-4" />
       </button>
 
-      <h1 data-testid="page-title" className="min-w-0 truncate text-base font-semibold text-ink">
+      <h1 data-testid="page-title" className="min-w-0 truncate text-[15px] font-semibold tracking-[-0.01em] text-ink">
         {title}
       </h1>
-      <span className="hidden truncate text-xs text-ink-3 min-[701px]:inline">
+      <span className="hidden truncate text-[11.5px] text-ink-3 min-[701px]:inline">
         / {location.hostname || "localhost"}
       </span>
 
@@ -33,14 +33,14 @@ export default function Topbar({ title, attentionCount, onMenu }) {
           onClick={toggle}
           aria-label={themeLabel}
           title={themeLabel}
-          className="rounded-md border border-line-strong bg-card p-1.5 text-ink-2 hover:bg-subtle"
+          className="rounded-[7px] border border-[var(--aether-hairline)] bg-card/70 p-1.5 text-ink-2 hover:bg-subtle hover:text-ink"
         >
           <Icon name={theme === "dark" ? "sun" : "moon"} className="h-4 w-4" />
         </button>
         <a
           href="#/attention"
           aria-label={attentionCount ? `${attentionCount} awaiting your approval` : "Attention required"}
-          className="relative flex items-center rounded-md border border-line-strong bg-card p-1.5 text-ink-2 hover:bg-subtle"
+          className="relative flex items-center rounded-[7px] border border-[var(--aether-hairline)] bg-card/70 p-1.5 text-ink-2 hover:bg-subtle hover:text-ink"
         >
           <Icon name="bell" className="h-4 w-4" />
           {attentionCount > 0 && (

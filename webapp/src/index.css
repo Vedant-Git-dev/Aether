@@ -1,26 +1,29 @@
 /* Aether panel — Tailwind v4, CSS-first config.
-   Semantic variables flip under [data-theme="dark"], mirroring the old
-   architecture: utilities (bg-card, text-ink-2, border-line) reference
-   these vars, so no per-element dark: prefixes anywhere.
-   Flat design: borders delineate, no shadows, no animations, no fills
-   behind status text — colour carries meaning in text only. */
+   Semantic variables flip under [data-theme="dark"], so utilities
+   (bg-card, text-ink-2, border-line) follow the theme with no per-element
+   dark: prefixes anywhere.
+
+   The mood is quiet depth rather than flat paper: hairline borders carry
+   structure, translucent surfaces sit over a low atmospheric wash, and
+   colour still carries meaning in text. Motion is limited to the short
+   state changes a control needs; nothing decorative moves. */
 @import "tailwindcss";
 
 @theme {
   --font-sans: "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, "Cascadia Mono", Consolas, "Lucida Console", monospace;
 
-  --color-surface: #f7f7f8;
-  --color-card: #ffffff;
-  --color-subtle: #f1f1f3;
-  --color-line: #e4e4e7;
-  --color-line-strong: #d4d4d8;
+  --color-surface: #f4f5f8;
+  --color-card: rgba(255, 255, 255, 0.78);
+  --color-subtle: rgba(238, 240, 244, 0.58);
+  --color-line: rgba(54, 65, 85, 0.10);
+  --color-line-strong: rgba(54, 65, 85, 0.22);
 
-  --color-ink: #18181b;
-  --color-ink-2: #52525b;
-  --color-ink-3: #8b8b93;
+  --color-ink: #15181e;
+  --color-ink-2: #535b68;
+  --color-ink-3: #666e7a;
 
-  --color-accent: #3b5bdb;
+  --color-accent: #3556c9;
   --color-on-accent: #ffffff;
 
   --color-success: #157a3e;
@@ -29,36 +32,399 @@
 }
 
 [data-theme="dark"] {
-  --color-surface: #17181a;
-  --color-card: #1f2124;
-  --color-subtle: #27292d;
-  --color-line: #2e3134;
-  --color-line-strong: #3f4348;
+  --color-surface: #111318;
+  --color-card: rgba(24, 27, 33, 0.78);
+  --color-subtle: rgba(30, 34, 42, 0.58);
+  --color-line: rgba(255, 255, 255, 0.075);
+  --color-line-strong: rgba(255, 255, 255, 0.18);
 
-  --color-ink: #e8e8ea;
-  --color-ink-2: #a6a8ad;
-  --color-ink-3: #74767c;
+  --color-ink: #eceef2;
+  --color-ink-2: #a5abb6;
+  --color-ink-3: #818a97;
 
-  --color-accent: #7c9df0;
-  --color-on-accent: #17181a;
+  --color-accent: #8aa4ff;
+  --color-on-accent: #101319;
 
   --color-success: #55c585;
   --color-warning: #d9a441;
   --color-danger: #e5736a;
 }
 
-:root { color-scheme: light; }
-[data-theme="dark"] { color-scheme: dark; }
+:root {
+  color-scheme: light;
+  --aether-stage:
+    radial-gradient(72% 64% at 12% 0%, rgba(98, 126, 216, 0.20), transparent 64%),
+    radial-gradient(58% 58% at 92% 12%, rgba(80, 154, 196, 0.13), transparent 68%),
+    radial-gradient(76% 70% at 58% 108%, rgba(117, 94, 196, 0.12), transparent 68%),
+    linear-gradient(180deg, #f4f6fa 0%, #e9edf3 100%);
+  --aether-hairline: rgba(54, 65, 85, 0.10);
+  --aether-raise: 0 1px 2px rgba(22, 31, 51, 0.09);
+  --aether-chrome: rgba(248, 249, 252, 0.78);
+  --aether-popover: #ffffff;
+  --aether-inset: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  --aether-card-shadow: 0 24px 60px -44px rgba(31, 42, 68, 0.30);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --aether-stage:
+    radial-gradient(68% 62% at 10% -4%, rgba(79, 108, 206, 0.28), transparent 66%),
+    radial-gradient(52% 54% at 94% 10%, rgba(38, 115, 158, 0.16), transparent 68%),
+    radial-gradient(74% 68% at 56% 108%, rgba(91, 65, 172, 0.18), transparent 70%),
+    linear-gradient(180deg, #0b0e14 0%, #0e1118 100%);
+  --aether-hairline: rgba(255, 255, 255, 0.075);
+  --aether-raise: 0 1px 2px rgba(0, 0, 0, 0.32);
+  --aether-chrome: rgba(15, 18, 24, 0.78);
+  --aether-popover: #171a20;
+  --aether-inset: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  --aether-card-shadow: 0 24px 60px -44px rgba(0, 0, 0, 0.55);
+}
 
 *:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 
 body {
   margin: 0;
-  background: var(--color-surface);
+  min-height: 100vh;
+  background-color: var(--color-surface);
+  background-image: var(--aether-stage);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+  background-size: cover;
   color: var(--color-ink);
   font: 14px/1.5 var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
   -webkit-tap-highlight-color: transparent;
+}
+
+/* The shared shell and surface language: chrome floats over the wash,
+   cards are quiet glass, controls sit on a defined hairline. */
+.aether-chrome {
+  background: var(--aether-chrome);
+  -webkit-backdrop-filter: blur(24px) saturate(1.2);
+  backdrop-filter: blur(24px) saturate(1.2);
+}
+.aether-card {
+  background: var(--color-card);
+  border: 1px solid var(--aether-hairline);
+  border-radius: 10px;
+  box-shadow: var(--aether-card-shadow), var(--aether-inset);
+  -webkit-backdrop-filter: blur(20px) saturate(1.15);
+  backdrop-filter: blur(20px) saturate(1.15);
+}
+.aether-popover {
+  background: var(--aether-popover);
+  border: 1px solid var(--aether-hairline);
+  border-radius: 10px;
+  box-shadow: var(--aether-card-shadow);
+}
+/* the toast keeps its meaning-coded edge on top of the quiet popover */
+.aether-popover.border-l-danger {
+  border-left: 2px solid var(--color-danger);
+}
+.aether-popover.border-l-success {
+  border-left: 2px solid var(--color-success);
+}
+.aether-inset {
+  background: color-mix(in srgb, var(--color-subtle) 55%, transparent);
+  border: 1px solid var(--aether-hairline);
+  border-radius: 8px;
+}
+.aether-field {
+  background: color-mix(in srgb, var(--color-card) 82%, transparent);
+  border: 1px solid var(--color-line-strong);
+  border-radius: 7px;
+  color: var(--color-ink);
+  transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+.aether-field:hover {
+  background: color-mix(in srgb, var(--color-card) 92%, transparent);
+  border-color: color-mix(in srgb, var(--color-line-strong) 80%, var(--color-ink-3));
+}
+.aether-field:focus,
+.aether-field:focus-visible {
+  background: var(--aether-popover);
+  border-color: var(--color-accent);
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 16%, transparent);
+}
+.aether-field:disabled { opacity: 0.5; cursor: default; }
+.aether-select {
+  text-align: center;
+  text-align-last: center;
+}
+.aether-select option {
+  background: var(--aether-popover);
+  color: var(--color-ink);
+  text-align: center;
+}
+
+/* Tables stay tables: airy rows, one hairline, no nested boxes. */
+.aether-card table { width: 100%; border-collapse: collapse; }
+.aether-card thead tr { border-bottom: 1px solid var(--aether-hairline); }
+.aether-card thead th {
+  padding: 10px 12px;
+  color: var(--color-ink-3);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.aether-card tbody td { padding-top: 9px; padding-bottom: 9px; }
+.aether-card tbody tr:hover { background: color-mix(in srgb, var(--color-ink) 3%, transparent); }
+
+.aether-nav-active {
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 14%, transparent),
+    var(--aether-raise);
+}
+.aether-nav-active svg { color: var(--color-accent); opacity: 1; }
+
+/* filter bars and tab strips share the same quiet glass edge */
+.aether-toolbar {
+  background: color-mix(in srgb, var(--color-card) 86%, transparent);
+  border: 1px solid var(--aether-hairline);
+  border-radius: 10px;
+  box-shadow: var(--aether-raise), var(--aether-inset);
+  -webkit-backdrop-filter: blur(18px) saturate(1.15);
+  backdrop-filter: blur(18px) saturate(1.15);
+}
+
+.aether-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--color-ink-2);
+  font-size: 12.5px;
+  font-weight: 500;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease,
+    box-shadow 140ms ease;
+}
+.aether-tab:hover { color: var(--color-ink); background: color-mix(in srgb, var(--color-ink) 5%, transparent); }
+.aether-tab[data-active="1"] {
+  background: var(--color-card);
+  border-color: var(--aether-hairline);
+  color: var(--color-ink);
+  box-shadow: var(--aether-raise);
+}
+
+/* one list row: a hairline seam and a hover that barely lifts */
+.aether-row { transition: background-color 120ms ease; }
+.aether-row:hover { background: color-mix(in srgb, var(--color-ink) 3%, transparent); }
+.aether-row + .aether-row { border-top: 1px solid var(--aether-hairline); }
+
+/* A number is typed, not nudged: no spinner arrows on any setting. */
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* ---------- the settings workspace ---------- */
+
+.settings-stage {
+  position: relative;
+}
+
+.settings-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-ink-3) 34%, transparent) transparent;
+}
+
+.settings-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.settings-scroll::-webkit-scrollbar-track { background: transparent; }
+.settings-scroll::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-ink-3) 30%, transparent);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+.settings-scroll::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-ink-3) 48%, transparent);
+  background-clip: content-box;
+}
+
+.settings-nav-item {
+  position: relative;
+  color: var(--color-ink-2);
+}
+.settings-nav-item:hover { color: var(--color-ink); background: color-mix(in srgb, var(--color-ink) 5%, transparent); }
+.settings-nav-item[data-active="1"] {
+  color: var(--color-ink);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 14%, transparent),
+    var(--aether-raise);
+}
+.settings-nav-item[data-active="1"] svg {
+  color: var(--color-accent);
+  opacity: 1;
+}
+[data-theme="dark"] .settings-nav-item[data-active="1"] {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+.settings-search {
+  background: color-mix(in srgb, var(--color-subtle) 78%, transparent);
+  border: 1px solid transparent;
+}
+.settings-search:focus-within {
+  background: var(--aether-popover);
+  border-color: var(--color-line-strong);
+}
+
+.settings-row + .settings-row { border-top: 1px solid var(--aether-hairline); }
+
+.settings-section + .settings-section { border-top: 1px solid var(--aether-hairline); }
+
+/* One control language: quiet by default, a defined edge on interaction. */
+.quiet-field {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--color-ink-2);
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.quiet-field:hover {
+  background: color-mix(in srgb, var(--color-subtle) 68%, transparent);
+  border-color: var(--aether-hairline);
+  color: var(--color-ink);
+}
+.quiet-field:focus,
+.quiet-field:focus-visible {
+  background: var(--aether-popover);
+  border-color: var(--color-line-strong);
+  color: var(--color-ink);
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 16%, transparent);
+}
+.quiet-field:disabled { opacity: 0.45; cursor: default; }
+
+/* paste fields and long text inputs keep a visible edge: they are empty
+   most of the time, so the row must still say where to type */
+.quiet-field-edge {
+  border-color: var(--aether-hairline);
+  background: color-mix(in srgb, var(--color-subtle) 42%, transparent);
+}
+.quiet-field-edge:hover {
+  border-color: var(--color-line-strong);
+  background: color-mix(in srgb, var(--color-subtle) 62%, transparent);
+}
+.quiet-field-edge:focus,
+.quiet-field-edge:focus-visible {
+  border-color: var(--color-line-strong);
+  background: var(--aether-popover);
+}
+
+.quiet-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: none;
+  text-align: center;
+  text-align-last: center;
+}
+.quiet-select option {
+  background: var(--aether-popover);
+  color: var(--color-ink);
+  text-align: center;
+}
+
+/* the switch: a small physical control, not a filled status badge */
+.aether-switch {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 38px;
+  height: 22px;
+  flex: none;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-ink-3) 34%, transparent);
+  cursor: pointer;
+  transition: background-color 160ms ease;
+}
+.aether-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(10, 14, 22, 0.28);
+  transition: transform 160ms ease;
+}
+.aether-switch:checked { background: var(--color-accent); }
+.aether-switch:checked::after { transform: translateX(16px); }
+.aether-switch:disabled { opacity: 0.4; cursor: default; }
+.aether-switch-button { padding: 0; border: 1px solid transparent; }
+.aether-switch-button[aria-checked="true"] { background: var(--color-accent); }
+.aether-switch-button[aria-checked="true"]::after { transform: translateX(16px); }
+[data-theme="dark"] .aether-switch::after { background: #f5f6f9; }
+
+/* the segmented control used for appearance choices */
+.segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--aether-hairline);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-subtle) 70%, transparent);
+}
+.segmented > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 68px;
+  height: 26px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-3);
+  font-size: 12px;
+  font-weight: 500;
+  transition: background-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+.segmented > button:hover { color: var(--color-ink); }
+.segmented > button[data-active="1"] {
+  background: var(--color-card);
+  color: var(--color-ink);
+  box-shadow: var(--aether-raise);
+}
+
+/* the surface table: hairline rows, no boxes */
+.surface-head {
+  color: var(--color-ink-3);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.surface-row { border-top: 1px solid var(--aether-hairline); }
+.surface-row:hover { background: color-mix(in srgb, var(--color-subtle) 42%, transparent); }
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-nav-item,
+  .quiet-field,
+  .aether-switch,
+  .aether-switch::after,
+  .aether-tab,
+  .aether-row,
+  .segmented > button {
+    transition: none;
+  }
 }

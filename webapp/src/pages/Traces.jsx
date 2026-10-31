@@ -35,7 +35,7 @@ export default function TracesPage() {
           />
         </Card>
       ) : (
-        <Card>
+        <Card className="overflow-hidden">
           {traces.map((t) => (
             <TraceRow
               key={t.id}
