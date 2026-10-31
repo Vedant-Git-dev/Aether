@@ -114,6 +114,24 @@ async def test_boot_merge_mutates_in_place_keeping_section_identity() -> None:
     assert live.salience.threshold == 5.0
 
 
+async def test_a_stale_composio_row_never_reaches_the_live_config() -> None:
+    # the direct-provider cutover retired the app hub; an old whole-list
+    # row may still name it, but boot keeps the row and ignores the entry
+    live = AppConfig(mcp_servers=[MCPServerConfig(name="mail")])
+    rows = {"mcp_servers": [{"name": "mail"}, {"name": "composio"}]}
+    manager, _, _ = _manager(rows=rows, live=live)
+
+    assert await manager.bootstrap() == 1
+    assert [s.name for s in live.mcp_servers] == ["mail"]
+
+
+async def test_composio_cannot_be_added_back_from_chat() -> None:
+    manager, _, live = _manager()
+    reply = await manager.set(op="add", path="mcp_servers", value={"name": "composio"})
+    assert "retired app hub" in reply
+    assert live.mcp_servers == []
+
+
 async def test_boot_merge_composes_item_rows_after_the_list_root() -> None:
     live = AppConfig(mcp_servers=[MCPServerConfig(name="mail")])
     rows = {
@@ -943,30 +961,16 @@ async def test_the_dropdowns_stored_forms_round_trip() -> None:
     assert "salience gemini/gemini-2.5-flash" in overview
 
 
-async def test_ollama_vision_is_hidden_under_other_providers() -> None:
-    # the flag governs Ollama alone — under Gemini its raw copy reads as
-    # a real setting and fed the bot's wrong self-diagnosis, so it isn't
-    # shown at all when the provider isn't Ollama
-    live = AppConfig()
-    live.llm.provider = "gemini"
-    manager, _, _ = _manager(live=live)
-
-    section = await manager.show("llm")
-    assert "ollama_vision" not in section
-    # under Ollama it stays — a real setting the user actually owns
-    live.llm.provider = "ollama"
-    manager, _, _ = _manager(live=live)
-    assert "ollama_vision" in await manager.show("llm")
-
-
-async def test_nvidia_vision_is_hidden_under_other_providers() -> None:
-    # the same rule for the NIM flag — it speaks for NVIDIA alone
-    live = AppConfig()
-    live.llm.provider = "gemini"
-    manager, _, _ = _manager(live=live)
-    assert "nvidia_vision" not in await manager.show("llm")
-    live.llm.provider = "nvidia"
-    manager, _, _ = _manager(live=live)
-    section = await manager.show("llm")
-    assert "nvidia_vision" in section
-    assert "ollama_vision" not in section
+async def test_capability_fields_are_the_only_vision_configuration() -> None:
+    # no per-provider flags at all — every provider shares the same
+    # capability fields, whichever provider is live
+    for provider in ("gemini", "ollama", "nvidia"):
+        live = AppConfig()
+        live.llm.provider = provider
+        manager, _, _ = _manager(live=live)
+        section = await manager.show("llm")
+        assert "ollama_vision" not in section
+        assert "nvidia_vision" not in section
+        assert "image_model" in section
+        assert "audio_model" in section
+        assert "video_model" in section

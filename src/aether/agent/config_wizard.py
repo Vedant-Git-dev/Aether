@@ -193,18 +193,6 @@ _SECTIONS: tuple[_Section, ...] = (
                 "{cur} — or none to turn search off)",
             ),
             _Setting(
-                "llm.ollama_vision",
-                "ollama_vision",
-                "ollama only: whether my model reads images",
-                "does your ollama model read images — on or off? (currently {cur})",
-            ),
-            _Setting(
-                "llm.nvidia_vision",
-                "nvidia_vision",
-                "nvidia only: whether my model reads images",
-                "does your nvidia model read images — on or off? (currently {cur})",
-            ),
-            _Setting(
                 "llm.max_tokens",
                 "max_tokens",
                 "how much room my answers get",

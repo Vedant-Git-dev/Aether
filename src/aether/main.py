@@ -155,7 +155,9 @@ def create_app(
         # the Settings page's model dropdowns ask this for the models each
         # configured key can reach — fetched live per provider, cached by
         # key, so a pasted key lists its models without a restart
-        app.state.model_catalog = ModelCatalog(env_resolver)
+        app.state.model_catalog = ModelCatalog(
+            env_resolver, base_urls={"nvidia": settings.nvidia_base_url}
+        )
 
         # --- chat-made config: rows merge onto the live config, in place ----
         # Before anything reads a section — an authz or allowlist override

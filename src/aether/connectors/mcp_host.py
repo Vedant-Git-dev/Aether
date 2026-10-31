@@ -17,7 +17,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from ..config import MCPServerConfig, PollTool
+from ..config import MCPServerConfig, PollTool, is_legacy_composio_server
 from ..llm.types import ToolSpec, with_plain_param
 from ..secret_env import EnvResolver
 from .base import ConnectorUnavailableError, UnknownToolError
@@ -297,7 +297,13 @@ class MCPHost:
 
     def __init__(self, servers: list[MCPServerConfig], resolver: EnvResolver | None = None) -> None:
         self._resolver = resolver
-        self._connections = [MCPServerConnection(c, resolver) for c in servers if c.enabled]
+        # the retired app hub is not a user server, whatever source the
+        # config came from — never open a connection for it
+        self._connections = [
+            MCPServerConnection(c, resolver)
+            for c in servers
+            if c.enabled and not is_legacy_composio_server(c.name)
+        ]
         self._by_name = {c.name: c for c in self._connections}
 
     @property
@@ -319,7 +325,7 @@ class MCPHost:
         Returns {"started": [connections], "stopped": [names]} — the names a
         caller should drop from any derived state (the tool namespace, poll
         targets)."""
-        desired = [c for c in servers if c.enabled]
+        desired = [c for c in servers if c.enabled and not is_legacy_composio_server(c.name)]
         current = {c.name: c for c in self._connections}
         new_conns: list[MCPServerConnection] = []
         started: list[MCPServerConnection] = []

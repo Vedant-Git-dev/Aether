@@ -58,7 +58,7 @@ def _client_for(clients: dict[str, object], calls: list[str]):
     """The injectable factory: hands each provider its fake and records
     every fetch, so cache behavior is assertable."""
 
-    def factory(provider: str, secret: str) -> object:
+    def factory(provider: str, secret: str, base_url: str | None = None) -> object:
         calls.append(provider)
         maker = clients[provider]
         if isinstance(maker, Exception) or (
@@ -183,6 +183,53 @@ async def test_ollama_lists_through_its_address(caplog) -> None:
     assert feed["providers"] == [
         {"provider": "ollama", "models": ["llama3.3", "qwen2.5vl:7b"], "error": ""}
     ]
+
+
+async def test_nvidia_lists_through_its_openai_style_endpoint() -> None:
+    # NIM serves the OpenAI models shape; its key is what makes it
+    # configured, and its base URL rides to the client factory
+    calls: list[str] = []
+    seen_base: list[str | None] = []
+
+    def factory(provider: str, secret: str, base_url: str | None = None) -> object:
+        calls.append(provider)
+        seen_base.append(base_url)
+        return _openai_client(["meta/llama-3.1-405b-instruct"])
+
+    catalog = ModelCatalog(
+        FakeResolver({"NVIDIA_API_KEY": "nvapi-test"}),
+        client_for=factory,
+        base_urls={"nvidia": "https://integrate.api.nvidia.com/v1"},
+    )
+    feed = await catalog.feed()
+    assert feed["configured"] is True
+    assert feed["providers"] == [
+        {
+            "provider": "nvidia",
+            "models": ["meta/llama-3.1-405b-instruct"],
+            "error": "",
+        }
+    ]
+    assert calls == ["nvidia"]
+    assert seen_base == ["https://integrate.api.nvidia.com/v1"]
+
+
+async def test_an_unreachable_provider_logs_one_plain_line(caplog) -> None:
+    # an Ollama address with no server is ordinary, not a crash — the
+    # feed carries the inline note and the log stays one line, no traceback
+    calls: list[str] = []
+    catalog = ModelCatalog(
+        FakeResolver({"OPENAI_API_KEY": "sk-o"}),
+        client_for=_client_for({"openai": RuntimeError("down")}, calls),
+    )
+    with caplog.at_level(logging.WARNING, logger="aether.llm.model_list"):
+        feed = await catalog.feed()
+    assert feed["providers"][0]["error"]
+    notices = [r for r in caplog.records if "didn't answer" in r.getMessage()]
+    assert len(notices) == 1
+    assert notices[0].exc_info is None
+    assert "RuntimeError" in notices[0].getMessage()
+    assert "down" not in notices[0].getMessage()  # no exception text, no key
 
 
 async def test_a_key_value_never_rides_the_feed_or_the_log(caplog) -> None:

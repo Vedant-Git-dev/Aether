@@ -111,13 +111,6 @@ class LLMConfig(BaseModel):
     # memory search unavailable
     embedding_model: str | None = "gemini-embedding-001"
     max_tokens: int = 16000
-    # Ollama's vision ability depends entirely on which model was pulled;
-    # the hosted providers are inherently vision-capable. Setting an
-    # image_model implies this regardless.
-    ollama_vision: bool = False
-    # NIM hosts both text-only and vision-capable models under one API —
-    # same ambiguity as Ollama, same fix: a config flag names the choice.
-    nvidia_vision: bool = False
 
 
 class AgentConfig(BaseModel):

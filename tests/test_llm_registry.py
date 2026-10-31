@@ -117,31 +117,30 @@ def test_explicit_knob_builds_its_own_provider() -> None:
     assert image.supports_vision is True
 
 
-def test_ollama_vision_flag_still_gates_the_base_provider() -> None:
-    # The flag is the user's own claim about their pulled model — with a
-    # "base" image knob it decides whether the base provider may see.
-    flagged = ProviderRegistry.from_config(
+def test_the_image_knob_declares_a_local_models_vision() -> None:
+    # no per-provider flag: routing image_model to "base" is the user
+    # saying their main local model reads images; leaving it empty keeps
+    # the main model text-only
+    seeing = ProviderRegistry.from_config(
         _settings(),
-        LLMConfig(provider="ollama", model="llava", ollama_vision=True, image_model="base"),
+        LLMConfig(provider="ollama", model="llava", image_model="base"),
     )
-    assert flagged.for_role("image") is flagged.for_role("reasoning")
-    assert flagged.for_role("image").supports_vision is True
-    unflagged = ProviderRegistry.from_config(
-        _settings(), LLMConfig(provider="ollama", model="llava", image_model="base")
+    assert seeing.for_role("image") is seeing.for_role("reasoning")
+    assert seeing.for_role("image").supports_vision is True
+    text_only = ProviderRegistry.from_config(
+        _settings(), LLMConfig(provider="ollama", model="llama3.3")
     )
-    assert unflagged.for_role("reasoning").supports_vision is False
+    assert text_only.for_role("reasoning").supports_vision is False
 
 
-def test_ollama_vision_never_gates_a_hosted_provider() -> None:
-    # the flag speaks only about the model the user pulled for Ollama —
-    # under Gemini (or any hosted provider) it is inert, and a panel copy
-    # of the raw config must never read as "no vision model is set"
+def test_hosted_providers_see_without_any_capability_declaration() -> None:
+    # hosted providers are inherently vision-capable; the knob only
+    # routes the medium, it never has to declare the capability
     registry = ProviderRegistry.from_config(
         _settings(gemini_api_key="test"),
         LLMConfig(
             provider="gemini",
             model="gemini-3.1-flash-lite",
-            ollama_vision=False,  # unchecked in the panel — meaningless here
             image_model="base",
             audio_model="base",
             video_model="base",
@@ -174,21 +173,10 @@ def test_a_prefixed_nvidia_model_keeps_its_vendor_slash() -> None:
     assert reasoning.model == "meta/llama-3.1-405b-instruct"
 
 
-def test_nvidia_vision_flag_gates_the_base_provider() -> None:
-    # The flag is the user's own claim about the chosen NIM model — with
-    # a "base" image knob it decides whether the base provider may see.
-    flagged = ProviderRegistry.from_config(
-        _settings(nvidia_api_key="nvapi-test"),
-        LLMConfig(
-            provider="nvidia",
-            model="meta/llama-3.2-90b-vision-instruct",
-            nvidia_vision=True,
-            image_model="base",
-        ),
-    )
-    assert flagged.for_role("image") is flagged.for_role("reasoning")
-    assert flagged.for_role("image").supports_vision is True
-    unflagged = ProviderRegistry.from_config(
+def test_the_image_knob_declares_a_nim_models_vision() -> None:
+    # NIM hosts both text-only and vision models behind one key; the image
+    # field is the one place the choice lives
+    seeing = ProviderRegistry.from_config(
         _settings(nvidia_api_key="nvapi-test"),
         LLMConfig(
             provider="nvidia",
@@ -196,7 +184,13 @@ def test_nvidia_vision_flag_gates_the_base_provider() -> None:
             image_model="base",
         ),
     )
-    assert unflagged.for_role("reasoning").supports_vision is False
+    assert seeing.for_role("image") is seeing.for_role("reasoning")
+    assert seeing.for_role("image").supports_vision is True
+    text_only = ProviderRegistry.from_config(
+        _settings(nvidia_api_key="nvapi-test"),
+        LLMConfig(provider="nvidia", model="meta/llama-3.1-405b-instruct"),
+    )
+    assert text_only.for_role("reasoning").supports_vision is False
 
 
 def test_a_prefixed_nvidia_image_model_is_trusted_to_see() -> None:
@@ -332,25 +326,22 @@ def test_bare_ids_still_route_through_the_global_provider() -> None:
     assert registry.for_role("image").model == "claude-haiku-4-5"
 
 
-def test_ollama_vision_follows_the_main_models_own_provider() -> None:
-    # the flag speaks about the model the user pulled for Ollama — it
-    # gates vision only when the main model actually routes there,
-    # prefix or global
+def test_a_prefixed_local_main_model_is_text_only_until_the_knob_says_otherwise() -> None:
+    # capability follows the model the main value actually routes to, and
+    # the image knob is the only declaration
     settings = _settings(anthropic_api_key="k", ollama_base_url="http://localhost:11434/v1")
-    flagged = ProviderRegistry.from_config(
-        settings,
-        LLMConfig(provider="anthropic", model="ollama/llava", ollama_vision=True),
+    text_only = ProviderRegistry.from_config(
+        settings, LLMConfig(provider="anthropic", model="ollama/llava")
     )
-    assert flagged.for_role("reasoning").supports_vision is True
-    unflagged = ProviderRegistry.from_config(
+    assert text_only.for_role("reasoning").supports_vision is False
+    seeing = ProviderRegistry.from_config(
         settings,
-        LLMConfig(provider="anthropic", model="ollama/llava", ollama_vision=False),
+        LLMConfig(provider="anthropic", model="ollama/llava", image_model="base"),
     )
-    assert unflagged.for_role("reasoning").supports_vision is False
-    # and it stays inert when the main model is hosted after all
+    assert seeing.for_role("reasoning").supports_vision is True
+    # hosted models are inherently capable, with or without the knob
     hosted = ProviderRegistry.from_config(
-        settings,
-        LLMConfig(provider="anthropic", model="claude-opus-5", ollama_vision=False),
+        settings, LLMConfig(provider="anthropic", model="claude-opus-5")
     )
     assert hosted.for_role("reasoning").supports_vision is True
 

@@ -46,6 +46,7 @@ from .config import (
     ContactRule,
     MCPServerConfig,
     Settings,
+    is_legacy_composio_server,
 )
 from .connectors import build_messaging_connectors
 from .memory.crypto import Cipher, CryptoError
@@ -327,6 +328,7 @@ class ConfigManager:
         understands, or whose value no longer validates, is skipped with a
         warning and kept — a schema drift must never crash boot, and a yaml
         revert can still resurrect the row."""
+        self._forget_legacy_servers()
         rows = await self._store.load()
         if not rows:
             return 0
@@ -340,9 +342,23 @@ class ConfigManager:
                 continue
             self._mutate(resolved, validated)
             applied += 1
+        # a stored whole-list row can carry the retired hub even though
+        # config.yaml no longer does — keep the row, ignore the entry
+        self._forget_legacy_servers()
         if applied:
             log.info("boot merged %d config override(s) on top of config.yaml", applied)
         return applied
+
+    def _forget_legacy_servers(self) -> None:
+        """The retired app hub is not a user MCP server. Old rows that
+        still name it stay in the store (no data migration), but they
+        never reach the live config or the yaml fallback."""
+        for config in (self._live, self._base):
+            config.mcp_servers[:] = [
+                server
+                for server in config.mcp_servers
+                if not is_legacy_composio_server(server.name)
+            ]
 
     # -- reads -------------------------------------------------------------------
 
@@ -618,6 +634,11 @@ class ConfigManager:
             entry = MCPServerConfig.model_validate(value)
         except ValidationError as exc:
             raise ConfigError(_plain_validation_error(exc, "the mcp_servers entry")) from exc
+        if is_legacy_composio_server(entry.name):
+            raise ConfigError(
+                "composio is the retired app hub — apps connect directly now; "
+                "add the provider's own app entry instead."
+            )
         if any(s.name == entry.name for s in current):
             raise ConfigError(f"an app named {entry.name!r} is already in mcp_servers.")
         return current + [entry]
@@ -650,6 +671,10 @@ class ConfigManager:
                         raise ConfigError(
                             f"that rule's pattern {rule.tool_pattern!r} isn't valid regex: {exc}"
                         ) from exc
+            if resolved.root == "mcp_servers":
+                # the retired app hub is never a live server — a pasted
+                # whole-list value drops it the same way the yaml loader does
+                entries = [entry for entry in entries if not is_legacy_composio_server(entry.name)]
             return entries
         try:
             candidate = resolved.section_model.model_validate(
@@ -1156,13 +1181,6 @@ class ConfigManager:
         section_live = getattr(self._live, name)
         section_base = getattr(self._base, name)
         for field in type(section_live).model_fields:
-            if name == "llm" and field == "ollama_vision" and section_live.provider != "ollama":
-                # ollama_vision only governs Ollama — showing it under
-                # another provider reads as a real setting and misleads
-                continue
-            if name == "llm" and field == "nvidia_vision" and section_live.provider != "nvidia":
-                # same rule for nvidia_vision: it speaks for NIM alone
-                continue
             live_v = getattr(section_live, field)
             base_v = getattr(section_base, field)
             if isinstance(live_v, list):

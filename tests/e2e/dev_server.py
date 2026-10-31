@@ -1098,7 +1098,7 @@ class FakeResolver:
 
 
 class FakeModelCatalog:
-    """The live model list's double: models from two providers so the
+    """The live model list's double: models from several providers so the
     Settings pickers render real grouped choices, and one model that
     appears only after a refresh is asked for — the refresh button's
     visible effect. The fixture's saved main model sits on no list (the
@@ -1124,6 +1124,14 @@ class FakeModelCatalog:
                         "gemini-2.5-flash",
                         "gemini-3.1-flash-lite",
                         "gemini-embedding-001",
+                    ],
+                    "error": "",
+                },
+                {
+                    "provider": "nvidia",
+                    "models": [
+                        "meta/llama-3.1-405b-instruct",
+                        "meta/llama-3.2-90b-vision-instruct",
                     ],
                     "error": "",
                 },

@@ -455,6 +455,7 @@ def test_model_fields_are_pickers_over_the_live_catalog(page, live_server, token
     model_list = page.locator('[data-testid="settings-model-list-llm.model"]')
     assert "ANTHROPIC" in model_list.inner_text()
     assert "GEMINI" in model_list.inner_text()
+    assert "NVIDIA" in model_list.inner_text()
     assert (
         model_list.locator('[data-testid="settings-model-option-anthropic/claude-opus-5"]')
         .inner_text()
@@ -463,6 +464,14 @@ def test_model_fields_are_pickers_over_the_live_catalog(page, live_server, token
     )
     assert (
         model_list.locator('[data-testid="settings-model-option-gemini/gemini-2.5-flash"]').count()
+        == 1
+    )
+    # NVIDIA's vendor ids pool into the same dropdown, in the prefixed form
+    # the registry routes
+    assert (
+        model_list.locator(
+            '[data-testid="settings-model-option-nvidia/meta/llama-3.2-90b-vision-instruct"]'
+        ).count()
         == 1
     )
     # the typed value rides in the list too — kept selectable, never dropped
@@ -526,6 +535,14 @@ def test_model_fields_are_pickers_over_the_live_catalog(page, live_server, token
     page.click('[data-testid="settings-field-llm.image_model"]')
     page.wait_for_selector('[data-testid="settings-model-list-llm.image_model"]')
     image_list = page.locator('[data-testid="settings-model-list-llm.image_model"]')
+    # the same pooled catalog feeds a capability field — NVIDIA's vision
+    # model is offered here without a provider-specific picker
+    assert (
+        image_list.locator(
+            '[data-testid="settings-model-option-nvidia/meta/llama-3.2-90b-vision-instruct"]'
+        ).count()
+        == 1
+    )
     assert (
         image_list.locator('[data-testid="settings-model-option-off"]').inner_text().strip()
         == "None (off)"
