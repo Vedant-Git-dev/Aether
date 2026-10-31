@@ -84,11 +84,12 @@ def test_contacts_allowlist_shape() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Settings: every name .env.example documents must actually load
+# Settings: representative env names load, including the code-default switches
+# (PORT, the dev key, provider endpoints)
 # ---------------------------------------------------------------------------
 
 
-def test_settings_reads_the_documented_env_names(monkeypatch) -> None:
+def test_settings_reads_representative_env_names(monkeypatch) -> None:
     from aether.config import Settings
 
     for name in (

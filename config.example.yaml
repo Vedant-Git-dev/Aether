@@ -1,154 +1,167 @@
-# Aether configuration — structure only; secrets live in .env.
-# Copy to config.yaml and edit.
+# Aether configuration
 #
-# Everything here is also changeable from chat: send just /config in
-# Telegram or Discord and answer the questions — or use the one-line
-# /config commands. Chat changes persist in Postgres and override
-# this file until you /config reset them — personal tuning applies immediately,
-# the security sections (contacts, authz, messaging, mcp_servers) wait for
-# your one-tap approval, llm changes restart the agent themselves, and
-# secrets never ride a /config line — keys paste in /apps instead (.env
-# keeps working for every one of them).
+# Copy this file to config.yaml and edit what you need.
+# Secrets belong in .env, never here.
 #
-# Apps connect from chat too: /apps walks you through adding one — the link
-# to make the key, the numbered steps, and a paste that takes it right there
-# (consumed before the agent sees it, stored encrypted, never echoed back).
-# The verdict reads the live connection, not the diff: "connected ·
-# N actions" or "hasn't answered yet — I'll tell you the moment it's up".
-# mcp_servers entries written that way reference keys by name ($NAME),
-# never the value.
+# The same settings can be changed from chat with /config or from the
+# Settings page. Changes made there persist in Postgres and override this
+# file until you run /config reset.
+#
+# Only setup belongs here. Agent cadence, salience thresholds, workspace
+# paths, background budgets, workbench limits, media quotas, and poll timing
+# default in code and are editable from Settings or chat. Add a value here
+# only to pin it in the YAML baseline.
+#
+# Apps can be connected from chat too: send /apps and follow the steps.
+# MCP entries written that way reference keys by name ($NAME), never values.
+
+# ---------------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------------
 
 llm:
-  provider: anthropic            # anthropic | openai | gemini | ollama | nvidia
+  provider: anthropic              # anthropic | openai | gemini | ollama | nvidia
   model: claude-opus-5
-  # OpenAI:  provider: openai,  model: gpt-5.1
-  # Gemini:  provider: gemini,  model: gemini-2.5-pro
-  # Ollama:  provider: ollama,  model: llama3.3   (needs OLLAMA_BASE_URL in .env)
-  # NVIDIA:  provider: nvidia,  model: meta/llama-3.1-405b-instruct   (needs NVIDIA_API_KEY in .env)
-  # perception models, one per medium — tri-state: empty (default) means
-  # that medium is off, "base" means the main model takes it, or a model
-  # name routes that medium to its own model. Each field pools every
-  # provider's models, named with the provider in front
-  # ("ollama/qwen2.5vl:7b", "nvidia/meta/llama-3.2-90b-vision-instruct").
-  # What the chosen model truly accepts is discovered at call time: video
-  # falls back to frames pulled by a cloud sandbox and read by the image
-  # model, audio falls back to transcription, and the agent says plainly
-  # when nothing is set.
-  image_model:                   # reads images; empty leaves images unseen
-  audio_model:                   # listens to audio; empty leaves transcription only
-  video_model:                   # watches video; empty falls back to frames
-  salience_model:                # optional cheaper model for the salience judge
-  embedding_model: gemini-embedding-001  # free on the Gemini API key; none = no semantic search
-  max_tokens: 16000
 
-agent:
-  tick_seconds: 30               # agent loop cadence
-  max_tool_iterations: 12         # tool-call turns per activation before forcing a summary
-  turn_timeout_seconds: 600      # one reply's hard ceiling; past it the turn stops with a plain message
-  daily_surface_cap: 20           # max high-salience items surfaced per day
-  max_searches_per_day: 25       # web searches per day (chat + background share it); needs TAVILY_API_KEY
+  # Other provider examples:
+  #   provider: openai,  model: gpt-5.1
+  #   provider: gemini,  model: gemini-2.5-pro
+  #   provider: ollama,  model: llama3.3
+  #   provider: nvidia,  model: meta/llama-3.1-405b-instruct
 
-salience:
-  threshold: 6.0                 # 0-10; events below are stored but never surface
-  rate_cap_per_hour: 20          # heuristic pre-gate: events above this are noise
+  # Perception models, one per medium. Empty turns that medium off,
+  # "base" lets the main model handle it, or name a model to route it
+  # separately. Every field pools all providers and is named with the
+  # provider first (for example "ollama/qwen2.5vl:7b").
+  image_model:                     # reads images
+  audio_model:                     # listens to audio
+  video_model:                     # watches video
 
-mcp_servers: []                  # connect apps from chat: /apps add <name> — or by hand here
-  # Direct apps (gmail, calendar, drive, docs, github, linkedin) connect
-  # from chat or the Apps page; Aether owns their OAuth client and tokens.
-  # Anything that speaks MCP directly can be added here or by the generic
-  # /apps walk. Keys are referenced by name ($NAME) from the encrypted
-  # store, never written into this file:
-  # - name: weather
-  #   transport: {type: stdio, command: npx, args: ["-y", "mcp-weather"]}
-  # - name: news
-  #   transport:
-  #     type: http
-  #     url: "https://mcp.example.com/mcp"
-  #     headers: {Authorization: "Bearer $NEWS_API_KEY"}
-  #   poll_tools: [{tool: list_headlines, every_minutes: 15}]
+  # Optional cheaper model for the salience judge.
+  salience_model:
+
+  # Embeddings make memory searchable. The default is free on the Gemini
+  # API key; "none" leaves memory search unavailable.
+  embedding_model: gemini-embedding-001
+
+# ---------------------------------------------------------------------------
+# MCP servers
+# ---------------------------------------------------------------------------
+
+# Most apps connect from chat with /apps add <name>, or from the Apps page.
+# Anything that speaks MCP directly can be listed here. Keys are referenced
+# by name ($NAME) from the encrypted store.
+mcp_servers: []
+
+# To add a server, replace the empty list above with a block like this:
+#
+# mcp_servers:
+#   - name: weather
+#     transport: {type: stdio, command: npx, args: ["-y", "mcp-weather"]}
+#
+#   - name: news
+#     transport:
+#       type: http
+#       url: "https://mcp.example.com/mcp"
+#       headers: {Authorization: "Bearer $NEWS_API_KEY"}
+#     poll_tools: [{tool: list_headlines, every_minutes: 15}]
+
+# ---------------------------------------------------------------------------
+# Messaging
+# ---------------------------------------------------------------------------
 
 messaging:
-  telegram: {enabled: false}     # set true + TELEGRAM_BOT_TOKEN in .env
-  discord: {enabled: false}
+  telegram:
+    enabled: false                 # set true and add TELEGRAM_BOT_TOKEN in .env
+  discord:
+    enabled: false                 # set true and add DISCORD_BOT_TOKEN in .env
+
+# ---------------------------------------------------------------------------
+# Contacts
+# ---------------------------------------------------------------------------
 
 contacts:
-  mode: "off"                    # the default every app follows:
-                                 #   "enforce" = agent sees only allowlisted senders
-  allowlist: []                  # the "any platform" bucket — counts on every app
-    # - {platform: telegram, handle: "@you"}
-    # - {platform: "*", handle: "friend@example.com"}
-  # each connected app can carry its own list and its own switch; a missing
-  # mode (or "default") follows the section default above. Gmail's list also
-  # decides which inbox mail the agent may read — from allowlisted people,
-  # mail you sent them, and mail you sent yourself; everything else is
-  # dropped before the agent ever sees it.
+  # Default for every app:
+  #   "enforce" = the agent only sees allowlisted senders
+  #   "off"     = no filtering
+  mode: "off"
+
+  # The cross-app bucket. Rules here count on every platform.
+  allowlist: []
+  # Replace [] above with entries like:
+  #   - {platform: telegram, handle: "@you"}
+  #   - {platform: "*", handle: "friend@example.com"}
+
+  # Each app can override the default and keep its own list.
+  # Gmail's list also controls which inbox mail the agent may read.
   gmail:
-    mode: null                   # null = follow the default; "enforce" | "off"
+    mode: null                     # null follows the default; "enforce" | "off"
     allowlist: []
-      # - {platform: gmail, handle: "friend@example.com"}
+    # Replace [] above with entries like:
+    #   - {platform: gmail, handle: "friend@example.com"}
+
   telegram:
     mode: null
     allowlist: []
+
   discord:
     mode: null
     allowlist: []
 
+# ---------------------------------------------------------------------------
+# Authorization
+# ---------------------------------------------------------------------------
+
+# Rules run before the built-in risk rules.
 authz:
-  rules: []                      # evaluated before built-in risk rules
-    # - {tool_pattern: "telegram__send_message", decision: "approve", note: "telegram sends are one-tap"}
-  approval_ttl_hours: 24
+  rules: []
+  # Replace [] above with rules like:
+  #   - tool_pattern: "telegram__send_message"
+  #     decision: "approve"
+  #     note: "Telegram sends are one tap"
 
+# ---------------------------------------------------------------------------
+# Workspace
+# ---------------------------------------------------------------------------
+
+# Human-editable identity and memory Markdown files.
 workspace:
-  enabled: true                  # the human-editable identity/memory Markdown files
-  path: aether-workspace          # created on first boot
-  encrypted: true                 # files sit as AES-256-GCM blobs, edited through the
-                                 # panel; turning this off later never decrypts what
-                                 # was already written encrypted
-
-proactive:                        # the background worker — OFF by default
-  enabled: false
-  interval_minutes: 30            # how often it looks around; a look that finds
-                                 # nothing costs nothing
-  max_tasks_per_day: 3            # the daily brakes — tasks claimed, LLM tokens,
-  max_tokens_per_day: 100000      # and sandbox time. A spent budget skips the
-  max_sandbox_minutes_per_day: 20 # cycle; it never crashes or overspends
-  notify_daily_cap: 5             # the most result notifications one day carries
-  skills: [followups, research, media]  # which skills it may run; unknown names
-                                 # are ignored. /pause and /resume switch it from
-                                 # chat, and it also pauses itself if too much
-                                 # comes back wrong
-
-providers:                       # direct app connections — Aether owns the
-                                 # OAuth client and the encrypted tokens
   enabled: true
-  gmail:
-    poll_minutes: 5              # how often the Gmail history poll runs
+  encrypted: true                  # keep files encrypted at rest
 
-workbench:                        # where background jobs run when they must not
-                                 # run on this machine — never with Aether's keys
-  provider: modal                 # modal | vercel | github_actions | none — the
-                                 # configured default; the ladder falls through to
-                                 # the next available one on a dispatch failure
-  monthly_minutes_cap: 1500       # the batch queue's monthly wall-clock ceiling
-  job_timeout_minutes: 10          # one job's own limit; exceeding it is a real
-                                 # timed-out result, never a fallback
-  actions_repo: ""                 # the batch queue's own home: the repository
-                                 # (owner/name) whose runner workflow carries its
-                                 # jobs — empty leaves the batch queue off
-  actions_workflow: ""             # the workflow file name in that repository
-                                 # (like aether-batch.yml)
-  actions_ref: main                # the branch the workflow dispatches on
+# ---------------------------------------------------------------------------
+# Background worker
+# ---------------------------------------------------------------------------
 
-media:                           # shared and generated images, voice, video —
-                                 # all kept encrypted under one quota
-  storage_quota_mb: 200          # how much is kept before the oldest
-                                 # unreferenced items go; a full store refuses
-                                 # new media in plain words
-  image_provider: pollinations   # pollinations | gemini | none — who draws
-                                 # images when asked (gemini rides the
-                                 # existing GEMINI_API_KEY)
-  max_images_per_day: 10         # the daily brake on generated images
-  max_prompt_chars: 500          # image prompts travel to the image service —
-                                 # short by design
-  max_sandbox_jobs_per_day: 20   # frame-extraction and video-edit jobs on the
-                                 # workbench, per day
+proactive:
+  enabled: false                   # off by default
+  skills:
+    - followups
+    - research
+    - media
+
+# ---------------------------------------------------------------------------
+# Cloud workbench
+# ---------------------------------------------------------------------------
+
+# Where background jobs run when they cannot run on this machine.
+workbench:
+  provider: modal                  # modal | vercel | github_actions | none
+  actions_repo: ""                 # batch queue repository (owner/name)
+  actions_workflow: ""             # runner workflow file in that repository
+
+# ---------------------------------------------------------------------------
+# Media
+# ---------------------------------------------------------------------------
+
+# Shared and generated media, kept encrypted.
+media:
+  image_provider: pollinations     # pollinations | gemini | none
+
+# ---------------------------------------------------------------------------
+# Direct app connections
+# ---------------------------------------------------------------------------
+
+# Aether owns the OAuth client and stores tokens encrypted.
+providers:
+  enabled: true
