@@ -217,3 +217,10 @@ that would also discard policy and allowlist decisions you made deliberately.
 
 To start over completely, use a fresh database and a fresh encryption key. The old
 database remains readable only with the old key; delete it yourself when you are sure.
+
+## Embedding errors mention `models/none`
+
+`llm.embedding_model` treats `none` as a literal model id. The off sentinels are
+`off`, `default`, and `base`. Use `off` (or leave it empty) to disable semantic
+memory, or `gemini-embedding-001` to enable it. `none` is sent to Gemini as a
+model named `none` and returns 404.

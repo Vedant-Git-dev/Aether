@@ -593,6 +593,7 @@ ask_questions() {
     esac
     case "$(printf '%s' "$svc" | tr '[:upper:]' '[:lower:]')" in
       *"screen capture"*) continue ;;
+      *"semantic memory"*) continue ;;
     esac
     service_opts+=("$svc")
   done <<SERVICES_LIST
@@ -602,6 +603,7 @@ SERVICES_LIST
     menu_multi SERVICES "3. Optional services (multi-select)" "" "${service_opts[@]}"
     SERVICES=$(map_indices "$SERVICES" "${service_opts[@]}")
   fi
+  say "  Semantic memory is always on (Gemini embeddings); it is not an optional choice."
   case "$(printf '%s' ",$SERVICES," | tr '[:upper:]' '[:lower:]')" in
     *"image generation"*) ask_line IMAGE_PROVIDER "  Image provider (pollinations|gemini|none)" "pollinations" ;;
     *) IMAGE_PROVIDER="none" ;;
@@ -827,13 +829,12 @@ gather_credentials() {
     open_url "https://console.groq.com/keys"
     ask_secret GROQ_KEY "Groq API key"
   fi
-  if has_service "semantic memory" || has_service "image generation"; then
-    if [ -z "$GEMINI_KEY" ]; then
-      say ""
-      say "Semantic memory and Gemini image generation use a Gemini API key."
-      open_url "https://aistudio.google.com/apikey"
-      ask_secret GEMINI_KEY "Gemini API key"
-    fi
+  if [ -z "$GEMINI_KEY" ]; then
+    say ""
+    say "Semantic memory is always on and uses Gemini embeddings."
+    say "A Gemini API key is required for it."
+    open_url "https://aistudio.google.com/apikey"
+    ask_secret GEMINI_KEY "Gemini API key (semantic memory)"
   fi
   if has_service "background jobs"; then
     say ""
@@ -928,14 +929,13 @@ gather_credentials() {
     AETHER_TOKEN=$(gen_token)
     save_secret AETHER_TOKEN "$AETHER_TOKEN"
   fi
-  if [ -n "$APPS" ]; then
-    if [ -z "$TOKEN_ENC_KEY" ]; then
-      TOKEN_ENC_KEY=$(gen_key_b64)
-      TOKEN_ENC_KEY_ID=$(date +%Y-%m)
-      save_secret TOKEN_ENC_KEY "$TOKEN_ENC_KEY"
-      save_secret TOKEN_ENC_KEY_ID "$TOKEN_ENC_KEY_ID"
-    fi
-    [ -n "$TOKEN_ENC_KEY_ID" ] || TOKEN_ENC_KEY_ID=$(date +%Y-%m)
+  if [ -z "$TOKEN_ENC_KEY" ]; then
+    TOKEN_ENC_KEY=$(gen_key_b64)
+    save_secret TOKEN_ENC_KEY "$TOKEN_ENC_KEY"
+  fi
+  if [ -z "$TOKEN_ENC_KEY_ID" ]; then
+    TOKEN_ENC_KEY_ID=$(date +%Y-%m)
+    save_secret TOKEN_ENC_KEY_ID "$TOKEN_ENC_KEY_ID"
   fi
   ok "AETHER_ENCRYPTION_KEY: $(mask "$AETHER_ENCRYPTION_KEY")"
   ok "AETHER_TOKEN: $(mask "$AETHER_TOKEN")"
@@ -951,8 +951,7 @@ has_channel() {
 }
 
 build_config() {
-  local embed="none" img="$IMAGE_PROVIDER" wb="$WORKBENCH_PROVIDER"
-  if has_service "semantic memory"; then embed="gemini-embedding-001"; fi
+  local embed="gemini-embedding-001" img="$IMAGE_PROVIDER" wb="$WORKBENCH_PROVIDER"
   [ -n "$img" ] || img="none"
   [ -n "$wb" ] || wb="none"
   local tg="false" dc="false"
@@ -1016,10 +1015,8 @@ build_env_vars() {
   add_env PYTHON_VERSION "$PYTHON_VERSION_PIN"
   add_env NODE_VERSION "$NODE_VERSION_PIN"
   [ -n "$SERVICE_URL" ] && add_env AETHER_PUBLIC_URL "$SERVICE_URL"
-  if [ -n "$APPS" ]; then
-    add_env AETHER_TOKEN_ENCRYPTION_KEY "$TOKEN_ENC_KEY"
-    add_env AETHER_TOKEN_ENCRYPTION_KEY_ID "$TOKEN_ENC_KEY_ID"
-  fi
+  add_env AETHER_TOKEN_ENCRYPTION_KEY "$TOKEN_ENC_KEY"
+  add_env AETHER_TOKEN_ENCRYPTION_KEY_ID "$TOKEN_ENC_KEY_ID"
   add_env ANTHROPIC_API_KEY "$ANTHROPIC_KEY"
   add_env OPENAI_API_KEY "$OPENAI_KEY"
   add_env GEMINI_API_KEY "$GEMINI_KEY"
@@ -1049,13 +1046,15 @@ render_api() {
     return 0
   fi
   if [ -n "$data" ]; then
-    curl -sS -X "$method" "$RENDER_API$path" \
+    curl -sS --connect-timeout 10 --max-time 60 --retry 2 --retry-delay 2 \
+      -X "$method" "$RENDER_API$path" \
       -H "Authorization: Bearer $RENDER_API_KEY" \
       -H "Accept: application/json" \
       -H "Content-Type: application/json" \
       --data-binary "$data"
   else
-    curl -sS -X "$method" "$RENDER_API$path" \
+    curl -sS --connect-timeout 10 --max-time 60 --retry 2 --retry-delay 2 \
+      -X "$method" "$RENDER_API$path" \
       -H "Authorization: Bearer $RENDER_API_KEY" \
       -H "Accept: application/json"
   fi
@@ -1119,13 +1118,14 @@ create_render_service() {
 
 update_render_public_url() {
   [ -n "$SERVICE_URL" ] || return 0
-  say "  Setting AETHER_PUBLIC_URL to $SERVICE_URL"
+  say "  Updating AETHER_PUBLIC_URL to $SERVICE_URL"
   if [ "$DRY_RUN" -eq 1 ]; then
     say "  [dry-run] would PUT /services/$SERVICE_ID/env-vars/AETHER_PUBLIC_URL"
     return 0
   fi
   render_api PUT "/services/$SERVICE_ID/env-vars/AETHER_PUBLIC_URL" \
     "{\"value\":\"$(json_escape "$SERVICE_URL")\"}" >/dev/null
+  say "  Public URL updated."
 }
 
 trigger_render_deploy() {
@@ -1135,8 +1135,10 @@ trigger_render_deploy() {
     DEPLOY_ID="dep-dryrun"
     return 0
   fi
+  say "  Triggering a deploy..."
   body=$(render_api POST "/services/$SERVICE_ID/deploys" "{\"clearCache\":\"do_not_clear\"}")
   DEPLOY_ID=$(json_id dep "$body")
+  if [ -n "$DEPLOY_ID" ]; then say "  Deploy $DEPLOY_ID queued."; fi
   [ -n "$DEPLOY_ID" ] || warn "could not read the deploy id; using the latest deploy instead"
 }
 
@@ -1163,7 +1165,7 @@ poll_render_deploy() {
         show_deploy_logs
         return 1 ;;
       "")
-        : ;;
+        if [ $((tries % 6)) -eq 0 ]; then printf '  ... waiting for the deploy\n'; fi ;;
       *)
         printf '  ... %s\n' "$status" ;;
     esac
@@ -1201,7 +1203,7 @@ write_blueprint() {
   esac
   if has_service "web search"; then keys="$keys TAVILY_API_KEY"; fi
   if has_service "voice-note transcription"; then keys="$keys GROQ_API_KEY"; fi
-  if has_service "semantic memory" || has_service "image generation"; then keys="$keys GEMINI_API_KEY"; fi
+  keys="$keys GEMINI_API_KEY"
   if has_service "background jobs"; then
     case "$WORKBENCH_PROVIDER" in
       modal) keys="$keys MODAL_TOKEN_ID MODAL_TOKEN_SECRET" ;;
@@ -1209,7 +1211,7 @@ write_blueprint() {
       github_actions) keys="$keys GITHUB_ACTIONS_TOKEN" ;;
     esac
   fi
-  if [ -n "$APPS" ]; then keys="$keys AETHER_TOKEN_ENCRYPTION_KEY AETHER_TOKEN_ENCRYPTION_KEY_ID"; fi
+  keys="$keys AETHER_TOKEN_ENCRYPTION_KEY AETHER_TOKEN_ENCRYPTION_KEY_ID"
   if has_app gmail || has_app calendar || has_app drive || has_app docs; then
     keys="$keys GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET"
     if has_app drive || has_app docs; then keys="$keys GOOGLE_PICKER_API_KEY GOOGLE_PICKER_APP_ID"; fi
@@ -1687,7 +1689,14 @@ main() {
   hr
   if [ -n "$RENDER_API_KEY" ] && [ "$DEPLOY_SOURCE" = "fork" ]; then
     say "  Using the Render API (own fork detected)."
-    SERVICE_ID=$(find_render_service)
+    # Reuse the id from a previous run when it still exists. Render may append
+    # a suffix to the onrender.com subdomain, so name lookup can miss it.
+    if [ -n "$SERVICE_ID" ] && [ "$DRY_RUN" -eq 0 ]; then
+      if ! render_api GET "/services/$SERVICE_ID" | grep -q '"id"'; then
+        SERVICE_ID=""
+      fi
+    fi
+    [ -n "$SERVICE_ID" ] || SERVICE_ID=$(find_render_service)
     if [ -n "$SERVICE_ID" ]; then
       ok "found existing service $SERVICE_ID (updating, not creating)"
       SERVICE_URL=$(render_service_url)
