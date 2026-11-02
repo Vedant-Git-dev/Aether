@@ -238,7 +238,7 @@ Secrets live in `.env`. Structure and policy live in `config.yaml`. Settings cha
 chat or the panel are stored in Postgres and override the YAML until reset.
 
 | File | Holds | Examples |
-|---|---|---|
+| --- | --- | --- |
 | `.env` | Secrets | `DATABASE_URL`, `AETHER_ENCRYPTION_KEY`, `AETHER_TOKEN`, provider keys, bot tokens, OAuth apps, Tavily, Groq, sandbox keys |
 | `config.yaml` | Structure | `llm.*`, `agent.*`, `salience.*`, `mcp_servers`, `messaging.*`, `contacts.*`, `authz.*`, `workspace.*`, `proactive.*`, `workbench.*`, `media.*`, `providers.*` |
 
@@ -274,7 +274,7 @@ fail-safe: an unrecognized tool parks. See [docs/policy.md](docs/policy.md).
 A named model carries its provider as `provider/model`; a bare id uses `llm.provider`.
 
 | Slot | Key | Values |
-|---|---|---|
+| --- | --- | --- |
 | Main | `llm.model` | `claude-opus-5`, `openai/gpt-5.1`, `ollama/llama3.3` |
 | Images | `llm.image_model` | empty = off, `default` = main, or a named model |
 | Audio | `llm.audio_model` | empty = off, `default` = main, or a named model |
@@ -347,7 +347,7 @@ A full component and persistence walkthrough is in
 ### Repository map
 
 | Path | Purpose |
-|---|---|
+| --- | --- |
 | `src/aether/agent/` | Agent loop, native tools, prompts, traces, config and app walks |
 | `src/aether/api/` | REST endpoints for the panel, companion, and transfers |
 | `src/aether/authz/` | Deterministic policy, approvals, hash-chained audit |
@@ -365,7 +365,7 @@ A full component and persistence walkthrough is in
 ## How it compares
 
 | Attribute | Aether | What to check in an alternative |
-|---|---|---|
+| --- | --- | --- |
 | Where it runs | Your machine or your cloud account | Vendor-hosted or self-hosted |
 | Pre-action policy | Deterministic code, first match wins | Whether policy is a prompt or enforced code |
 | Approvals | Web chat, Telegram, Discord | Where approvals land and whether they expire |
