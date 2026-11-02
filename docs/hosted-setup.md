@@ -234,9 +234,8 @@ the Blueprint.
 - Without a key, or with the public upstream repo (which the API cannot attach
   to a workspace), the script writes a tailored `render.yaml`, opens the
   Blueprint page, and prints the exact values to paste. Render prompts for the
-  `sync: false` secrets. The repository's own root `render.yaml` is complete for
-  the public-repo Blueprint route; `deploy/render.yaml` is the same reference
-  file kept alongside this document.
+  `sync: false` secrets. The repository's root `render.yaml` is the single
+  Blueprint Render reads for the public-repo route and for a fork.
 - On failure the script prints the deploy status and recent Render events and
   links to the build log.
 
