@@ -143,13 +143,15 @@ open_url() {
     say "  $url"
     return 0
   fi
+  say "  Opening: $url"
   if command -v xdg-open >/dev/null 2>&1; then
-    xdg-open "$url" >/dev/null 2>&1 &
-    # Give the browser a moment, then do not block on it.
-    sleep 1
+    if ! xdg-open "$url" >/dev/null 2>&1; then
+      warn "the browser did not open; use this link: $url"
+    fi
   elif command -v gio >/dev/null 2>&1; then
-    gio open "$url" >/dev/null 2>&1 &
-    sleep 1
+    if ! gio open "$url" >/dev/null 2>&1; then
+      warn "the browser did not open; use this link: $url"
+    fi
   else
     warn "no xdg-open or gio found; open this link yourself:"
     say "  $url"
@@ -657,6 +659,22 @@ CHANNEL_LIST
 
   # 7. Render details
   ask_line SERVICE_NAME "7a. Render service name" "aether"
+  if [ "$NON_INTERACTIVE" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
+    while :; do
+      _code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "https://$SERVICE_NAME.onrender.com" 2>/dev/null || echo 000)
+      case "$_code" in
+        200|301|302|403|503)
+          warn "https://$SERVICE_NAME.onrender.com already answers (HTTP $_code)."
+          say "  Render would append a suffix and need one extra redeploy."
+          printf '  Service name [%s]: ' "$SERVICE_NAME"
+          IFS= read -r _newname || true
+          [ -n "$_newname" ] || break
+          SERVICE_NAME="$_newname"
+          ;;
+        *) break ;;
+      esac
+    done
+  fi
   menu_single REGION "7b. Render region" 1 oregon ohio virginia frankfurt singapore
   say ""
   say "  7c. Deploy source"
@@ -760,7 +778,7 @@ gather_credentials() {
   say "A Render API key lets this script create and configure everything."
   say "Without one, the script writes a Blueprint and walks you through the"
   say "dashboard instead."
-  open_url "https://dashboard.render.com/u/settings"
+  open_url "https://dashboard.render.com/u/settings#api-keys"
   say "  Render Dashboard, top right, Account Settings, API Keys, Create API Key."
   ask_secret RENDER_API_KEY "Render API key (or press Enter to skip and use the dashboard)"
   if [ -n "$RENDER_API_KEY" ]; then
@@ -1068,6 +1086,13 @@ find_render_service() {
     | json_id srv
 }
 
+needs_public_url() {
+  # AETHER_PUBLIC_URL matters for OAuth callbacks and the GitHub Actions queue.
+  [ -n "$APPS" ] && return 0
+  [ "$WORKBENCH_PROVIDER" = "github_actions" ] && return 0
+  return 1
+}
+
 render_service_url() {
   local body
   body=$(render_api GET "/services/$SERVICE_ID")
@@ -1114,6 +1139,7 @@ create_render_service() {
   fi
   ok "created service $SERVICE_ID"
   save_state SERVICE_ID "$SERVICE_ID"
+  open_url "https://dashboard.render.com/web/$SERVICE_ID"
 }
 
 update_render_public_url() {
@@ -1572,6 +1598,7 @@ summary() {
   say "  Live URL:   $SERVICE_URL"
   say "  Panel:      $SERVICE_URL  (paste the token under Settings > Access)"
   say "  Health:     $SERVICE_URL/healthz"
+  [ -n "$SERVICE_ID" ] && say "  Render:     https://dashboard.render.com/web/$SERVICE_ID"
   say "  AETHER_TOKEN: $(mask "$AETHER_TOKEN")"
   say "  Back up AETHER_ENCRYPTION_KEY outside Render now (password manager)."
   say "  Losing it makes every stored message, memory, and token unrecoverable."
@@ -1711,7 +1738,11 @@ main() {
       if [ -n "$real_url" ] && [ "$real_url" != "$SERVICE_URL" ]; then
         SERVICE_URL="$real_url"
         update_render_public_url
-        trigger_render_deploy
+        if needs_public_url; then
+          trigger_render_deploy
+        else
+          say "  No direct apps or GitHub Actions queue: the URL is stored; no second deploy needed."
+        fi
       elif [ -n "$real_url" ]; then
         SERVICE_URL="$real_url"
       fi

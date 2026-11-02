@@ -231,7 +231,12 @@ the Blueprint.
   with `runtime: python`, `healthCheckPath: /healthz`, `envSpecificDetails`,
   and the environment variables), reads the real URL
   (`GET /v1/services/{id}`), sets `AETHER_PUBLIC_URL`, triggers a deploy
-  (`POST /v1/services/{id}/deploys`), and polls the deploy status.
+  (`POST /v1/services/{id}/deploys`), and polls the deploy status. The create
+  call itself starts Render's "First Deploy". If Render appends a suffix to the
+  subdomain because the requested name is taken, a second deploy is needed to
+  apply the real `AETHER_PUBLIC_URL`; the script skips that second deploy when
+  no OAuth app or GitHub Actions queue needs the URL. Choosing an unused name
+  avoids the suffix and the extra deploy.
 - Without a key, or with the public upstream repo (which the API cannot attach
   to a workspace), the script writes a tailored `render.yaml`, opens the
   Blueprint page, and prints the exact values to paste. Render prompts for the
