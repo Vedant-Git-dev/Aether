@@ -162,6 +162,8 @@ media:
 # Direct app connections
 # ---------------------------------------------------------------------------
 
-# Aether owns the OAuth client and stores tokens encrypted.
+# Aether owns the OAuth client and stores tokens encrypted. This section needs
+# AETHER_TOKEN_ENCRYPTION_KEY in .env; without that keyring the providers stay
+# disabled and the rest of Aether still boots.
 providers:
   enabled: true

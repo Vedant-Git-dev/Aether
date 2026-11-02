@@ -5,66 +5,112 @@ Thanks for helping build a personal agent people can actually trust.
 ## Getting set up
 
 ```bash
-git clone <your-fork>
-cd aether
-cp .env.example .env        # you only need real values for a live smoke test
-cp config.example.yaml config.yaml
+git clone https://github.com/Vedant-Git-dev/Aether.git
+cd Aether
+python -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
 ```
+
+You need Python 3.12 or newer. Node 22 is only needed to build or develop the panel.
 
 ## Running the tests
 
 ```bash
-pytest                                  # unit tests — no network, no database
-AETHER_TEST_DATABASE_URL=<url> pytest -m integration   # opt-in, needs Postgres
-
-ruff check .                            # lint
-ruff format --check .                   # formatting
-
-playwright install chromium             # one-time, for the browser tests below
-AETHER_TEST_E2E=1 pytest -m e2e          # opt-in, no database or API keys needed
+pytest -m "not integration and not e2e"     # unit tests: no network, no database
+ruff check src tests
+ruff format --check .
 ```
 
-CI runs this same gauntlet on every pull request — ruff check and format, the
-unit suite on Python 3.12 and 3.14, the integration suite against a
-containerized Postgres, the webapp build, and the e2e suite under Chromium
-(`.github/workflows/ci.yml`). A PR is only done when CI is green.
+Integration tests need a throwaway Postgres. They truncate every table they touch, so
+never point them at a database you care about:
 
-Unit tests must stay hermetic: no network calls, no database, no API keys.
-Anything touching a real provider or Postgres goes behind the `integration`
-marker. `tests/fakes.py` holds the in-memory provider/connector doubles —
-extend those rather than mocking SDKs ad hoc.
+```bash
+createdb aether_scratch_ci
+AETHER_TEST_DATABASE_URL=postgresql://localhost/aether_scratch_ci pytest -m integration
+dropdb aether_scratch_ci
+```
 
-The `e2e` suite (`tests/e2e/`) drives the real frontend with a real browser
-against `tests/e2e/dev_server.py` — the real FastAPI app wired to in-memory
-fakes instead of Postgres. The panel source lives in `webapp/` (React +
-Tailwind, built by Vite into `src/aether/web/`); build it first with
-`cd webapp && npm install && npm run build`, or the e2e tests skip. Extend
-that fixture and `tests/e2e/test_smoke.py` when you change frontend behavior;
-don't verify frontend changes by manual screenshotting alone.
+Browser tests need Chromium and a built panel:
 
-For hands-on frontend work, `npm run dev` serves the panel with `/api`
-proxied to a locally running `aether` (port 8000). To click through against
-the fixture instead, start `python tests/e2e/dev_server.py` (token
-`secret`) and run `AETHER_DEV_API=http://127.0.0.1:8731 npm run dev:test` —
-it skips unless `AETHER_DEV_API` is set, so a test run never silently
-targets the real backend.
+```bash
+playwright install chromium
+cd webapp && npm ci && npm run build && cd ..
+AETHER_TEST_E2E=1 pytest -m e2e
+```
+
+Unit tests must stay hermetic: no network, no database, no API keys. Anything touching a
+real provider or Postgres goes behind the `integration` marker. `tests/fakes.py` holds the
+in-memory doubles; extend those rather than mocking SDKs ad hoc.
+
+The `e2e` suite drives the real frontend against `tests/e2e/dev_server.py`, which is the
+real app wired to in-memory fakes. Extend that fixture and `tests/e2e/test_smoke.py` when
+you change frontend behavior. Do not verify frontend changes by screenshots alone.
+
+For hands-on panel work, `npm run dev` proxies `/api` to a locally running `aether` on
+port 8000. To click through the fixture instead:
+
+```bash
+python tests/e2e/dev_server.py
+AETHER_DEV_API=http://127.0.0.1:8731 npm run dev:test
+```
+
+`dev:test` skips unless `AETHER_DEV_API` is set, so a test run never silently targets the
+real backend.
+
+## Documentation checks
+
+```bash
+python scripts/check_links.py
+bash scripts/check_quickstart.sh --skip-install
+bash scripts/check_docs.sh
+```
+
+`check_links.py` verifies every relative link and heading anchor in the README and docs.
+`check_quickstart.sh` runs the documented no-database quick start against the example
+config and the fixture server. `check_docs.sh` runs the link checker, markdown lint, and
+spell check.
 
 ## Code conventions
 
-- Python 3.12+, async everywhere — the whole service is one asyncio process.
+- Python 3.12+, async everywhere. The service is one asyncio process.
 - `ruff check` and `ruff format --check` must pass; both are configured in
   `pyproject.toml`.
 - Plain SQL through asyncpg; no ORM. Migrations are forward-only files in
-  `src/aether/migrations/`.
-- Anything a human would consider private gets encrypted before it touches
-  the database (`aether.memory.crypto`) and is bound to its record via AAD.
-- The authorization layer stays **deterministic**: no LLM in the decision
-  path, only code and declared rules.
-- Every connector failure degrades gracefully — one broken MCP server or bot
-  token must never take the agent loop down.
+  `src/aether/migrations/`, applied in filename order.
+- Anything private is encrypted before it touches the database (`aether.memory.crypto`)
+  and bound to its record with additional authenticated data.
+- The authorization layer stays deterministic: no LLM in the decision path, only code and
+  declared rules.
+- Every connector failure degrades gracefully. One broken MCP server or bot token must
+  never take the agent loop down.
+- No emojis in user-facing strings, comments, logs, documentation, or commit messages.
+- The panel shows plain language, never raw tool names, rule ids, event kinds, ISO
+  timestamps, or JSON. When a new backend string shape appears, add a mapping in
+  `webapp/src/lib/describe.js`; never add a raw `{value}` fallback.
+
+## Pull requests
+
+- Keep the subject one line, Conventional Commits style (`feat`, `fix`, `chore`, `docs`).
+- Explain what changed and why. Include the verification commands you ran.
+- Add or update tests for behavior changes.
+- Update the relevant `docs/` page when a configuration field, command, channel, or
+  user-visible behavior changes.
+- Do not include generated panel assets (`src/aether/web/` is built in CI).
+- Do not add attribution trailers of any kind.
+
+CI runs ruff, the unit suite on Python 3.12 and 3.14, the integration suite against
+Postgres, the panel build, the browser suite, and the documentation checks. A PR is ready
+when CI is green.
 
 ## Reporting issues
 
-Open an issue with: what you did, what you expected, what happened, and the
-relevant entries from the audit log (`/api/audit`).
+Open an issue with:
+
+- what you did,
+- what you expected,
+- what happened,
+- the relevant audit entries from `/api/audit`, with secrets removed.
+
+For security problems, follow [SECURITY.md](SECURITY.md) instead of opening a public
+issue.

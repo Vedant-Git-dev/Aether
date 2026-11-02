@@ -44,7 +44,7 @@ class Sender:
     handle: str
 
 
-_PHONE_PLATFORMS = {"phone", "sms", "whatsapp", "call"}
+_PHONE_PLATFORMS = {"phone", "sms", "call"}
 
 
 def normalize_handle(platform: str, handle: str) -> str:
