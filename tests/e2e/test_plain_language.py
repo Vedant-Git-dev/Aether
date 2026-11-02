@@ -272,44 +272,58 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     page.wait_for_selector('[data-testid="contact-row"]')
     page.wait_for_timeout(500)
     text = page.locator("body").inner_text()
-    # the allowlist renders people plainly — a name over the platform and
-    # handle, and the "*" platform reads as "Any platform", never a wildcard
+    # the dropdown offers only connected apps: Email is configured but not
+    # connected, and Discord is off
+    assert page.locator('[data-testid="contact-app"] option').all_inner_texts() == ["Telegram"]
+    # the selected app's own people plus the cross-app rule that counts
+    # everywhere — a name over the platform and handle, and the "*" platform
+    # reads as "Any platform", never a wildcard
     assert "Sam" in text
+    assert "@sam" in text
+    assert "sam@example.com" in text
     assert "Any platform" in text
-    # each connected app has its own card with its own people
-    assert page.locator('[data-testid="app-card-gmail"]').count() == 1
-    assert page.locator('[data-testid="app-card-telegram"]').count() == 1
-    assert "abc123@xyz.com" in page.locator('[data-testid="app-card-gmail"]').inner_text()
-    assert "@sam" in page.locator('[data-testid="app-card-telegram"]').inner_text()
-    # a disconnected app with no list of its own never shows a card
-    assert page.locator('[data-testid="app-card-discord"]').count() == 0
+    assert page.locator('[data-testid="contact-row"]').count() == 2
+    # the old per-app cards are gone
+    assert page.locator('[data-testid="app-card-telegram"]').count() == 0
 
-    # one app's own switch round-trips: only its list, then back to default
-    page.select_option('[data-testid="app-mode-telegram"]', "enforce")
-    page.wait_for_timeout(500)
-    assert page.locator('[data-testid="app-mode-telegram"]').input_value() == "enforce"
-    page.select_option('[data-testid="app-mode-telegram"]', "default")
-    page.wait_for_timeout(500)
-    assert page.locator('[data-testid="app-mode-telegram"]').input_value() == "default"
+    # the searchbox filters the list directly below it
+    page.fill('[data-testid="contact-search"]', "sam@example")
+    assert page.locator('[data-testid="contact-row"]').count() == 1
+    page.fill('[data-testid="contact-search"]', "")
 
-    # the panel's one write path round-trips inside one app's card: add then
-    # remove, both through the config manager, both landing on the audit trail
-    page.fill('[data-testid="contact-handle-telegram"]', "@priya")
-    page.click('[data-testid="contact-add-telegram"]')
+    # Everyone opens the selected app to all senders, and survives a reload
+    everyone = page.locator('[data-testid="contact-everyone"]')
+    assert everyone.get_attribute("aria-pressed") == "false"
+    assert "Only the people below" in page.locator('[data-testid="contact-mode-text"]').inner_text()
+    everyone.click()
     page.wait_for_timeout(500)
-    card_rows = page.locator('[data-testid="contact-row-telegram"]')
-    assert card_rows.count() == 2
-    card_rows.nth(1).locator('[data-testid="contact-remove"]').click()
+    assert everyone.get_attribute("aria-pressed") == "true"
+    assert (
+        "Everyone can reach Aether on Telegram right now."
+        in page.locator('[data-testid="contact-mode-text"]').inner_text()
+    )
+    page.reload()
+    page.wait_for_selector('[data-testid="contact-mode-text"]')
+    assert page.locator('[data-testid="contact-everyone"]').get_attribute("aria-pressed") == "true"
+    page.locator('[data-testid="contact-everyone"]').click()
     page.wait_for_timeout(500)
-    assert page.locator('[data-testid="contact-row-telegram"]').count() == 1
+    assert page.locator('[data-testid="contact-everyone"]').get_attribute("aria-pressed") == "false"
 
-    # and the same round-trip on the list that counts everywhere
-    page.fill('[data-testid="contact-handle"]', "@priya")
+    # Add writes the typed name into the selected app's own list
+    page.fill('[data-testid="contact-search"]', "@priya")
     page.click('[data-testid="contact-add"]')
     page.wait_for_timeout(500)
-    rows = page.locator('[data-testid="contact-row"]')
-    assert rows.count() == 2
-    rows.nth(1).locator('[data-testid="contact-remove"]').click()
+    assert page.locator('[data-testid="contact-row"]').count() == 3
+    added = page.locator('[data-testid="contact-row"]', has_text="@priya")
+    assert added.count() == 1
+    added.locator('[data-testid="contact-remove"]').click()
+    page.wait_for_timeout(500)
+    assert page.locator('[data-testid="contact-row"]').count() == 2
+
+    # a cross-app rule is tagged, and Remove takes it off everywhere
+    any_row = page.locator('[data-testid="contact-row"]', has_text="sam@example.com")
+    assert "any app" in any_row.inner_text()
+    any_row.locator('[data-testid="contact-remove"]').click()
     page.wait_for_timeout(500)
     assert page.locator('[data-testid="contact-row"]').count() == 1
 

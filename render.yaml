@@ -1,36 +1,104 @@
-# Render blueprint — the free-tier deploy described in DEPLOYMENT.md.
+# Aether on Render - Blueprint (no secrets).
 #
-# `sync: false` env vars are entered in the Render dashboard (or on first
-# Blueprint deploy) and stored there — secrets never live in this file.
-# config.yaml (structure, no secrets) is read from the repo root at boot;
-# commit yours before deploying, or the instance runs with defaults
-# (web chat + agent loop, no external connectors).
+# This is the Blueprint Render reads from the repository root. It works for the
+# public upstream repo and for a fork. scripts/setup.sh and scripts/setup.bat
+# generate a smaller, tailored copy (only the variables your choices need) in
+# their state directory for the fork route.
+#
+# Render Dashboard -> New -> Blueprint -> pick the repo. Render prompts for
+# every `sync: false` value; paste them there. They are stored in Render, never
+# in this file.
+#
+# Why the build command decodes AETHER_CONFIG_B64:
+#   config.yaml is gitignored and holds no secrets. Aether reads structure from
+#   config.yaml (or $AETHER_CONFIG). Delivering the YAML as a base64 environment
+#   variable keeps the user's config out of the repository while still giving the
+#   app a real file at boot. Empty/omitted -> Aether uses its built-in defaults.
+#
+# Runtime versions: Render's Python runtime ships Node and npm (see
+# https://render.com/docs/native-runtimes). Aether needs Python >= 3.12 and
+# Node >= 22; both are pinned here for reproducibility.
 
 services:
   - type: web
     name: aether
     runtime: python
     plan: free
-    # build the web panel (Vite -> src/aether/web), then install the server —
-    # the panel is a build artifact, its source lives in webapp/
-    buildCommand: cd webapp && npm ci && npm run build && cd .. && pip install .
-    startCommand: aether   # serves on 0.0.0.0:$PORT — /healthz answers pings
+    region: oregon
+    buildCommand: 'if [ -n "$AETHER_CONFIG_B64" ]; then printf %s "$AETHER_CONFIG_B64" | base64 -d > config.yaml; fi; cd webapp && npm ci && npm run build && cd .. && pip install .'
+    startCommand: 'aether'
+    healthCheckPath: /healthz
+    # Free instances cannot attach a disk. On a paid plan, uncomment this and
+    # mount the workspace path so IDENTITY.md / SOUL.md / MEMORY.md survive:
+    # disk:
+    #   name: workspace
+    #   mountPath: /opt/render/project/src/aether-workspace
+    #   sizeGB: 1
     envVars:
       # --- required ---
-      - key: DATABASE_URL          # Neon connection string, sslmode=require
+      - key: DATABASE_URL
         sync: false
-      - key: AETHER_ENCRYPTION_KEY  # base64 of 32 bytes — see DEPLOYMENT.md
+      - key: AETHER_ENCRYPTION_KEY
         sync: false
-      - key: AETHER_TOKEN          # guards the API, web chat, and companion uploads
+      - key: AETHER_TOKEN
         sync: false
-      # --- LLM provider (set the one matching llm.provider in config.yaml) ---
+      - key: AETHER_CONFIG_B64
+        sync: false
+      # --- runtime pins ---
+      - key: PYTHON_VERSION
+        value: '3.12.11'
+      - key: NODE_VERSION
+        value: '22.12.0'
+      # --- public URL (set from Render's own default variable) ---
+      - key: AETHER_PUBLIC_URL
+        fromService:
+          name: aether
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL
+      # --- model provider (set the one matching llm.provider) ---
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: OPENAI_API_KEY
         sync: false
       - key: GEMINI_API_KEY
         sync: false
-      # --- messaging surfaces (optional) ---
+      - key: NVIDIA_API_KEY
+        sync: false
+      # --- optional services ---
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: MODAL_TOKEN_ID
+        sync: false
+      - key: MODAL_TOKEN_SECRET
+        sync: false
+      - key: VERCEL_TOKEN
+        sync: false
+      - key: GITHUB_ACTIONS_TOKEN
+        sync: false
+      # --- direct apps: token keyring + OAuth clients ---
+      - key: AETHER_TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: AETHER_TOKEN_ENCRYPTION_KEY_ID
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_PICKER_API_KEY
+        sync: false
+      - key: GOOGLE_PICKER_APP_ID
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: LINKEDIN_CLIENT_ID
+        sync: false
+      - key: LINKEDIN_CLIENT_SECRET
+        sync: false
+      # --- chat channels ---
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: DISCORD_BOT_TOKEN

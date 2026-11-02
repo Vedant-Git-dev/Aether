@@ -1,8 +1,8 @@
-// Who may reach Aether: one card per connected app, each with its own
-// allowlist and its own switch, plus the "Any platform" list that counts
-// everywhere. The same lists chat's /config edits — the owner's
-// authenticated taps are the approval; every change still lands through
-// the same validated, persisted path and in the audit log.
+// Who may reach Aether: one app at a time. Pick a connected app, search its
+// people, add a handle, or open the door for everyone. Cross-app rules show
+// in every app's list, tagged, because they count everywhere. The same lists
+// chat's /config edits — every change lands through the same validated,
+// persisted path and in the audit log.
 import { useEffect, useState } from "react";
 import PageHead from "../components/PageHead.jsx";
 import { Button, Card, Field, Select } from "../components/ui.jsx";
@@ -12,156 +12,40 @@ import { useData } from "../store.jsx";
 import { api, hasToken } from "../lib/api.js";
 import { personName, platformLabel } from "../lib/describe.js";
 
-const PLATFORMS = [
-  ["*", "Any platform"],
-  ["telegram", "Telegram"],
-  ["discord", "Discord"],
-  ["phone", "Phone (SMS)"],
-  ["email", "Email"],
-];
-
-// an app card's own words: what its list governs and what its add box takes
-const APP_META = {
-  gmail: {
-    hint: "While filtering is on, Aether only reads mail from these people — plus mail you sent them, and mail you sent yourself. Everything else is dropped before Aether ever sees it.",
-    placeholder: "an email address",
-  },
-  telegram: { hint: "Only these people's Telegram messages reach Aether while filtering is on.", placeholder: "@name" },
-  discord: { hint: "Only these people's Discord messages reach Aether while filtering is on.", placeholder: "@name" },
-};
-
-const MODE_TEXT = {
-  enforce: "Only the people on this list can reach Aether — everyone else is dropped before anything is stored.",
-  off: "Everyone can reach Aether right now. The list is kept for when filtering comes back on.",
+// what each app's list governs, in the app's own words
+const APP_HINTS = {
+  gmail: "While filtering is on, Aether only reads mail from these people — plus mail you sent them, and mail you sent yourself. Everything else is dropped before Aether ever sees it.",
+  telegram: "Only these people's Telegram messages reach Aether while filtering is on.",
+  discord: "Only these people's Discord messages reach Aether while filtering is on.",
 };
 
 const appTitle = (key) => platformLabel(key === "gmail" ? "email" : key);
-
-// One app's card: its own switch (which can follow the default), its own
-// list with Remove, and an inline add — the card fixes the platform, so
-// only the handle is typed.
-function AppCard({ app, defaultMode, busy, write, jsonOpts }) {
-  const toast = useToast();
-  const [handle, setHandle] = useState("");
-  const meta = APP_META[app.key] || { hint: "", placeholder: "a handle" };
-  const mode = app.mode ?? defaultMode; // null mode = follows the default
-  const own = app.mode !== null;
-
-  const add = () => {
-    const who = handle.trim();
-    if (!who) { toast("Enter the person's handle first.", "err"); return; }
-    write(
-      `/api/contacts/apps/${app.key}/allowlist`,
-      jsonOpts("POST", { platform: app.key, handle: who }),
-      `${personName(app.key, who)} can now reach Aether on ${appTitle(app.key)}.`,
-    );
-    setHandle("");
-  };
-
-  const remove = (entry) => {
-    // "any" entries live in the cross-app bucket — removing one takes it
-    // off everywhere, exactly as the "Any platform" card's Remove does
-    const path = entry.list === "any" ? "/api/contacts/allowlist" : `/api/contacts/apps/${app.key}/allowlist`;
-    write(
-      path,
-      jsonOpts("DELETE", { platform: entry.platform, handle: entry.handle }),
-      `${personName(entry.platform, entry.handle)} can no longer reach Aether.`,
-    );
-  };
-
-  const setMode = (value) => {
-    if (value === "default") {
-      write(
-        `/api/contacts/apps/${app.key}/mode`,
-        jsonOpts("PUT", { mode: "default" }),
-        `${appTitle(app.key)} follows the default again.`,
-      );
-      return;
-    }
-    write(
-      `/api/contacts/apps/${app.key}/mode`,
-      jsonOpts("PUT", { mode: value }),
-      value === "enforce"
-        ? `Only the people on the ${appTitle(app.key)} list can reach Aether now.`
-        : `Everyone can reach Aether on ${appTitle(app.key)} now.`,
-    );
-  };
-
-  return (
-    <Card className="p-5" data-testid={`app-card-${app.key}`}>
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-[13px] font-semibold text-ink">
-          {appTitle(app.key)}
-          {app.connected ? null : <span className="ml-2 text-xs font-normal text-ink-3">not connected</span>}
-        </h2>
-        <Select
-          data-testid={`app-mode-${app.key}`}
-          value={own ? app.mode : "default"}
-          disabled={busy}
-          onChange={(e) => setMode(e.target.value)}
-        >
-          <option value="default">Default ({mode === "enforce" ? "only the list" : "everyone"})</option>
-          <option value="enforce">Only this app's list</option>
-          <option value="off">Everyone</option>
-        </Select>
-      </div>
-      <p className="mb-3 text-xs text-ink-2">{meta.hint}</p>
-      {app.allowlist.length === 0 ? (
-        <EmptyState
-          title="No one is on this app's list yet"
-          sub={mode === "enforce"
-            ? "While filtering is on, nobody at all can reach Aether here."
-            : "Add people below so the list is ready when filtering comes on."}
-        />
-      ) : (
-        <ul className="divide-y divide-line">
-          {app.allowlist.map((entry) => (
-            <li
-              key={`${entry.platform}/${entry.handle}`}
-              data-testid={`contact-row-${app.key}`}
-              className="flex items-center justify-between gap-3 py-2.5"
-            >
-              <div className="min-w-0">
-                <div className="truncate text-sm text-ink">
-                  {personName(entry.platform, entry.handle)}
-                  {entry.list === "any" ? <span className="ml-2 text-xs text-ink-3">any platform</span> : null}
-                </div>
-                <div className="text-xs text-ink-3">{entry.handle}</div>
-              </div>
-              <Button data-testid="contact-remove" disabled={busy} onClick={() => remove(entry)}>
-                Remove
-              </Button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <div className="mt-3 flex flex-wrap gap-2">
-        <Field
-          data-testid={`contact-handle-${app.key}`}
-          type="text"
-          placeholder={meta.placeholder}
-          value={handle}
-          disabled={busy}
-          onChange={(e) => setHandle(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") add(); }}
-          className="min-w-0 flex-1"
-        />
-        <Button kind="primary" data-testid={`contact-add-${app.key}`} disabled={busy} onClick={add}>
-          Add
-        </Button>
-      </div>
-    </Card>
-  );
-}
 
 export default function ContactsPage() {
   const toast = useToast();
   const { ensurePeople } = useData();
   const [state, setState] = useState(null); // {mode, allowlist, apps}
   const [error, setError] = useState("");
-  const [platform, setPlatform] = useState("*");
-  const [handle, setHandle] = useState("");
+  const [selectedApp, setSelectedApp] = useState("");
+  const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // the dropdown offers only apps that are actually connected
+  const connectedApps = (state?.apps || []).filter((app) => app.connected);
+  const app = connectedApps.find((a) => a.key === selectedApp) || connectedApps[0];
+
+  // cross-app rules count on every app, so they appear in every app's list
+  // and carry their own Remove path
+  const wildcard = (state?.allowlist || []).map((entry) => ({ ...entry, list: "any" }));
+  const entries = app ? [...app.allowlist, ...wildcard] : [];
+  const needle = query.trim().toLowerCase();
+  const visible = entries.filter((entry) => {
+    if (!needle) return true;
+    return [personName(entry.platform, entry.handle), entry.handle, platformLabel(entry.platform)]
+      .some((value) => value.toLowerCase().includes(needle));
+  });
+  const everyone = app ? (app.mode ?? state.mode) === "off" : false;
+  const title = app ? appTitle(app.key) : "";
 
   useEffect(() => {
     if (!hasToken()) return;
@@ -194,31 +78,40 @@ export default function ContactsPage() {
   });
 
   const add = () => {
-    const who = handle.trim();
-    if (!who) { toast("Enter the person's handle first.", "err"); return; }
+    if (!app) return;
+    const who = query.trim();
+    if (!who) { toast("Type the person's handle first.", "err"); return; }
     write(
-      "/api/contacts/allowlist",
-      jsonOpts("POST", { platform, handle: who }),
-      `${personName(platform, who)} can now reach Aether.`,
+      `/api/contacts/apps/${app.key}/allowlist`,
+      jsonOpts("POST", { platform: app.key, handle: who }),
+      `${personName(app.key, who)} can now reach Aether on ${title}.`,
     );
-    setHandle("");
+    setQuery("");
   };
 
-  const remove = (entry) => {
+  const removeEntry = (entry) => {
+    // an "any" entry lives in the cross-app bucket — removing it takes it
+    // off everywhere, not just this app
+    const path = entry.list === "any"
+      ? "/api/contacts/allowlist"
+      : `/api/contacts/apps/${app.key}/allowlist`;
     write(
-      "/api/contacts/allowlist",
-      jsonOpts("DELETE", entry),
-      `${personName(entry.platform, entry.handle)} can no longer reach Aether.`,
+      path,
+      jsonOpts("DELETE", { platform: entry.platform, handle: entry.handle }),
+      entry.list === "any"
+        ? `${personName(entry.platform, entry.handle)} can no longer reach Aether anywhere.`
+        : `${personName(entry.platform, entry.handle)} can no longer reach Aether on ${title}.`,
     );
   };
 
-  const setMode = (mode) => {
+  const toggleEveryone = () => {
+    if (!app) return;
     write(
-      "/api/contacts/mode",
-      jsonOpts("PUT", { mode }),
-      mode === "enforce"
-        ? "Only the people on the list can reach Aether now."
-        : "Everyone can reach Aether now.",
+      `/api/contacts/apps/${app.key}/mode`,
+      jsonOpts("PUT", { mode: everyone ? "enforce" : "off" }),
+      everyone
+        ? `Only the people on the ${title} list can reach Aether now.`
+        : `Everyone can reach Aether on ${title} now.`,
     );
   };
 
@@ -227,7 +120,7 @@ export default function ContactsPage() {
       <PageHead
         eyebrow="Privacy"
         title="Contacts"
-        sub="Who Aether sees and remembers messages from — one list per app, plus one that counts everywhere. The same lists chat's /config edits; changes apply to the next message."
+        sub="Who Aether sees and remembers messages from — one list per app. Pick an app, search its people, or add someone new. The same lists chat's /config edits; changes apply to the next message."
       />
       {!hasToken() ? (
         <Card><NoToken /></Card>
@@ -235,117 +128,109 @@ export default function ContactsPage() {
         <Card><EmptyState title="The contact list isn't available." sub={error} /></Card>
       ) : !state ? (
         <div className="py-2 text-sm text-ink-3">Loading…</div>
+      ) : !app ? (
+        <Card>
+          <EmptyState
+            title="No app is connected yet."
+            sub="Connect an app from Apps, then come back here to choose who can reach Aether on it."
+          />
+        </Card>
       ) : (
-        <>
-          <div className="grid gap-4 xl:grid-cols-2 xl:items-start">
-            <div className="flex min-w-0 flex-col gap-4">
-              {(state.apps || []).map((app) => (
-                <AppCard
-                  key={app.key}
-                  app={app}
-                  defaultMode={state.mode}
-                  busy={busy}
-                  write={write}
-                  jsonOpts={jsonOpts}
-                />
+        <Card className="p-5">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <Select
+              data-testid="contact-app"
+              aria-label="App"
+              value={app.key}
+              disabled={busy}
+              onChange={(e) => { setSelectedApp(e.target.value); setQuery(""); }}
+              className="sm:w-44"
+            >
+              {connectedApps.map((a) => (
+                <option key={a.key} value={a.key}>{appTitle(a.key)}</option>
               ))}
-            </div>
-
-            <div className="flex min-w-0 flex-col gap-4">
-              <Card className="p-5">
-                <h2 className="mb-2 text-[13px] font-semibold text-ink">The default, for every app without its own switch</h2>
-                <p className="mb-3 text-[12px] leading-relaxed text-ink-2" data-testid="contacts-mode-text">
-                  {MODE_TEXT[state.mode]}
-                </p>
-                <Select
-                  data-testid="contacts-mode"
-                  value={state.mode}
-                  disabled={busy}
-                  onChange={(e) => setMode(e.target.value)}
-                >
-                  <option value="enforce">Only the people on the list</option>
-                  <option value="off">Everyone</option>
-                </Select>
-              </Card>
-
-              <Card className="p-5">
-                <h2 className="mb-2 text-[13px] font-semibold text-ink">Any platform</h2>
-                <p className="mb-3 text-[12px] leading-relaxed text-ink-2">
-                  These people count on every app — Gmail, Discord, Telegram —
-                  wherever they match.
-                </p>
-                {state.allowlist.length === 0 ? (
-                  <EmptyState
-                    title="No one is on the list yet"
-                    sub={state.mode === "enforce"
-                      ? "While filtering is on, nobody at all can reach Aether."
-                      : "Add people below so the list is ready when filtering comes on."}
-                  />
-                ) : (
-                  <ul className="divide-y divide-line">
-                    {state.allowlist.map((entry) => (
-                      <li
-                        key={`${entry.platform}/${entry.handle}`}
-                        data-testid="contact-row"
-                        className="flex items-center justify-between gap-3 py-2.5"
-                      >
-                        <div className="min-w-0">
-                          <div className="truncate text-[13px] text-ink">
-                            {personName(entry.platform, entry.handle)}
-                          </div>
-                          <div className="text-[11.5px] text-ink-3">
-                            {platformLabel(entry.platform)} · {entry.handle}
-                          </div>
-                        </div>
-                        <Button
-                          data-testid="contact-remove"
-                          disabled={busy}
-                          onClick={() => remove(entry)}
-                        >
-                          Remove
-                        </Button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </Card>
-
-              <Card className="p-5">
-                <h2 className="mb-2 text-[13px] font-semibold text-ink">Add someone on any platform</h2>
-                <p className="mb-3 text-[12px] leading-relaxed text-ink-2">
-                  Handles match the way they arrive: @name for chat apps, a phone
-                  number for SMS, an email address for mail. "Any
-                  platform" matches the same handle everywhere.
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  <Select
-                    data-testid="contact-platform"
-                    value={platform}
-                    disabled={busy}
-                    onChange={(e) => setPlatform(e.target.value)}
-                  >
-                    {PLATFORMS.map(([value, label]) => (
-                      <option key={value} value={value}>{label}</option>
-                    ))}
-                  </Select>
-                  <Field
-                    data-testid="contact-handle"
-                    type="text"
-                    placeholder="e.g. @friend or +91…"
-                    value={handle}
-                    disabled={busy}
-                    onChange={(e) => setHandle(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") add(); }}
-                    className="min-w-0 flex-1"
-                  />
-                  <Button kind="primary" data-testid="contact-add" disabled={busy} onClick={add}>
-                    Add
-                  </Button>
-                </div>
-              </Card>
+            </Select>
+            <Field
+              data-testid="contact-search"
+              type="text"
+              aria-label="Search or add a name"
+              placeholder="Search or add a name"
+              value={query}
+              disabled={busy}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") add(); }}
+              className="min-w-0 flex-1"
+            />
+            <div className="flex gap-2">
+              <Button
+                kind="primary"
+                data-testid="contact-add"
+                disabled={busy || !query.trim()}
+                onClick={add}
+              >
+                Add
+              </Button>
+              <Button
+                kind={everyone ? "on" : "neutral"}
+                data-testid="contact-everyone"
+                aria-pressed={everyone}
+                disabled={busy}
+                onClick={toggleEveryone}
+              >
+                Everyone
+              </Button>
             </div>
           </div>
-        </>
+
+          <p className="mt-3 text-[12px] text-ink-2" data-testid="contact-mode-text">
+            {everyone
+              ? `Everyone can reach Aether on ${title} right now.`
+              : `Only the people below can reach Aether on ${title}.`}
+          </p>
+          {APP_HINTS[app.key] ? (
+            <p className="mt-1 text-[11.5px] leading-relaxed text-ink-3">{APP_HINTS[app.key]}</p>
+          ) : null}
+
+          {visible.length ? (
+            <ul className="mt-3 divide-y divide-line border-t border-line">
+              {visible.map((entry) => (
+                <li
+                  key={`${entry.list}/${entry.platform}/${entry.handle}`}
+                  data-testid="contact-row"
+                  className="flex items-center justify-between gap-3 py-2.5"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-[13px] text-ink">
+                      {personName(entry.platform, entry.handle)}
+                      {entry.list === "any" ? (
+                        <span className="ml-2 text-[11.5px] text-ink-3">any app</span>
+                      ) : null}
+                    </div>
+                    <div className="truncate text-[11.5px] text-ink-3">
+                      {platformLabel(entry.platform)} · {entry.handle}
+                    </div>
+                  </div>
+                  <Button data-testid="contact-remove" disabled={busy} onClick={() => removeEntry(entry)}>
+                    Remove
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          ) : needle ? (
+            <p className="mt-3 border-t border-line pt-3 text-[12.5px] text-ink-3">
+              No one on this list matches that search. Add still puts the typed name on it.
+            </p>
+          ) : (
+            <div className="mt-3 border-t border-line pt-3">
+              <EmptyState
+                title="No one is on this app's list yet."
+                sub={everyone
+                  ? "Everyone can still reach Aether here; this list is ready for when filtering comes back on."
+                  : `While filtering is on, anyone not added here is dropped before Aether ever sees them on ${title}.`}
+              />
+            </div>
+          )}
+        </Card>
       )}
     </div>
   );
