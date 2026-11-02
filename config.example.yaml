@@ -41,7 +41,7 @@ llm:
   salience_model:
 
   # Embeddings make memory searchable. The default is free on the Gemini
-  # API key; "none" leaves memory search unavailable.
+  # API key; "off" (or empty) leaves memory search unavailable.
   embedding_model: gemini-embedding-001
 
 # ---------------------------------------------------------------------------

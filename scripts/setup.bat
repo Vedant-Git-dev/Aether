@@ -311,6 +311,7 @@ call :ask_line LLM_MODEL "  Main model" "!EX_MODEL!"
 
 call :pick_many SERVICES "3. Optional services (multi-select)" "" services
 for /f "usebackq delims=" %%A in (`%PS% map -Kind services -Pick "!SERVICES!" -RepoRoot "%REPO_ROOT%"`) do set "SERVICES=%%A"
+echo   Semantic memory is always on (Gemini embeddings); it is not an optional choice.
 echo !SERVICES! | findstr /i /c:"image generation" >nul && (
   call :pick_fixed IMAGE_PROVIDER "  Image provider" 1 "pollinations|gemini|none"
 ) || set "IMAGE_PROVIDER=none"
@@ -471,15 +472,10 @@ if not errorlevel 1 (
   call :open_url "https://console.groq.com/keys"
   call :ask_secret GROQ_KEY "Groq API key"
 )
-call :has_word SERVICES "semantic memory"
-if not errorlevel 1 if "!GEMINI_KEY!"=="" (
+if "!GEMINI_KEY!"=="" (
+  echo Semantic memory is always on and uses Gemini embeddings.
   call :open_url "https://aistudio.google.com/apikey"
-  call :ask_secret GEMINI_KEY "Gemini API key"
-)
-call :has_word SERVICES "image generation"
-if not errorlevel 1 if "!GEMINI_KEY!"=="" if /i "!IMAGE_PROVIDER!"=="gemini" (
-  call :open_url "https://aistudio.google.com/apikey"
-  call :ask_secret GEMINI_KEY "Gemini API key"
+  call :ask_secret GEMINI_KEY "Gemini API key (semantic memory)"
 )
 call :has_word SERVICES "background jobs"
 if not errorlevel 1 (
@@ -564,8 +560,10 @@ if "!AETHER_ENCRYPTION_KEY!"=="" (
 if "!AETHER_TOKEN!"=="" (
   for /f "usebackq delims=" %%V in (`%PS% randtoken`) do set "AETHER_TOKEN=%%V"
 )
-if not "!APPS!"=="" if "!TOKEN_ENC_KEY!"=="" (
+if "!TOKEN_ENC_KEY!"=="" (
   for /f "usebackq delims=" %%V in (`%PS% randkey`) do set "TOKEN_ENC_KEY=%%V"
+)
+if "!TOKEN_ENC_KEY_ID!"=="" (
   for /f "usebackq delims=" %%V in (`%PS% yearmonth`) do set "TOKEN_ENC_KEY_ID=%%V"
 )
 echo [ok] encryption material generated.
@@ -615,6 +613,8 @@ set "NAMES=%TMPBASE%/names.txt"
 >> "%NAMES%" echo MODAL_TOKEN_SECRET
 >> "%NAMES%" echo VERCEL_TOKEN
 >> "%NAMES%" echo UPTIME_API_KEY
+>> "%NAMES%" echo SERVICE_ID
+>> "%NAMES%" echo SERVICE_URL
 >> "%NAMES%" echo NON_INTERACTIVE
 %PS% dump -Names "%NAMES%" -Out "%RUNENV%"
 if errorlevel 1 (
@@ -717,7 +717,7 @@ function Get-Catalog([string]$kind) {
         if ($in -and $line -match '^## ') { break }
         if ($in -and $line -match '^\|') {
           $cell = ($line.Trim('|') -split '\|')[0].Trim()
-          if ($cell -and $cell -ne "Capability" -and $cell -notmatch '^-+$' -and $cell -notmatch '^Screen capture$') { $out += $cell }
+          if ($cell -and $cell -ne "Capability" -and $cell -notmatch '^-+$' -and $cell -notmatch '^(Screen capture|Semantic memory)$') { $out += $cell }
         }
       }
       return @($out)
@@ -806,10 +806,11 @@ function Invoke-Run {
   $tokKey = G "TOKEN_ENC_KEY"
   $tokKeyId = G "TOKEN_ENC_KEY_ID"
   $renderKey = G "RENDER_API_KEY"
+  $savedSid = G "SERVICE_ID"
   $urKey = G "UPTIME_API_KEY"
   $dry = $DryRun
 
-  $embed = if (HasList $services "semantic memory") { "gemini-embedding-001" } else { "none" }
+  $embed = "gemini-embedding-001"
   $tg = if (HasList $channels "telegram") { "true" } else { "false" }
   $dc = if (HasList $channels "discord") { "true" } else { "false" }
   $img = G "IMAGE_PROVIDER" "none"
@@ -850,9 +851,7 @@ providers:
   }
   if (HasList $services "web search") { if (G "TAVILY_KEY") { $envp["TAVILY_API_KEY"] = G "TAVILY_KEY" } }
   if (HasList $services "voice-note transcription") { if (G "GROQ_KEY") { $envp["GROQ_API_KEY"] = G "GROQ_KEY" } }
-  if ((HasList $services "semantic memory") -or (HasList $services "image generation")) {
-    if (G "GEMINI_KEY") { $envp["GEMINI_API_KEY"] = G "GEMINI_KEY" }
-  }
+  if (G "GEMINI_KEY") { $envp["GEMINI_API_KEY"] = G "GEMINI_KEY" }
   if (HasList $services "background jobs") {
     if ($wb -eq "modal") {
       if (G "MODAL_TOKEN_ID") { $envp["MODAL_TOKEN_ID"] = G "MODAL_TOKEN_ID" }
@@ -861,10 +860,8 @@ providers:
       if (G "VERCEL_TOKEN") { $envp["VERCEL_TOKEN"] = G "VERCEL_TOKEN" }
     }
   }
-  if ($apps) {
-    if ($tokKey) { $envp["AETHER_TOKEN_ENCRYPTION_KEY"] = $tokKey }
-    if ($tokKeyId) { $envp["AETHER_TOKEN_ENCRYPTION_KEY_ID"] = $tokKeyId }
-  }
+  if ($tokKey) { $envp["AETHER_TOKEN_ENCRYPTION_KEY"] = $tokKey }
+  if ($tokKeyId) { $envp["AETHER_TOKEN_ENCRYPTION_KEY_ID"] = $tokKeyId }
   foreach ($pair in @(@("TELEGRAM_BOT_TOKEN", "TELEGRAM_TOKEN"), @("DISCORD_BOT_TOKEN", "DISCORD_TOKEN"),
                      @("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_ID"), @("GOOGLE_CLIENT_SECRET", "GOOGLE_CLIENT_SECRET"),
                      @("GOOGLE_PICKER_API_KEY", "GOOGLE_PICKER_KEY"), @("GOOGLE_PICKER_APP_ID", "GOOGLE_PICKER_APP_ID"),
@@ -899,8 +896,13 @@ providers:
       $owners = @(Api "GET" "/owners?limit=1")
       $owner = $owners[0].owner.id
       if (-not $owner) { $owner = $owners[0].id }
-      $list = @(Api "GET" ("/services?name=" + [uri]::EscapeDataString($name) + "&limit=20"))
-      foreach ($row in $list) { if ($row.service.name -eq $name) { $sid = $row.service.id } }
+      if ($savedSid) {
+        try { $e0 = Api "GET" "/services/$savedSid"; if ($e0.id) { $sid = $e0.id } } catch { }
+      }
+      if (-not $sid) {
+        $list = @(Api "GET" ("/services?name=" + [uri]::EscapeDataString($name) + "&limit=20"))
+        foreach ($row in $list) { if ($row.service.name -eq $name) { $sid = $row.service.id } }
+      }
     }
 
     if ($sid) {
@@ -986,13 +988,13 @@ providers:
     }
     if (HasList $services "web search") { $keys += "TAVILY_API_KEY" }
     if (HasList $services "voice-note transcription") { $keys += "GROQ_API_KEY" }
-    if ((HasList $services "semantic memory") -or (HasList $services "image generation")) { $keys += "GEMINI_API_KEY" }
+    $keys += "GEMINI_API_KEY"
     if (HasList $services "background jobs") {
       if ($wb -eq "modal") { $keys += @("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET") }
       elseif ($wb -eq "vercel") { $keys += @("VERCEL_TOKEN", "VERCEL_TEAM_ID", "VERCEL_PROJECT_ID") }
       elseif ($wb -eq "github_actions") { $keys += "GITHUB_ACTIONS_TOKEN" }
     }
-    if ($apps) { $keys += @("AETHER_TOKEN_ENCRYPTION_KEY", "AETHER_TOKEN_ENCRYPTION_KEY_ID") }
+    $keys += @("AETHER_TOKEN_ENCRYPTION_KEY", "AETHER_TOKEN_ENCRYPTION_KEY_ID")
     if ($apps -match 'gmail|calendar|drive|docs') { $keys += @("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET") }
     if ($apps -match 'drive|docs') { $keys += @("GOOGLE_PICKER_API_KEY", "GOOGLE_PICKER_APP_ID") }
     if ($apps -match 'github') { $keys += @("GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET") }

@@ -59,8 +59,9 @@ comma-separated numbers; Enter takes the default.
    and the naming rule from `docs/models.md` is printed: a bare id uses
    `llm.provider`, and `provider/model` routes to that provider.
 3. **Optional services** (multi-select) - read from the "Optional services"
-   table in `docs/quickstart.md`: web search, voice-note transcription, semantic
-   memory, image generation, background jobs. Screen capture is deliberately not
+   table in `docs/quickstart.md`: web search, voice-note transcription, image
+   generation, background jobs. Semantic memory is always on (it uses Gemini
+   embeddings) and is not offered as a choice. Screen capture is deliberately not
    offered: it needs Wayland, `grim`, and the companion on the user's machine.
 4. **Direct apps** (multi-select) - read from the `AppDefinition` blocks in
    `src/aether/providers/*.py`: gmail, calendar, drive, docs, github, linkedin.
@@ -95,7 +96,7 @@ DATABASE_MODE=neon
 DATABASE_URL=postgresql://user:pass@host/db?sslmode=require
 LLM_PROVIDER=openai
 LLM_MODEL=openai/gpt-5.1
-SERVICES=Web search,Semantic memory
+SERVICES=Web search
 APPS=gmail,calendar
 CHANNELS=telegram
 PLAN=free
@@ -248,7 +249,7 @@ the Blueprint.
   file (`chmod 600` on Linux, `icacls` on Windows).
 - `AETHER_TOKEN` is a 64-character random value. Anyone holding it can control
   the instance, so it is treated as a shared secret, not a user account.
-- Direct apps also get a separate `AETHER_TOKEN_ENCRYPTION_KEY` and a key id.
+- The token-encryption keyring (`AETHER_TOKEN_ENCRYPTION_KEY` and its id) is always generated, even with no direct app chosen, so apps can be connected later with `/apps`.
 - A resume copy of the core deployment secrets (encryption key, token, database
   URL, and the token keyring) is kept in `~/.aether-setup/secrets.env`
   (owner-only). Third-party provider keys, the Render API key, and the
@@ -291,6 +292,7 @@ is running.
 | `Application startup failed. DATABASE_URL is not set.` | The service was created without its environment variables. Open the Render service, **Environment**, and add `DATABASE_URL`, `AETHER_ENCRYPTION_KEY`, `AETHER_TOKEN`, `AETHER_CONFIG_B64`, `PYTHON_VERSION=3.12.11`, and `NODE_VERSION=22.12.0`, then **Save and deploy**. Or re-run the fixed script with the same name; it finds the existing service and updates every variable. The generated core secrets are in `~/.aether-setup/secrets.env`. |
 | `/healthz` never turns ok | Check Render logs for `database ready`; a bad `DATABASE_URL` or missing `AETHER_ENCRYPTION_KEY` stops boot. |
 | Panel returns 503 `panel not built` | The npm build failed, or the built panel was excluded from the wheel. `src/aether/web/` is gitignored and Hatchling respects `.gitignore`; `pyproject.toml` now pins it with `artifacts = ["src/aether/web/**"]`. Make sure the build command runs `cd webapp && npm ci && npm run build` before `pip install .`, then clear the build cache and redeploy. |
+| Embedding 404 `models/none is not found` | The embedding knob used the literal string `none`. Aether's off sentinels are `off`, `default`, and `base`; `none` is treated as a model id. Use `off` to disable or the default `gemini-embedding-001`. The setup scripts always write the default and require a Gemini key. |
 | First build is slow | Normal: `npm ci`, Vite, and `pip install` on a small instance. |
 | Free instance asleep | The monitor is the fix; confirm it targets `/healthz` every 5 minutes. |
 | Settings reset after restart | Expected on free: `aether-workspace/` is disk-only. Use a paid plan with the disk. |
