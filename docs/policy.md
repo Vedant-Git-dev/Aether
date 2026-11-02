@@ -67,7 +67,7 @@ be approved later.
 ## Naming
 
 | Source | Shape | Example |
-|---|---|---|
+| --- | --- | --- |
 | Direct app provider | `app__tool` | `gmail__send_email`, `github__create_issue` |
 | MCP server | `server__tool` | `weather__get_forecast` |
 | Native Aether tool | its own name | `memory_search`, `schedule_action` |

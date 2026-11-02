@@ -7,7 +7,7 @@ several slots, or each slot can route somewhere else.
 ## Providers
 
 | Provider | Key | Notes |
-|---|---|---|
+| --- | --- | --- |
 | Anthropic | `ANTHROPIC_API_KEY` | Claude models |
 | OpenAI | `OPENAI_API_KEY` | GPT models |
 | Google Gemini | `GEMINI_API_KEY` | Gemini models, and the embedding model |
@@ -54,7 +54,7 @@ legacy spelling `base`.
 ## Slots
 
 | Slot | Key | Empty | `default` | Named model |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | Reasoning | `llm.model` | invalid; required | not applicable | yes |
 | Images | `llm.image_model` | medium off | main model handles it | route to another model |
 | Audio | `llm.audio_model` | medium off | main model handles it | route to another model |

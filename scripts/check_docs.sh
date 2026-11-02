@@ -28,6 +28,7 @@ fi
 
 echo "== spelling =="
 if command -v codespell >/dev/null 2>&1; then
-  codespell README.md CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md CHANGELOG.md docs .github scriptselse
+  codespell README.md CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md CHANGELOG.md docs .github scripts
+else
   echo "skipped: codespell is not installed (pip install codespell)"
 fi

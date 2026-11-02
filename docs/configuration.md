@@ -31,7 +31,7 @@ default value.
 ### Required
 
 | Name | Purpose |
-|---|---|
+| --- | --- |
 | `DATABASE_URL` | Postgres connection string. Aether runs its migrations on boot. |
 | `AETHER_ENCRYPTION_KEY` | Base64 of 32 random bytes. Encrypts content at rest. Losing it loses the data. |
 | `AETHER_TOKEN` | Shared token for the API, web chat, and companion uploads. |
@@ -39,7 +39,7 @@ default value.
 ### Core options
 
 | Name | Default | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `PORT` | `8000` | HTTP port. `aether` binds `0.0.0.0`. |
 | `LOG_LEVEL` | `INFO` | Python logging level. |
 | `AETHER_PUBLIC_URL` | empty | This deployment's public address. Required for the GitHub Actions batch queue. |
@@ -49,7 +49,7 @@ default value.
 ### Provider tokens
 
 | Name | Purpose |
-|---|---|
+| --- | --- |
 | `AETHER_TOKEN_ENCRYPTION_KEY` | Base64 key for provider OAuth tokens. Separate from the content key. |
 | `AETHER_TOKEN_ENCRYPTION_KEY_ID` | A short label for the active token key, such as `2026-10`. |
 | `AETHER_TOKEN_ENCRYPTION_KEY_PREVIOUS` | Previous token key, for rotation. |
@@ -70,7 +70,7 @@ Set the key for the provider you use. Several can be set at once because each mo
 slot may route to a different provider.
 
 | Name | Purpose |
-|---|---|
+| --- | --- |
 | `ANTHROPIC_API_KEY` | Anthropic |
 | `OPENAI_API_KEY` | OpenAI |
 | `GEMINI_API_KEY` | Google Gemini, and the free embedding model |
@@ -81,7 +81,7 @@ slot may route to a different provider.
 ### Chat surfaces
 
 | Name | Purpose |
-|---|---|
+| --- | --- |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot, from BotFather. |
 | `DISCORD_BOT_TOKEN` | Discord bot token. |
 
@@ -94,7 +94,7 @@ Only needed for direct provider connections. The `/apps` walk can also collect t
 one at a time.
 
 | Name | Purpose |
-|---|---|
+| --- | --- |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google OAuth client for Gmail, Calendar, Drive, and Docs. |
 | `GOOGLE_PICKER_API_KEY`, `GOOGLE_PICKER_APP_ID` | Google Picker, used by Drive and Docs. |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub OAuth App. A fine-grained personal token also works. |
@@ -103,7 +103,7 @@ one at a time.
 ### Tools and sandboxes
 
 | Name | Purpose |
-|---|---|
+| --- | --- |
 | `TAVILY_API_KEY` | Web search. Without it, `web_search` refuses in plain words. `web_fetch` still works. |
 | `GROQ_API_KEY` | Voice-note transcription with `whisper-large-v3`. |
 | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | Modal sandbox, the default workbench. |
@@ -121,7 +121,7 @@ web panel and no external connectors.
 ### `llm`
 
 | Key | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `provider` | `anthropic` | `anthropic`, `openai`, `gemini`, `ollama`, or `nvidia` |
 | `model` | `claude-opus-5` | A bare id, or `provider/model` to override the provider |
 | `image_model` | empty | Empty = off, `default` = main model, or a named model |
@@ -134,7 +134,7 @@ web panel and no external connectors.
 ### `agent`
 
 | Key | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `tick_seconds` | `30` | How often the loop checks its queue and due polls |
 | `max_tool_iterations` | `12` | Tool rounds per turn |
 | `daily_surface_cap` | `20` | Maximum of today's events included in the prompt context |
@@ -146,7 +146,7 @@ web panel and no external connectors.
 ### `salience`
 
 | Key | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `threshold` | `6.0` | Score needed before an observation is worth mentioning |
 | `rate_cap_per_hour` | `20` | Events from one source above this hourly count are pre-gated as noise |
 
@@ -155,7 +155,7 @@ web panel and no external connectors.
 A list. Each entry has:
 
 | Key | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `name` | required | Becomes the tool prefix: `name__tool` |
 | `transport.type` | `stdio` | `stdio` or `http` |
 | `transport.command` | none | For stdio |
@@ -181,7 +181,7 @@ messaging:
 ### `contacts`
 
 | Key | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `mode` | `off` | `enforce` filters every surface; `off` does not |
 | `allowlist` | `[]` | Cross-app entries: `{platform, handle}`. `platform: "*"` matches everywhere |
 | `gmail` | empty slice | `{mode, allowlist}`; Gmail's list also filters inbox reads |
@@ -194,7 +194,7 @@ senders.
 ### `authz`
 
 | Key | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `rules` | `[]` | List of `{tool_pattern, param_pattern, decision, note}` |
 | `approval_ttl_hours` | `24` | How long a parked call stays decidable |
 
@@ -205,7 +205,7 @@ senders.
 ### `workspace`
 
 | Key | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `enabled` | `true` | |
 | `path` | `aether-workspace` | Relative to the working directory |
 | `encrypted` | `true` | AES-256-GCM at rest |
@@ -217,7 +217,7 @@ Turning encryption off later does not decrypt files already written.
 ### `proactive`
 
 | Key | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `enabled` | `false` | The worker reads this live each cycle |
 | `interval_minutes` | `30` | |
 | `max_tasks_per_day` | `3` | |
@@ -229,7 +229,7 @@ Turning encryption off later does not decrypt files already written.
 ### `workbench`
 
 | Key | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `provider` | `modal` | `modal`, `vercel`, `github_actions`, or `none` |
 | `monthly_minutes_cap` | `1500` | Applies to the batch queue |
 | `job_timeout_minutes` | `10` | One job's ceiling |
@@ -240,7 +240,7 @@ Turning encryption off later does not decrypt files already written.
 ### `media`
 
 | Key | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `storage_quota_mb` | `200` | Encrypted media in Postgres |
 | `image_provider` | `pollinations` | `pollinations`, `gemini`, or `none` |
 | `max_images_per_day` | `10` | |
@@ -250,7 +250,7 @@ Turning encryption off later does not decrypt files already written.
 ### `providers`
 
 | Key | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `enabled` | `true` | Direct app connections |
 | `gmail.poll_minutes` | `5` | Gmail polling interval |
 

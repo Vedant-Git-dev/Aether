@@ -10,7 +10,7 @@ The panel is a React app built into `src/aether/web/` and served by the same pro
 on `/`. It includes:
 
 | Page | What it shows |
-|---|---|
+| --- | --- |
 | Live Activity | Recent events Aether has seen across connected apps |
 | Attention Required | Approvals waiting for you, plus recently decided items |
 | Tasks | Scheduled actions and background task results |

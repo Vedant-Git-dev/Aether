@@ -11,7 +11,7 @@ Aether has no hosted instance. Everything below runs on your machine or your acc
 ## Requirements
 
 | Component | Version | Needed for |
-|---|---|---|
+| --- | --- | --- |
 | Python | 3.12 or newer | Everything |
 | Postgres | any recent version; CI runs 18 | Self-hosting |
 | Node | 22 or newer | Building the panel |
@@ -282,7 +282,7 @@ mcp_servers:
 ## Optional services
 
 | Capability | Needs |
-|---|---|
+| --- | --- |
 | Web search | `TAVILY_API_KEY`. Without it, `web_search` refuses; `web_fetch` still works. |
 | Voice-note transcription | `GROQ_API_KEY`. Without it, voice notes are kept but not transcribed unless an audio model is set. |
 | Background jobs | A key pair for Modal, Vercel, or a GitHub Actions batch queue. |

@@ -30,7 +30,7 @@ If no provider can take the job, the caller refuses or queues in plain words.
 A job carries a sensitivity and a latency class.
 
 | Meta | Values | Default if absent |
-|---|---|---|
+| --- | --- | --- |
 | `sensitivity` | `sensitive`, `ordinary` | `sensitive` |
 | `latency_class` | `interactive`, `background` | `background` |
 
@@ -93,7 +93,7 @@ No Aether secret is committed or dispatched.
 ## Limits
 
 | Setting | Default | Applies to |
-|---|---|---|
+| --- | --- | --- |
 | `workbench.job_timeout_minutes` | 10 | Every job; a skill may ask for less, never more |
 | `workbench.monthly_minutes_cap` | 1500 | Batch queue only |
 | `proactive.max_sandbox_minutes_per_day` | 20 | Background jobs |
@@ -107,7 +107,7 @@ retried.
 ## What runs where
 
 | Work | Provider path |
-|---|---|
+| --- | --- |
 | Background follow-up, research | No sandbox needed; uses tools directly |
 | Video frame extraction | Ladder, image model for the frames |
 | Video edit | Ladder, requires an `ffmpeg`-capable provider |

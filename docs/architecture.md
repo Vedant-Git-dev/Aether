@@ -126,7 +126,7 @@ Migrations live in `src/aether/migrations/` and run in filename order. The runne
 records each version in `schema_migrations`.
 
 | Table group | Tables |
-|---|---|
+| --- | --- |
 | Memory | `events`, `identities`, `identity_handles`, `entity_notes`, `memory_chunks`, `chat_messages` |
 | Trust | `audit_log`, `pending_approvals`, `decision_traces` |
 | Automation | `scheduled_actions`, `routines`, `proactive_tasks`, `daily_counters` |
@@ -164,7 +164,7 @@ rotate the token key without re-encrypting message history. The rotation tool is
 ## Failure behavior
 
 | Failure | Behavior |
-|---|---|
+| --- | --- |
 | MCP server fails | Logged; the rest boots |
 | Provider key missing | That provider's tools are absent; the rest boots |
 | LLM key missing | Chat, salience, and vision off; panel and audit work |

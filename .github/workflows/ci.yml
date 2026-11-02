@@ -138,7 +138,7 @@ jobs:
           cache: npm
           cache-dependency-path: webapp/package-lock.json
       - run: pip install -e ".[dev]"
-      - run: npm install --global markdownlint-cli2
+      - run: npm install --global markdownlint-cli2@0.24.0 # pinned so a new rule default cannot fail the build
       - run: python scripts/check_links.py
       - run: >-
           codespell
