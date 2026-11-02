@@ -76,6 +76,12 @@ The output goes to `src/aether/web/`, which is gitignored. Restart is not requir
 the files themselves, but the server only mounts the panel when `index.html` exists at
 startup, so restart `aether` after the first build.
 
+On a non-editable install (`pip install .`, including Render), the built panel has to be
+inside the wheel. `src/aether/web/` is gitignored and Hatchling respects `.gitignore`, so
+`pyproject.toml` lists it under `[tool.hatch.build.targets.wheel] artifacts`. Without that
+entry the server boots and `/` still returns 503 even though the source tree contains the
+files.
+
 ## The panel loads but every page is empty or 401
 
 The browser has no token, or the wrong one.

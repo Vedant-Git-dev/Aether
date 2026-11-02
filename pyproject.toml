@@ -47,6 +47,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aether"]
+# The Vite panel builds into src/aether/web, which is gitignored. Hatchling
+# respects .gitignore by default, so pin the built assets explicitly or
+# `pip install .` ships a wheel without the panel and `/` returns 503.
+artifacts = ["src/aether/web/**"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
