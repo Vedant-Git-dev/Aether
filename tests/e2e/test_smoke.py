@@ -58,6 +58,16 @@ def test_apps_page_hides_settings_and_the_legacy_hub(page, live_server, token) -
     # the old app hub is gone even if its config entry is still present
     assert page.locator('[data-testid="integration-s-composio"]').count() == 0
 
+    # the connected chat surfaces box lists only what is on: Telegram once,
+    # never the disabled Discord, which belongs to the available list
+    assert page.locator('[data-testid="integration-c-telegram"]').count() == 1
+    assert page.locator('[data-testid="integration-c-discord"]').count() == 0
+    assert page.locator('[data-testid="available-discord"]').count() == 1
+    text = page.locator("body").inner_text().upper()
+    assert "CONNECTED CHAT SURFACES" in text
+    assert "APPS AETHER ACTS THROUGH" in text
+    assert "AVAILABLE CHAT SURFACES" in text
+
 
 def test_approve_reaches_the_fake_backend_and_the_card_disappears(page, live_server, token) -> None:
     _set_token(page, token)

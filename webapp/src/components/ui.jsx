@@ -48,6 +48,7 @@ export function Toggle({ className = "", label, ...rest }) {
 const BTN_KINDS = {
   primary: "border-accent bg-accent text-on-accent hover:opacity-90",
   neutral: "border-[var(--color-line-strong)] bg-card text-ink hover:bg-subtle hover:text-ink",
+  on: "border-accent/55 bg-accent/5 text-accent hover:bg-accent/10",
   approve: "border-success/55 bg-success/5 text-success hover:bg-success/10",
   deny: "border-danger/55 bg-danger/5 text-danger hover:bg-danger/10",
 };

@@ -1,6 +1,6 @@
-// What Aether can see and act through: native messaging surfaces, MCP
-// servers, direct provider apps, and the chat surfaces the walk can still
-// switch on. Everything here reflects live backend state.
+// What Aether can see and act through: the chat surfaces that are on, the
+// apps and tool servers Aether acts through, and the chat surfaces the walk
+// can still switch on. Everything here reflects live backend state.
 import { useCallback, useEffect, useState } from "react";
 import PageHead from "../components/PageHead.jsx";
 import { Button, Card, Field, SectionLabel } from "../components/ui.jsx";
@@ -219,8 +219,8 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken,
       ) : null}
       {app.note ? <div className="text-xs text-ink-3">{app.note}</div> : null}
 
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs text-ink-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="min-w-[9rem] flex-1 text-xs text-ink-3">
           {needsAccess
             ? "Add this app's access without disconnecting the others."
             : connected
@@ -249,9 +249,9 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken,
 }
 
 
-function AvailableCard({ iconFace, name, blurb }) {
+function AvailableCard({ iconFace, name, blurb, testid }) {
   return (
-    <Card className="flex items-center gap-3 p-3.5">
+    <Card data-testid={testid} className="flex items-center gap-3 p-3.5">
       {iconFace.imgSrc
         ? <img src={iconFace.imgSrc} alt="" className="h-9 w-9 shrink-0 rounded-[7px] object-contain" />
         : <BrandLogo icon={iconFace.icon} />}
@@ -375,9 +375,10 @@ export default function AppsPage() {
     );
   }
 
+  // Connected chat surfaces are the messaging connectors that are actually
+  // on. An off connector belongs in Available chat surfaces below, never in
+  // both places at once.
   const cards = [];
-  // Connected services only lists surfaces that are actually on. An off
-  // surface belongs in Chat surfaces below, never in both places at once.
   data.connectors.filter((c) => c.enabled).forEach((c) => {
     const meta = CONNECTOR_META[c.name] || { icon: "apps", subtitle: "Messaging connector", permission: "Read, reply" };
     cards.push({
@@ -391,20 +392,20 @@ export default function AppsPage() {
       statusTone: c.has_token ? "ok" : "warn",
     });
   });
-  // MCP servers with the host's live verdict — up and answering, or not yet
-  data.mcp_servers.forEach((s) => {
+  // tool servers that are on, with the host's live verdict — up and
+  // answering, or not yet. A server that is off belongs in Settings.
+  const serverCards = [];
+  data.mcp_servers.filter((s) => s.enabled).forEach((s) => {
     const face = SERVER_FACES[s.name.toLowerCase()] || { icon: "apps", label: `MCP: ${s.name}` };
-    cards.push({
+    serverCards.push({
       key: `s-${s.name}`,
       logo: <BrandLogo icon={face.icon} imgSrc={face.imgSrc} />,
       name: face.label,
       subtitle: `MCP server · ${s.transport}`,
       permission: "Tools exposed by this MCP server",
-      enabled: s.enabled,
-      statusText: !s.enabled ? "Disabled"
-        : s.connected ? `Connected · ${s.actions} action${s.actions === 1 ? "" : "s"}`
-        : "Still connecting",
-      statusTone: !s.enabled ? "idle" : s.connected ? "ok" : "warn",
+      enabled: true,
+      statusText: s.connected ? `Connected · ${s.actions} action${s.actions === 1 ? "" : "s"}` : "Still connecting",
+      statusTone: s.connected ? "ok" : "warn",
     });
   });
   const connectedSurfaces = new Set(data.connectors.filter((c) => c.enabled).map((c) => c.name));
@@ -416,32 +417,52 @@ export default function AppsPage() {
         sub="What Aether can actually see and act through right now." />
 
       <SectionLabel className="mb-2">
-        Connected services
-        <span className="ml-2 font-normal normal-case text-ink-3">{cards.length} configured</span>
+        Connected chat surfaces
+        {cards.length ? (
+          <span className="ml-2 font-normal normal-case text-ink-3">
+            {cards.length} connected
+          </span>
+        ) : null}
       </SectionLabel>
-      <div className="mb-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        {cards.map((c) => (
-          <IntegrationCard key={c.key} data-testid={`integration-${c.key}`} {...c} />
-        ))}
-      </div>
+      {cards.length ? (
+        <div className="mb-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {cards.map((c) => (
+            <IntegrationCard key={c.key} data-testid={`integration-${c.key}`} {...c} />
+          ))}
+        </div>
+      ) : (
+        <Card className="mb-7">
+          <EmptyState
+            title="No chat surface is connected yet."
+            sub="Aether still works here in the web panel. Turn one on below, or run /apps in any chat."
+          />
+        </Card>
+      )}
 
       <SectionLabel className="mb-2">
-        Direct apps
+        Apps Aether acts through
         <span className="ml-2 font-normal normal-case text-ink-3">
-          Aether owns the sign-in and the tokens for these apps
+          Aether holds the sign-in and tokens for these apps, and runs its own tool servers
         </span>
       </SectionLabel>
-      <div className="mb-7">
+      <div className="mb-7 flex flex-col gap-3">
+        {serverCards.length ? (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {serverCards.map((c) => (
+              <IntegrationCard key={c.key} data-testid={`integration-${c.key}`} {...c} />
+            ))}
+          </div>
+        ) : null}
         {providers === undefined ? (
-          <Card className="p-5"><div className="text-[13px] text-ink-3">Loading direct apps…</div></Card>
+          <Card className="p-5"><div className="text-[13px] text-ink-3">Loading app connections…</div></Card>
         ) : providers === null ? (
           <Card className="p-5">
-            <div className="text-[13px] text-ink-3">Direct app connections aren't wired on this instance.</div>
+            <div className="text-[13px] text-ink-3">App connections aren't wired on this instance.</div>
           </Card>
         ) : providers.apps.length === 0 ? (
           <Card className="p-5">
             <div className="text-[13px] text-ink-3">
-              No direct apps are configured yet. Add a provider definition to make one available here.
+              No apps are set up yet. Add a provider definition to make one available here.
             </div>
           </Card>
         ) : (
@@ -462,9 +483,9 @@ export default function AppsPage() {
       </div>
 
       <SectionLabel className="mb-2">
-        Chat surfaces
+        Available chat surfaces
         <span className="ml-2 font-normal normal-case text-ink-3">
-          talk to Aether there — run /apps in any chat and the walk takes the tokens there
+          Turn one on from chat — run /apps there and the walk takes the tokens
         </span>
       </SectionLabel>
       {addable.length ? (
@@ -472,6 +493,7 @@ export default function AppsPage() {
           {addable.map((r) => (
             <AvailableCard
               key={r.key}
+              testid={`available-${r.key}`}
               iconFace={CATALOG_ICONS[r.key] || { icon: "apps" }}
               name={r.name[0].toUpperCase() + r.name.slice(1)}
               blurb={r.blurb}
