@@ -143,7 +143,6 @@ _ACTION_WORDS: dict[str, ActionWords] = {
     "gmail": ActionWords("Send the email", "sending an email", "sent the email"),
     "telegram": ActionWords("Send the message", "sending a message", "sent the message"),
     "discord": ActionWords("Send the message", "sending a message", "sent the message"),
-    "whatsapp": ActionWords("Send the message", "sending a message", "sent the message"),
     "calendar": ActionWords(
         "Make the calendar change", "a calendar action", "made the calendar change"
     ),

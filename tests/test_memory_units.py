@@ -61,7 +61,7 @@ def test_normalize_handle_forms() -> None:
     assert normalize_handle("*", "mailto:X@Y.com") == "email:x@y.com"
     # phones are platform-agnostic and key on the last 10 digits
     assert normalize_handle("phone", "+1 (555) 010-1234") == normalize_handle("sms", "5550101234")
-    assert normalize_handle("whatsapp", "+91 98765 43210") == "tel:9876543210"
+    assert normalize_handle("phone", "+91 98765 43210") == "tel:9876543210"
     # platform handles embed their platform
     assert normalize_handle("telegram", "@vedant") == "telegram:vedant"
     assert normalize_handle("discord", "@vedant") == "discord:vedant"

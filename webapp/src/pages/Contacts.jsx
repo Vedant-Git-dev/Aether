@@ -16,7 +16,6 @@ const PLATFORMS = [
   ["*", "Any platform"],
   ["telegram", "Telegram"],
   ["discord", "Discord"],
-  ["whatsapp", "WhatsApp"],
   ["phone", "Phone (SMS)"],
   ["email", "Email"],
 ];
@@ -315,7 +314,7 @@ export default function ContactsPage() {
                 <h2 className="mb-2 text-[13px] font-semibold text-ink">Add someone on any platform</h2>
                 <p className="mb-3 text-[12px] leading-relaxed text-ink-2">
                   Handles match the way they arrive: @name for chat apps, a phone
-                  number for SMS or WhatsApp, an email address for mail. "Any
+                  number for SMS, an email address for mail. "Any
                   platform" matches the same handle everywhere.
                 </p>
                 <div className="flex flex-wrap gap-2">

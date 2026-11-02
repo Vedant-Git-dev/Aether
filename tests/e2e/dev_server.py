@@ -1628,6 +1628,11 @@ def build_app() -> FastAPI:
     app.state.model_catalog = FakeModelCatalog()
     app.state.provider_runtime = FakeProviderRuntime()
 
+    @app.get("/healthz")
+    @app.get("/health")
+    async def healthz() -> dict:
+        return {"ok": True}
+
     @app.get("/")
     async def index() -> Response:
         if not panel_built:

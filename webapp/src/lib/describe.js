@@ -120,7 +120,7 @@ export function describeOutcome(outcome) {
 const APP_NAMES = {
   gmail: "Email", mail: "Email", email: "Email", outlook: "Email",
   calendar: "Calendar", gcal: "Calendar",
-  slack: "Slack", telegram: "Telegram", discord: "Discord", whatsapp: "WhatsApp", teams: "Teams",
+  slack: "Slack", telegram: "Telegram", discord: "Discord", teams: "Teams",
   github: "GitHub", drive: "Drive", docs: "Docs", linkedin: "LinkedIn",
   filesystem: "Files", fs: "Files",
   phone: "Phone (SMS)", sms: "Phone (SMS)", call: "Phone call",
@@ -141,7 +141,7 @@ const NOUNS = { email: "email", emails: "email", mail: "email", message: "messag
   channel: "channels", channels: "channels", contact: "contacts", contacts: "contacts" };
 
 const DEFAULT_NOUN = { Email: "email", Calendar: "events", Slack: "messages", Telegram: "messages",
-  Discord: "messages", WhatsApp: "messages", Teams: "messages", GitHub: "issues", Files: "files",
+  Discord: "messages", Teams: "messages", GitHub: "issues", Files: "files",
   Drive: "files", Docs: "documents" };
 
 const NATIVE_TOOLS = {
