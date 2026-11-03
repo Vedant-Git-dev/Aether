@@ -34,6 +34,11 @@ default value.
 | --- | --- |
 | `DATABASE_URL` | Postgres connection string. Aether runs its migrations on boot. |
 | `AETHER_ENCRYPTION_KEY` | Base64 of 32 random bytes. Encrypts content at rest. Losing it loses the data. |
+| `AETHER_ENCRYPTION_KEY_ID` | Short label for the active key, such as `2026-10`. Written into every new sealed value. Defaults to `k1`. |
+| `AETHER_ENCRYPTION_KEY_PREVIOUS` | Previous content key, only during rotation. Values written under it stay readable. |
+| `AETHER_ENCRYPTION_KEY_PREVIOUS_ID` | Label for the previous content key. Required when the previous key is set. |
+
+Content keys carry a version label. A rotation sets the new key as active and the old one as previous: old rows stay readable, new writes use the new version. Keyed blind indexes (address lookups, dedup tokens) are derived from the active key, so a rotation also needs a re-index pass before those lookups see old rows again. That pass ships with the storage migration tooling.
 | `AETHER_TOKEN` | Shared token for the API, web chat, and companion uploads. |
 
 ### Core options
