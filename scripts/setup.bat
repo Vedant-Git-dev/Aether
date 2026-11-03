@@ -457,8 +457,8 @@ echo Credentials
 echo ------------------------------------------------------------
 echo Pasted values are read without echo and never printed.
 echo.
-echo A Render account is required. Create one if you do not have one.
-call :open_url "https://dashboard.render.com/register"
+echo A Render account is required. If you do not have one, create it first:
+echo   https://dashboard.render.com/register
 echo Render dashboard: https://dashboard.render.com
 echo.
 echo A Render API key lets this script create and configure everything.

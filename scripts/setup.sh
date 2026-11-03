@@ -142,6 +142,14 @@ urlencode() {
 
 open_url() {
   # Open a URL in the user's browser, falling back to printing it.
+  #
+  # The launcher is detached on purpose. xdg-open and gio open run the browser
+  # in the foreground, and the browser inherits this script's stdin. When the
+  # browser does not fork (or there is no running instance to hand off to),
+  # open_url blocks until the browser exits and the terminal's keyboard input
+  # goes to the browser instead of this script, which looks like a frozen
+  # script that ignores what you type. Backgrounding the launcher and giving it
+  # /dev/null for stdin keeps the script's own reads working.
   local url="$1"
   if [ "$DRY_RUN" -eq 1 ]; then
     say "  [dry-run] would open: $url"
@@ -153,13 +161,11 @@ open_url() {
   fi
   say "  Opening: $url"
   if command -v xdg-open >/dev/null 2>&1; then
-    if ! xdg-open "$url" >/dev/null 2>&1; then
-      warn "the browser did not open; use this link: $url"
-    fi
+    ( xdg-open "$url" >/dev/null 2>&1 ) </dev/null &
+    disown 2>/dev/null || true
   elif command -v gio >/dev/null 2>&1; then
-    if ! gio open "$url" >/dev/null 2>&1; then
-      warn "the browser did not open; use this link: $url"
-    fi
+    ( gio open "$url" >/dev/null 2>&1 ) </dev/null &
+    disown 2>/dev/null || true
   else
     warn "no xdg-open or gio found; open this link yourself:"
     say "  $url"
@@ -798,8 +804,11 @@ gather_credentials() {
   say ""
 
   # --- Render account and API key ---------------------------------------
-  say "A Render account is required. If you do not have one, create it now."
-  open_url "https://dashboard.render.com/register"
+  # Only one browser tab is opened. The API key is what the next prompt needs,
+  # so the API-keys page is opened and the sign-up link is printed instead of
+  # also opening it (two Render tabs in a row was noise).
+  say "A Render account is required. If you do not have one, create it first:"
+  say "  https://dashboard.render.com/register"
   say "  Render dashboard: https://dashboard.render.com"
   say ""
   say "A Render API key lets this script create and configure everything."
