@@ -8,9 +8,10 @@
 # deploy, verifies /healthz and the panel, creates an UptimeRobot monitor so the
 # free instance does not spin down, and prints a masked summary.
 #
-# It is safe to run again: a second run finds the existing Render service and
-# monitor and updates them instead of creating duplicates. It never deletes a
-# Render service or a monitor.
+# A machine that already has setup state is left alone; pass --force to run
+# again. A forced run finds the existing Render service and monitor and updates
+# them instead of creating duplicates. It never deletes a Render service or a
+# monitor.
 #
 # Requirements on this machine: bash, coreutils (base64, head, date, chmod) and
 # curl. No Python, jq or Node needed.
@@ -40,6 +41,7 @@ ANSWERS_FILE=""
 SECRETS_INPUT=""
 DRY_RUN=0
 NON_INTERACTIVE=0
+FORCE=0
 
 # Answers, filled by the questions or the answers file.
 DATABASE_MODE=""
@@ -210,11 +212,14 @@ Options:
   --set KEY=VALUE      Set one answer or secret (repeatable). Implies
                        --non-interactive.
   --non-interactive    Never prompt; use answers, secrets, and defaults.
+  --force              Run even when this machine already has setup state.
+                       Without it, a second run exits without changing anything.
   --state-dir DIR      Where to keep resume state (default ~/.aether-setup).
   --rotate-encryption-key
                        Replace the deployed content key on an existing
                        service. This makes every previously stored chat,
                        memory, and trace row unreadable. Off by default.
+                       Requires --force on a machine that already ran setup.
   -h, --help           Show this help.
 
 Environment:
@@ -231,6 +236,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
     --non-interactive) NON_INTERACTIVE=1 ;;
+    --force) FORCE=1 ;;
     --answers) shift; ANSWERS_FILE="${1:-}" ;;
     --secrets) shift; SECRETS_INPUT="${1:-}" ;;
     --set)
@@ -253,6 +259,16 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -n "$ANSWERS_FILE" ]; then NON_INTERACTIVE=1; fi
+
+# A machine that already has setup state is not set up again by accident.
+# A dry-run is allowed because it changes nothing; everything else needs the
+# explicit --force.
+if [ -s "$STATE_FILE" ] && [ "$FORCE" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
+  say "Aether setup has already run on this machine."
+  say "  state: $STATE_FILE"
+  say "Nothing was changed. Re-run with --force to update the deployment."
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Repo discovery and the repo's own catalogs (nothing is hardcoded)
@@ -568,8 +584,8 @@ ask_questions() {
   hr
   say "Aether hosted setup"
   hr
-  say "Nothing secret is written to the repo. Re-running updates instead of"
-  say "duplicating. Ctrl+C at any point stops cleanly."
+  say "Nothing secret is written to the repo. Re-running with --force updates"
+  say "instead of duplicating. Ctrl+C at any point stops cleanly."
   say ""
 
   # 1. Database
@@ -1733,7 +1749,11 @@ print_redirect_uris() {
 on_interrupt() {
   say ""
   warn "Interrupted. Nothing was deleted."
-  say "  Resume with: $0"
+  if [ -s "$STATE_FILE" ]; then
+    say "  Resume with: $0 --force"
+  else
+    say "  Resume with: $0"
+  fi
   if [ -n "$SERVICE_ID" ]; then say "  Render service: $SERVICE_ID ($SERVICE_NAME)"; fi
   if [ -n "$SERVICE_URL" ]; then say "  URL: $SERVICE_URL"; fi
   say "  State: $STATE_FILE"

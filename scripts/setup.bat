@@ -12,7 +12,8 @@ REM
 REM  Usage: setup.bat [--dry-run] [--answers FILE] [--secrets FILE]
 REM                   [--non-interactive] [--help]
 REM
-REM  Safe to re-run: it finds the existing service and monitor and updates them.
+REM  A machine that already has setup state is left alone; pass --force to run
+REM  again. A forced run finds the existing service and monitor and updates them.
 REM  Never deletes a Render service or a monitor.
 REM ===========================================================================
 
@@ -29,6 +30,7 @@ set "SECRETS_FILE=%STATE_DIR%/secrets.env"
 
 set "DRY_RUN=0"
 set "NON_INTERACTIVE=0"
+set "FORCE=0"
 set "ANSWERS_FILE="
 set "SECRETS_INPUT="
 set "DATABASE_MODE="
@@ -92,6 +94,11 @@ if /i "!_a!"=="--non-interactive" (
   shift
   goto parse_args
 )
+if /i "!_a!"=="--force" (
+  set "FORCE=1"
+  shift
+  goto parse_args
+)
 if /i "!_a!"=="--answers" (
   set "ANSWERS_FILE=%~2"
   set "NON_INTERACTIVE=1"
@@ -135,12 +142,15 @@ echo Aether hosted setup (Windows)
 echo.
 echo Usage: setup.bat [--dry-run] [--answers FILE] [--secrets FILE]
 echo                   [--set KEY=VALUE] [--non-interactive] [--state-dir DIR]
-echo                   [--rotate-encryption-key] [--help]
+echo                   [--force] [--rotate-encryption-key] [--help]
 echo.
 echo The answers file uses KEY=value lines and is the same format as setup.sh.
+echo --force runs even when this machine already has setup state. Without it,
+echo a second run exits without changing anything.
 echo --rotate-encryption-key replaces the deployed content key on an existing
 echo service, making every previously stored chat, memory, and trace row
-echo unreadable. It is off by default.
+echo unreadable. It is off by default, and needs --force on an already-run
+echo machine.
 echo See docs/hosted-setup.md.
 exit /b 0
 
@@ -164,6 +174,16 @@ if defined ANSWERS_FILE call :load_kv "%ANSWERS_FILE%"
 if defined SECRETS_INPUT call :load_kv "%SECRETS_INPUT%"
 if exist "%STATE_FILE%" call :load_kv "%STATE_FILE%"
 if exist "%SECRETS_FILE%" call :load_kv "%SECRETS_FILE%"
+
+REM A machine that already has setup state is not set up again by accident.
+REM A dry-run is allowed because it changes nothing; everything else needs the
+REM explicit --force.
+if exist "%STATE_FILE%" if "%FORCE%"=="0" if "%DRY_RUN%"=="0" (
+  echo [ ok ] Aether setup has already run on this machine.
+  echo State: %STATE_FILE%
+  echo Nothing was changed. Re-run with --force to update the deployment.
+  exit /b 0
+)
 
 set "N=0"
 %PS% catalog providers -RepoRoot "%REPO_ROOT%" > "%TMPBASE%/providers.txt"
@@ -296,8 +316,9 @@ echo.
 echo ------------------------------------------------------------
 echo Aether hosted setup
 echo ------------------------------------------------------------
-echo Nothing secret is written to the repo. Re-running updates instead of
-echo duplicating. Ctrl+C stops the run; re-run setup.bat to resume.
+echo Nothing secret is written to the repo. Re-running with --force updates
+echo instead of duplicating. Ctrl+C stops the run; re-run setup.bat --force to
+echo resume if state was saved.
 
 call :pick_fixed DATABASE_MODE "1. Database" 1 "neon|existing|render"
 if /i "!DATABASE_MODE!"=="render" (
