@@ -175,7 +175,7 @@ export default function SettingsPage() {
       // a pasted provider key changes what the model pickers can list —
       // the server's key-keyed cache decides whether to refetch
       loadModels();
-      toast(`${cred.label} stored encrypted — it is never shown back.`);
+      toast(d.reply || `${cred.label} stored encrypted — it is never shown back.`);
     } catch (err) {
       toast(err.message, "err");
     }

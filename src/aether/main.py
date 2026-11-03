@@ -42,7 +42,7 @@ from .counters import DailyCounters
 from .llm.base import ProviderError
 from .llm.embeddings import GeminiEmbedder
 from .llm.model_list import ModelCatalog, is_sentinel
-from .llm.registry import ProviderRegistry
+from .llm.registry import ProviderRegistry, settings_with_resolved_keys
 from .logging_setup import configure_logging
 from .media.editing import MediaEditor
 from .media.frames import FrameWatcher
@@ -152,6 +152,12 @@ def create_app(
         env_resolver = EnvResolver(secrets=secret_store)
         app.state.secrets = secret_store
         app.state.resolver = env_resolver
+        # the same truth for the chat wire: a provider key pasted in the
+        # panel is in the encrypted store, not .env, so boot asks the
+        # resolver before building the LLM layer — otherwise the model
+        # dropdown lists that key's models while every turn still says no
+        # provider is configured.
+        llm_settings = await settings_with_resolved_keys(settings, env_resolver)
         # the Settings page's model dropdowns ask this for the models each
         # configured key can reach — fetched live per provider, cached by
         # key, so a pasted key lists its models without a restart
@@ -253,9 +259,9 @@ def create_app(
                     "Gemini, so it stays off",
                     provider,
                 )
-            elif settings.gemini_api_key:
+            elif llm_settings.gemini_api_key:
                 try:
-                    embedder = GeminiEmbedder.build(settings.gemini_api_key, embed_model)
+                    embedder = GeminiEmbedder.build(llm_settings.gemini_api_key, embed_model)
                 except ProviderError as exc:
                     log.warning(
                         "embedding model unavailable (%s) — memory search is "
@@ -363,7 +369,7 @@ def create_app(
 
         # --- llm providers (best effort: the agent boots without keys) ----
         try:
-            providers = ProviderRegistry.from_config(settings, config.llm)
+            providers = ProviderRegistry.from_config(llm_settings, config.llm)
         except ProviderError as exc:
             providers = None
             log.warning(

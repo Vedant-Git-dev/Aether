@@ -26,6 +26,8 @@ a refusal.
 
 from __future__ import annotations
 
+from typing import Any
+
 from ..config import (
     MODEL_BASE,
     MODEL_DEFAULT,
@@ -41,6 +43,33 @@ from .ollama_provider import OllamaProvider
 from .openai_provider import OpenAIProvider
 
 ROLES = ("reasoning", "salience", "image", "audio", "video")
+
+# the Settings field each provider key lands in, and the secret name the
+# resolver knows it by. Settings reads .env at boot; a key pasted in the
+# panel lives only in the encrypted store, so boot has to ask the resolver
+# before building providers — otherwise the model dropdown fills while the
+# chat wire stays dark.
+_PROVIDER_KEY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("anthropic_api_key", "ANTHROPIC_API_KEY"),
+    ("openai_api_key", "OPENAI_API_KEY"),
+    ("gemini_api_key", "GEMINI_API_KEY"),
+    ("nvidia_api_key", "NVIDIA_API_KEY"),
+)
+
+
+async def settings_with_resolved_keys(settings: Settings, resolver: Any) -> Settings:
+    """The boot Settings with every provider key the resolver knows filled
+    in — a pasted key counts exactly like an .env one, and a key removed
+    from the store falls back to whatever Settings read. The resolver is
+    the same truth the model catalog reads, so the dropdown and the chat
+    wire can't disagree about which providers exist."""
+    values: dict[str, str] = {}
+    for field, name in _PROVIDER_KEY_FIELDS:
+        value = await resolver.resolve(name)
+        if value:
+            values[field] = value
+    return settings.model_copy(update=values) if values else settings
+
 
 # the knob's words for "the main model takes this" — "base" is the legacy
 # spelling of "default"; both mean the same thing and both keep working
