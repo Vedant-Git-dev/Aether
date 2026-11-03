@@ -142,6 +142,14 @@ urlencode() {
 
 open_url() {
   # Open a URL in the user's browser, falling back to printing it.
+  #
+  # The launcher is detached on purpose. xdg-open and gio open run the browser
+  # in the foreground, and the browser inherits this script's stdin. When the
+  # browser does not fork (or there is no running instance to hand off to),
+  # open_url blocks until the browser exits and the terminal's keyboard input
+  # goes to the browser instead of this script, which looks like a frozen
+  # script that ignores what you type. Backgrounding the launcher and giving it
+  # /dev/null for stdin keeps the script's own reads working.
   local url="$1"
   if [ "$DRY_RUN" -eq 1 ]; then
     say "  [dry-run] would open: $url"
@@ -153,13 +161,11 @@ open_url() {
   fi
   say "  Opening: $url"
   if command -v xdg-open >/dev/null 2>&1; then
-    if ! xdg-open "$url" >/dev/null 2>&1; then
-      warn "the browser did not open; use this link: $url"
-    fi
+    ( xdg-open "$url" >/dev/null 2>&1 ) </dev/null &
+    disown 2>/dev/null || true
   elif command -v gio >/dev/null 2>&1; then
-    if ! gio open "$url" >/dev/null 2>&1; then
-      warn "the browser did not open; use this link: $url"
-    fi
+    ( gio open "$url" >/dev/null 2>&1 ) </dev/null &
+    disown 2>/dev/null || true
   else
     warn "no xdg-open or gio found; open this link yourself:"
     say "  $url"
