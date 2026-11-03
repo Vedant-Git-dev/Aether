@@ -60,6 +60,10 @@ class Traces:
     def __init__(self, pool: asyncpg.Pool, cipher: Cipher) -> None:
         self._pool = pool
         self._cipher = cipher
+        # a row written under an older content key is unreadable forever;
+        # warning on every panel read would flood the log, so each bad id
+        # gets one line per process
+        self._warned: set[int] = set()
 
     async def create(self, *, kind: str, label: str = "", payload: dict[str, Any]) -> Trace:
         """Persist one trace — the same two-step encrypt pattern as every
@@ -108,7 +112,9 @@ class Traces:
         try:
             payload = self._cipher.decrypt_json(row["trace_enc"], aad=_aad(trace_id))
         except Exception:
-            log.warning("trace %s undecryptable — treated as empty", trace_id)
+            if trace_id not in self._warned:
+                self._warned.add(trace_id)
+                log.warning("trace %s undecryptable — treated as empty", trace_id)
             payload = {}
         return Trace(
             id=trace_id,

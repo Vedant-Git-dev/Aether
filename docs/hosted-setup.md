@@ -6,9 +6,9 @@ uptime monitor. They ask the same questions in the same order, read the same
 answers file, call the same Render and UptimeRobot APIs, and end with the same
 result. They do not change Aether's application code.
 
-The scripts live next to this page and are safe to run again. A second run finds
-the existing Render service and monitor and updates them; it never deletes a
-service, a database, or a monitor.
+The scripts leave a machine that already has setup state alone. Pass `--force`
+to run again; the forced run finds the existing Render service and monitor and
+updates them. It never deletes a service, a database, or a monitor.
 
 ## Quick start
 
@@ -137,6 +137,11 @@ Windows), repeated as needed. For example:
 network call. Non-interactive mode never prompts; missing secrets are reported
 and skipped.
 
+On a machine that already has setup state (`~/.aether-setup`, or the
+`--state-dir` you chose), a normal run exits without changing anything. Add
+`--force` to run again; `--dry-run` is allowed without it because it changes
+nothing.
+
 ## Blocker check: what survives a Render restart
 
 This is the one limitation the scripts state before the plan question.
@@ -252,6 +257,11 @@ the Blueprint.
 - `AETHER_ENCRYPTION_KEY` is 32 random bytes, base64. Losing it makes stored
   data unrecoverable. The scripts say this once and offer an owner-only backup
   file (`chmod 600` on Linux, `icacls` on Windows).
+- When the script updates an existing service through the Render API, it keeps
+  the encryption key already deployed there. If the local resume file is
+  missing, the script reads the key from Render instead of replacing it, so old
+  chat, memory, and trace rows stay readable. `--rotate-encryption-key` is the
+  only way to replace it, and it makes every previously stored row unreadable.
 - `AETHER_TOKEN` is a 64-character random value. Anyone holding it can control
   the instance, so it is treated as a shared secret, not a user account.
 - The token-encryption keyring (`AETHER_TOKEN_ENCRYPTION_KEY` and its id) is always generated, even with no direct app chosen, so apps can be connected later with `/apps`.
@@ -294,8 +304,10 @@ is running.
 
 | Symptom | Fix |
 | --- | --- |
-| `Application startup failed. DATABASE_URL is not set.` | The service was created without its environment variables. Open the Render service, **Environment**, and add `DATABASE_URL`, `AETHER_ENCRYPTION_KEY`, `AETHER_TOKEN`, `AETHER_CONFIG_B64`, `PYTHON_VERSION=3.12.11`, and `NODE_VERSION=22.12.0`, then **Save and deploy**. Or re-run the fixed script with the same name; it finds the existing service and updates every variable. The generated core secrets are in `~/.aether-setup/secrets.env`. |
+| `Application startup failed. DATABASE_URL is not set.` | The service was created without its environment variables. Open the Render service, **Environment**, and add `DATABASE_URL`, `AETHER_ENCRYPTION_KEY`, `AETHER_TOKEN`, `AETHER_CONFIG_B64`, `PYTHON_VERSION=3.12.11`, and `NODE_VERSION=22.12.0`, then **Save and deploy**. Or re-run the fixed script with `--force` and the same name; it finds the existing service and updates every variable. The generated core secrets are in `~/.aether-setup/secrets.env`. |
+| Script says setup already ran | Setup state exists in `~/.aether-setup` (or the `--state-dir` you chose). Add `--force` to update the existing service, or point `--state-dir` at a fresh directory for a separate setup. |
 | `/healthz` never turns ok | Check Render logs for `database ready`; a bad `DATABASE_URL` or missing `AETHER_ENCRYPTION_KEY` stops boot. |
+| Logs say `trace N undecryptable` or `event N undecryptable` | The row was encrypted with a different `AETHER_ENCRYPTION_KEY` than the one the process is running with. Restore the original key if you have it; otherwise the row is treated as empty. Re-running the setup script no longer rotates the key. |
 | Panel returns 503 `panel not built` | The npm build failed, or the built panel was excluded from the wheel. `src/aether/web/` is gitignored and Hatchling respects `.gitignore`; `pyproject.toml` now pins it with `artifacts = ["src/aether/web/**"]`. Make sure the build command runs `cd webapp && npm ci && npm run build` before `pip install .`, then clear the build cache and redeploy. |
 | Embedding 404 `models/none is not found` | The embedding knob used the literal string `none`. Aether's off sentinels are `off`, `default`, and `base`; `none` is treated as a model id. Use `off` to disable or the default `gemini-embedding-001`. The setup scripts always write the default and require a Gemini key. |
 | First build is slow | Normal: `npm ci`, Vite, and `pip install` on a small instance. |

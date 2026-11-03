@@ -12,7 +12,8 @@ REM
 REM  Usage: setup.bat [--dry-run] [--answers FILE] [--secrets FILE]
 REM                   [--non-interactive] [--help]
 REM
-REM  Safe to re-run: it finds the existing service and monitor and updates them.
+REM  A machine that already has setup state is left alone; pass --force to run
+REM  again. A forced run finds the existing service and monitor and updates them.
 REM  Never deletes a Render service or a monitor.
 REM ===========================================================================
 
@@ -29,6 +30,7 @@ set "SECRETS_FILE=%STATE_DIR%/secrets.env"
 
 set "DRY_RUN=0"
 set "NON_INTERACTIVE=0"
+set "FORCE=0"
 set "ANSWERS_FILE="
 set "SECRETS_INPUT="
 set "DATABASE_MODE="
@@ -48,31 +50,32 @@ set "ALERT_EMAIL="
 set "LOCAL_COPY="
 set "WORKBENCH_PROVIDER="
 set "IMAGE_PROVIDER="
-set "AETHER_ENCRYPTION_KEY="
-set "AETHER_TOKEN="
-set "TOKEN_ENC_KEY="
-set "TOKEN_ENC_KEY_ID="
-set "RENDER_API_KEY="
-set "TAVILY_KEY="
-set "GROQ_KEY="
-set "GEMINI_KEY="
-set "ANTHROPIC_KEY="
-set "OPENAI_KEY="
-set "NVIDIA_KEY="
-set "TELEGRAM_TOKEN="
-set "DISCORD_TOKEN="
-set "GOOGLE_CLIENT_ID="
-set "GOOGLE_CLIENT_SECRET="
-set "GOOGLE_PICKER_KEY="
-set "GOOGLE_PICKER_APP_ID="
-set "GITHUB_CLIENT_ID="
-set "GITHUB_CLIENT_SECRET="
-set "LINKEDIN_CLIENT_ID="
-set "LINKEDIN_CLIENT_SECRET="
-set "MODAL_TOKEN_ID="
-set "MODAL_TOKEN_SECRET="
-set "VERCEL_TOKEN="
-set "UPTIME_API_KEY="
+if not defined AETHER_ENCRYPTION_KEY set "AETHER_ENCRYPTION_KEY="
+if not defined AETHER_TOKEN set "AETHER_TOKEN="
+if not defined TOKEN_ENC_KEY set "TOKEN_ENC_KEY="
+if not defined TOKEN_ENC_KEY_ID set "TOKEN_ENC_KEY_ID="
+if not defined RENDER_API_KEY set "RENDER_API_KEY="
+if not defined TAVILY_KEY set "TAVILY_KEY="
+if not defined GROQ_KEY set "GROQ_KEY="
+if not defined GEMINI_KEY set "GEMINI_KEY="
+if not defined ANTHROPIC_KEY set "ANTHROPIC_KEY="
+if not defined OPENAI_KEY set "OPENAI_KEY="
+if not defined NVIDIA_KEY set "NVIDIA_KEY="
+if not defined TELEGRAM_TOKEN set "TELEGRAM_TOKEN="
+if not defined DISCORD_TOKEN set "DISCORD_TOKEN="
+if not defined GOOGLE_CLIENT_ID set "GOOGLE_CLIENT_ID="
+if not defined GOOGLE_CLIENT_SECRET set "GOOGLE_CLIENT_SECRET="
+if not defined GOOGLE_PICKER_KEY set "GOOGLE_PICKER_KEY="
+if not defined GOOGLE_PICKER_APP_ID set "GOOGLE_PICKER_APP_ID="
+if not defined GITHUB_CLIENT_ID set "GITHUB_CLIENT_ID="
+if not defined GITHUB_CLIENT_SECRET set "GITHUB_CLIENT_SECRET="
+if not defined LINKEDIN_CLIENT_ID set "LINKEDIN_CLIENT_ID="
+if not defined LINKEDIN_CLIENT_SECRET set "LINKEDIN_CLIENT_SECRET="
+if not defined MODAL_TOKEN_ID set "MODAL_TOKEN_ID="
+if not defined MODAL_TOKEN_SECRET set "MODAL_TOKEN_SECRET="
+if not defined VERCEL_TOKEN set "VERCEL_TOKEN="
+if not defined UPTIME_API_KEY set "UPTIME_API_KEY="
+set "ROTATE_ENCRYPTION_KEY=0"
 
 REM ---------------------------------------------------------------------------
 REM Arguments
@@ -88,6 +91,11 @@ if /i "!_a!"=="--dry-run" (
 )
 if /i "!_a!"=="--non-interactive" (
   set "NON_INTERACTIVE=1"
+  shift
+  goto parse_args
+)
+if /i "!_a!"=="--force" (
+  set "FORCE=1"
   shift
   goto parse_args
 )
@@ -119,6 +127,11 @@ if /i "!_a!"=="--state-dir" (
   shift
   goto parse_args
 )
+if /i "!_a!"=="--rotate-encryption-key" (
+  set "ROTATE_ENCRYPTION_KEY=1"
+  shift
+  goto parse_args
+)
 if /i "!_a!"=="--help" goto usage
 if /i "!_a!"=="-h" goto usage
 echo [stop] unknown option: %~1
@@ -128,9 +141,16 @@ exit /b 2
 echo Aether hosted setup (Windows)
 echo.
 echo Usage: setup.bat [--dry-run] [--answers FILE] [--secrets FILE]
-echo                   [--set KEY=VALUE] [--non-interactive] [--state-dir DIR] [--help]
+echo                   [--set KEY=VALUE] [--non-interactive] [--state-dir DIR]
+echo                   [--force] [--rotate-encryption-key] [--help]
 echo.
 echo The answers file uses KEY=value lines and is the same format as setup.sh.
+echo --force runs even when this machine already has setup state. Without it,
+echo a second run exits without changing anything.
+echo --rotate-encryption-key replaces the deployed content key on an existing
+echo service, making every previously stored chat, memory, and trace row
+echo unreadable. It is off by default, and needs --force on an already-run
+echo machine.
 echo See docs/hosted-setup.md.
 exit /b 0
 
@@ -154,6 +174,16 @@ if defined ANSWERS_FILE call :load_kv "%ANSWERS_FILE%"
 if defined SECRETS_INPUT call :load_kv "%SECRETS_INPUT%"
 if exist "%STATE_FILE%" call :load_kv "%STATE_FILE%"
 if exist "%SECRETS_FILE%" call :load_kv "%SECRETS_FILE%"
+
+REM A machine that already has setup state is not set up again by accident.
+REM A dry-run is allowed because it changes nothing; everything else needs the
+REM explicit --force.
+if exist "%STATE_FILE%" if "%FORCE%"=="0" if "%DRY_RUN%"=="0" (
+  echo [ ok ] Aether setup has already run on this machine.
+  echo State: %STATE_FILE%
+  echo Nothing was changed. Re-run with --force to update the deployment.
+  exit /b 0
+)
 
 set "N=0"
 %PS% catalog providers -RepoRoot "%REPO_ROOT%" > "%TMPBASE%/providers.txt"
@@ -286,8 +316,9 @@ echo.
 echo ------------------------------------------------------------
 echo Aether hosted setup
 echo ------------------------------------------------------------
-echo Nothing secret is written to the repo. Re-running updates instead of
-echo duplicating. Ctrl+C stops the run; re-run setup.bat to resume.
+echo Nothing secret is written to the repo. Re-running with --force updates
+echo instead of duplicating. Ctrl+C stops the run; re-run setup.bat --force to
+echo resume if state was saved.
 
 call :pick_fixed DATABASE_MODE "1. Database" 1 "neon|existing|render"
 if /i "!DATABASE_MODE!"=="render" (
@@ -599,6 +630,7 @@ set "NAMES=%TMPBASE%/names.txt"
 >> "%NAMES%" echo AETHER_TOKEN
 >> "%NAMES%" echo TOKEN_ENC_KEY
 >> "%NAMES%" echo TOKEN_ENC_KEY_ID
+>> "%NAMES%" echo ROTATE_ENCRYPTION_KEY
 >> "%NAMES%" echo RENDER_API_KEY
 >> "%NAMES%" echo TAVILY_KEY
 >> "%NAMES%" echo GROQ_KEY
@@ -805,6 +837,7 @@ function Invoke-Run {
   $email = G "ALERT_EMAIL"
   $token = G "AETHER_TOKEN"
   $enc = G "AETHER_ENCRYPTION_KEY"
+  $rotateEnc = G "ROTATE_ENCRYPTION_KEY" "0"
   $db = G "DATABASE_URL"
   if (-not $db -and -not $dry) {
     Out "[stop] DATABASE_URL is required. Re-run and paste the Neon, existing, or Render Postgres connection string."
@@ -917,6 +950,22 @@ providers:
     if ($sid) {
       Out "Found existing service $sid (updating, not creating)."
       if (-not $dry) {
+        # the content key is not rotatable in place: keep the deployed one
+        # unless the operator explicitly asks to rotate it
+        if ($rotateEnc -ne "1") {
+          try {
+            $cur = Api "GET" "/services/$sid/env-vars/AETHER_ENCRYPTION_KEY"
+            if ($cur.value -and $cur.value -ne $enc) {
+              Out "[warn] keeping the deployed encryption key so existing data stays readable."
+              Out "  Pass --rotate-encryption-key to replace it (old rows become unreadable)."
+              $enc = $cur.value
+              $envp["AETHER_ENCRYPTION_KEY"] = $enc
+            }
+          } catch {
+            Out "[warn] could not read the deployed encryption key."
+            Out "  If this service already has data, stop and restore the original key."
+          }
+        }
         $svc = Api "GET" "/services/$sid"
         $url = $svc.serviceDetails.url
         foreach ($k in $envp.Keys) {

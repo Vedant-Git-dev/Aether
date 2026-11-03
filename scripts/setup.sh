@@ -8,9 +8,10 @@
 # deploy, verifies /healthz and the panel, creates an UptimeRobot monitor so the
 # free instance does not spin down, and prints a masked summary.
 #
-# It is safe to run again: a second run finds the existing Render service and
-# monitor and updates them instead of creating duplicates. It never deletes a
-# Render service or a monitor.
+# A machine that already has setup state is left alone; pass --force to run
+# again. A forced run finds the existing Render service and monitor and updates
+# them instead of creating duplicates. It never deletes a Render service or a
+# monitor.
 #
 # Requirements on this machine: bash, coreutils (base64, head, date, chmod) and
 # curl. No Python, jq or Node needed.
@@ -40,6 +41,7 @@ ANSWERS_FILE=""
 SECRETS_INPUT=""
 DRY_RUN=0
 NON_INTERACTIVE=0
+FORCE=0
 
 # Answers, filled by the questions or the answers file.
 DATABASE_MODE=""
@@ -61,31 +63,37 @@ WORKBENCH_PROVIDER=""
 IMAGE_PROVIDER=""
 
 # Secrets, kept in memory only (plus an owner-only state file for resume).
-AETHER_ENCRYPTION_KEY=""
-AETHER_TOKEN=""
-TOKEN_ENC_KEY=""
-TOKEN_ENC_KEY_ID=""
-RENDER_API_KEY=""
-TAVILY_KEY=""
-GROQ_KEY=""
-GEMINI_KEY=""
-ANTHROPIC_KEY=""
-OPENAI_KEY=""
-NVIDIA_KEY=""
-TELEGRAM_TOKEN=""
-DISCORD_TOKEN=""
-GOOGLE_CLIENT_ID=""
-GOOGLE_CLIENT_SECRET=""
-GOOGLE_PICKER_KEY=""
-GOOGLE_PICKER_APP_ID=""
-GITHUB_CLIENT_ID=""
-GITHUB_CLIENT_SECRET=""
-LINKEDIN_CLIENT_ID=""
-LINKEDIN_CLIENT_SECRET=""
-MODAL_TOKEN_ID=""
-MODAL_TOKEN_SECRET=""
-VERCEL_TOKEN=""
-UPTIME_API_KEY=""
+# An exported value wins over an empty default; files loaded below win over
+# both, because a saved resume file is the most deliberate source.
+: "${AETHER_ENCRYPTION_KEY:=}"
+: "${AETHER_TOKEN:=}"
+: "${TOKEN_ENC_KEY:=}"
+: "${TOKEN_ENC_KEY_ID:=}"
+: "${RENDER_API_KEY:=}"
+: "${TAVILY_KEY:=}"
+: "${GROQ_KEY:=}"
+: "${GEMINI_KEY:=}"
+: "${ANTHROPIC_KEY:=}"
+: "${OPENAI_KEY:=}"
+: "${NVIDIA_KEY:=}"
+: "${TELEGRAM_TOKEN:=}"
+: "${DISCORD_TOKEN:=}"
+: "${GOOGLE_CLIENT_ID:=}"
+: "${GOOGLE_CLIENT_SECRET:=}"
+: "${GOOGLE_PICKER_KEY:=}"
+: "${GOOGLE_PICKER_APP_ID:=}"
+: "${GITHUB_CLIENT_ID:=}"
+: "${GITHUB_CLIENT_SECRET:=}"
+: "${LINKEDIN_CLIENT_ID:=}"
+: "${LINKEDIN_CLIENT_SECRET:=}"
+: "${MODAL_TOKEN_ID:=}"
+: "${MODAL_TOKEN_SECRET:=}"
+: "${VERCEL_TOKEN:=}"
+: "${UPTIME_API_KEY:=}"
+# whether this run had to make a new content key — the update path uses it
+# to tell "the operator supplied this key" from "the resume file was gone"
+AETHER_ENCRYPTION_KEY_GENERATED=0
+ROTATE_ENCRYPTION_KEY=0
 
 # Results.
 SERVICE_ID=""
@@ -204,7 +212,14 @@ Options:
   --set KEY=VALUE      Set one answer or secret (repeatable). Implies
                        --non-interactive.
   --non-interactive    Never prompt; use answers, secrets, and defaults.
+  --force              Run even when this machine already has setup state.
+                       Without it, a second run exits without changing anything.
   --state-dir DIR      Where to keep resume state (default ~/.aether-setup).
+  --rotate-encryption-key
+                       Replace the deployed content key on an existing
+                       service. This makes every previously stored chat,
+                       memory, and trace row unreadable. Off by default.
+                       Requires --force on a machine that already ran setup.
   -h, --help           Show this help.
 
 Environment:
@@ -221,6 +236,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
     --non-interactive) NON_INTERACTIVE=1 ;;
+    --force) FORCE=1 ;;
     --answers) shift; ANSWERS_FILE="${1:-}" ;;
     --secrets) shift; SECRETS_INPUT="${1:-}" ;;
     --set)
@@ -235,6 +251,7 @@ while [ $# -gt 0 ]; do
       NON_INTERACTIVE=1
       ;;
     --state-dir) shift; STATE_DIR="${1:-}"; STATE_FILE="$STATE_DIR/state.env"; SECRETS_FILE="$STATE_DIR/secrets.env" ;;
+    --rotate-encryption-key) ROTATE_ENCRYPTION_KEY=1 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1 (try --help)" ;;
   esac
@@ -242,6 +259,16 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -n "$ANSWERS_FILE" ]; then NON_INTERACTIVE=1; fi
+
+# A machine that already has setup state is not set up again by accident.
+# A dry-run is allowed because it changes nothing; everything else needs the
+# explicit --force.
+if [ -s "$STATE_FILE" ] && [ "$FORCE" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
+  say "Aether setup has already run on this machine."
+  say "  state: $STATE_FILE"
+  say "Nothing was changed. Re-run with --force to update the deployment."
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Repo discovery and the repo's own catalogs (nothing is hardcoded)
@@ -557,8 +584,8 @@ ask_questions() {
   hr
   say "Aether hosted setup"
   hr
-  say "Nothing secret is written to the repo. Re-running updates instead of"
-  say "duplicating. Ctrl+C at any point stops cleanly."
+  say "Nothing secret is written to the repo. Re-running with --force updates"
+  say "instead of duplicating. Ctrl+C at any point stops cleanly."
   say ""
 
   # 1. Database
@@ -941,6 +968,7 @@ gather_credentials() {
   say "Generating the encryption material."
   if [ -z "$AETHER_ENCRYPTION_KEY" ]; then
     AETHER_ENCRYPTION_KEY=$(gen_key_b64)
+    AETHER_ENCRYPTION_KEY_GENERATED=1
     save_secret AETHER_ENCRYPTION_KEY "$AETHER_ENCRYPTION_KEY"
   fi
   if [ -z "$AETHER_TOKEN" ]; then
@@ -1309,6 +1337,37 @@ deploy_dashboard_route() {
   say ""
   say "After the dashboard deploy finishes, this script will verify the URL:"
   say "  $SERVICE_URL"
+}
+
+keep_deployed_encryption_key() {
+  # The content key is not rotatable in place: every encrypted row was
+  # written under it. A re-run from a machine without the resume file used
+  # to generate a new key and PUT it over the deployed one, making all old
+  # chat, memory, and trace rows unreadable. Prefer the deployed key unless
+  # the operator explicitly asks to rotate it.
+  [ "$ROTATE_ENCRYPTION_KEY" -eq 1 ] && return 0
+  [ "$DRY_RUN" -eq 1 ] && return 0
+  [ -n "$SERVICE_ID" ] || return 0
+  [ -n "$RENDER_API_KEY" ] || return 0
+  local body existing
+  body=$(render_api GET "/services/$SERVICE_ID/env-vars/AETHER_ENCRYPTION_KEY" 2>/dev/null || true)
+  existing=$(json_field "value" "$body")
+  if [ -z "$existing" ]; then
+    if [ "$AETHER_ENCRYPTION_KEY_GENERATED" -eq 1 ]; then
+      warn "could not read the deployed encryption key"
+      warn "if this service already has data, stop and restore the original key"
+    fi
+    return 0
+  fi
+  [ "$existing" = "$AETHER_ENCRYPTION_KEY" ] && return 0
+  if [ "$AETHER_ENCRYPTION_KEY_GENERATED" -eq 1 ] || [ -z "$AETHER_ENCRYPTION_KEY" ]; then
+    ok "kept the deployed encryption key so existing data stays readable"
+  else
+    warn "the deployed service already has a different encryption key"
+    warn "keeping the deployed one — pass --rotate-encryption-key to replace it"
+  fi
+  AETHER_ENCRYPTION_KEY="$existing"
+  save_secret AETHER_ENCRYPTION_KEY "$AETHER_ENCRYPTION_KEY"
 }
 
 update_existing_env() {
@@ -1690,7 +1749,11 @@ print_redirect_uris() {
 on_interrupt() {
   say ""
   warn "Interrupted. Nothing was deleted."
-  say "  Resume with: $0"
+  if [ -s "$STATE_FILE" ]; then
+    say "  Resume with: $0 --force"
+  else
+    say "  Resume with: $0"
+  fi
   if [ -n "$SERVICE_ID" ]; then say "  Render service: $SERVICE_ID ($SERVICE_NAME)"; fi
   if [ -n "$SERVICE_URL" ]; then say "  URL: $SERVICE_URL"; fi
   say "  State: $STATE_FILE"
@@ -1728,6 +1791,7 @@ main() {
       ok "found existing service $SERVICE_ID (updating, not creating)"
       SERVICE_URL=$(render_service_url)
       save_state SERVICE_URL "$SERVICE_URL"
+      keep_deployed_encryption_key
       build_env_vars
       update_existing_env
       trigger_render_deploy

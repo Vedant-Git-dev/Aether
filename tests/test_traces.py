@@ -483,3 +483,20 @@ async def test_recent_lists_newest_first(db) -> None:
     assert [t.id for t in rows] == [second.id, first.id]
     missing = await store.get(first.id + 100)
     assert missing is None
+
+
+@pytest.mark.integration
+async def test_an_undecryptable_trace_warns_once_and_reads_empty(db, caplog) -> None:
+    # a row written under an older content key is unreadable, but a panel
+    # refresh must not flood the log with the same warning
+    written = _make_traces(db)
+    trace = await written.create(kind="turn", label="old key", payload={"reply": "secret"})
+    reader = Traces(db, Cipher.from_b64(generate_key_b64()))
+    with caplog.at_level("WARNING", logger="aether.agent.traces"):
+        first = await reader.get(trace.id)
+        second = await reader.get(trace.id)
+
+    assert first is not None and first.payload == {}
+    assert second is not None and second.payload == {}
+    warnings = [r for r in caplog.records if "undecryptable" in r.getMessage()]
+    assert len(warnings) == 1
