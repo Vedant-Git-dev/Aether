@@ -54,6 +54,7 @@ from .memory.crypto import Cipher, CryptoError, generate_key_b64
 from .memory.db import create_pool, run_migrations
 from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
+from .memory.indexes import MemoryIndex
 from .memory.salience import LLMJudge, Salience
 from .memory.storage import StorageGuardError, enforce_schema
 from .memory.vectors import VectorMemory
@@ -286,7 +287,21 @@ def create_app(
 
         # --- memory + authz ------------------------------------------------
         audit = AuditLog(pool)
-        events = EventStore(pool, cipher, audit, config.contacts, indexer=vectors)
+        # the resident event index: filtering and ordering cannot read the
+        # sealed columns in SQL, so the hot set is decrypted once at boot
+        # and kept current by every ingest and salience write
+        memory_index = MemoryIndex()
+        await memory_index.rebuild(pool, cipher, hot_limit=config.memory.hot_events)
+        app.state.memory_index = memory_index
+        events = EventStore(
+            pool,
+            cipher,
+            audit,
+            config.contacts,
+            indexer=vectors,
+            index=memory_index,
+            cold_batch=config.memory.cold_batch,
+        )
         approvals = Approvals(pool, cipher, audit, config.authz.approval_ttl_hours)
         agent_settings = AgentSettings(pool, cipher)
         app.state.audit = audit

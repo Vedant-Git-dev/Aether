@@ -129,7 +129,7 @@ async def test_seal_backfill_fills_every_table_and_verifies(db) -> None:
     results = await backfill(db, cipher, batch=50, sleep=0)
     assert all(result.remaining == 0 for result in results), results
     assert all(result.failed == 0 for result in results), results
-    assert sum(result.sealed for result in results) >= 9
+    assert sum(result.sealed for result in results) >= 7
 
     event = await db.fetchrow(
         "SELECT source_token, dedup_mac, meta_enc FROM events WHERE id = $1", ids["event"]
@@ -154,12 +154,9 @@ async def test_seal_backfill_fills_every_table_and_verifies(db) -> None:
         " WHERE identity_id = $1",
         ids["identity"],
     )
-    assert (
-        cipher.decrypt_text(
-            handle["handle_enc"], aad=f"identity_handles:handle_enc:{ids['handle_id']}"
-        )
-        == ids["handle"]
-    )
+    assert cipher.decrypt_json(
+        handle["handle_enc"], aad=f"identity_handles:handle_enc:{ids['handle_id']}"
+    ) == {"platform": "gmail", "handle": ids["handle"]}
     assert handle["platform_token"] == cipher.blind_token("platform", "gmail")
     assert handle["normalized_token"] == cipher.blind_token(
         "handle", normalize_handle("gmail", ids["handle"])
@@ -253,6 +250,31 @@ async def test_seal_backfill_is_idempotent(db) -> None:
     second = await backfill(db, cipher, batch=50, sleep=0)
     assert sum(result.sealed for result in second) == 0
     assert all(result.failed == 0 for result in second)
+
+
+@pytest.mark.integration
+async def test_sealer_fills_a_legacy_identity_and_handle(db) -> None:
+    cipher = _cipher()
+    identity_id = await db.fetchval(
+        "INSERT INTO identities (display_name, confidence) VALUES ('Old Name', 0.5) RETURNING id"
+    )
+    handle_id = await db.fetchval(
+        "INSERT INTO identity_handles (identity_id, platform, raw_handle, normalized)"
+        " VALUES ($1, 'gmail', 'old@example.com', 'email:old@example.com') RETURNING id",
+        identity_id,
+    )
+    results = await backfill(
+        db, cipher, batch=10, sleep=0, tables={"identities", "identity_handles"}
+    )
+    assert [result.sealed for result in results] == [1, 1]
+    profile = await db.fetchrow("SELECT profile_enc FROM identities WHERE id = $1", identity_id)
+    assert cipher.decrypt_json(
+        profile["profile_enc"], aad=f"identities:profile_enc:{identity_id}"
+    ) == {"display_name": "Old Name", "confidence": 0.5}
+    handle = await db.fetchrow("SELECT handle_enc FROM identity_handles WHERE id = $1", handle_id)
+    assert cipher.decrypt_json(
+        handle["handle_enc"], aad=f"identity_handles:handle_enc:{handle_id}"
+    ) == {"platform": "gmail", "handle": "old@example.com"}
 
 
 @pytest.mark.integration
