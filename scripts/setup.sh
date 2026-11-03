@@ -804,8 +804,11 @@ gather_credentials() {
   say ""
 
   # --- Render account and API key ---------------------------------------
-  say "A Render account is required. If you do not have one, create it now."
-  open_url "https://dashboard.render.com/register"
+  # Only one browser tab is opened. The API key is what the next prompt needs,
+  # so the API-keys page is opened and the sign-up link is printed instead of
+  # also opening it (two Render tabs in a row was noise).
+  say "A Render account is required. If you do not have one, create it first:"
+  say "  https://dashboard.render.com/register"
   say "  Render dashboard: https://dashboard.render.com"
   say ""
   say "A Render API key lets this script create and configure everything."
