@@ -76,6 +76,16 @@ backup, WAL segment or provider snapshot may keep an old plaintext copy until
 it expires. The fresh-database cutover path exists for deployments that need a
 clean boundary.
 
+## The in-memory index
+
+Because event time, source, kind and salience live inside `meta_enc`, Postgres
+cannot sort or filter them. The agent keeps a decrypted hot set in process
+memory: events by sequence, by time and by salience, rebuilt at boot from the
+newest `memory.hot_events` rows and kept current by every ingest and salience
+write. A query that needs an older window cold-scans `memory.cold_batch` rows
+at a time and folds them into the same index; it never scans the whole table
+for one question. Nothing in the index is persisted.
+
 ## Key rotation
 
 Set the new key as `AETHER_ENCRYPTION_KEY` with a new `AETHER_ENCRYPTION_KEY_ID`,

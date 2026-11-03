@@ -135,7 +135,13 @@ async def _seal_handle(conn: asyncpg.Connection, cipher: Cipher, row: asyncpg.Re
     await conn.execute(
         "UPDATE identity_handles SET handle_enc = $1, platform_token = $2,"
         f" normalized_token = $3, {KEY_VERSION} = $4 WHERE id = $5",
-        _seal_text(cipher, row["raw_handle"], "identity_handles", "handle_enc", row["id"]),
+        _seal(
+            cipher,
+            {"platform": row["platform"], "handle": row["raw_handle"]},
+            "identity_handles",
+            "handle_enc",
+            row["id"],
+        ),
         cipher.blind_token("platform", row["platform"]),
         cipher.blind_token("handle", row["normalized"]),
         cipher.key_id,
