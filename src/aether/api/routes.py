@@ -18,6 +18,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, Response, Upl
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
+from .. import restart
 from ..agent.tools import with_plain_calls, with_plain_event
 from ..apps_catalog import CATALOG, recipe_for
 from ..config import is_legacy_composio_server
@@ -676,7 +677,10 @@ async def set_credential(
     value is consumed here, never echoed, never audited, never logged. When
     it belongs to an enabled chat surface, the same-value toggle write that
     follows is what makes the surface reconnect with the fresh token now
-    (the manager's connector diff reads tokens on every write)."""
+    (the manager's connector diff reads tokens on every write). A provider
+    key is read when the LLM layer is built, so a paste arms the same
+    graceful restart a model change does — the fresh boot asks the resolver
+    and the key is live."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
     spec = credential_for(name)
@@ -712,7 +716,13 @@ async def set_credential(
                     value=True,
                     source="panel",
                 )
-    return await _settings_state(request)
+    feed = await _settings_state(request)
+    if spec.llm_key and restart.request():
+        # the response is still the fresh feed; the extra note is what the
+        # page's toast says instead of the bare "stored" — the window
+        # where the saved key has not loaded yet is visible, not mysterious
+        feed["reply"] = "stored — restarting myself to put it to work, back in a few seconds"
+    return feed
 
 
 @router.get("/api/settings/personality")

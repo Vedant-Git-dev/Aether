@@ -397,8 +397,7 @@ Pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first. The un
 runs with no network and no database; integration and browser tests are opt-in.
 
 Participation is governed by [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Report security
-issues through [SECURITY.md](SECURITY.md), not a public issue. Change history starts at
-[CHANGELOG.md](CHANGELOG.md).
+issues through [SECURITY.md](SECURITY.md), not a public issue.
 
 ## License
 

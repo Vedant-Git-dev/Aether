@@ -124,6 +124,9 @@ The Settings panel asks the server for the models each configured key can reach.
 catalog is fetched live and cached by key, so a key pasted after boot appears without a
 restart.
 
+The chat wire reads provider keys when the LLM layer is built, so pasting a provider key
+(or saving a model) restarts Aether. It is back in a few seconds with the new key live.
+
 If a stored model id is not in the catalog, the picker keeps it selected and labels it
 `not in the available models — kept as saved`. It never silently changes your value.
 

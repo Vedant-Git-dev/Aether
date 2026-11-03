@@ -16,6 +16,7 @@ from fakes import (
 )
 from fastapi import FastAPI
 
+from aether import restart
 from aether.agent.loop import CaptureRequestBox
 from aether.api.routes import router
 from aether.authz.approvals import Approval
@@ -1663,6 +1664,57 @@ async def test_credential_paste_for_a_disabled_surface_waits_for_the_toggle() ->
     assert response.status_code == 200
     # nothing to reconcile — the surface's own toggle write will do it
     assert manager.set_calls == []
+
+
+async def test_credential_paste_for_a_provider_key_arms_the_llm_restart(
+    monkeypatch,
+) -> None:
+    # a provider key is read when the LLM layer is built, so a paste asks
+    # for the same graceful restart a model change does
+    armed: list[bool] = []
+
+    def _request() -> bool:
+        armed.append(True)
+        return True
+
+    monkeypatch.setattr(restart, "request", _request)
+    manager = FakeConfigManager()
+    store = _SecretStore()
+    app = _app(None, config=AppConfig(), config_manager=manager)
+    app.state.secrets = store
+    app.state.resolver = _Resolver()
+    async with _client(app) as client:
+        response = await client.put(
+            "/api/settings/credentials/NVIDIA_API_KEY",
+            params={"token": "secret"},
+            json={"value": "nvapi-pasted"},
+        )
+    assert response.status_code == 200
+    assert armed == [True]
+    assert "restarting" in response.json()["reply"]
+    # the value itself never rides back out
+    assert "nvapi-pasted" not in response.text
+
+
+async def test_credential_paste_for_an_ordinary_key_does_not_restart(monkeypatch) -> None:
+    # only the keys the LLM layer reads at boot cost a restart; the rest
+    # are resolved fresh per use
+    armed: list[bool] = []
+    monkeypatch.setattr(restart, "request", lambda: armed.append(True) or True)
+    manager = FakeConfigManager()
+    store = _SecretStore()
+    app = _app(None, config=AppConfig(), config_manager=manager)
+    app.state.secrets = store
+    app.state.resolver = _Resolver()
+    async with _client(app) as client:
+        response = await client.put(
+            "/api/settings/credentials/TAVILY_API_KEY",
+            params={"token": "secret"},
+            json={"value": "tvly-pasted"},
+        )
+    assert response.status_code == 200
+    assert armed == []
+    assert "reply" not in response.json()
 
 
 async def test_credential_paste_refuses_the_unknown_and_the_empty() -> None:

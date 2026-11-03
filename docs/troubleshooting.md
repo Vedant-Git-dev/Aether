@@ -101,6 +101,10 @@ The process booted, but no LLM provider was built. Check:
 - The model id is one that provider serves.
 - For Ollama, the server is running at `OLLAMA_BASE_URL`.
 
+A pasted provider key triggers a restart, because the LLM layer reads provider keys when
+it is built. Wait a few seconds after pasting, then send `/status` to confirm the model
+is live.
+
 The log line at boot names the provider failure. The panel, audit, approvals, and
 settings keep working while the model is down.
 

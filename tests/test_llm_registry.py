@@ -9,12 +9,53 @@ from aether.llm.gemini_provider import GeminiProvider
 from aether.llm.nvidia_provider import NvidiaProvider
 from aether.llm.ollama_provider import OllamaProvider
 from aether.llm.openai_provider import OpenAIProvider
-from aether.llm.registry import ProviderRegistry
+from aether.llm.registry import ProviderRegistry, settings_with_resolved_keys
 
 
 def _settings(**kwargs) -> Settings:
-    # a developer's real .env stays out of the test.
-    return Settings.without_env_file(**kwargs)
+    # a developer's real .env and shell stay out of the test: pydantic
+    # reads os.environ even with the file off, and a key exported there
+    # would make the "missing key" cases pass or fail by machine
+    values = {
+        "anthropic_api_key": "",
+        "openai_api_key": "",
+        "gemini_api_key": "",
+        "nvidia_api_key": "",
+    }
+    values.update(kwargs)
+    return Settings.without_env_file(**values)
+
+
+class _Resolver:
+    """The resolver's one shape boot needs: a name in, a value or None out."""
+
+    def __init__(self, values: dict[str, str] | None = None) -> None:
+        self._values = values or {}
+
+    async def resolve(self, name: str) -> str | None:
+        return self._values.get(name)
+
+
+async def test_pasted_provider_key_builds_the_provider_at_boot() -> None:
+    # a key pasted in the panel lives encrypted in the store, not in .env;
+    # boot asks the resolver so the dropdown and the chat wire agree. The
+    # model value is exactly what the picker saves: provider/id.
+    settings = await settings_with_resolved_keys(
+        _settings(), _Resolver({"NVIDIA_API_KEY": "nvapi-pasted"})
+    )
+    registry = ProviderRegistry.from_config(
+        settings,
+        LLMConfig(provider="anthropic", model="nvidia/meta/llama-3.1-405b-instruct"),
+    )
+    provider = registry.for_role("reasoning")
+    assert isinstance(provider, NvidiaProvider)
+    assert provider.model == "meta/llama-3.1-405b-instruct"
+
+
+async def test_a_key_absent_from_the_store_keeps_the_boot_value() -> None:
+    # the resolver only fills what it knows — an .env key still builds
+    settings = await settings_with_resolved_keys(_settings(nvidia_api_key="from-env"), _Resolver())
+    assert settings.nvidia_api_key == "from-env"
 
 
 def test_registry_builds_each_configured_provider() -> None:

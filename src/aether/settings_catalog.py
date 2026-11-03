@@ -359,6 +359,7 @@ class CredentialSpec:
     label: str
     hint: str
     platform: str = ""  # a messaging surface: paste + its toggle reconnects it
+    llm_key: bool = False  # a provider key the LLM layer reads at boot
 
 
 CREDENTIALS: tuple[CredentialSpec, ...] = (
@@ -366,16 +367,19 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
         name="ANTHROPIC_API_KEY",
         label="Provider API key",
         hint="Needed when the provider is set to the matching one.",
+        llm_key=True,
     ),
     CredentialSpec(
         name="OPENAI_API_KEY",
         label="Provider API key",
         hint="Needed when the provider is set to the matching one.",
+        llm_key=True,
     ),
     CredentialSpec(
         name="GEMINI_API_KEY",
         label="Provider API key",
         hint="Needed when the provider is set to the matching one.",
+        llm_key=True,
     ),
     CredentialSpec(
         name="GROQ_API_KEY",
@@ -386,6 +390,7 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
         name="NVIDIA_API_KEY",
         label="Provider API key",
         hint="Needed when the provider is set to the matching one.",
+        llm_key=True,
     ),
     CredentialSpec(
         name="TELEGRAM_BOT_TOKEN",

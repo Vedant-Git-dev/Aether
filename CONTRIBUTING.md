@@ -58,18 +58,14 @@ AETHER_DEV_API=http://127.0.0.1:8731 npm run dev:test
 `dev:test` skips unless `AETHER_DEV_API` is set, so a test run never silently targets the
 real backend.
 
-## Documentation checks
+## Quickstart check
 
 ```bash
-python scripts/check_links.py
 bash scripts/check_quickstart.sh --skip-install
-bash scripts/check_docs.sh
 ```
 
-`check_links.py` verifies every relative link and heading anchor in the README and docs.
 `check_quickstart.sh` runs the documented no-database quick start against the example
-config and the fixture server. `check_docs.sh` runs the link checker, markdown lint, and
-spell check.
+config and the fixture server.
 
 ## Code conventions
 
