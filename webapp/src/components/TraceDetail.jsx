@@ -128,7 +128,7 @@ export default function TraceDetail({ t }) {
       )}
 
       {p.error && (
-        <div className="mt-2 text-xs text-danger">error: {plainText(p.error)}</div>
+        <div className="mt-2 text-xs text-danger">What stopped it: {plainText(p.error)}</div>
       )}
     </div>
   );

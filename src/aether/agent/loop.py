@@ -29,6 +29,7 @@ import json
 import logging
 import secrets
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,8 @@ from ..connectors.mcp_host import MCPHost
 from ..connectors.registry import ToolRegistry
 from ..llm.agent import run_tool_loop
 from ..llm.base import Provider
+from ..llm.base import ProviderError as LLMProviderError
+from ..llm.failures import ProviderFailure, classify_provider_failure
 from ..llm.registry import ProviderRegistry
 from ..llm.types import PLAIN_PARAM, Message, ToolCall, ToolResult, ToolSpec
 from ..memory.context import ContextBuilder
@@ -105,6 +108,15 @@ _TRANSCRIPT_MESSAGES = 20
 # runs longer refreshes it at this cadence — one fire at turn start would
 # go dark while the work is still honest.
 TYPING_REFRESH_SECONDS = 4.5
+
+# A turn that dies on a provider outage is tried again by the loop itself:
+# the first failure tells the user the cause and the wait, later attempts
+# stay quiet until one lands. Bounded so a provider that never comes back
+# ends with one plain sentence instead of retrying forever.
+MAX_TURN_ATTEMPTS = 5
+# At most this many unanswered asks are remembered at once — a person can
+# queue several questions during an outage, not an unbounded pile.
+MAX_PENDING_RESUMES = 10
 
 
 # the instruction behind the one reply a decision gets: a single exchange
@@ -360,6 +372,25 @@ def _parked_this_turn(calls: list[dict[str, Any]]) -> bool:
     return any(call.get("approval_id") is not None for call in calls)
 
 
+@dataclass
+class _Resume:
+    """One solicited turn waiting out a provider outage.
+
+    The tool loop's own history is kept, not rebuilt: a resumed attempt
+    continues exactly where the dead one stopped, so a tool that already
+    ran is never proposed and executed a second time.
+    """
+
+    messages: list[InboundMessage]
+    observations: list[Event]
+    history: list[Message]
+    calls: list[dict[str, Any]]
+    turn_ref: str
+    failure: ProviderFailure
+    attempts: int
+    due_at: datetime
+
+
 # the value sentinel: "not on the line" — distinct from None, which is an
 # explicit clear (llm.vision_model, agent.quiet_hours)
 _MISSING = object()
@@ -518,6 +549,9 @@ class AgentLoop:
         self._down: set[str] = set()
         self._quiet = _parse_quiet_hours(config.agent.quiet_hours)
         self._held: list[str] = []  # unprompted notes waiting out the window
+        # solicited turns a provider outage interrupted, waiting their turn
+        # again — see _handle_provider_failure and _run_due_resumes
+        self._resumes: list[_Resume] = []
         self.rebuild_poll_targets()
 
     # -- lifecycle ------------------------------------------------------------
@@ -682,8 +716,127 @@ class AgentLoop:
             except Exception:
                 log.exception("agent tick failed")
             with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._woken.wait(), timeout=self._config.agent.tick_seconds)
+                await asyncio.wait_for(self._woken.wait(), timeout=self._next_wait())
             self._woken.clear()
+
+    def _next_wait(self) -> float:
+        """The loop's sleep: the tick cadence, pulled in when a pending
+        retry comes due sooner. A retry never waits for the next tick by
+        accident, so 'I'll try again in about 20 seconds' stays true."""
+        wait = float(self._config.agent.tick_seconds)
+        if self._resumes:
+            soonest = min(resume.due_at for resume in self._resumes)
+            remaining = (soonest - datetime.now(UTC)).total_seconds()
+            wait = min(wait, max(0.05, remaining))
+        return wait
+
+    async def _run_due_resumes(self) -> None:
+        """Try every pending turn whose wait is over, oldest first. Each
+        one either lands and delivers its answer, or schedules the next
+        attempt; nothing here raises into the tick."""
+        if not self._resumes:
+            return
+        now = datetime.now(UTC)
+        due = sorted(
+            (resume for resume in self._resumes if resume.due_at <= now),
+            key=lambda resume: resume.due_at,
+        )
+        for resume in due:
+            if not any(item is resume for item in self._resumes):
+                continue
+            self._resumes = [item for item in self._resumes if item is not resume]
+            try:
+                await self._turn(resume.messages, resume.observations, resume=resume)
+            except Exception:
+                # _turn already said plain words for a provider failure; a
+                # deeper bug is a log line, never a dead loop
+                log.exception("resumed turn failed")
+
+    async def _handle_provider_failure(
+        self,
+        exc: LLMProviderError,
+        *,
+        messages: list[InboundMessage],
+        observations: list[Event],
+        history: list[Message],
+        calls: list[dict[str, Any]],
+        turn_ref: str,
+        attempt: int,
+        trace: dict[str, Any],
+        previous: ProviderFailure | None,
+    ) -> None:
+        """Say a provider failure in plain words and, when it is the kind
+        that clears on its own, hand the turn back to the loop to finish
+        once the service answers again."""
+        failure = classify_provider_failure(exc)
+        # the record keeps plain words, never the SDK's raw error — the
+        # panel renders this line, and a person should be able to read it
+        trace["error"] = failure.message()
+        trace["failure"] = failure.kind
+        log.warning(
+            "turn %s failed on the provider (%s, attempt %d): %s",
+            turn_ref,
+            failure.kind,
+            attempt,
+            exc,
+        )
+        # an unprompted tick stays quiet: nobody asked, so a background
+        # hiccup is a log line, never an interruption
+        if not messages:
+            return
+        if not failure.retryable:
+            await self._surfaces.send_to_user(failure.message())
+            return
+        if attempt >= MAX_TURN_ATTEMPTS:
+            await self._surfaces.send_to_user(failure.exhausted)
+            return
+        # exponential backoff, capped so a long outage keeps checking in
+        delay = min(failure.retry_after * (2 ** (attempt - 1)), 120.0)
+        if previous is None or previous.kind != failure.kind:
+            # the first failure — or a new kind of failure — always says the
+            # cause and when the next attempt comes. Repeats of the same
+            # outage stay quiet, so a long wait is not a drip of notes.
+            await self._surfaces.send_to_user(failure.message(delay))
+        self._schedule_resume(
+            messages=messages,
+            observations=observations,
+            history=history,
+            calls=calls,
+            turn_ref=turn_ref,
+            failure=failure,
+            attempt=attempt,
+            delay=delay,
+        )
+
+    def _schedule_resume(
+        self,
+        *,
+        messages: list[InboundMessage],
+        observations: list[Event],
+        history: list[Message],
+        calls: list[dict[str, Any]],
+        turn_ref: str,
+        failure: ProviderFailure,
+        attempt: int,
+        delay: float,
+    ) -> None:
+        # a person can queue a few asks during an outage, not an unbounded
+        # pile — the oldest is dropped when the cap is reached
+        if len(self._resumes) >= MAX_PENDING_RESUMES:
+            dropped = self._resumes.pop(0)
+            log.info("dropped the oldest pending retry (turn %s)", dropped.turn_ref)
+        self._resumes.append(
+            _Resume(
+                messages=list(messages),
+                observations=list(observations),
+                history=list(history),
+                calls=list(calls),
+                turn_ref=turn_ref,
+                failure=failure,
+                attempts=attempt,
+                due_at=datetime.now(UTC) + timedelta(seconds=max(0.05, delay)),
+            )
+        )
 
     def _spawn_scoring(self, event_id: int) -> None:
         """Score one event on a background task — the salience judge is a
@@ -711,6 +864,10 @@ class AgentLoop:
         # found
         polled = False
         if self._queue.empty():
+            # a turn an outage interrupted comes first when its wait is
+            # over — the user was told it would resume, and a message that
+            # arrived meanwhile still gets its own turn below
+            await self._run_due_resumes()
             await self._run_due_polls()
             await self._run_due_provider_polls()
             polled = True
@@ -836,6 +993,8 @@ class AgentLoop:
             if not polled:
                 await self._run_due_polls()
                 await self._run_due_provider_polls()
+            # a retry that came due while the queue was busy still runs
+            await self._run_due_resumes()
             return
 
         await self._turn(messages, observations)
@@ -845,6 +1004,10 @@ class AgentLoop:
         if not polled:
             await self._run_due_polls()
             await self._run_due_provider_polls()
+
+        # a retry that came due during this turn, or one the turn itself
+        # just failed, runs now rather than waiting out the next tick
+        await self._run_due_resumes()
 
         # a tick that never suspended (a provider-less turn, say) still
         # lets the scorers it spawned take their first step here, so none
@@ -1583,7 +1746,13 @@ class AgentLoop:
             await self._surfaces.show_typing()
             await asyncio.sleep(TYPING_REFRESH_SECONDS)
 
-    async def _turn(self, messages: list[InboundMessage], observations: list[Event]) -> None:
+    async def _turn(
+        self,
+        messages: list[InboundMessage],
+        observations: list[Event],
+        *,
+        resume: _Resume | None = None,
+    ) -> None:
         provider = self._providers.for_role("reasoning") if self._providers else None
         if provider is None:
             if messages:
@@ -1593,51 +1762,59 @@ class AgentLoop:
                 )
             return
 
-        # the recall query depends only on the message texts, so its
-        # embedding starts now and the round trip overlaps the context
-        # assembly below — one API wait hidden instead of added
-        recall_embed: asyncio.Task[list[float] | None] | None = None
-        if messages and self._vectors is not None and self._vectors.enabled:
-            try:
-                recall_query = " ".join(
-                    [m.text for m in messages]
-                    + [m.reply_to_text for m in messages if m.reply_to_text]
-                ).strip()
-                if recall_query:
-                    recall_embed = asyncio.create_task(self._vectors.embed_query(recall_query))
-            except Exception:
-                # a layer this broken recalls inline or not at all — either
-                # way the turn itself must survive
-                log.exception("recall head start failed — embedding inline instead")
-
-        ctx = await self._context.build()
-        history: list[Message] = []
-        # every meaningful question pulls its own related memories in —
-        # older conversations, shared documents, whatever the question
-        # touches — without the model having to think to ask
         recalled: list[dict[str, Any]] = []
-        recall_lines: list[str] = []
-        if messages:
-            recalled, recall_lines = await self._recall_related(
-                messages, ctx, observations, recall_embed
-            )
-        context_block = self._format_context(ctx)
-        head = "\n\n".join(part for part in (context_block, "\n".join(recall_lines)) if part)
-        if head:
-            history.append(Message.user(f"[working context]\n{head}"))
-        history.extend(await self._transcript_messages(messages))
-        for event in reversed(observations):  # oldest first inside the block
-            history.append(Message.user(f"[new event] {self._event_line(event)}"))
-        for message in messages:
-            line = f"[message from {message.handle} via {message.surface}]\n{message.text}"
-            if message.reply_to_text:
-                # so the model can see *which* of its own messages is being
-                # answered when the platform hands the text over
-                line += f'\n(replying to my earlier message: "{message.reply_to_text[:200]}")'
-            history.append(Message.user(line))
-        history = _window_history(history, keep_head=1 if context_block else 0)
+        if resume is None:
+            # the recall query depends only on the message texts, so its
+            # embedding starts now and the round trip overlaps the context
+            # assembly below — one API wait hidden instead of added
+            recall_embed: asyncio.Task[list[float] | None] | None = None
+            if messages and self._vectors is not None and self._vectors.enabled:
+                try:
+                    recall_query = " ".join(
+                        [m.text for m in messages]
+                        + [m.reply_to_text for m in messages if m.reply_to_text]
+                    ).strip()
+                    if recall_query:
+                        recall_embed = asyncio.create_task(self._vectors.embed_query(recall_query))
+                except Exception:
+                    # a layer this broken recalls inline or not at all — either
+                    # way the turn itself must survive
+                    log.exception("recall head start failed — embedding inline instead")
 
-        calls: list[dict[str, Any]] = []  # filled by _execute as the turn runs
+            ctx = await self._context.build()
+            history: list[Message] = []
+            # every meaningful question pulls its own related memories in —
+            # older conversations, shared documents, whatever the question
+            # touches — without the model having to think to ask
+            recall_lines: list[str] = []
+            if messages:
+                recalled, recall_lines = await self._recall_related(
+                    messages, ctx, observations, recall_embed
+                )
+            context_block = self._format_context(ctx)
+            head = "\n\n".join(part for part in (context_block, "\n".join(recall_lines)) if part)
+            if head:
+                history.append(Message.user(f"[working context]\n{head}"))
+            history.extend(await self._transcript_messages(messages))
+            for event in reversed(observations):  # oldest first inside the block
+                history.append(Message.user(f"[new event] {self._event_line(event)}"))
+            for message in messages:
+                line = f"[message from {message.handle} via {message.surface}]\n{message.text}"
+                if message.reply_to_text:
+                    # so the model can see *which* of its own messages is being
+                    # answered when the platform hands the text over
+                    line += f'\n(replying to my earlier message: "{message.reply_to_text[:200]}")'
+                history.append(Message.user(line))
+            history = _window_history(history, keep_head=1 if context_block else 0)
+            calls: list[dict[str, Any]] = []  # filled by _execute as the turn runs
+        else:
+            # a retry continues the tool loop's own history — the context,
+            # the user's words, and every tool result already collected.
+            # Nothing is rebuilt, so a tool that already ran is never
+            # proposed and executed a second time.
+            history = list(resume.history)
+            calls = resume.calls
+
         # a short ref this turn owns: the log lines below carry it, the
         # trace keeps it, so "why did you say that?" and the server log
         # meet on one searchable token — the panel renders named keys
@@ -1672,6 +1849,10 @@ class AgentLoop:
             },
             "calls": calls,
         }
+        if resume is not None:
+            # a resumed attempt points at the dead one, so the record reads
+            # as one ask with a gap, not two separate requests
+            trace["resumed_from"] = resume.turn_ref
         full_history: list[Message] = []
         reply = ""
         # tool gating: natives always; MCP tools whose names match the
@@ -1687,6 +1868,18 @@ class AgentLoop:
             ]
         )
         unlocked: set[str] = set()
+        if resume is not None:
+            # tools the interrupted attempt already used stay offered when
+            # the loop continues, so a resumed turn is not suddenly blind
+            unlocked.update(c["name"] for c in calls if isinstance(c.get("name"), str))
+            # a search_tools result lives in the history, but the names it
+            # unlocked were a local set — re-run the same (local) search
+            for call in calls:
+                if call.get("name") != "search_tools":
+                    continue
+                query = (call.get("params") or {}).get("query")
+                if isinstance(query, str):
+                    unlocked.update(s.name for s in self._tools.search(query))
 
         # the agent's own acts this turn is being told about: a tool whose
         # outcome just arrived. On a turn nobody asked for, re-proposing
@@ -1733,6 +1926,10 @@ class AgentLoop:
         typing: asyncio.Task[None] | None = None
         if messages:
             typing = asyncio.create_task(self._typing_pulse())
+        # the loop writes its history here as it goes, so a provider failure
+        # can resume from the exact step that died instead of starting over
+        loop_history: list[Message] = []
+        attempt = 1 if resume is None else resume.attempts + 1
         try:
             # one turn's hard ceiling: a hung provider or a runaway tool
             # loop ends here (the wait cancels whatever was stuck) instead
@@ -1745,6 +1942,7 @@ class AgentLoop:
                     _gate,
                     _execute_unlocking,
                     max_iterations=self._config.agent.max_tool_iterations,
+                    progress=loop_history,
                 ),
                 timeout=self._config.agent.turn_timeout_seconds,
             )
@@ -1794,6 +1992,23 @@ class AgentLoop:
             )
             if messages:
                 await self._surfaces.send_to_user(TIMEOUT_REPLY)
+        except LLMProviderError as exc:
+            # a dead provider is a handled outcome: the user hears the
+            # cause in plain words, and a retryable outage hands the turn
+            # back to the loop to pick up when the service answers again
+            resume_history = loop_history or history
+            full_history = resume_history
+            await self._handle_provider_failure(
+                exc,
+                messages=messages,
+                observations=observations,
+                history=resume_history,
+                calls=calls,
+                turn_ref=turn_ref,
+                attempt=attempt,
+                trace=trace,
+                previous=resume.failure if resume is not None else None,
+            )
         except Exception as exc:
             trace["error"] = f"{type(exc).__name__}: {exc}"
             if messages:

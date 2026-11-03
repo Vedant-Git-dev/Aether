@@ -37,6 +37,7 @@ async def run_tool_loop(
     tools: list[ToolSpec] | ToolGate,
     execute: ToolExecutor,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    progress: list[Message] | None = None,
 ) -> tuple[Turn, list[Message]]:
     """Run reason -> act -> observe until the model replies without tool calls.
 
@@ -53,9 +54,13 @@ async def run_tool_loop(
     the very next iteration.
 
     Returns (final_turn, full_history): the last completion, plus the input
-    messages extended with everything the loop appended.
+    messages extended with everything the loop appended. When `progress` is
+    given, the same history is built inside it instead of a private list —
+    a caller that catches a provider failure can resume from exactly where
+    the loop stopped, without replaying tools that already ran.
     """
-    history = list(messages)
+    history = progress if progress is not None else []
+    history.extend(messages)
     turn = Turn()
     active: set[str] = {t.name for t in tools} if isinstance(tools, list) else set()
     for _ in range(max_iterations):

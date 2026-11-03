@@ -108,6 +108,13 @@ is live.
 The log line at boot names the provider failure. The panel, audit, approvals, and
 settings keep working while the model is down.
 
+A provider that is up but briefly failing is handled without losing the ask. A rate
+limit, an overloaded service, or a network blip gets one plain sentence in chat naming
+the cause and when the retry comes. The same turn then resumes from where it stopped,
+so a tool that already ran is not run twice. After several failed attempts Aether stops
+retrying and says so. A rejected or missing key is not retried: the reply names the fix
+in **Settings > Model providers**.
+
 ## `/status` shows "nothing set" for a medium
 
 An empty media slot means that medium is off. Set it to `default` to use the main model,
