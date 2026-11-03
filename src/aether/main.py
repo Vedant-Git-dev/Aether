@@ -55,6 +55,7 @@ from .memory.db import create_pool, run_migrations
 from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
 from .memory.salience import LLMJudge, Salience
+from .memory.storage import StorageGuardError, enforce_schema
 from .memory.vectors import VectorMemory
 from .proactive import Budget, ProactiveStore, ProactiveWorker
 from .providers.catalog import PROVIDERS
@@ -90,7 +91,12 @@ class StartupError(RuntimeError):
 def _build_cipher(settings: Settings) -> Cipher:
     if settings.encryption_key:
         try:
-            return Cipher.from_b64(settings.encryption_key)
+            return Cipher.from_b64(
+                settings.encryption_key,
+                key_id=settings.encryption_key_id or "k1",
+                previous_b64=settings.encryption_key_previous,
+                previous_id=settings.encryption_key_previous_id,
+            )
         except CryptoError as exc:
             raise StartupError(f"AETHER_ENCRYPTION_KEY is invalid: {exc}") from exc
     if settings.dev_ephemeral_key:
@@ -99,7 +105,7 @@ def _build_cipher(settings: Settings) -> Cipher:
             "Encrypted data will be unreadable after a restart. "
             "Set AETHER_DEV_EPHEMERAL_KEY=0 and configure a real key for anything real."
         )
-        return Cipher.from_b64(generate_key_b64())
+        return Cipher.from_b64(generate_key_b64(), key_id="dev")
     raise StartupError(
         "AETHER_ENCRYPTION_KEY is not set. Generate one with:\n"
         '  python -c "from aether.memory.crypto import generate_key_b64; print(generate_key_b64())"\n'
@@ -142,6 +148,13 @@ def create_app(
         pool = await create_pool(settings.database_url)
         applied = await run_migrations(pool)
         log.info("database ready (migrations applied this boot: %s)", applied or "none")
+        # the storage guard: refuse to run on a schema that still stores
+        # user-derived content in plain columns. Warns during the migration
+        # window; flips to enforce when the ledger is empty.
+        try:
+            await enforce_schema(pool, config.memory.schema_audit)
+        except StorageGuardError as exc:
+            raise StartupError(str(exc)) from exc
 
         # --- secrets by name ------------------------------------------------
         # keys pasted in the /apps walk (consumed before ingest) live

@@ -34,6 +34,10 @@ jobs:
       - run: pip install ruff
       - run: ruff check --output-format=github . # errors also show inline on the PR
       - run: ruff format --check .
+      - name: sealed-storage guard
+        # no install needed: the script reads src/ and imports only the
+        # dependency-free allowlist registry
+        run: python scripts/check_storage_guard.py
 
   unit-tests:
     name: unit tests (Python ${{ matrix.python }})
