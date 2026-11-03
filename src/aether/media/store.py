@@ -163,11 +163,11 @@ class MediaStore:
             row = await conn.fetchrow(
                 "INSERT INTO media_blobs"
                 " (filename, media_type, size, width, height, duration_s,"
-                "  origin, dedup_mac, bytes_enc)"
-                " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+                "  origin, dedup_mac, bytes_enc, meta_enc, origin_token, key_version)"
+                " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
                 " ON CONFLICT (dedup_mac)"
                 " DO UPDATE SET last_used_at = now()"
-                " RETURNING id, media_type, filename, size, (xmax = 0) AS inserted",
+                " RETURNING id, media_type, filename, size, meta_enc, (xmax = 0) AS inserted",
                 filename,
                 media_type,
                 len(data),
@@ -177,13 +177,17 @@ class MediaStore:
                 origin,
                 mac,
                 b"",
+                b"",
+                self._cipher.blind_token("source", origin),
+                self._cipher.key_id,
             )
             media_id = int(row["id"])
             if not row["inserted"]:  # dedup hit — the bytes already exist
+                meta = self._meta(row, media_id)
                 return MediaRef(
                     media_id=media_id,
-                    media_type=str(row["media_type"]),
-                    filename=str(row["filename"]),
+                    media_type=str(meta.get("media_type", row["media_type"])),
+                    filename=str(meta.get("filename", row["filename"])),
                     size=int(row["size"]),
                 )
             # the new row is already in the table — make_room counts it in
@@ -191,9 +195,21 @@ class MediaStore:
             # refusal the surrounding transaction rolls the insert back
             await self._make_room(conn, media_id)
             blob = self._cipher.encrypt_bytes(data, aad=f"media:{AAD_COLUMN}:{media_id}")
+            meta_blob = self._cipher.encrypt_json(
+                {
+                    "filename": filename,
+                    "media_type": media_type,
+                    "width": width,
+                    "height": height,
+                    "duration_s": duration_s,
+                    "origin": origin,
+                },
+                aad=f"media_blobs:meta_enc:{media_id}",
+            )
             await conn.execute(
-                "UPDATE media_blobs SET bytes_enc = $1 WHERE id = $2",
+                "UPDATE media_blobs SET bytes_enc = $1, meta_enc = $2 WHERE id = $3",
                 blob,
+                meta_blob,
                 media_id,
             )
         return MediaRef(media_id=media_id, media_type=media_type, filename=filename, size=len(data))
@@ -203,7 +219,7 @@ class MediaStore:
         should say the plain words — gone, evicted, or unreadable all
         read the same from the outside and never raise."""
         row = await self._pool.fetchrow(
-            "SELECT filename, media_type, size, bytes_enc FROM media_blobs WHERE id = $1",
+            "SELECT filename, media_type, size, bytes_enc, meta_enc FROM media_blobs WHERE id = $1",
             media_id,
         )
         if row is None:
@@ -219,10 +235,11 @@ class MediaStore:
             "UPDATE media_blobs SET last_used_at = now() WHERE id = $1",
             media_id,
         )
+        meta = self._meta(row, media_id)
         return MediaRecord(
             media_id=media_id,
-            filename=str(row["filename"]),
-            media_type=str(row["media_type"]),
+            filename=str(meta.get("filename", row["filename"])),
+            media_type=str(meta.get("media_type", row["media_type"])),
             size=int(row["size"]),
             data=data,
         )
@@ -234,21 +251,40 @@ class MediaStore:
         how new it is, so a "the video I sent" resolves by fact and
         never by a guessed id."""
         rows = await self._pool.fetch(
-            "SELECT id, filename, media_type, size, origin, created_at"
+            "SELECT id, filename, media_type, size, origin, created_at, meta_enc"
             " FROM media_blobs ORDER BY created_at DESC, id DESC LIMIT $1",
             limit,
         )
-        return [
-            MediaSummary(
-                media_id=int(row["id"]),
-                filename=str(row["filename"]),
-                media_type=str(row["media_type"]),
-                size=int(row["size"]),
-                origin=str(row["origin"] or ""),
-                created_at=row["created_at"],
+        summaries: list[MediaSummary] = []
+        for row in rows:
+            media_id = int(row["id"])
+            meta = self._meta(row, media_id)
+            summaries.append(
+                MediaSummary(
+                    media_id=media_id,
+                    filename=str(meta.get("filename", row["filename"])),
+                    media_type=str(meta.get("media_type", row["media_type"])),
+                    size=int(row["size"]),
+                    origin=str(meta.get("origin", row["origin"]) or ""),
+                    created_at=row["created_at"],
+                )
             )
-            for row in rows
-        ]
+        return summaries
+
+    def _meta(self, row: Any, media_id: int) -> dict[str, Any]:
+        """Sealed media metadata, or the plaintext columns during the
+        migration window."""
+        blob = row.get("meta_enc")
+        if blob:
+            try:
+                return self._cipher.decrypt_json(blob, aad=f"media_blobs:meta_enc:{media_id}")
+            except Exception:
+                log.warning("media %s metadata undecryptable — using the columns", media_id)
+        return {
+            "filename": row["filename"],
+            "media_type": row["media_type"],
+            "origin": row["origin"],
+        }
 
     async def total_bytes(self) -> int:
         """Everything currently kept — the quota's other side."""

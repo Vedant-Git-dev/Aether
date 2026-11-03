@@ -114,9 +114,12 @@ class Routines:
             )
             routine_id = row["id"]
             await conn.execute(
-                "UPDATE routines SET trigger_enc = $1, action_enc = $2 WHERE id = $3",
+                "UPDATE routines SET trigger_enc = $1, action_enc = $2, label_enc = $3,"
+                " key_version = $4 WHERE id = $5",
                 self._cipher.encrypt_json(trigger, aad=_aad(routine_id, "trigger_enc")),
                 self._cipher.encrypt_json(action, aad=_aad(routine_id, "action_enc")),
+                self._cipher.encrypt_text(label, aad=f"routines:label_enc:{routine_id}"),
+                self._cipher.key_id,
                 routine_id,
             )
         await self._audit.append(
@@ -144,7 +147,8 @@ class Routines:
 
     async def get(self, routine_id: int) -> Routine | None:
         row = await self._pool.fetchrow(
-            "SELECT id, label, trigger_enc, action_enc, enabled, cooldown_seconds,"
+            "SELECT id, label, label_enc, trigger_enc, action_enc, enabled,"
+            " cooldown_seconds,"
             " fire_count, last_fired_at, created_at FROM routines WHERE id = $1",
             routine_id,
         )
@@ -153,7 +157,8 @@ class Routines:
     async def list(self, limit: int = 50) -> list[Routine]:
         """Newest first, any status — the listing tool's view."""
         rows = await self._pool.fetch(
-            "SELECT id, label, trigger_enc, action_enc, enabled, cooldown_seconds,"
+            "SELECT id, label, label_enc, trigger_enc, action_enc, enabled,"
+            " cooldown_seconds,"
             " fire_count, last_fired_at, created_at"
             " FROM routines ORDER BY id DESC LIMIT $1",
             limit,
@@ -164,7 +169,8 @@ class Routines:
         """What the loop evaluates, oldest first so earlier-taught routines
         fire in the order the user taught them."""
         rows = await self._pool.fetch(
-            "SELECT id, label, trigger_enc, action_enc, enabled, cooldown_seconds,"
+            "SELECT id, label, label_enc, trigger_enc, action_enc, enabled,"
+            " cooldown_seconds,"
             " fire_count, last_fired_at, created_at"
             " FROM routines WHERE enabled ORDER BY id"
         )
@@ -180,7 +186,7 @@ class Routines:
     async def set_enabled(self, routine_id: int, enabled: bool) -> Routine | None:
         row = await self._pool.fetchrow(
             "UPDATE routines SET enabled = $1 WHERE id = $2"
-            " RETURNING id, label, trigger_enc, action_enc, enabled,"
+            " RETURNING id, label, label_enc, trigger_enc, action_enc, enabled,"
             " cooldown_seconds, fire_count, last_fired_at, created_at",
             enabled,
             routine_id,
@@ -192,6 +198,15 @@ class Routines:
             "DELETE FROM routines WHERE id = $1 RETURNING id", routine_id
         )
         return row is not None
+
+    def _label(self, row: asyncpg.Record) -> str:
+        blob = row.get("label_enc")
+        if blob:
+            try:
+                return self._cipher.decrypt_text(blob, aad=f"routines:label_enc:{row['id']}")
+            except Exception:
+                log.warning("routine %s label undecryptable — using the plaintext copy", row["id"])
+        return str(row["label"])
 
     def _to_routine(self, row: asyncpg.Record) -> Routine:
         routine_id = row["id"]
@@ -211,7 +226,7 @@ class Routines:
             action = {}
         return Routine(
             id=routine_id,
-            label=row["label"],
+            label=self._label(row),
             trigger=trigger,
             action=action,
             enabled=row["enabled"],

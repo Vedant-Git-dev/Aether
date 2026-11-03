@@ -107,6 +107,37 @@ async def _seed(db, cipher: Cipher) -> dict[str, int]:
         cipher.encrypt_text("page two text", aad=f"chunks:text_enc:{chunk_id}"),
         chunk_id,
     )
+
+    # the stores sealed their new rows; strip the sealed copies so this test
+    # exercises the sealer's legacy path in every table, as a real pre-phase
+    # database would
+    await db.execute(
+        "UPDATE events SET meta_enc = NULL, source_token = NULL, dedup_mac = NULL WHERE id = $1",
+        event_id,
+    )
+    await db.execute("UPDATE identities SET profile_enc = NULL WHERE id = $1", person.id)
+    await db.execute(
+        "UPDATE identity_handles SET handle_enc = NULL, platform_token = NULL,"
+        " normalized_token = NULL WHERE identity_id = $1",
+        person.id,
+    )
+    await db.execute(
+        "UPDATE pending_approvals SET rules_matched_enc = NULL, note_enc = NULL WHERE id = $1",
+        approval.id,
+    )
+    await db.execute("UPDATE scheduled_actions SET meta_enc = NULL WHERE id = $1", scheduled.id)
+    await db.execute("UPDATE routines SET label_enc = NULL WHERE id = $1", routine.id)
+    await db.execute("UPDATE decision_traces SET label_enc = NULL WHERE id = $1", trace.id)
+    await db.execute(
+        "UPDATE proactive_tasks SET label_enc = NULL, meta_enc = NULL,"
+        " opportunity_token = NULL, day_token = NULL WHERE id = $1",
+        task.id,
+    )
+    await db.execute(
+        "UPDATE media_blobs SET meta_enc = NULL, origin_token = NULL WHERE id = $1",
+        blob.media_id,
+    )
+    await db.execute("UPDATE chat_messages SET surface_token = NULL")
     return {
         "event": event_id,
         "identity": person.id,
@@ -129,7 +160,7 @@ async def test_seal_backfill_fills_every_table_and_verifies(db) -> None:
     results = await backfill(db, cipher, batch=50, sleep=0)
     assert all(result.remaining == 0 for result in results), results
     assert all(result.failed == 0 for result in results), results
-    assert sum(result.sealed for result in results) >= 7
+    assert sum(result.sealed for result in results) >= 9
 
     event = await db.fetchrow(
         "SELECT source_token, dedup_mac, meta_enc FROM events WHERE id = $1", ids["event"]

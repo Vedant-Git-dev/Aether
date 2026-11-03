@@ -30,14 +30,18 @@ class ChatHistory:
     async def append(self, surface: str, direction: str, text: str) -> None:
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
-                "INSERT INTO chat_messages (surface, direction, payload_enc)"
-                " VALUES ($1, $2, $3) RETURNING id",
+                "INSERT INTO chat_messages (surface, direction, payload_enc,"
+                " surface_token, key_version)"
+                " VALUES ($1, $2, $3, $4, $5) RETURNING id",
                 surface,
                 direction,
                 b"",  # placeholder until the id exists; replaced below, same transaction
+                self._cipher.blind_token("source", surface),
+                self._cipher.key_id,
             )
             blob = self._cipher.encrypt_json(
-                {"text": text}, aad=f"chat_messages:payload_enc:{row['id']}"
+                {"text": text, "surface": surface},
+                aad=f"chat_messages:payload_enc:{row['id']}",
             )
             await conn.execute(
                 "UPDATE chat_messages SET payload_enc = $1 WHERE id = $2",
@@ -47,7 +51,7 @@ class ChatHistory:
 
     async def recent(self, limit: int = 50) -> list[dict[str, Any]]:
         rows = await self._pool.fetch(
-            "SELECT id, surface, direction, created_at, payload_enc"
+            "SELECT id, surface, surface_token, direction, created_at, payload_enc"
             " FROM chat_messages ORDER BY id DESC LIMIT $1",
             limit,
         )
@@ -61,7 +65,7 @@ class ChatHistory:
                 continue
             out.append(
                 {
-                    "surface": row["surface"],
+                    "surface": str(payload.get("surface", row["surface"])),
                     "direction": row["direction"],
                     "text": payload.get("text", ""),
                     "at": row["created_at"].isoformat(),
