@@ -1,4 +1,0 @@
-[codespell]
-skip = .git,.venv,.ruff_cache,.pytest_cache,.claude,*/node_modules/*,*/src/aether/web/*,*/aether-workspace/*,*.pyc,*.sql,*.lock,package-lock.json,*.min.js
-quiet-level = 2
-ignore-words-list = aether,asyncpg,uvicorn,webapp,fastapi,pydantic,gemini,nvidia,ollama,anthropic,openai,tavily,groq,modal,vercel,dropdown,nd
