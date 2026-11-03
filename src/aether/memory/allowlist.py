@@ -75,8 +75,8 @@ PLAINTEXT_ALLOWLIST: dict[str, frozenset[str]] = {
             "created_at",
         }
     ),
-    "connector_cursors": frozenset({"source"}),
-    "agent_settings": frozenset({"id", "updated_at"}),
+    "connector_cursors": frozenset({"source", "key_version"}),
+    "agent_settings": frozenset({"id", "updated_at", "key_version"}),
     "routines": frozenset(
         {
             "id",
@@ -89,9 +89,9 @@ PLAINTEXT_ALLOWLIST: dict[str, frozenset[str]] = {
         }
     ),
     "decision_traces": frozenset({"id", "kind", "created_at", "key_version"}),
-    "config_overrides": frozenset({"path", "updated_at"}),
-    "oauth_tokens": frozenset({"provider", "scopes", "expires_at", "updated_at"}),
-    "app_secrets": frozenset({"name", "updated_at"}),
+    "config_overrides": frozenset({"path", "updated_at", "key_version"}),
+    "oauth_tokens": frozenset({"provider", "scopes", "expires_at", "updated_at", "key_version"}),
+    "app_secrets": frozenset({"name", "updated_at", "key_version"}),
     "memory_chunks": frozenset(
         {"id", "event_id", "key_version", "embed_model_token", "dims", "created_at"}
     ),
@@ -109,7 +109,7 @@ PLAINTEXT_ALLOWLIST: dict[str, frozenset[str]] = {
         }
     ),
     "workbench_transfers": frozenset(
-        {"id", "token_hash", "kind", "used", "expires_at", "created_at"}
+        {"id", "token_hash", "kind", "used", "expires_at", "created_at", "key_version"}
     ),
     "workbench_minutes": frozenset({"month", "seconds", "updated_at"}),
     "proactive_tasks": frozenset(
@@ -144,6 +144,7 @@ PLAINTEXT_ALLOWLIST: dict[str, frozenset[str]] = {
             "last_refreshed_at",
             "created_at",
             "updated_at",
+            "key_version",
         }
     ),
     "provider_oauth_states": frozenset(
@@ -159,7 +160,7 @@ PLAINTEXT_ALLOWLIST: dict[str, frozenset[str]] = {
             "consumed_at",
         }
     ),
-    "provider_sync_state": frozenset({"provider", "app", "key", "updated_at"}),
+    "provider_sync_state": frozenset({"provider", "app", "key", "updated_at", "key_version"}),
     "schema_migrations": frozenset({"version", "applied_at"}),
     # tables introduced by the sealed storage phase
     "facts": frozenset(
@@ -204,7 +205,7 @@ SEALED_COLUMNS: dict[str, frozenset[str]] = {
     "entity_notes": frozenset({"payload_enc"}),
     "chat_messages": frozenset({"payload_enc"}),
     "pending_approvals": frozenset({"params_enc", "rules_matched_enc", "note_enc"}),
-    "scheduled_actions": frozenset({"payload_enc"}),
+    "scheduled_actions": frozenset({"payload_enc", "meta_enc"}),
     "agent_settings": frozenset({"personality_enc"}),
     "routines": frozenset({"label_enc", "trigger_enc", "action_enc"}),
     "decision_traces": frozenset({"label_enc", "trace_enc"}),

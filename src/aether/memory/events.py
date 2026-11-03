@@ -39,7 +39,9 @@ log = logging.getLogger("aether.memory.events")
 SENDER_KEY = "_sender"
 
 
-def content_hash(kind: str, payload: dict[str, Any]) -> str:
+def canonical_payload(kind: str, payload: dict[str, Any]) -> bytes:
+    """The canonical bytes dedup is computed over — one helper so the
+    legacy SHA-256 and the sealed keyed tag can never disagree."""
     blob = json.dumps(
         {"kind": kind, "payload": payload},
         sort_keys=True,
@@ -47,7 +49,11 @@ def content_hash(kind: str, payload: dict[str, Any]) -> str:
         ensure_ascii=False,
         default=str,
     )
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+    return blob.encode("utf-8")
+
+
+def content_hash(kind: str, payload: dict[str, Any]) -> str:
+    return hashlib.sha256(canonical_payload(kind, payload)).hexdigest()
 
 
 def _bare(handle: str) -> str:

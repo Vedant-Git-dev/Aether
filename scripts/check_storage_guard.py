@@ -55,6 +55,7 @@ SQL_MODULES = frozenset(
         "src/aether/memory/db.py",
         "src/aether/memory/entities.py",
         "src/aether/memory/events.py",
+        "src/aether/memory/seal_migrate.py",
         "src/aether/memory/storage.py",
         "src/aether/memory/vectors.py",
         "src/aether/proactive/store.py",
