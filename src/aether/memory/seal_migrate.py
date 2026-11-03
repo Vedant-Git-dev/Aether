@@ -260,9 +260,16 @@ async def _seal_chunk(conn: asyncpg.Connection, cipher: Cipher, row: asyncpg.Rec
 
 async def _seal_proactive(conn: asyncpg.Connection, cipher: Cipher, row: asyncpg.Record) -> bool:
     await conn.execute(
-        "UPDATE proactive_tasks SET label_enc = $1, opportunity_token = $2,"
-        f" day_token = $3, {KEY_VERSION} = $4 WHERE id = $5",
+        "UPDATE proactive_tasks SET label_enc = $1, meta_enc = $2,"
+        f" opportunity_token = $3, day_token = $4, {KEY_VERSION} = $5 WHERE id = $6",
         _seal_text(cipher, row["label"], "proactive_tasks", "label_enc", row["id"]),
+        _seal(
+            cipher,
+            {"skill": row["skill"], "opportunity_key": row["opportunity_key"], "day": row["day"]},
+            "proactive_tasks",
+            "meta_enc",
+            row["id"],
+        ),
         cipher.blind_token("opportunity", f"{row['skill']}\x1f{row['opportunity_key']}"),
         cipher.blind_token("day", row["day"]),
         cipher.key_id,

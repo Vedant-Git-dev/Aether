@@ -77,6 +77,7 @@ ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS dims INT;
 
 ALTER TABLE proactive_tasks ADD COLUMN IF NOT EXISTS key_version TEXT NOT NULL DEFAULT 'k1';
 ALTER TABLE proactive_tasks ADD COLUMN IF NOT EXISTS label_enc BYTEA;
+ALTER TABLE proactive_tasks ADD COLUMN IF NOT EXISTS meta_enc BYTEA;
 ALTER TABLE proactive_tasks ADD COLUMN IF NOT EXISTS opportunity_token BYTEA;
 ALTER TABLE proactive_tasks ADD COLUMN IF NOT EXISTS day_token BYTEA;
 CREATE UNIQUE INDEX IF NOT EXISTS proactive_tasks_token_idx

@@ -33,6 +33,20 @@ def _aad(approval_id: int) -> str:
     return f"pending_approvals:params_enc:{approval_id}"
 
 
+def _sealed_text(cipher: Cipher, blob: Any, plaintext: Any, aad: str) -> str:
+    """A sealed string with the plaintext column as the migration fallback."""
+    if blob:
+        try:
+            return cipher.decrypt_text(blob, aad=aad)
+        except CryptoError:
+            log.warning("approval field undecryptable — using the plaintext copy")
+    return str(plaintext or "")
+
+
+_AAD_RULES = "pending_approvals:rules_matched_enc:{}"
+_AAD_NOTE = "pending_approvals:note_enc:{}"
+
+
 @dataclass
 class Approval:
     id: int
@@ -99,8 +113,12 @@ class Approvals:
             # encrypt only after the id exists so the AAD can bind to it
             blob = self._cipher.encrypt_json(params, aad=_aad(approval_id))
             await conn.execute(
-                "UPDATE pending_approvals SET params_enc = $1 WHERE id = $2",
+                "UPDATE pending_approvals SET params_enc = $1, rules_matched_enc = $2,"
+                " note_enc = $3, key_version = $4 WHERE id = $5",
                 blob,
+                self._cipher.encrypt_text(rules_matched, aad=_AAD_RULES.format(approval_id)),
+                self._cipher.encrypt_text(note, aad=_AAD_NOTE.format(approval_id)),
+                self._cipher.key_id,
                 approval_id,
             )
         await self._audit.append(
@@ -141,18 +159,16 @@ class Approvals:
                 " SET status = $1, decided_at = now(), decided_by = $2, media_id = NULL"
                 " WHERE id = $3 AND status = 'pending' AND expires_at > now()"
                 " RETURNING id, tool_name, status, created_at, expires_at,"
-                " decided_at, decided_by, rules_matched, note",
+                " decided_at, decided_by, rules_matched, rules_matched_enc,"
+                " note, note_enc, params_enc",
                 decision,
                 decided_by,
                 approval_id,
             )
             if row is None:
                 return None
-            blob = await conn.fetchval(
-                "SELECT params_enc FROM pending_approvals WHERE id = $1",
-                approval_id,
-            )
-        params = self._cipher.decrypt_json(blob, aad=_aad(approval_id))
+            approval = self._to_approval(row)
+        params = approval.params
         await self._audit.append(
             actor="user",
             tool_name=row["tool_name"],
@@ -161,18 +177,7 @@ class Approvals:
             outcome=f"{decision} by {decided_by}",
         )
         log.info("approval %s decided %s by %s", approval_id, decision, decided_by)
-        return Approval(
-            id=approval_id,
-            tool_name=row["tool_name"],
-            params=params,
-            status=decision,
-            created_at=row["created_at"],
-            expires_at=row["expires_at"],
-            decided_at=row["decided_at"],
-            decided_by=row["decided_by"],
-            rules_matched=row["rules_matched"],
-            note=row["note"],
-        )
+        return approval
 
     async def mark_executed(self, approval_id: int) -> None:
         """Flip an approved call to executed after the tool ran."""
@@ -252,7 +257,7 @@ class Approvals:
     async def get(self, approval_id: int) -> Approval | None:
         row = await self._pool.fetchrow(
             "SELECT id, tool_name, status, created_at, expires_at, decided_at,"
-            " decided_by, rules_matched, note, params_enc"
+            " decided_by, rules_matched, rules_matched_enc, note, note_enc, params_enc"
             " FROM pending_approvals WHERE id = $1",
             approval_id,
         )
@@ -271,7 +276,7 @@ class Approvals:
     async def list_pending(self) -> list[Approval]:
         rows = await self._pool.fetch(
             "SELECT id, tool_name, status, created_at, expires_at, decided_at,"
-            " decided_by, rules_matched, note, params_enc"
+            " decided_by, rules_matched, rules_matched_enc, note, note_enc, params_enc"
             " FROM pending_approvals WHERE status = 'pending' AND expires_at > now()"
             " ORDER BY created_at"
         )
@@ -294,6 +299,13 @@ class Approvals:
             expires_at=row["expires_at"],
             decided_at=row["decided_at"],
             decided_by=row["decided_by"],
-            rules_matched=row["rules_matched"],
-            note=row["note"],
+            rules_matched=_sealed_text(
+                self._cipher,
+                row.get("rules_matched_enc"),
+                row["rules_matched"],
+                _AAD_RULES.format(row["id"]),
+            ),
+            note=_sealed_text(
+                self._cipher, row.get("note_enc"), row["note"], _AAD_NOTE.format(row["id"])
+            ),
         )

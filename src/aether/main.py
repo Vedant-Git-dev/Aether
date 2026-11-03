@@ -327,7 +327,9 @@ def create_app(
         # so the panel can say why, but it exposes no actions and stores
         # nothing.
         provider_http = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0))
-        provider_store = ProviderStore(pool, token_keyring) if token_keyring is not None else None
+        provider_store = (
+            ProviderStore(pool, token_keyring, cipher) if token_keyring is not None else None
+        )
         provider_oauth = (
             OAuthEngine(
                 store=provider_store,

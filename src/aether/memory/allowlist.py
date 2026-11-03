@@ -215,7 +215,14 @@ SEALED_COLUMNS: dict[str, frozenset[str]] = {
     "memory_chunks": frozenset({"text_enc", "embedding_enc", "meta_enc"}),
     "workbench_transfers": frozenset({"payload_enc"}),
     "proactive_tasks": frozenset(
-        {"label_enc", "opportunity_enc", "plan_enc", "result_enc", "feedback_note_enc"}
+        {
+            "label_enc",
+            "meta_enc",
+            "opportunity_enc",
+            "plan_enc",
+            "result_enc",
+            "feedback_note_enc",
+        }
     ),
     "media_blobs": frozenset({"bytes_enc", "meta_enc"}),
     "provider_connections": frozenset(
