@@ -97,6 +97,12 @@ log = logging.getLogger("aether.agent")
 
 _MAX_OBSERVATIONS = 20
 
+# A solicited turn waits this long for write-time enrichment still in
+# flight before it answers from the deterministic floor. The classifier is
+# one cheap model turn per event, so a burst can outrun the question that
+# followed it; this is the bound, not a promise to wait for every event.
+ENRICHMENT_WAIT_SECONDS = 2.0
+
 # History windowing (token control): a turn's prompt is capped at this many
 # messages — the context block and the newest triggers always stay, the
 # oldest middle entries fall off first. The tool loop's own back-and-forth
@@ -1942,6 +1948,7 @@ class AgentLoop:
             # assembly below — one API wait hidden instead of added
             recall_embed: asyncio.Task[list[float] | None] | None = None
             await self._refresh_owner_addresses()
+            await self._await_enrichment()
             delivery_lines = await self._redeliver_failed()
             if messages and self._vectors is not None and self._vectors.enabled:
                 try:
@@ -2429,6 +2436,28 @@ class AgentLoop:
             self._owner_addresses = await self._entities.owner_addresses()
         except Exception:
             log.warning("could not read the owner addresses — rendering without them")
+
+    async def _await_enrichment(self) -> None:
+        """Give enrichment still in flight a short, bounded head start.
+
+        The floor already made an urgent event visible at ingest, so this is
+        detail — a summary, a deadline, a classifier urgency — not the thing
+        that makes the event exist. A turn never waits longer than
+        `ENRICHMENT_WAIT_SECONDS`, and a wait that times out answers from the
+        floor rather than delaying the user.
+        """
+        wait = getattr(self._events, "wait_idle", None)
+        if wait is None:
+            return
+        try:
+            await asyncio.wait_for(wait(), timeout=ENRICHMENT_WAIT_SECONDS)
+        except TimeoutError:
+            log.info(
+                "enrichment still in flight after %.1fs — answering from the floor",
+                ENRICHMENT_WAIT_SECONDS,
+            )
+        except Exception:
+            log.warning("could not wait for enrichment — answering from the floor", exc_info=True)
 
     # -- structured views, focus and delivery ---------------------------------
 

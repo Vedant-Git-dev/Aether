@@ -1249,8 +1249,41 @@ async def test_a_failed_redelivery_is_abandoned_not_retried_forever() -> None:
 
 
 # ---------------------------------------------------------------------------
-# the attention view and the focus object
+# enrichment wait, the attention view and the focus object
 # ---------------------------------------------------------------------------
+
+
+async def test_enrichment_is_awaited_briefly_on_a_solicited_turn() -> None:
+    kit = LoopKit(None)
+    waited: list[bool] = []
+
+    async def wait_idle() -> None:
+        waited.append(True)
+
+    kit.events.wait_idle = wait_idle
+
+    await kit.loop._await_enrichment()
+
+    assert waited == [True]
+
+
+async def test_the_enrichment_wait_is_bounded(monkeypatch) -> None:
+    kit = LoopKit(None)
+
+    async def never() -> None:
+        await asyncio.sleep(30)
+
+    kit.events.wait_idle = never
+    monkeypatch.setattr("aether.agent.loop.ENRICHMENT_WAIT_SECONDS", 0.01)
+
+    # it returns rather than hanging the turn
+    await kit.loop._await_enrichment()
+
+
+async def test_a_store_without_enrichment_never_waits() -> None:
+    kit = LoopKit(None)
+    # LoopKit's FakeEventStore has no wait_idle; the helper is a no-op
+    await kit.loop._await_enrichment()
 
 
 async def test_an_urgent_question_gets_an_as_of_attention_line() -> None:
