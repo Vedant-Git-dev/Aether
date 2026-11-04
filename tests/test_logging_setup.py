@@ -51,3 +51,39 @@ def test_installing_twice_stacks_no_second_filter() -> None:
     before = _access_log_filters()
     configure_logging()  # the serve loop calls this again on every restart
     assert _access_log_filters() == before == 1
+
+
+# -- the content safety net -------------------------------------------------
+
+
+def _scrubbed(msg: object, args: object = ()) -> str:
+    record = logging.LogRecord("aether", logging.INFO, __file__, 1, msg, args, None)
+    _NoTokensInLogs().filter(record)
+    return record.getMessage()
+
+
+def test_addresses_links_and_files_never_reach_a_log() -> None:
+    out = _scrubbed(
+        "mail from %s about %s, reachable at %s",
+        ("friend@example.com", "invoice.pdf", "mailto:friend@example.com"),
+    )
+    assert "friend@example.com" not in out
+    assert "invoice.pdf" not in out
+    assert "[address]" in out
+    assert "[file]" in out
+
+
+def test_home_paths_and_snippets_never_reach_a_log() -> None:
+    out = _scrubbed(
+        "wrote %s and said %s",
+        ("/home/vedant/notes.txt", '"the subject line runs long enough to count"'),
+    )
+    assert "/home/vedant" not in out
+    assert "the subject line runs long enough" not in out
+    assert "[home]" in out
+    assert "[text]" in out
+
+
+def test_ids_and_counts_pass_through_the_scrubber() -> None:
+    out = _scrubbed("event %d scored %.1f for %s", (42, 7.5, "gmail"))
+    assert out == "event 42 scored 7.5 for gmail"

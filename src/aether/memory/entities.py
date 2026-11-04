@@ -477,7 +477,7 @@ class Entities:
             tool_name="entity_resolve",
             decision="info",
             params={"identity_id": identity_id, "handle": handle, "platform": platform},
-            outcome=f"handle linked: {how}",
+            outcome="handle linked",
         )
 
     async def _create(

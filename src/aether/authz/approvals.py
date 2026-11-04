@@ -121,13 +121,16 @@ class Approvals:
                 self._cipher.key_id,
                 approval_id,
             )
+        # the audit record keeps ids and digests only: the free-text note
+        # already lives, sealed, on the approval row itself, and the rule is
+        # a policy vocabulary id rather than user content
         await self._audit.append(
             actor=actor,
             tool_name=tool_name,
             decision="approve",
             rules_matched=rules_matched,
             params=params,
-            outcome=note or "parked for approval",
+            outcome="parked for approval",
         )
         return Approval(
             id=approval_id,

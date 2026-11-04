@@ -201,10 +201,13 @@ async def process_due(scheduler: Scheduler, run: ActionRunner) -> int:
             result = await run(action)
             digest = hashlib.sha256(result.encode("utf-8")).hexdigest()[:16]
             await scheduler.mark(action.id, DONE, digest)
-            log.info("scheduled action %d (%s) done", action.id, action.label)
+            log.info("scheduled action %d done", action.id)
         except Exception as exc:
-            log.exception("scheduled action %d (%s) failed", action.id, action.label)
-            await scheduler.mark(action.id, FAILED, str(exc)[:200])
+            log.exception("scheduled action %d failed", action.id)
+            # the column is a digest, and an executor's error can quote the
+            # action's own content — hash it rather than write it down
+            digest = hashlib.sha256(str(exc).encode("utf-8")).hexdigest()[:16]
+            await scheduler.mark(action.id, FAILED, digest)
         ran += 1
     return ran
 
