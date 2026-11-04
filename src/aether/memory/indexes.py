@@ -188,6 +188,11 @@ class MemoryIndex:
                     break
         return out
 
+    def all_events(self) -> list[IndexedEvent]:
+        """Every resident event, unordered — the attention view sorts the
+        hot set itself, and the index does not keep an urgency order."""
+        return list(self._events.values())
+
     def since_time(self, since: datetime, limit: int = 2_000) -> list[IndexedEvent]:
         """Oldest first among events at or after `since`, capped."""
         start = bisect.bisect_left(self._order, (since, -1))
