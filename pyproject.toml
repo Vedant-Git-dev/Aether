@@ -17,6 +17,8 @@ dependencies = [
     "tenacity>=9",
     "rapidfuzz>=3.10",
     "pyyaml>=6.0",
+    "rich>=13.0",  # the setup wizard's terminal styling and intro
+    "prompt_toolkit>=3.0",  # the wizard's cross-platform arrow-key prompts
     "anthropic>=1.0",
     "openai>=1.60",
     "google-genai>=1.0",
@@ -39,6 +41,7 @@ dev = [
 
 [project.scripts]
 aether = "aether.main:main"
+aether-setup = "aether.setup.cli:run"
 
 [build-system]
 requires = ["hatchling"]

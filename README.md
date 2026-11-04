@@ -126,16 +126,123 @@ flowchart TD
 - **Self-host anywhere.** One asyncio process and Postgres. A Render blueprint is included.
 - **Persistent schedules.** Scheduled actions and routines survive restarts and re-arm on boot.
 
-## Quick start
+## Installation
 
-Aether needs Postgres to boot. There is no hosted instance and no SQLite mode. To click
-through the panel first, use the fixture server, which needs no database. The long version
-is in [docs/quickstart.md](docs/quickstart.md).
+Aether needs Python 3.12+ and a Postgres database. A free Neon database works; so
+does a local one. Node 22+ is only needed when you build the panel yourself — the
+deploy engine builds it on Render. There is no hosted instance and no SQLite mode.
+
+### Requirements
+
+| Component | Linux | Windows (PowerShell) |
+| --- | --- | --- |
+| Python 3.12+ | `sudo apt-get install -y python3 python3-venv` | `winget install Python.Python.3.12` |
+| Postgres | `sudo apt-get install -y postgresql` | `winget install PostgreSQL.PostgreSQL` |
+| Node 22+ (local panel only) | `sudo apt-get install -y nodejs npm` | `winget install OpenJS.NodeJS.LTS` |
+
+Use your distro's package manager when it is not `apt` (`dnf`, `pacman`, `apk`).
+On macOS: `brew install python@3.12 postgresql node`. Node 22+ may need
+NodeSource or `nvm` on older distributions. The setup wizard checks the Python
+version and installs its own `rich` and `prompt_toolkit` dependencies (into a
+private venv when the system Python refuses `pip`); it does not install Python or
+Postgres for you.
+
+### Install and configure
+
+Linux and macOS:
+
+```bash
+git clone https://github.com/Vedant-Git-dev/Aether.git
+cd Aether
+./scripts/setup.sh
+```
+
+Windows, in PowerShell (or `scripts\setup.bat` from `cmd.exe`):
+
+```powershell
+git clone https://github.com/Vedant-Git-dev/Aether.git
+cd Aether
+.\scripts\setup.bat
+```
+
+The wizard checks and installs its Python dependencies, then asks the questions
+with arrow keys, Space and Enter. Secrets are masked, and no question needs a
+typed number or y/n. It writes the answers, the generated secrets and a ready
+`config.generated.yaml` to `~/.aether-setup`.
+
+For a scripted install, add `--yes` to accept every default, or point at an
+answers file:
+
+```bash
+./scripts/setup.sh --yes
+./scripts/setup.sh --answers answers.toml
+```
+
+```powershell
+.\scripts\setup.bat --yes
+.\scripts\setup.bat --answers answers.toml
+```
+
+### Deploy
+
+Linux and macOS:
+
+```bash
+./scripts/deploy.sh --answers ~/.aether-setup/answers.env
+```
+
+Windows, in PowerShell:
+
+```powershell
+.\scripts\deploy.bat --answers "$env:USERPROFILE\.aether-setup\answers.env"
+```
+
+With a Render API key and your own fork, the deploy engine creates or updates the
+Render service, waits for the first build, verifies `/healthz` and the panel, and
+creates the uptime monitor. Without a key (or with the public upstream repo), it
+writes the Blueprint and prints the exact dashboard steps instead.
+
+Open the deployed URL, paste the token under **Settings > Access**, and send
+`/status`. It reports the resolved models, pending approvals, and queue depth
+without a model call. Back up `~/.aether-setup/secrets.env`: losing
+`AETHER_ENCRYPTION_KEY` makes every stored message, memory, and token unrecoverable.
+
+### Run locally instead
+
+The wizard's generated config and secrets are plain files. On Linux or macOS:
+
+```bash
+cp ~/.aether-setup/config.generated.yaml config.yaml
+set -a; . ~/.aether-setup/secrets.env; set +a
+cd webapp && npm ci && npm run build && cd ..
+aether
+```
+
+On Windows, in PowerShell:
+
+```powershell
+Copy-Item "$env:USERPROFILE\.aether-setup\config.generated.yaml" config.yaml
+Get-Content "$env:USERPROFILE\.aether-setup\secrets.env" | ForEach-Object {
+  $k, $v = $_ -split '=', 2
+  if ($k -and $v) { Set-Item -Path "Env:$k" -Value $v }
+}
+cd webapp; npm ci; npm run build; cd ..
+aether
+```
+
+For a local Postgres, choose **existing** for the database question and paste the
+local connection string (for example `postgresql:///aether`).
+
+The full question list, `--answers`, `--yes`, `--dry-run` and `--no-animation` are
+in [docs/hosted-setup.md](docs/hosted-setup.md). The manual, step-by-step install is
+in [docs/quickstart.md](docs/quickstart.md).
 
 ### Try the panel without a database
 
-Real app, real panel, in-memory fixtures. It does not run the agent, call a model, or
-persist anything.
+Real app, real panel, in-memory fixtures. It does not run the agent, call a model,
+or persist anything.
+
+Linux and macOS:
 
 ```bash
 git clone https://github.com/Vedant-Git-dev/Aether.git
@@ -146,72 +253,20 @@ cd webapp && npm ci && npm run build && cd ..
 python tests/e2e/dev_server.py
 ```
 
-Expected: `Uvicorn running on http://127.0.0.1:8731`. Open it and paste the token
-`secret` under **Settings > Access**. The data is fake and nothing is saved.
+Windows, in PowerShell:
 
-### Self-host
-
-You need Python 3.12+, Node 22+ to build the panel, and a Postgres database. A free Neon
-database works; so does a local one.
-
-**1. Install and create the database**
-
-```bash
+```powershell
 git clone https://github.com/Vedant-Git-dev/Aether.git
 cd Aether
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
-createdb aether          # or use a Neon connection string
+cd webapp; npm ci; npm run build; cd ..
+python tests/e2e/dev_server.py
 ```
 
-**2. Generate a key and write `.env`**
-
-```bash
-python -c "from aether.memory.crypto import generate_key_b64; print(generate_key_b64())"
-cp .env.example .env
-```
-
-Fill in the required values:
-
-```dotenv
-DATABASE_URL=postgresql://user:pass@host/dbname?sslmode=require
-AETHER_ENCRYPTION_KEY=<the base64 line from the command above>
-AETHER_TOKEN=<a long random string>
-ANTHROPIC_API_KEY=<your provider key, or use OpenAI, Gemini, or NVIDIA>
-```
-
-Save the key. Losing it means losing every stored message, memory, and token.
-`AETHER_TOKEN` is a shared secret, not a user account.
-
-**3. Write `config.yaml` and build the panel**
-
-```bash
-cp config.example.yaml config.yaml
-cd webapp && npm ci && npm run build && cd ..
-```
-
-The example selects Anthropic and `claude-opus-5`. Change `llm.provider` and `llm.model`
-if needed. Without the build, `/` returns a plain 503.
-
-**4. Run and check**
-
-```bash
-aether
-# in another terminal
-curl http://localhost:8000/healthz
-```
-
-Expected:
-
-```json
-{"ok":true}
-```
-
-Open `http://localhost:8000`, paste `AETHER_TOKEN` under **Settings > Access**, and send
-`/status`. It reports the resolved models, pending approvals, and queue depth without a
-model call. Then ask a normal question; a reply means the provider key works. If chat says
-the model is unavailable, the key is missing or wrong. The panel, audit, and settings
-still work. If boot fails, see [troubleshooting](docs/troubleshooting.md).
+Expected: `Uvicorn running on http://127.0.0.1:8731`. Open it and paste the token
+`secret` under **Settings > Access**. The data is fake and nothing is saved.
 
 ### First connectors
 

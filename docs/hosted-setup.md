@@ -1,14 +1,41 @@
-# Hosted setup scripts
+# Setup wizard and deployment
 
-`scripts/setup.sh` (Linux) and `scripts/setup.bat` (Windows 10/11) take a new
-user from a blank machine to Aether running on a public Render URL with an
-uptime monitor. They ask the same questions in the same order, read the same
-answers file, call the same Render and UptimeRobot APIs, and end with the same
-result. They do not change Aether's application code.
+`scripts/setup.sh` (Linux and macOS) and `scripts/setup.bat` (Windows 10/11)
+launch the interactive, keyboard-driven setup wizard. The wizard replaces the
+old typed prompts: every option is drawn with a circle indicator, arrow keys
+move the highlight, Space toggles multi-select rows, and Enter confirms. No
+question ever asks you to type a number or a y/n. Secrets are entered masked.
 
-The scripts leave a machine that already has setup state alone. Pass `--force`
-to run again; the forced run finds the existing Render service and monitor and
-updates them. It never deletes a service, a database, or a monitor.
+The wizard collects every answer, generates the encryption material, and
+writes its artifacts to `~/.aether-setup` (or the `--state-dir` you choose):
+
+| File | What it is |
+| --- | --- |
+| `answers.toml` | the answers, in the canonical TOML form |
+| `answers.env` | the same answers as `KEY=value`, for the deploy engine |
+| `secrets.env` | the secrets (owner-only); back this up |
+| `config.generated.yaml` | the non-secret `config.yaml` for the service |
+| `render.yaml` | a Render blueprint with the `sync: false` secrets |
+
+Deployment is `scripts/deploy.sh` (Linux/macOS) and `scripts/deploy.bat`
+(Windows). Given the wizard's answers, they run non-interactively: they create
+or update the Render service, wait for the first deploy, verify `/healthz` and
+the panel, and create an UptimeRobot monitor.
+
+The wizard is implemented in `src/aether/setup`:
+
+| Module | What it holds |
+| --- | --- |
+| `brand.py` | the wordmark, tagline, gradient and timing (change the brand in one place) |
+| `capabilities.py` | TTY, color and circle-glyph detection |
+| `theme.py` | the rich console and the prompt_toolkit style |
+| `prompts.py` | the circle prompts (**single**, **multi**, text and masked input) |
+| `catalogs.py` | the choices, read from the repository's own files |
+| `plan.py` | the answers dataclass and the TOML / env-file I/O |
+| `stages.py` | the ordered question flow |
+| `wizard.py` | back-navigation, non-interactive mode and persistence |
+| `requirements.py` | the dependency preflight the launchers run (check + install) |
+| `cli.py` | argument parsing and the entry point |
 
 ## Quick start
 
@@ -22,129 +49,156 @@ From a clone of this repository:
 scripts\setup.bat
 ```
 
-Both scripts derive the repo root from their own location, so they can be run
-from any working directory. They ask the questions below, open the pages you
-need, and end with a live URL and a monitor.
+Both derive the repo root from their own location, so they can be run from any
+working directory. The wizard opens with a short animated Aether wordmark
+(under 2.5 seconds), then asks the questions below.
 
 ## Requirements
 
 | System | Needs |
 | --- | --- |
-| Linux | bash, coreutils (`base64`, `head`, `date`, `chmod`), `curl` |
-| Windows | Windows 10/11, cmd, built-in PowerShell 5.1 |
+| Linux | Python 3.12 or newer; `curl` and `base64` for the deploy step |
+| Windows | Windows 10/11, Python 3.12 or newer; built-in PowerShell and `curl.exe` for the deploy step |
 
-No Python, Node, or jq is needed on the machine running the script. The scripts
-generate the encryption keys themselves. If the Aether package is importable,
-the Linux script uses the quickstart's own `generate_key_b64()`; otherwise it
-produces the same 32-byte base64 value from `/dev/urandom`.
+Before asking anything, `scripts/setup.sh` / `scripts/setup.bat` run a
+preflight (`python -m aether.setup.requirements --mode setup`):
 
-Windows notes: `setup.bat` uses cmd for the menu flow and the built-in
-PowerShell 5.1 for hidden input, HTTP, JSON, random keys, and the UptimeRobot
-proof-of-work. Nothing needs to be installed with winget. cmd's delayed
-expansion does not carry a literal `!` reliably; if a secret contains one, set it
-in the parent shell before launching the script (or use a Render API key and let
-the script read it from the environment).
+- it checks the Python version and the `rich` and `prompt_toolkit` packages;
+- missing packages are installed with `pip`; if the system Python refuses pip
+  (PEP 668's externally-managed marker), the launcher creates a private
+  virtual environment at `~/.aether-setup/venv` (override with
+  `AETHER_SETUP_VENV`) and installs them there;
+- if Python itself is missing or too old, it prints the exact install command
+  for the platform and stops.
+
+The deploy engine (`scripts/deploy.sh` / `scripts/deploy.bat`) runs the same
+preflight in deploy mode: it checks `curl` and `base64`, tries to install them
+with the platform's package manager when they are missing, and otherwise
+prints the command to run. Python is optional there; the engine uses it for
+key generation and the UptimeRobot email flow, but has fallbacks.
+
+The packages are declared in `pyproject.toml`; running `pip install -e .`
+installs them for an existing environment. The wizard itself never needs Node,
+jq, or a network connection once its packages are present.
+
+## Keyboard
+
+- **Arrow keys** (`↑`/`↓`) move the highlight between options.
+- **Space** toggles a multi-select row; on a single-choice question it
+  confirms the highlighted option.
+- **Enter** confirms the current question and advances.
+- **Esc** or **Backspace** goes back one question, where it makes sense.
+- **Ctrl+C** at any step stops cleanly, prints a message, and writes nothing.
+
+Single-choice rows show `○`, with `●` in green on the option under the cursor.
+Multi-select rows show `●` for every toggled option, so several can be green at
+once. The row under the cursor is highlighted separately (bold and underlined,
+with a cyan pointer), so "where I am" never gets confused with "what I picked".
+Each multi-select shows a count of selected items and a hint line:
+`↑↓ move · space toggle · enter continue`. Blank lines separate the question,
+the options, the count and the hint so the block is easy to scan.
+
+The green is rich's plain `green`, which stays readable on both dark and light
+terminal themes. When color is off (a `NO_COLOR` environment, or a non-TTY),
+the green is dropped and the `●`/`○` marks still show the state. When the
+console font cannot render the circles, the wizard falls back to `(*)` and
+`( )` and says so. The wordmark fades violet to pink; change the two colors in
+`brand.py` to re-skin it.
 
 ## The questions, in order
 
-Every question is a menu with a default. Multi-select questions take
-comma-separated numbers; Enter takes the default.
+Every question has a default a bare Enter accepts. The multi-select questions
+start with nothing selected; use Space to add.
 
 1. **Database** - `neon` (default, recommended), `existing` (paste a connection
    string), or `render` (with a plain warning that Render's free Postgres
    expires 30 days after creation).
 2. **Model provider** - read from `provider: Literal[...]` in
    `src/aether/config.py` (`anthropic`, `openai`, `gemini`, `ollama`, `nvidia`).
-   Then **main model** - the example model comes from `config.example.yaml`,
-   and the naming rule from `docs/models.md` is printed: a bare id uses
-   `llm.provider`, and `provider/model` routes to that provider.
+   Then **main model** - the example model comes from `config.example.yaml`.
 3. **Optional services** (multi-select) - read from the "Optional services"
    table in `docs/quickstart.md`: web search, voice-note transcription, image
-   generation, background jobs. Semantic memory is always on (it uses Gemini
-   embeddings) and is not offered as a choice. Screen capture is deliberately not
-   offered: it needs Wayland, `grim`, and the companion on the user's machine.
-4. **Direct apps** (multi-select) - read from the `AppDefinition` blocks in
+   generation, background jobs. Semantic memory is always on (Gemini
+   embeddings) and is not a choice. Screen capture is deliberately omitted.
+4. **Direct apps** (multi-select) - from the `AppDefinition` blocks in
    `src/aether/providers/*.py`: gmail, calendar, drive, docs, github, linkedin.
-5. **Chat channels** (multi-select) - read from the messaging recipes in
-   `src/aether/apps_catalog.py`: telegram, discord.
-6. **Render plan** - `free` (default) or `starter` (paid). The trade-offs are
-   printed before the choice: free is 512 MB / 0.1 CPU, spins down after 15 idle
-   minutes, has an ephemeral disk, and shares 750 instance-hours per workspace
-   per month; Starter is about $7/month, does not spin down, and can attach a
-   persistent disk.
-7. **Render details** - service name (default `aether`), region (default
-   `oregon`), and deploy source: the public upstream repo (default) or your own
-   fork. A fork is required for full Render API automation.
-8. **Uptime monitoring** - `api` (default; UptimeRobot API key), `email`
-   (UptimeRobot's no-API-key email-confirmation flow), `manual` (print the steps
-   and open the page), or `skip`.
-9. **Local copy for testing** - `no` (default) or `yes`. Yes prints the Path 2
-   steps; it does not start a second deployment.
+5. **Chat channels** (multi-select) - from `src/aether/apps_catalog.py`:
+   telegram, discord.
+6. **Render plan** - `free` (default) or `starter` (paid), with the trade-offs.
+7. **Render details** - service name, region, and the deploy source (public
+   upstream repo, or your own fork).
+8. **Uptime monitoring** - `api`, `email`, `manual`, or `skip`.
+9. **Local copy for testing** - no (default) or yes.
 
-Credential prompts follow the choices: Render account and API key, database,
-model provider key, optional-service keys, OAuth clients (with the exact Google
-recipe and redirect URI), Telegram/Discord tokens, and the UptimeRobot key.
-Browser pages open automatically (`xdg-open`/`gio` on Linux, `start` on
-Windows), with the link printed as a fallback.
+Credential prompts follow the choices, one masked ask each: Render API key,
+database URL, model provider key, optional-service keys, the Gemini key for
+semantic memory, the workbench keys, OAuth clients, Telegram/Discord tokens,
+and the UptimeRobot key. The wizard prints the link to open instead of opening
+browsers itself.
 
 ## Answers file and non-interactive mode
 
-Both scripts accept the same `KEY=value` file:
+`--answers FILE` reads either the canonical `answers.toml` or the legacy
+`KEY=value` file the old scripts used:
 
-```text
-DATABASE_MODE=neon
-DATABASE_URL=postgresql://user:pass@host/db?sslmode=require
-LLM_PROVIDER=openai
-LLM_MODEL=openai/gpt-5.1
-SERVICES=Web search
-APPS=gmail,calendar
-CHANNELS=telegram
-PLAN=free
-SERVICE_NAME=aether
-REGION=oregon
-DEPLOY_SOURCE=fork
-REPO_URL=https://github.com/you/Aether
-UPTIME_MODE=api
-ALERT_EMAIL=you@example.com
-LOCAL_COPY=no
-WORKBENCH_PROVIDER=none
-IMAGE_PROVIDER=none
+```toml
+database_mode = "neon"
+llm_provider = "openai"
+llm_model = "openai/gpt-5.1"
+services = ["Web search"]
+apps = ["gmail", "calendar"]
+channels = ["telegram"]
+plan = "free"
+service_name = "aether"
+region = "oregon"
+deploy_source = "fork"
+repo_url = "https://github.com/you/Aether"
+uptime_mode = "api"
+alert_email = "you@example.com"
+local_copy = false
+workbench_provider = "none"
+image_provider = "none"
 ```
-
-`SERVICES`, `APPS`, and `CHANNELS` accept the displayed names or 1-based
-numbers. Secrets may be placed in the same file (keep it `chmod 600` /
-owner-only) or passed through the environment. On Linux:
 
 ```bash
-./scripts/setup.sh --dry-run --answers answers.env
-RENDER_API_KEY=... UPTIME_API_KEY=... ./scripts/setup.sh --answers answers.env
+./scripts/setup.sh --answers answers.toml
+./scripts/setup.sh --yes
 ```
 
-On Windows:
+`--yes` accepts every default and never prompts. `--answers` fills what the
+file provides and defaults the rest, so CI and scripted installs work without a
+TTY. If there is no TTY and neither flag is given, the wizard fails with a
+message that names both flags.
+
+Secrets may live in the answers file (keep it owner-only) or in the
+environment; they are never written back to `answers.toml`. `--dry-run`
+collects the answers and prints them without writing anything, and
+`--no-animation` skips the intro. The animation also skips cleanly on a
+non-TTY and when `NO_COLOR` is set.
+
+On a machine that already has setup state, a normal run exits without changing
+anything. Add `--force` to run again.
+
+## Deploying
+
+The wizard writes `answers.env` and `secrets.env`, then the deploy engine uses
+them:
+
+```bash
+./scripts/deploy.sh --answers ~/.aether-setup/answers.env
+```
 
 ```bat
-scripts\setup.bat /dry-run --answers answers.env
+scripts\deploy.bat --answers %USERPROFILE%\.aether-setup\answers.env
 ```
 
-Individual answers can also be passed with `--set KEY=VALUE` (or `/set` on
-Windows), repeated as needed. For example:
-
-```bash
-./scripts/setup.sh --set SERVICE_NAME=aether --set PLAN=free
-```
-
-`--dry-run` / `/dry-run` asks the questions, prints every action, and makes no
-network call. Non-interactive mode never prompts; missing secrets are reported
-and skipped.
-
-On a machine that already has setup state (`~/.aether-setup`, or the
-`--state-dir` you chose), a normal run exits without changing anything. Add
-`--force` to run again; `--dry-run` is allowed without it because it changes
-nothing.
+The deploy engine reads `~/.aether-setup/secrets.env` automatically, so it does
+not re-ask for the values the wizard collected. `--dry-run` prints every action
+and makes no network call.
 
 ## Blocker check: what survives a Render restart
 
-This is the one limitation the scripts state before the plan question.
+This is the one limitation the wizard states before the plan question.
 
 - **Workspace files live only on disk.** `aether-workspace/` (`IDENTITY.md`,
   `SOUL.md`, `AGENTS.md`, `USER.md`, `MEMORY.md`, `memory/YYYY-MM-DD.md`) is a
@@ -166,8 +220,8 @@ Therefore:
   Chat/memory/settings still survive in Postgres.
 - **Paid plan + persistent disk** - mount a 1 GB disk at
   `/opt/render/project/src/aether-workspace`. The workspace then survives.
-- The scripts choose the disk automatically for `starter` and never attach one
-  to `free`, because Render does not allow it.
+- The wizard chooses the disk automatically for `starter` and the blueprint
+  never attaches one to `free`, because Render does not allow it.
 
 ## Plan limits (checked November 2026)
 
@@ -201,16 +255,16 @@ script prints this and opens the Blueprint page:
 5. Paste the `sync: false` values when prompted.
 
 The Render API route requires the fork to be connected to your Render account;
-the API cannot attach an unconnected public repository. That is why the scripts
-fall back to the dashboard for the public-repo choice.
+the API cannot attach an unconnected public repository. That is why the deploy
+engine falls back to the dashboard for the public-repo choice.
 
 ## Configuration without committing it
 
 `config.yaml` is gitignored and holds no secrets. Aether reads structure from
 `config.yaml` or the path in `AETHER_CONFIG` (`src/aether/config.py`); there is
-no environment variable that carries YAML directly. The scripts therefore
-generate the YAML, base64-encode it into `AETHER_CONFIG_B64`, and add a build
-step:
+no environment variable that carries YAML directly. The wizard therefore
+generates the YAML, base64-encodes it into `AETHER_CONFIG_B64`, and the deploy
+engine adds a build step:
 
 ```sh
 if [ -n "$AETHER_CONFIG_B64" ]; then
@@ -230,7 +284,7 @@ the Blueprint.
 
 ## Render creation
 
-- With a Render API key and your own fork, the script does everything through
+- With a Render API key and your own fork, the deploy engine does everything through
   the API: it finds the workspace id (`GET /v1/owners`), finds an existing
   service by name (`GET /v1/services?name=...`), creates it (`POST /v1/services`
   with `runtime: python`, `healthCheckPath: /healthz`, `envSpecificDetails`,
@@ -239,40 +293,40 @@ the Blueprint.
   (`POST /v1/services/{id}/deploys`), and polls the deploy status. The create
   call itself starts Render's "First Deploy". If Render appends a suffix to the
   subdomain because the requested name is taken, a second deploy is needed to
-  apply the real `AETHER_PUBLIC_URL`; the script skips that second deploy when
+  apply the real `AETHER_PUBLIC_URL`; the deploy engine skips that second deploy when
   no OAuth app or GitHub Actions queue needs the URL. Choosing an unused name
   avoids the suffix and the extra deploy.
 - Without a key, or with the public upstream repo (which the API cannot attach
-  to a workspace), the script writes a tailored `render.yaml`, opens the
+  to a workspace), the deploy engine writes a tailored `render.yaml`, opens the
   Blueprint page, and prints the exact values to paste. Render prompts for the
   `sync: false` secrets. The repository's root `render.yaml` is the single
   Blueprint Render reads for the public-repo route and for a fork.
-- On failure the script prints the deploy status and recent Render events and
+- On failure the deploy engine prints the deploy status and recent Render events and
   links to the build log.
 
 ## Secrets
 
-- Pasted values are read with `read -s` (Linux) or a secure PowerShell prompt
-  (Windows); they are never echoed, logged, or committed.
+- The wizard reads secrets masked (`prompt_toolkit`'s password input) and writes
+  them owner-only (`chmod 600` on Linux, `icacls` on Windows); they are never
+  echoed, logged, or committed.
 - `AETHER_ENCRYPTION_KEY` is 32 random bytes, base64. Losing it makes stored
-  data unrecoverable. The scripts say this once and offer an owner-only backup
-  file (`chmod 600` on Linux, `icacls` on Windows).
-- When the script updates an existing service through the Render API, it keeps
-  the encryption key already deployed there. If the local resume file is
-  missing, the script reads the key from Render instead of replacing it, so old
-  chat, memory, and trace rows stay readable. `--rotate-encryption-key` is the
-  only way to replace it, and it makes every previously stored row unreadable.
+  data unrecoverable. The wizard says this once and keeps a backup copy in
+  `~/.aether-setup/secrets.env`.
+- When the deploy engine updates an existing service through the Render API, it
+  keeps the encryption key already deployed there. If the local resume file is
+  missing, it reads the key from Render instead of replacing it, so old chat,
+  memory, and trace rows stay readable. `--rotate-encryption-key` is the only
+  way to replace it, and it makes every previously stored row unreadable.
 - `AETHER_TOKEN` is a 64-character random value. Anyone holding it can control
   the instance, so it is treated as a shared secret, not a user account.
 - The token-encryption keyring (`AETHER_TOKEN_ENCRYPTION_KEY` and its id) is always generated, even with no direct app chosen, so apps can be connected later with `/apps`.
-- A resume copy of the core deployment secrets (encryption key, token, database
-  URL, and the token keyring) is kept in `~/.aether-setup/secrets.env`
-  (owner-only). Third-party provider keys, the Render API key, and the
-  UptimeRobot API key are not written there; they are used for the run only.
+- The wizard writes every collected secret to `~/.aether-setup/secrets.env`
+  (owner-only), so the deploy engine does not re-ask. Back it up, and do not
+  commit it.
 
 ## Verification
 
-The scripts check:
+The deploy engine checks:
 
 1. `https://<service>.onrender.com/healthz` returns `{"ok":true}`.
 2. `/` returns HTTP 200 (a 503 means the panel build is missing).
@@ -287,11 +341,11 @@ is running.
 ## UptimeRobot
 
 - Free plan: 50 monitors, 5-minute checks, email alerts, 10 API requests/minute.
-- With an API key the script creates or updates a **keyword** monitor on
+- With an API key the deploy engine creates or updates a **keyword** monitor on
   `/healthz` expecting `ok`, interval 300 seconds, so the free instance stays
   awake. It stores the key only for the run. Alerts go to the email on the
   UptimeRobot account, so use the address you want to be alerted at.
-- Without an API key, the script uses UptimeRobot's agentic flow: it requests a
+- Without an API key, the deploy engine uses UptimeRobot's agentic flow: it requests a
   proof-of-work challenge (`/agentic/agent-monitor/challenge`), solves it (the
   Windows script in PowerShell, the Linux script with `python3` when present,
   otherwise it opens the browser deep link), submits the monitor, and asks the
@@ -304,10 +358,10 @@ is running.
 
 | Symptom | Fix |
 | --- | --- |
-| `Application startup failed. DATABASE_URL is not set.` | The service was created without its environment variables. Open the Render service, **Environment**, and add `DATABASE_URL`, `AETHER_ENCRYPTION_KEY`, `AETHER_TOKEN`, `AETHER_CONFIG_B64`, `PYTHON_VERSION=3.12.11`, and `NODE_VERSION=22.12.0`, then **Save and deploy**. Or re-run the fixed script with `--force` and the same name; it finds the existing service and updates every variable. The generated core secrets are in `~/.aether-setup/secrets.env`. |
-| Script says setup already ran | Setup state exists in `~/.aether-setup` (or the `--state-dir` you chose). Add `--force` to update the existing service, or point `--state-dir` at a fresh directory for a separate setup. |
+| `Application startup failed. DATABASE_URL is not set.` | The service was created without its environment variables. Open the Render service, **Environment**, and add `DATABASE_URL`, `AETHER_ENCRYPTION_KEY`, `AETHER_TOKEN`, `AETHER_CONFIG_B64`, `PYTHON_VERSION=3.12.11`, and `NODE_VERSION=22.12.0`, then **Save and deploy**. Or re-run `scripts/setup.sh --force` and then `scripts/deploy.sh` with the same name; it finds the existing service and updates every variable. The generated secrets are in `~/.aether-setup/secrets.env`. |
+| Setup says it already ran | Setup state exists in `~/.aether-setup` (or the `--state-dir` you chose). Add `--force` to update the existing service, or point `--state-dir` at a fresh directory for a separate setup. |
 | `/healthz` never turns ok | Check Render logs for `database ready`; a bad `DATABASE_URL` or missing `AETHER_ENCRYPTION_KEY` stops boot. |
-| Logs say `trace N undecryptable` or `event N undecryptable` | The row was encrypted with a different `AETHER_ENCRYPTION_KEY` than the one the process is running with. Restore the original key if you have it; otherwise the row is treated as empty. Re-running the setup script no longer rotates the key. |
+| Logs say `trace N undecryptable` or `event N undecryptable` | The row was encrypted with a different `AETHER_ENCRYPTION_KEY` than the one the process is running with. Restore the original key if you have it; otherwise the row is treated as empty. Re-running setup no longer rotates the key. |
 | Panel returns 503 `panel not built` | The npm build failed, or the built panel was excluded from the wheel. `src/aether/web/` is gitignored and Hatchling respects `.gitignore`; `pyproject.toml` now pins it with `artifacts = ["src/aether/web/**"]`. Make sure the build command runs `cd webapp && npm ci && npm run build` before `pip install .`, then clear the build cache and redeploy. |
 | Embedding 404 `models/none is not found` | The embedding knob used the literal string `none`. Aether's off sentinels are `off`, `default`, and `base`; `none` is treated as a model id. Use `off` to disable or the default `gemini-embedding-001`. The setup scripts always write the default and require a Gemini key. |
 | First build is slow | Normal: `npm ci`, Vite, and `pip install` on a small instance. |

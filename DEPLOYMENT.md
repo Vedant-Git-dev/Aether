@@ -5,9 +5,21 @@ The reference deployment runs on two free tiers — **Neon** (Postgres) and
 uptime ping. Everything is one always-on process: the API, the web chat,
 the agent loop, the scheduler, and the connectors.
 
-> Running locally instead? `cp .env.example .env`, fill it in,
-> `pip install -e ".[dev]"`, `aether`. Everything below only matters for
-> the hosted deployment.
+> The fastest path is the setup wizard and the deploy engine:
+>
+> ```bash
+> ./scripts/setup.sh
+> ./scripts/deploy.sh --answers ~/.aether-setup/answers.env
+> ```
+>
+> Windows, in PowerShell: `.\scripts\setup.bat`, then
+> `.\scripts\deploy.bat --answers "$env:USERPROFILE\.aether-setup\answers.env"`.
+> The rest of this page explains what those scripts do, step by step, so you can
+> follow along or do it by hand. Running locally instead? The wizard also writes
+> `config.generated.yaml` and `secrets.env`; copy them into place, run
+> `pip install -e ".[dev]"`, build the panel, and start `aether`.
+>
+> Full wizard details: [docs/hosted-setup.md](docs/hosted-setup.md).
 
 ## What you need
 
@@ -19,6 +31,9 @@ the agent loop, the scheduler, and the connectors.
 
 ## 1. The database (Neon)
 
+The setup wizard asks for this first. Choose **neon** and paste the connection
+string; the wizard keeps it in `~/.aether-setup/secrets.env`. The manual steps:
+
 1. Create a Neon project. In the dashboard, copy the **connection string**
    — it looks like `postgresql://user:pass@host/dbname?sslmode=require`.
    Keep the `sslmode=require` part.
@@ -27,8 +42,10 @@ the agent loop, the scheduler, and the connectors.
 
 ## 2. Secrets
 
-Generate an encryption key locally — this is the AES-256-GCM key that
-encrypts every memory, note, and message at rest:
+The wizard generates the encryption key and the API token for you and writes
+them to `~/.aether-setup/secrets.env` (owner-only). It also generates the
+token-encryption keyring used by direct apps. Doing it by hand, generate the
+AES-256-GCM key that encrypts every memory, note, and message at rest:
 
 ```bash
 python -c "from aether.memory.crypto import generate_key_b64; print(generate_key_b64())"
@@ -52,7 +69,21 @@ dashboard alone.
 
 ## 3. The web service (Render)
 
-The repo ships a Blueprint (`render.yaml`), so the shortest path is:
+With the wizard's answers, the deploy engine does this for you:
+
+```bash
+./scripts/deploy.sh --answers ~/.aether-setup/answers.env
+```
+
+It finds or creates the Render service, sets every environment variable,
+triggers the deploy, waits for it, and verifies the result. On Windows, in
+PowerShell:
+`.\scripts\deploy.bat --answers "$env:USERPROFILE\.aether-setup\answers.env"`.
+
+That API route needs a Render API key and your own fork. Without them the engine
+writes the Blueprint and prints the exact dashboard steps instead.
+
+The repo also ships a Blueprint (`render.yaml`), so the manual path is:
 
 1. Render dashboard → **New → Blueprint**, pick your repo.
 2. Render reads `render.yaml`, asks for the env vars above, and deploys.
@@ -74,13 +105,16 @@ repo root. It holds no secrets, so commit yours before deploying —
 otherwise the hosted instance runs on defaults (web chat only, no
 external connectors). `config.yaml` is gitignored by default to keep
 *your* local copy out of the repo; `git add -f config.yaml` when you
-want the deployed instance to use it.
+want the deployed instance to use it. The wizard writes a ready copy to
+`~/.aether-setup/config.generated.yaml`.
 
 ## 4. Keeping it awake (the part free-tier guides skip)
 
-Render free services **spin down after 15 idle minutes** and are capped
-at **750 instance-hours/month** — just about enough for one service
-running 24/7. The fix for the first is an external pinger:
+The wizard's uptime question controls this: `api` or `email` make the deploy
+engine create the UptimeRobot monitor for you, `manual` prints the steps, and
+`skip` does nothing. Render free services **spin down after 15 idle minutes**
+and are capped at **750 instance-hours/month** — just about enough for one
+service running 24/7. The fix for the first is an external pinger:
 
 1. Create a monitor (UptimeRobot) or cron job (cron-job.org) for
    `https://<your-app>.onrender.com/healthz` every **10 minutes**.

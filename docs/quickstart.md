@@ -1,10 +1,13 @@
 # Quick start
 
-This page is the long version of the README's quick start. It covers the two honest
-paths:
+This page is the long version of the README's installation guide. It covers the
+honest paths:
 
 1. **Try the panel with no database.** Real app, real panel, fake in-memory data.
-2. **Self-host the agent.** Real database, real model, real connectors.
+2. **Set up the agent.** The recommended path is the keyboard-driven setup
+   wizard (`scripts/setup.sh` / `scripts/setup.bat`) and the deploy engine
+   (`scripts/deploy.sh` / `scripts/deploy.bat`); the manual equivalent follows
+   for reference.
 
 Aether has no hosted instance. Everything below runs on your machine or your account.
 
@@ -53,7 +56,65 @@ secret
 The fixture data is fake. There is no database and nothing survives a restart. This is
 for evaluating the panel and the approval flow, not for connecting real apps.
 
-## Path 2: Self-host
+## Path 2: Set up the agent
+
+### 2a. Use the setup scripts (recommended)
+
+The scripts replace the manual copy-and-edit steps below. The wizard checks and
+installs its own Python dependencies, then asks every question with arrow keys,
+Space and Enter. Secrets are masked; no question needs a typed number or y/n.
+
+```bash
+git clone https://github.com/Vedant-Git-dev/Aether.git
+cd Aether
+./scripts/setup.sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+.\scripts\setup.bat
+```
+
+It writes the answers, the generated secrets and a ready config to
+`~/.aether-setup` (`answers.toml`, `answers.env`, `secrets.env`,
+`config.generated.yaml`, `render.yaml`). Deploy the Render service it configured:
+
+```bash
+./scripts/deploy.sh --answers ~/.aether-setup/answers.env
+```
+
+On Windows, in PowerShell:
+`.\scripts\deploy.bat --answers "$env:USERPROFILE\.aether-setup\answers.env"`.
+With a Render API key and your own fork, the deploy engine creates or updates the
+service, waits for the first build, verifies `/healthz` and the panel, and creates the
+uptime monitor. Without a key (or with the public upstream repo), it writes the
+Blueprint and prints the dashboard steps instead.
+
+Open the deployed URL, paste the token under **Settings > Access**, and send
+`/status`. Back up `~/.aether-setup/secrets.env`; losing `AETHER_ENCRYPTION_KEY`
+makes every stored message, memory, and token unrecoverable.
+
+To run locally instead of on Render, use the wizard's generated files:
+
+```bash
+cp ~/.aether-setup/config.generated.yaml config.yaml
+set -a; . ~/.aether-setup/secrets.env; set +a
+cd webapp && npm ci && npm run build && cd ..
+aether
+```
+
+For a local Postgres, choose **existing** for the database question and paste the
+local connection string (for example `postgresql:///aether`).
+
+The full question list, the `answers.toml` format, `--yes`, `--answers`,
+`--dry-run` and `--no-animation` are in
+[hosted-setup.md](hosted-setup.md).
+
+### Manual setup (the traditional flow)
+
+Everything from here is the manual equivalent, for when you want to see or change
+each step yourself.
 
 ### 1. Clone and install
 
