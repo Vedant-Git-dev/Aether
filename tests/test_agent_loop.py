@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from fakes import (
     FakeAgentSettings,
     FakeApprovals,
@@ -1645,6 +1646,7 @@ async def test_system_prompt_is_unchanged_with_no_settings_store_wired() -> None
     )
 
 
+@pytest.mark.integration
 async def test_system_prompt_carries_the_workspace_context(db) -> None:
     workspace = Workspace(db, cipher=Cipher.from_b64(generate_key_b64()))
     await workspace.ensure_scaffold()
