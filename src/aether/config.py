@@ -162,6 +162,15 @@ class MemoryConfig(BaseModel):
     hot_events: int = 2_000
     hot_chunks: int = 8_000
     cold_batch: int = 500
+    # write-time enrichment: one cheap model turn per event reading out
+    # urgency, deadlines, commitments and a one-line summary. Off by
+    # default until the eval says it earns its cost; entity linking and
+    # the delivery rules do not ride this flag, because they need no model
+    # call and the rendering rules depend on them.
+    enrichment: bool = False
+    # how long a conclusion about live state stays usable — a mailbox
+    # answer older than this is re-asked rather than reused
+    conclusion_ttl_seconds: int = 120
     # the new routing/retrieval pipeline; off keeps the old vector recall
     query_pipeline: bool = False
     default_timezone: str = "Asia/Kolkata"

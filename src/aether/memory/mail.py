@@ -20,6 +20,7 @@ rendering shows the name and address back.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import getaddresses, parsedate_to_datetime
@@ -159,3 +160,44 @@ def _raw(value: Any) -> str:
     if isinstance(value, (list, tuple)):
         return ", ".join(str(part) for part in value if part)
     return str(value or "")
+
+
+# The shapes a quoted reply announces itself with. They are cut from the
+# text the index sees (plan §4.5) — a thread's history embedded in every
+# later message would otherwise make each reply retrieve as every earlier
+# one, and drown the new words.
+_QUOTE_STARTS = (
+    re.compile(r"^-{2,}\s*original message\s*-{2,}", re.IGNORECASE),
+    re.compile(r"^-{2,}\s*forwarded message\s*-{2,}", re.IGNORECASE),
+    re.compile(r"^on .{0,120}\bwrote:$", re.IGNORECASE),
+    re.compile(r"^on .{0,120}\bat .{0,40}\bwrote:$", re.IGNORECASE),
+    re.compile(r"^_{5,}$"),
+    re.compile(r"^from:\s", re.IGNORECASE),
+    re.compile(r"^sent from my\b", re.IGNORECASE),
+)
+
+
+def strip_quoted(body: str) -> str:
+    """A mail body with its quoted replies removed.
+
+    Everything from the first quote marker on is dropped, and every line
+    that is itself a quote marker (`> ...`) goes with it. A body that is
+    *entirely* a quote keeps its text rather than becoming empty — a reply
+    with nothing new in it is still a message that arrived.
+    """
+    lines = (body or "").splitlines()
+    cut = len(lines)
+    kept: list[str] = []
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith(">"):
+            cut = min(cut, index)
+            break
+        if any(pattern.match(stripped) for pattern in _QUOTE_STARTS):
+            cut = min(cut, index)
+            break
+        kept.append(line)
+    head = "\n".join(kept if kept else lines[:cut]).strip()
+    if head:
+        return head
+    return (body or "").strip()

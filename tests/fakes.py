@@ -304,14 +304,20 @@ class FakeSalience:
 
 
 class FakeContextBuilder:
-    """ContextBuilder double: hands back a canned AgentContext, counts builds."""
+    """ContextBuilder double: hands back a canned AgentContext, counts builds.
+
+    `with_questions` mirrors the real builder's human-turn switch, and each
+    call is recorded so a test can prove an unprompted tick asked for none.
+    """
 
     def __init__(self, context: AgentContext | None = None) -> None:
         self.context = context or AgentContext()
         self.builds = 0
+        self.question_calls: list[bool] = []
 
-    async def build(self) -> AgentContext:
+    async def build(self, *, with_questions: bool = False) -> AgentContext:
         self.builds += 1
+        self.question_calls.append(with_questions)
         return self.context
 
 

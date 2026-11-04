@@ -24,6 +24,7 @@ rather than asked of a model that cannot know the event's timestamp.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..llm.json_utils import extract_json
 from ..llm.types import Message
+from .mail import MAIL_KIND
 
 log = logging.getLogger("aether.memory.enrich")
 
@@ -180,6 +182,61 @@ class Enrichment:
             return ""
         earliest = min(self.deadlines, key=lambda deadline: deadline.at)
         return earliest.phrase
+
+    def to_extra(self) -> dict[str, Any]:
+        """The sealed-meta fields this reading contributes.
+
+        Only what was actually learned is written, so an unclassified event
+        keeps its floor urgency and carries no empty summary pretending to
+        be one.
+        """
+        extra: dict[str, Any] = {"urgency": self.urgency}
+        if self.needs_reply:
+            extra["needs_reply"] = True
+        if self.noise:
+            extra["noise"] = True
+        if self.action_type:
+            extra["action_type"] = self.action_type
+        if self.summary:
+            extra["summary"] = self.summary
+        earliest = self.deadline_at
+        if earliest is not None:
+            extra["deadline_at"] = earliest.isoformat()
+            extra["deadline_phrase"] = self.deadline_phrase
+            end = self.deadline_end
+            if end is not None and end != earliest:
+                extra["deadline_end"] = end.isoformat()
+        if self.classified:
+            extra["classified"] = True
+        return extra
+
+
+def enrichment_text(kind: str, payload: dict[str, Any]) -> str:
+    """The text an event is understood from — its words, not its JSON.
+
+    A mail reads as its subject, sender, snippet and body; a chat message
+    is what was said; a document is its name, caption and text. Anything
+    else falls back to the payload's own rendering, which is what the
+    salience judge has always seen.
+    """
+    data = payload or {}
+    if kind == MAIL_KIND:
+        parts = (
+            data.get("subject"),
+            data.get("sender"),
+            data.get("snippet"),
+            data.get("body"),
+        )
+        return "\n".join(str(part) for part in parts if part)
+    if kind == "chat_message":
+        return str(data.get("text") or "")
+    if kind in _DOCUMENT_KINDS:
+        parts = (data.get("filename"), data.get("caption"), data.get("text"))
+        return "\n".join(str(part) for part in parts if part)
+    return json.dumps(data, sort_keys=True, ensure_ascii=False, default=str)
+
+
+_DOCUMENT_KINDS = frozenset({"shared_doc", "shared_image", "shared_audio", "shared_video"})
 
 
 def _zone(tz: str) -> ZoneInfo:

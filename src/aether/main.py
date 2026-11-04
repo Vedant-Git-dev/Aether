@@ -49,9 +49,11 @@ from .media.frames import FrameWatcher
 from .media.generate import ImageGenerator
 from .media.store import MediaStore
 from .media.voice import GroqTranscriber
+from .memory.commitments import Commitments
 from .memory.context import ContextBuilder
 from .memory.crypto import Cipher, CryptoError, generate_key_b64
 from .memory.db import create_pool, run_migrations
+from .memory.enrich import Enricher, LLMClassifier
 from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
 from .memory.indexes import MemoryIndex
@@ -450,6 +452,27 @@ def create_app(
         )
         entities = Entities(pool, cipher, audit, LLMSamePersonJudge(identity_provider))
         salience = Salience(events, LLMJudge(judge_provider), config.salience)
+        # write-time enrichment (plan §4). The store is built before this
+        # point — it needs nothing from the model — so the two are joined
+        # here: addresses are linked to identities unconditionally (the
+        # rendering rules depend on it and it costs no model call), and the
+        # classifier rides memory.enrichment, which is off by default.
+        commitments = Commitments(pool, cipher, audit)
+        enricher = (
+            Enricher(
+                LLMClassifier(judge_provider),
+                timezone=config.memory.default_timezone,
+            )
+            if judge_provider is not None
+            else None
+        )
+        events.attach_enrichment(
+            entities=entities,
+            commitments=commitments,
+            enricher=enricher,
+            enrichment=config.memory.enrichment,
+        )
+        app.state.commitments = commitments
         context = ContextBuilder(events, entities, approvals, config.agent)
         scheduler = Scheduler(pool, cipher, audit)
         app.state.entities = entities
@@ -530,6 +553,7 @@ def create_app(
             vectors=vectors,
             mail_filter=mail_filter,
             media=media_store,
+            entities=entities,
         )
         app.state.agent = agent
         native = register_native_tools(

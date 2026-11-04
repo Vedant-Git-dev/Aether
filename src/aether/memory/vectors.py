@@ -38,6 +38,7 @@ import asyncpg
 
 from ..llm.embeddings import Embedder, pack_vector, unpack_vector, vector_norm
 from .crypto import Cipher
+from .mail import MAIL_KIND, parse_addresses, strip_quoted
 
 log = logging.getLogger("aether.memory.vectors")
 
@@ -45,6 +46,12 @@ log = logging.getLogger("aether.memory.vectors")
 # processor indexes the full document text, so the generic event hook must
 # not double-chunk the payload preview
 _RICH_INDEX_KINDS = frozenset({"shared_doc"})
+
+# A chunk is the unit retrieval reasons over, so its size is a retrieval
+# choice: about 250-400 tokens (plan §4.5) with 15% overlap, which keeps a
+# citation tight enough to point at and wide enough to be worth reading.
+CHUNK_CHARS = 1_400
+CHUNK_OVERLAP = 210
 
 
 @dataclass(frozen=True)
@@ -62,7 +69,7 @@ class MemoryHit:
     occurred_at: datetime
 
 
-def split_text(text: str, max_chars: int = 3500, overlap: int = 200) -> list[str]:
+def split_text(text: str, max_chars: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP) -> list[str]:
     """Long text -> overlapping chunks on paragraph/line boundaries, so a
     sentence never straddles two chunks mid-word. Falls back to hard
     windows only when a single paragraph itself exceeds the budget."""
@@ -85,6 +92,30 @@ def split_text(text: str, max_chars: int = 3500, overlap: int = 200) -> list[str
             break
         start = max(end - overlap, start + 1)
     return [c for c in out if c]
+
+
+def chunk_header(*, name: str = "", location: str = "", sender: str = "", when: Any = None) -> str:
+    """The context line a chunk carries into the index (plan §4.5).
+
+    A chunk retrieved on its own has to say what it is: which document or
+    message, which page, who it came from and when. Without it a page of a
+    slide deck retrieves as anonymous text, and the model cannot cite it.
+    """
+    stamp = _stamp(when)
+    bits = [
+        name.strip(),
+        location.strip(),
+        f"from {sender.strip()}" if sender and sender.strip() else "",
+        stamp,
+    ]
+    parts = [bit for bit in bits if bit]
+    return f"[{' | '.join(parts)}]" if parts else ""
+
+
+def _stamp(when: Any) -> str:
+    if isinstance(when, datetime):
+        return f"{when.astimezone(UTC):%Y-%m-%d %H:%M} UTC"
+    return ""
 
 
 class VectorMemory:
@@ -120,7 +151,7 @@ class VectorMemory:
         indexed_at unset, and the loop's backfill heals it."""
         if not self.enabled or kind in _RICH_INDEX_KINDS:
             return
-        parts = _chunk_text(source, kind, payload)
+        parts = _chunk_text(source, kind, payload, occurred_at)
         self._spawn(self._index_and_mark(event_id, source, kind, "", parts, occurred_at))
 
     async def _index_and_mark(
@@ -157,15 +188,44 @@ class VectorMemory:
     ) -> None:
         """The rich path for shared documents: full extracted text, one part
         per page/slide (location) or size-split for unstructured formats.
-        Called by the attachment processor right after the ingest lands."""
+        Called by the attachment processor right after the ingest lands.
+
+        Each chunk carries a context header naming the document and the
+        page it came from, so a page retrieved on its own can still be
+        cited (plan §4.5).
+        """
         if not self.enabled:
             return
+        when = await self._event_time(event_id)
         chunks: list[tuple[str, str]] = []
         for location, text in parts:
+            header = chunk_header(
+                name=f"Doc: {filename}" if filename else "Doc", location=location, when=when
+            )
             for piece in split_text(text):
-                chunks.append((location, piece))
-        when = await self._event_time(event_id)
+                chunks.append((location, f"{header}\n{piece}" if header else piece))
         await self._index_chunks(event_id, source, "shared_doc", filename, chunks, when)
+        await self._mark_indexed(event_id)
+
+    async def replace_with_summary(self, event_id: int, summary: str) -> None:
+        """A noise event keeps one chunk, not twenty.
+
+        A newsletter is thousands of words of marketing boilerplate: chunked
+        normally it wins vector slots from real mail on any question its
+        words happen to touch. Once the classifier has judged it noise,
+        what is kept is the one-line summary, so it stays recallable without
+        competing (plan §4.5).
+        """
+        if not self.enabled or not (summary or "").strip():
+            return
+        row = await self._pool.fetchrow(
+            "SELECT id, meta_enc, created_at FROM events WHERE id = $1", event_id
+        )
+        if row is None:
+            return
+        source, kind, when = self._event_meta(row)
+        await self._pool.execute("DELETE FROM memory_chunks WHERE event_id = $1", event_id)
+        await self._index_chunks(event_id, source, kind, "", [("", summary.strip())], when)
         await self._mark_indexed(event_id)
 
     async def _index_chunks(
@@ -188,15 +248,16 @@ class VectorMemory:
             return
         vectors = await self._embedder.embed([text for _, text in parts], task="document")
         async with self._pool.acquire() as conn, conn.transaction():
-            for (location, text), vector in zip(parts, vectors, strict=True):
+            for ordinal, ((location, text), vector) in enumerate(zip(parts, vectors, strict=True)):
                 row = await conn.fetchrow(
                     "INSERT INTO memory_chunks (event_id, text_enc, embed_model_token,"
-                    " dims, key_version)"
-                    " VALUES ($1, $2, $3, $4, $5) RETURNING id",
+                    " dims, ordinal, key_version)"
+                    " VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
                     event_id,
                     b"",
                     self._cipher.blind_token("embed_model", self._embedder.model),
                     len(vector),
+                    ordinal,
                     self._cipher.key_id,
                 )
                 if row is None:
@@ -275,7 +336,7 @@ class VectorMemory:
                 )
             else:
                 # _chunk_text already returns (location, text) parts
-                parts = _chunk_text(source, kind, payload)
+                parts = _chunk_text(source, kind, payload, occurred_at)
                 await self._index_chunks(row["id"], source, kind, "", parts, occurred_at)
             await self._mark_indexed(row["id"])
         return len(rows)
@@ -404,11 +465,17 @@ class VectorMemory:
         return "", "", row.get("created_at") or datetime.now(UTC)
 
     async def read_document(self, event_id: int) -> str:
-        """Every stored chunk of one event, joined with its location
-        headers — the full untruncated document, page by page. The
-        channel memory_search uses to re-read a shared document by id."""
+        """Every stored chunk of one event, in document order — the full
+        untruncated document, page by page. The channel memory_search uses
+        to re-read a shared document by id.
+
+        Chunks written since phase 1 carry their own context header, so the
+        location is prefixed only for the older rows that do not — otherwise
+        a page would announce itself twice.
+        """
         rows = await self._pool.fetch(
-            "SELECT id, text_enc, meta_enc FROM memory_chunks WHERE event_id = $1 ORDER BY id",
+            "SELECT id, text_enc, meta_enc FROM memory_chunks"
+            " WHERE event_id = $1 ORDER BY ordinal, id",
             event_id,
         )
         parts: list[str] = []
@@ -420,8 +487,9 @@ class VectorMemory:
             except Exception:
                 continue
             location = str(self._chunk_meta(row).get("location", ""))
-            header = f"{location}: " if location else ""
-            parts.append(header + text)
+            if location and not text.startswith("["):
+                text = f"{location}: {text}"
+            parts.append(text)
         return "\n\n".join(parts)
 
 
@@ -434,13 +502,17 @@ def _meta_time(value: Any, fallback: datetime | None = None) -> datetime:
     return fallback or datetime.now(UTC)
 
 
-def _chunk_text(source: str, kind: str, payload: dict[str, Any]) -> list[tuple[str, str]]:
-    """The one chunk a plain event contributes — its meaningful text,
-    not the raw JSON. Messages are their words; image memories are the
-    description; feed events are their payload's own rendering."""
+def _chunk_text(
+    source: str, kind: str, payload: dict[str, Any], occurred_at: datetime | None = None
+) -> list[tuple[str, str]]:
+    """The chunks a plain event contributes — its meaningful text, not the
+    raw JSON. Messages are their words; image memories are the description;
+    mail is its body with the quoted replies cut and a header naming it."""
     p = payload or {}
     if kind == "chat_message" and p.get("text"):
         return [("", str(p["text"]))]
+    if kind == MAIL_KIND:
+        return [("", text) for text in _mail_chunks(p, occurred_at)]
     if kind == "shared_image":
         bits = []
         # the file's own facts lead the chunk — a later "send it back"
@@ -465,3 +537,30 @@ def _chunk_text(source: str, kind: str, payload: dict[str, Any]) -> list[tuple[s
     if rendered and len(rendered) <= 6000:
         return [("", rendered)]
     return []
+
+
+def _mail_chunks(payload: dict[str, Any], occurred_at: datetime | None) -> list[str]:
+    """One mail, chunked with its own header.
+
+    The quoted replies are cut first (plan §4.5): a thread's history rides
+    inside every later message, and indexed whole it would make each reply
+    retrieve as all the earlier ones. The header then names the message,
+    its sender and its time, so a single chunk can be cited on its own.
+    """
+    body = strip_quoted(str(payload.get("body") or "")) or str(payload.get("snippet") or "")
+    if not body.strip():
+        return []
+    header = chunk_header(
+        name=f"Mail: {payload.get('subject')}" if payload.get("subject") else "Mail",
+        sender=_address_label(payload.get("sender")),
+        when=occurred_at,
+    )
+    return [f"{header}\n{piece}" if header else piece for piece in split_text(body)]
+
+
+def _address_label(raw: Any) -> str:
+    parsed = parse_addresses(raw)
+    if not parsed:
+        return ""
+    first = parsed[0]
+    return f"{first.name} <{first.address}>" if first.name else first.address

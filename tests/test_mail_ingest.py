@@ -255,6 +255,82 @@ async def test_a_poll_with_nothing_splittable_keeps_the_blob_shape() -> None:
 
 
 # ---------------------------------------------------------------------------
+# chunking a mail (plan §4.5)
+# ---------------------------------------------------------------------------
+
+
+def test_a_mail_chunk_carries_a_header_naming_it() -> None:
+    from aether.memory.vectors import _chunk_text
+
+    parts = _chunk_text(
+        MAIL_SOURCE,
+        MAIL_KIND,
+        {
+            "subject": "Invoice for October",
+            "sender": "Rahul Sharma <rahul@example.com>",
+            "date": "Tue, 03 Nov 2026 11:46:00 +0530",
+            "body": "Please find the invoice attached.",
+        },
+        SENT,
+    )
+
+    assert len(parts) == 1
+    text = parts[0][1]
+    assert text.startswith("[Mail: Invoice for October | from Rahul Sharma <rahul@example.com>")
+    assert "2026-11-03 06:16 UTC" in text
+    assert text.endswith("Please find the invoice attached.")
+
+
+def test_a_mails_quoted_history_is_not_indexed() -> None:
+    from aether.memory.vectors import _chunk_text
+
+    parts = _chunk_text(
+        MAIL_SOURCE,
+        MAIL_KIND,
+        {
+            "subject": "Re: Invoice",
+            "sender": "Rahul <rahul@example.com>",
+            "body": (
+                "yes please\n\n"
+                "On Tue, Nov 3 2026 at 11:46 Rahul wrote:\n"
+                "> can you send it\n> thanks"
+            ),
+        },
+        SENT,
+    )
+
+    text = parts[0][1]
+    assert "yes please" in text
+    # each reply would otherwise retrieve as every earlier message in the thread
+    assert "can you send it" not in text
+
+
+def test_a_mail_with_no_body_still_indexes_its_snippet() -> None:
+    from aether.memory.vectors import _chunk_text
+
+    parts = _chunk_text(
+        MAIL_SOURCE, MAIL_KIND, {"subject": "Hi", "snippet": "the short preview"}, SENT
+    )
+
+    assert len(parts) == 1
+    assert "the short preview" in parts[0][1]
+
+
+def test_a_bare_mail_with_nothing_to_read_indexes_nothing() -> None:
+    from aether.memory.vectors import _chunk_text
+
+    assert _chunk_text(MAIL_SOURCE, MAIL_KIND, {"subject": "", "body": ""}, SENT) == []
+
+
+def test_a_chunk_header_leaves_out_what_it_does_not_have() -> None:
+    from aether.memory.vectors import chunk_header
+
+    assert chunk_header(name="Doc: OSY.pdf", location="slide 3") == "[Doc: OSY.pdf | slide 3]"
+    assert chunk_header() == ""
+    assert chunk_header(sender="Ada <ada@x.com>").startswith("[from Ada")
+
+
+# ---------------------------------------------------------------------------
 # dedup on the provider's message id (real store)
 # ---------------------------------------------------------------------------
 

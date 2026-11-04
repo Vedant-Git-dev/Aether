@@ -18,6 +18,7 @@ came from, and the DB never stores the handle in plaintext).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -29,9 +30,12 @@ import asyncpg
 
 from ..authz.audit import AuditLog
 from ..config import ContactsConfig
+from .commitments import Commitments
 from .crypto import Cipher
-from .entities import Sender, normalize_handle
+from .enrich import Enricher, enrichment_text, heuristic_floor
+from .entities import Entities, Sender, normalize_handle
 from .indexes import IndexedEvent, MemoryIndex, decode_event_row, decode_extra
+from .mail import MAIL_KIND, parse_addresses
 
 if TYPE_CHECKING:
     from .vectors import VectorMemory
@@ -140,6 +144,10 @@ class EventStore:
         indexer: VectorMemory | None = None,
         index: MemoryIndex | None = None,
         cold_batch: int = 500,
+        entities: Entities | None = None,
+        commitments: Commitments | None = None,
+        enricher: Enricher | None = None,
+        enrichment: bool = False,
     ) -> None:
         self._pool = pool
         self._cipher = cipher
@@ -148,6 +156,44 @@ class EventStore:
         self._indexer = indexer
         self._index = index
         self._cold_batch = cold_batch
+        self._entities = entities
+        self._commitments = commitments
+        self._enricher = enricher
+        self._enrichment = enrichment
+        # background enrichment in flight — tracked so shutdown and tests
+        # never assert on work still mid-air
+        self._enriching: set[asyncio.Task[None]] = set()
+        # One lock for every sealed-meta merge. Salience and enrichment are
+        # both read-modify-write on the same blob, and two spawned writers
+        # racing would silently drop whichever finished first. Writes are a
+        # couple per event, so one lock costs nothing worth measuring.
+        self._meta_lock = asyncio.Lock()
+
+    async def wait_idle(self) -> None:
+        """Every enrichment currently in flight."""
+        while self._enriching:
+            await asyncio.gather(*self._enriching, return_exceptions=True)
+
+    def attach_enrichment(
+        self,
+        *,
+        entities: Entities | None = None,
+        commitments: Commitments | None = None,
+        enricher: Enricher | None = None,
+        enrichment: bool = False,
+    ) -> None:
+        """Join the write-time enrichment pieces to the store.
+
+        The store is built before the identity layer, which needs the model
+        registry, which needs the connectors — so the two are wired
+        together here rather than by reordering boot. Until this is called,
+        ingest stores exactly what it stored before: the floor still runs
+        (it needs nothing), but nothing is linked and nothing is classified.
+        """
+        self._entities = entities
+        self._commitments = commitments
+        self._enricher = enricher
+        self._enrichment = enrichment
 
     # -- ingestion ----------------------------------------------------------
 
@@ -182,13 +228,23 @@ class EventStore:
                 "handle": sender.handle,
             }
         when = occurred_at or datetime.now(tz=UTC)
+        extra = dict(meta or {})
+        # The deterministic floor runs here, synchronously, before anything
+        # is written (plan §4.3): whatever else is late — the classifier, the
+        # embedder, the network — an event whose own words say "urgent" is
+        # never invisible. It is not behind the enrichment flag because the
+        # one thing that must not fail is the one thing that cannot fail.
+        floor = heuristic_floor(enrichment_text(kind, stored_payload))
+        if floor:
+            extra["urgency"] = max(int(extra.get("urgency") or 0), floor)
+            extra["urgency_floor"] = True
         sealed_meta = {
             "source": source,
             "kind": kind,
             "occurred_at": when.isoformat(),
             "salience": 0.0,
             "memorable": False,
-            "extra": dict(meta or {}),
+            "extra": extra,
         }
         if dedup_key is not None:
             # the source's own identity for this thing (a provider message
@@ -229,7 +285,6 @@ class EventStore:
                 event_id,
             )
         if self._index is not None:
-            extra = dict(meta or {})
             self._index.upsert(
                 IndexedEvent(
                     id=event_id,
@@ -257,13 +312,146 @@ class EventStore:
                     source,
                     kind,
                     stored_payload,
-                    occurred_at or datetime.now(tz=UTC),
+                    when,
                 )
             except Exception:
                 log.warning(
                     "indexing failed for event %s — backfill will retry", event_id, exc_info=True
                 )
+        if self._entities is not None or (self._enricher is not None and self._enrichment):
+            self._spawn_enrichment(event_id, kind, stored_payload, when)
         return IngestResult(stored=True, reason="new", event_id=event_id)
+
+    # -- write-time enrichment (plan §4) --------------------------------------
+
+    def _spawn_enrichment(
+        self, event_id: int, kind: str, payload: dict[str, Any], occurred_at: datetime
+    ) -> None:
+        """Start the slow half of enrichment without making ingest wait.
+
+        Linking addresses needs the database and classifying needs a model
+        turn; neither belongs in front of a reply. The event is already
+        stored and already floor-scored, so this task only adds to what is
+        known — a failure costs detail, never the event.
+        """
+        task = asyncio.create_task(self._enrich(event_id, kind, payload, occurred_at))
+        self._enriching.add(task)
+        task.add_done_callback(self._enriching.discard)
+
+    async def _enrich(
+        self, event_id: int, kind: str, payload: dict[str, Any], occurred_at: datetime
+    ) -> None:
+        extra: dict[str, Any] = {}
+        if self._entities is not None:
+            try:
+                extra.update(await self._link_addresses(event_id, kind, payload))
+            except Exception:
+                log.warning("entity linking failed for event %s", event_id, exc_info=True)
+        if self._enricher is not None and self._enrichment:
+            try:
+                result = await self._enricher.enrich(
+                    enrichment_text(kind, payload), occurred_at=occurred_at
+                )
+            except Exception:
+                log.warning("enrichment failed for event %s", event_id, exc_info=True)
+                result = None
+            if result is not None:
+                extra.update(result.to_extra())
+                if self._commitments is not None and result.commitments:
+                    await self._commitments.add_many(
+                        [
+                            {
+                                "kind": commitment.kind,
+                                "text": commitment.text,
+                                "due_at": commitment.due_at,
+                            }
+                            for commitment in result.commitments
+                        ],
+                        source_event_id=event_id,
+                        counterparty_identity_id=_first(extra.get("entities")),
+                    )
+                if result.noise and self._indexer is not None:
+                    # a noise event keeps its one-line summary instead of a
+                    # chunk per paragraph, so it stops winning retrieval
+                    try:
+                        await self._indexer.replace_with_summary(
+                            event_id, result.summary or str(payload.get("subject") or "")
+                        )
+                    except Exception:
+                        log.warning("could not collapse noise event %s", event_id, exc_info=True)
+        if extra:
+            await self.merge_meta(event_id, extra)
+
+    async def _link_addresses(
+        self, event_id: int, kind: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Link every address an event carries to an identity.
+
+        Fill the event's own envelope from what the mail carried, and never
+        from a guess: an unknown display name that looks like the owner's
+        produces a question, not a merge.
+        """
+        if kind != MAIL_KIND:
+            return {}
+        assert self._entities is not None
+        seen: list[int] = []
+        for field in ("sender", "to", "cc"):
+            for address in parse_addresses(payload.get(field)):
+                linked = await self._entities.link_address("email", address.address, address.name)
+                if linked is None:
+                    continue
+                if linked.entity.id not in seen:
+                    seen.append(linked.entity.id)
+                if linked.alias_candidate and linked.alias_owner_id is not None:
+                    # §4.2: ask once, and only on a later human turn
+                    await self._entities.ask_alias_once(
+                        linked.entity.id,
+                        address=address.address,
+                        name=address.name,
+                        owner_name=str(linked.alias_owner_id),
+                    )
+        if not seen:
+            return {}
+        return {"entities": seen}
+
+    async def merge_meta(
+        self,
+        event_id: int,
+        extra: dict[str, Any],
+        *,
+        salience: float | None = None,
+        memorable: bool | None = None,
+    ) -> None:
+        """Fold fields into one event's sealed meta, under one lock.
+
+        Salience and enrichment both read-modify-write that single blob, so
+        they share this method rather than each re-implementing the merge —
+        otherwise whichever writer finished second would silently erase the
+        other's fields.
+        """
+        async with self._meta_lock:
+            current = await self.get(event_id)
+            if current is None:
+                return
+            merged = {**current.meta, **extra}
+            score = current.salience_score if salience is None else float(salience)
+            keep = current.memorable if memorable is None else bool(memorable)
+            sealed_meta = {
+                "source": current.source,
+                "kind": current.kind,
+                "occurred_at": current.occurred_at.isoformat(),
+                "salience": score,
+                "memorable": keep,
+                "extra": merged,
+            }
+            await self._pool.execute(
+                "UPDATE events SET meta_enc = $1, key_version = $2 WHERE id = $3",
+                self._cipher.encrypt_json(sealed_meta, aad=f"events:meta_enc:{event_id}"),
+                self._cipher.key_id,
+                event_id,
+            )
+            if self._index is not None:
+                self._index.update_salience(event_id, score, keep, merged)
 
     # -- reads ----------------------------------------------------------------
 
@@ -371,26 +559,7 @@ class EventStore:
         extra = {
             k: v for k, v in {"category": category, "actionability": actionability}.items() if v
         }
-        current = await self.get(event_id)
-        if current is None:
-            return
-        merged_extra = {**current.meta, **extra}
-        sealed_meta = {
-            "source": current.source,
-            "kind": current.kind,
-            "occurred_at": current.occurred_at.isoformat(),
-            "salience": float(score),
-            "memorable": bool(memorable),
-            "extra": merged_extra,
-        }
-        await self._pool.execute(
-            "UPDATE events SET meta_enc = $1, key_version = $2 WHERE id = $3",
-            self._cipher.encrypt_json(sealed_meta, aad=f"events:meta_enc:{event_id}"),
-            self._cipher.key_id,
-            event_id,
-        )
-        if self._index is not None:
-            self._index.update_salience(event_id, score, memorable, merged_extra)
+        await self.merge_meta(event_id, extra, salience=score, memorable=memorable)
 
     # -- internals ----------------------------------------------------------------
 
@@ -433,3 +602,12 @@ class EventStore:
 def start_of_today(now: datetime | None = None) -> datetime:
     now = now or datetime.now(UTC)
     return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _first(values: Any) -> int | None:
+    """The first identity an event was linked to — the counterparty a
+    commitment belongs to, when the event names one."""
+    if isinstance(values, (list, tuple)) and values:
+        first = values[0]
+        return int(first) if isinstance(first, int) else None
+    return None

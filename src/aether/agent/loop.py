@@ -58,7 +58,7 @@ from ..llm.failures import ProviderFailure, classify_provider_failure
 from ..llm.registry import ProviderRegistry
 from ..llm.types import PLAIN_PARAM, Message, ToolCall, ToolResult, ToolSpec
 from ..memory.context import ContextBuilder
-from ..memory.entities import Sender
+from ..memory.entities import Entities, Sender
 from ..memory.events import Event, EventStore
 from ..memory.mail import MAIL_KIND, MAIL_SOURCE, split_mail
 from ..memory.salience import Salience
@@ -475,6 +475,7 @@ class AgentLoop:
         vectors: VectorMemory | None = None,
         mail_filter: MailAllowlist | None = None,
         media: Any = None,
+        entities: Entities | None = None,
     ) -> None:
         self._providers = providers
         # the in-flight reply to a decision, if the model is writing one —
@@ -518,6 +519,9 @@ class AgentLoop:
         # carries a stored media id shows the media itself with the ask,
         # and a blob that's gone (evicted, purged) degrades to the words
         self._media = media
+        # identities — used to claim the owner's own address when a provider
+        # connects, so "my other address" renders correctly from the first mail
+        self._entities = entities
         # the guided /config walk in progress, if any — memory only
         self._wizard: ConfigWizard | None = None
         # the guided /apps walk in progress, if any — same rules, memory only
@@ -1419,7 +1423,17 @@ class AgentLoop:
     async def announce_provider_connection(self, app_key: str, identity: str = "") -> None:
         """The OAuth callback landed — move the walk to the gate's question:
         what may Aether do with this app. The answer writes an authz rule
-        with the direct provider prefix."""
+        with the direct provider prefix.
+
+        The account address the provider just reported is the owner's own,
+        so it is claimed here (plan §8): without it the first mail from a
+        second address of the user's would render as a stranger's.
+        """
+        if self._entities is not None and identity.strip():
+            try:
+                await self._entities.mark_owner_address(app_key, identity.strip())
+            except Exception:
+                log.warning("%s connected but its own address could not be claimed", app_key)
         walk = self._apps_walk
         if walk is None or not walk.alive:
             walk = self._new_apps_wizard()
@@ -1821,7 +1835,10 @@ class AgentLoop:
                     # way the turn itself must survive
                     log.exception("recall head start failed — embedding inline instead")
 
-            ctx = await self._context.build()
+            # the alias confirmation (plan §4.2) is a question, so it is only
+            # loaded when the user is actually here — an unprompted tick must
+            # never raise one
+            ctx = await self._context.build(with_questions=bool(messages))
             history: list[Message] = []
             # every meaningful question pulls its own related memories in —
             # older conversations, shared documents, whatever the question
@@ -2232,6 +2249,10 @@ class AgentLoop:
                 "them up again; they run (or quietly don't) the moment the "
                 "user decides"
             )
+        # one-off questions to put to the user this turn, in the words the
+        # context builder chose — currently the owner-alias confirmation
+        for question in ctx.questions:
+            lines.append(f"- {question}")
         if ctx.today_memorable:
             lines.append(f"- {ctx.today_memorable} memorable event(s) so far today")
         return "\n".join(lines)
