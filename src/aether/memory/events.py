@@ -295,7 +295,7 @@ class EventStore:
         count = 0
         for row in rows:
             event = self._to_event(row)
-            if event.source == source and event.occurred_at > since:
+            if event.source == source and event.occurred_at >= since:
                 count += 1
         return count
 

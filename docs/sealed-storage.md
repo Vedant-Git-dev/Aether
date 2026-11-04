@@ -140,6 +140,22 @@ never contain it, and the sealed payload must still decrypt to contain it.
 
 Set the new key as `AETHER_ENCRYPTION_KEY` with a new `AETHER_ENCRYPTION_KEY_ID`,
 and move the old value to `AETHER_ENCRYPTION_KEY_PREVIOUS` with its id. Old
-values stay readable; new writes use the new version. Blind-index tokens are
-derived from the active key, so a rotation also needs a re-tokenize pass before
-lookups match rows written under the previous key.
+sealed values stay readable; new writes use the new version.
+
+Blind-index tokens and dedup tags are derived from the active key, so lookups
+stop matching rows written under the previous key until they are rewritten.
+Run the re-tokenize pass while both keys are configured:
+
+```bash
+python -m aether.memory.seal_migrate --retokenize
+```
+
+It rewrites the derived token columns for workspace files, events (including
+their dedup tags), handles, chat surfaces, chunk model filters, proactive
+tasks, and media origins and content tags, and exits non-zero if any row could
+not be re-derived. The pass re-tokenizes
+indexes, not ciphertext: sealed blobs written under the previous key keep
+opening only while that key stays configured, so keep it set until a
+re-encryption pass exists. Chunks sealed before the model name was recorded in
+their sealed metadata cannot be re-tokenized; they are counted as failures and
+should be re-embedded.

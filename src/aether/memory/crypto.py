@@ -225,6 +225,12 @@ class Cipher:
         with a token for a display name, and a different master key yields
         different tokens. Callers pass an already-normalized value — this
         function does not guess at case or whitespace rules.
+
+        Tokens are bound to the *active* key version. After a key rotation a
+        stored token no longer matches the token this method produces, so the
+        derived token columns must be rewritten with
+        `python -m aether.memory.seal_migrate --retokenize` before equality
+        lookups see rows written under the previous key.
         """
         _check_purpose(purpose)
         if isinstance(value, str):

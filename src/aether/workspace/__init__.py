@@ -6,6 +6,7 @@ from .store import (
     WorkspaceHit,
     WorkspaceWriteError,
     looks_like_secret,
+    parse_entries,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "WorkspaceHit",
     "WorkspaceWriteError",
     "looks_like_secret",
+    "parse_entries",
 ]

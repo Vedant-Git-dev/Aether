@@ -215,7 +215,7 @@ async def workspace_row(pool: asyncpg.Pool, token: bytes) -> asyncpg.Record | No
 
 
 async def workspace_rows(pool: asyncpg.Pool) -> list[asyncpg.Record]:
-    return await pool.fetch("SELECT id, name_enc FROM workspace_files")
+    return await pool.fetch("SELECT id, name_enc, content_enc FROM workspace_files")
 
 
 async def upsert_workspace_file(
