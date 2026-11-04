@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from fakes import (
     FakeApprovals,
     FakeAudit,
@@ -28,6 +29,7 @@ from aether.connectors.registry import ToolRegistry
 from aether.llm.types import Turn
 from aether.media.editing import EditOutcome
 from aether.media.store import MediaRef
+from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.events import Event
 from aether.memory.vectors import MemoryHit
 from aether.workspace import Workspace
@@ -845,18 +847,19 @@ async def test_set_config_refuses_incomplete_calls_in_plain_words() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _workspace(tmp_path) -> Workspace:
-    ws = Workspace(tmp_path / "ws")
-    ws.ensure_scaffold()
+async def _workspace(db) -> Workspace:
+    ws = Workspace(db, cipher=Cipher.from_b64(generate_key_b64()))
+    await ws.ensure_scaffold()
     return ws
 
 
-async def test_workspace_tools_register_only_when_wired(tmp_path) -> None:
+@pytest.mark.integration
+async def test_workspace_tools_register_only_when_wired(db) -> None:
     bare = NativeKit()
     assert bare.count == 7
     assert bare.registry.get("workspace_read") is None
 
-    wired = NativeKit(workspace=_workspace(tmp_path))
+    wired = NativeKit(workspace=await _workspace(db))
     assert wired.count == 13
     for name in (
         "workspace_read",
@@ -869,8 +872,9 @@ async def test_workspace_tools_register_only_when_wired(tmp_path) -> None:
         assert wired.registry.get(name) is not None, name
 
 
-async def test_workspace_read_returns_scaffolded_files(tmp_path) -> None:
-    kit = NativeKit(workspace=_workspace(tmp_path))
+@pytest.mark.integration
+async def test_workspace_read_returns_scaffolded_files(db) -> None:
+    kit = NativeKit(workspace=await _workspace(db))
     out = await kit.run("workspace_read", {"file": "identity"})
     assert "Name: Aether" in out
 
@@ -880,8 +884,9 @@ async def test_workspace_read_returns_scaffolded_files(tmp_path) -> None:
     )
 
 
-async def test_workspace_remember_and_search_round_trip(tmp_path) -> None:
-    kit = NativeKit(workspace=_workspace(tmp_path))
+@pytest.mark.integration
+async def test_workspace_remember_and_search_round_trip(db) -> None:
+    kit = NativeKit(workspace=await _workspace(db))
     out = await kit.run(
         "workspace_remember", {"text": "prefers concise notifications", "kind": "preference"}
     )
@@ -895,15 +900,17 @@ async def test_workspace_remember_and_search_round_trip(tmp_path) -> None:
     )
 
 
-async def test_workspace_search_rejects_a_non_numeric_limit(tmp_path) -> None:
-    kit = NativeKit(workspace=_workspace(tmp_path))
+@pytest.mark.integration
+async def test_workspace_search_rejects_a_non_numeric_limit(db) -> None:
+    kit = NativeKit(workspace=await _workspace(db))
     await kit.run("workspace_remember", {"text": "note about coffee", "kind": "fact"})
     out = await kit.run("workspace_search", {"query": "coffee", "limit": "many"})
     assert out == "workspace_search needs limit to be a number."
 
 
-async def test_workspace_remember_refuses_secrets(tmp_path) -> None:
-    kit = NativeKit(workspace=_workspace(tmp_path))
+@pytest.mark.integration
+async def test_workspace_remember_refuses_secrets(db) -> None:
+    kit = NativeKit(workspace=await _workspace(db))
     out = await kit.run(
         "workspace_remember",
         {"text": "api_key: sk-abcdefghijklmnopqrstuvwxyz", "kind": "fact"},
@@ -914,8 +921,9 @@ async def test_workspace_remember_refuses_secrets(tmp_path) -> None:
     )
 
 
-async def test_workspace_promote_moves_a_daily_entry_into_memory(tmp_path) -> None:
-    workspace = _workspace(tmp_path)
+@pytest.mark.integration
+async def test_workspace_promote_moves_a_daily_entry_into_memory(db) -> None:
+    workspace = await _workspace(db)
     kit = NativeKit(workspace=workspace)
     today = datetime.now(UTC).date().isoformat()
     saved = await kit.run("workspace_remember", {"text": "deploy went out at 5pm", "kind": "daily"})
@@ -929,35 +937,39 @@ async def test_workspace_promote_moves_a_daily_entry_into_memory(tmp_path) -> No
     assert missing == f"No active entry doesnotexist on {today}."
 
 
-async def test_workspace_remember_records_user_vs_agent_origin(tmp_path) -> None:
-    workspace = _workspace(tmp_path)
+@pytest.mark.integration
+async def test_workspace_remember_records_user_vs_agent_origin(db) -> None:
+    workspace = await _workspace(db)
     kit = NativeKit(workspace=workspace)
     await kit.run(
         "workspace_remember", {"text": "told me directly", "kind": "fact", "source": "user"}
     )
     await kit.run("workspace_remember", {"text": "inferred this", "kind": "fact"})
-    sources = {e.text: e.source for e in workspace.entries("memory")}
+    sources = {e.text: e.source for e in await workspace.entries("memory")}
     assert sources["told me directly"] == "user"
     assert sources["inferred this"] == "agent"  # the default when the tool call omits it
 
 
-async def test_workspace_rewrite_replaces_identity_or_soul(tmp_path) -> None:
-    kit = NativeKit(workspace=_workspace(tmp_path))
+@pytest.mark.integration
+async def test_workspace_rewrite_replaces_identity_or_soul(db) -> None:
+    kit = NativeKit(workspace=await _workspace(db))
     out = await kit.run("workspace_rewrite", {"file": "soul", "text": "# SOUL.md\n\n- Be terse.\n"})
     assert out == "soul.md replaced."
     # the tool trims surrounding whitespace from model output before saving
     assert await kit.run("workspace_read", {"file": "soul"}) == "# SOUL.md\n\n- Be terse."
 
 
-async def test_workspace_rewrite_refuses_other_files(tmp_path) -> None:
-    kit = NativeKit(workspace=_workspace(tmp_path))
+@pytest.mark.integration
+async def test_workspace_rewrite_refuses_other_files(db) -> None:
+    kit = NativeKit(workspace=await _workspace(db))
     out = await kit.run("workspace_rewrite", {"file": "memory", "text": "whatever"})
     assert out.startswith("workspace_rewrite can only replace identity or soul")
     assert "whatever" not in await kit.run("workspace_read", {"file": "memory"})
 
 
-async def test_workspace_rewrite_refuses_secrets(tmp_path) -> None:
-    kit = NativeKit(workspace=_workspace(tmp_path))
+@pytest.mark.integration
+async def test_workspace_rewrite_refuses_secrets(db) -> None:
+    kit = NativeKit(workspace=await _workspace(db))
     out = await kit.run(
         "workspace_rewrite",
         {"file": "identity", "text": "api_key: sk-abcdefghijklmnopqrstuvwxyz0123456789"},
@@ -965,8 +977,9 @@ async def test_workspace_rewrite_refuses_secrets(tmp_path) -> None:
     assert out.startswith("not saved:")
 
 
-async def test_workspace_finish_bootstrap_removes_the_marker(tmp_path) -> None:
-    kit = NativeKit(workspace=_workspace(tmp_path))
+@pytest.mark.integration
+async def test_workspace_finish_bootstrap_removes_the_marker(db) -> None:
+    kit = NativeKit(workspace=await _workspace(db))
     assert await kit.run("workspace_finish_bootstrap", {}) == "First-run setup marked complete."
     assert await kit.run("workspace_finish_bootstrap", {}) == "No first-run setup was pending."
     assert await kit.run("workspace_read", {"file": "bootstrap"}) == "bootstrap is empty."

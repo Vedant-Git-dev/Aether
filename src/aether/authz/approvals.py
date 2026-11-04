@@ -33,6 +33,20 @@ def _aad(approval_id: int) -> str:
     return f"pending_approvals:params_enc:{approval_id}"
 
 
+def _sealed_text(cipher: Cipher, blob: Any, aad: str) -> str:
+    """A sealed string, empty when the row has none or it no longer opens."""
+    if blob:
+        try:
+            return cipher.decrypt_text(blob, aad=aad)
+        except CryptoError:
+            log.warning("approval field undecryptable — treated as empty")
+    return ""
+
+
+_AAD_RULES = "pending_approvals:rules_matched_enc:{}"
+_AAD_NOTE = "pending_approvals:note_enc:{}"
+
+
 @dataclass
 class Approval:
     id: int
@@ -86,30 +100,35 @@ class Approvals:
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "INSERT INTO pending_approvals"
-                " (tool_name, params_enc, status, expires_at, rules_matched, note, media_id)"
-                " VALUES ($1, $2, 'pending', $3, $4, $5, $6) RETURNING id, created_at",
+                " (tool_name, params_enc, status, expires_at, media_id, key_version)"
+                " VALUES ($1, $2, 'pending', $3, $4, $5) RETURNING id, created_at",
                 tool_name,
                 b"",  # placeholder until the id exists; replaced below, same transaction
                 expires_at,
-                rules_matched,
-                note,
                 media_id,
+                self._cipher.key_id,
             )
             approval_id = row["id"]
             # encrypt only after the id exists so the AAD can bind to it
             blob = self._cipher.encrypt_json(params, aad=_aad(approval_id))
             await conn.execute(
-                "UPDATE pending_approvals SET params_enc = $1 WHERE id = $2",
+                "UPDATE pending_approvals SET params_enc = $1, rules_matched_enc = $2,"
+                " note_enc = $3 WHERE id = $4",
                 blob,
+                self._cipher.encrypt_text(rules_matched, aad=_AAD_RULES.format(approval_id)),
+                self._cipher.encrypt_text(note, aad=_AAD_NOTE.format(approval_id)),
                 approval_id,
             )
+        # the audit record keeps ids and digests only: the free-text note
+        # already lives, sealed, on the approval row itself, and the rule is
+        # a policy vocabulary id rather than user content
         await self._audit.append(
             actor=actor,
             tool_name=tool_name,
             decision="approve",
             rules_matched=rules_matched,
             params=params,
-            outcome=note or "parked for approval",
+            outcome="parked for approval",
         )
         return Approval(
             id=approval_id,
@@ -141,18 +160,15 @@ class Approvals:
                 " SET status = $1, decided_at = now(), decided_by = $2, media_id = NULL"
                 " WHERE id = $3 AND status = 'pending' AND expires_at > now()"
                 " RETURNING id, tool_name, status, created_at, expires_at,"
-                " decided_at, decided_by, rules_matched, note",
+                " decided_at, decided_by, rules_matched_enc, note_enc, params_enc",
                 decision,
                 decided_by,
                 approval_id,
             )
             if row is None:
                 return None
-            blob = await conn.fetchval(
-                "SELECT params_enc FROM pending_approvals WHERE id = $1",
-                approval_id,
-            )
-        params = self._cipher.decrypt_json(blob, aad=_aad(approval_id))
+            approval = self._to_approval(row)
+        params = approval.params
         await self._audit.append(
             actor="user",
             tool_name=row["tool_name"],
@@ -161,18 +177,7 @@ class Approvals:
             outcome=f"{decision} by {decided_by}",
         )
         log.info("approval %s decided %s by %s", approval_id, decision, decided_by)
-        return Approval(
-            id=approval_id,
-            tool_name=row["tool_name"],
-            params=params,
-            status=decision,
-            created_at=row["created_at"],
-            expires_at=row["expires_at"],
-            decided_at=row["decided_at"],
-            decided_by=row["decided_by"],
-            rules_matched=row["rules_matched"],
-            note=row["note"],
-        )
+        return approval
 
     async def mark_executed(self, approval_id: int) -> None:
         """Flip an approved call to executed after the tool ran."""
@@ -252,7 +257,7 @@ class Approvals:
     async def get(self, approval_id: int) -> Approval | None:
         row = await self._pool.fetchrow(
             "SELECT id, tool_name, status, created_at, expires_at, decided_at,"
-            " decided_by, rules_matched, note, params_enc"
+            " decided_by, rules_matched_enc, note_enc, params_enc"
             " FROM pending_approvals WHERE id = $1",
             approval_id,
         )
@@ -271,7 +276,7 @@ class Approvals:
     async def list_pending(self) -> list[Approval]:
         rows = await self._pool.fetch(
             "SELECT id, tool_name, status, created_at, expires_at, decided_at,"
-            " decided_by, rules_matched, note, params_enc"
+            " decided_by, rules_matched_enc, note_enc, params_enc"
             " FROM pending_approvals WHERE status = 'pending' AND expires_at > now()"
             " ORDER BY created_at"
         )
@@ -294,6 +299,8 @@ class Approvals:
             expires_at=row["expires_at"],
             decided_at=row["decided_at"],
             decided_by=row["decided_by"],
-            rules_matched=row["rules_matched"],
-            note=row["note"],
+            rules_matched=_sealed_text(
+                self._cipher, row.get("rules_matched_enc"), _AAD_RULES.format(row["id"])
+            ),
+            note=_sealed_text(self._cipher, row.get("note_enc"), _AAD_NOTE.format(row["id"])),
         )

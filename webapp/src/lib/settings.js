@@ -17,6 +17,7 @@ export const SECTION_META = [
   { key: "mcp_servers", group: "Connections", title: "App servers", icon: "server", feed: true },
   { key: "credentials", group: "Connections", title: "Credentials", icon: "key" },
   { key: "profile", group: "You", title: "What Aether knows about you", icon: "user" },
+  { key: "workspace", group: "You", title: "Workspace files", icon: "docs" },
   { key: "personality", group: "You", title: "Personality", icon: "pen" },
   { key: "access", group: "You", title: "Access", icon: "lock" },
   { key: "workbench", group: "System", title: "Cloud workbench", icon: "cloud", feed: true },

@@ -34,6 +34,13 @@ default value.
 | --- | --- |
 | `DATABASE_URL` | Postgres connection string. Aether runs its migrations on boot. |
 | `AETHER_ENCRYPTION_KEY` | Base64 of 32 random bytes. Encrypts content at rest. Losing it loses the data. |
+| `AETHER_ENCRYPTION_KEY_ID` | Short label for the active key, such as `2026-10`. Written into every new sealed value. Defaults to `k1`. |
+| `AETHER_ENCRYPTION_KEY_PREVIOUS` | Previous content key, only during rotation. Values written under it stay readable. |
+| `AETHER_ENCRYPTION_KEY_PREVIOUS_ID` | Label for the previous content key. Required when the previous key is set. |
+
+Content keys carry a version label. A rotation sets the new key as active and the old one as previous: old rows stay readable, new writes use the new version. Keyed blind indexes (address lookups, dedup tokens) are derived from the active key, so a rotation also needs a re-index pass before those lookups see old rows again. That pass ships with the storage migration tooling.
+
+See [sealed-storage.md](sealed-storage.md) for the plaintext allowlist and the sealer.
 | `AETHER_TOKEN` | Shared token for the API, web chat, and companion uploads. |
 
 ### Core options
@@ -207,12 +214,15 @@ senders.
 | Key | Default | Notes |
 | --- | --- | --- |
 | `enabled` | `true` | |
-| `path` | `aether-workspace` | Relative to the working directory |
-| `encrypted` | `true` | AES-256-GCM at rest |
+| `path` | `aether-workspace` | One-time import source; the files then live in Postgres |
+| `encrypted` | `true` | Retained for older config files; the database store always seals |
 
 Files: `IDENTITY.md`, `SOUL.md`, `AGENTS.md`, `USER.md`, `MEMORY.md`, and
-`memory/YYYY-MM-DD.md`. They are encrypted individually and bound to their names.
-Turning encryption off later does not decrypt files already written.
+`memory/YYYY-MM-DD.md`. Each is one sealed row in `workspace_files`, bound to
+its row id, with a keyed blind token for the name. On the first boot after
+upgrading, a file-backed workspace at `path` is imported and its files are
+removed; nothing readable stays on disk. Edit them in Settings, Workspace
+files, or through the workspace tools. Export and import use a passphrase.
 
 ### `proactive`
 

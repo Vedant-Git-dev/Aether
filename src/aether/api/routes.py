@@ -9,6 +9,7 @@ routes (and only those) are open by design.
 
 from __future__ import annotations
 
+import base64
 import hmac
 import logging
 from datetime import datetime
@@ -23,10 +24,12 @@ from ..agent.tools import with_plain_calls, with_plain_event
 from ..apps_catalog import CATALOG, recipe_for
 from ..config import is_legacy_composio_server
 from ..connectors.base import Attachment, InboundMessage, classify_attachment
+from ..memory.crypto import CryptoError
 from ..proactive import DONE
 from ..providers.types import ProviderError
 from ..settings_catalog import ALL_FIELD_PATHS, credential_for, settings_feed
 from ..workspace import SecretRejected, WorkspaceEntry, WorkspaceWriteError
+from ..workspace.transfer import export_bundle, import_bundle
 
 log = logging.getLogger("aether.api")
 
@@ -59,6 +62,15 @@ class PersonalityBody(BaseModel):
 
 class WorkspaceTextBody(BaseModel):
     text: str
+
+
+class WorkspaceExportBody(BaseModel):
+    passphrase: str
+
+
+class WorkspaceImportBody(BaseModel):
+    passphrase: str
+    bundle: str  # base64 of the exported bytes
 
 
 class ContactBody(BaseModel):
@@ -1018,8 +1030,8 @@ async def profile_feed(request: Request, token: str | None = None) -> dict:
     if workspace is None:
         raise HTTPException(status_code=503, detail="workspace is not enabled")
     return {
-        "confirmed": [_entry_dict(e) for e in workspace.profile()],
-        "pending": [_entry_dict(e) for e in workspace.pending_profile()],
+        "confirmed": [_entry_dict(e) for e in await workspace.profile()],
+        "pending": [_entry_dict(e) for e in await workspace.pending_profile()],
     }
 
 
@@ -1035,7 +1047,7 @@ async def confirm_profile_entries(
     workspace = getattr(request.app.state, "workspace", None)
     if workspace is None:
         raise HTTPException(status_code=503, detail="workspace is not enabled")
-    confirmed = workspace.confirm_profile(body.ids)
+    confirmed = await workspace.confirm_profile(body.ids)
     return {"ok": True, "confirmed": confirmed}
 
 
@@ -1061,11 +1073,11 @@ async def workspace_feed(request: Request, token: str | None = None) -> dict:
     if workspace is None:
         raise HTTPException(status_code=503, detail="workspace is not enabled")
     return {
-        "needs_bootstrap": workspace.needs_bootstrap(),
+        "needs_bootstrap": await workspace.needs_bootstrap(),
         "files": {
             key: {
-                "raw": workspace.read(key),
-                "entries": [_entry_dict(e) for e in workspace.entries(key)],
+                "raw": await workspace.read(key),
+                "entries": [_entry_dict(e) for e in await workspace.entries(key)],
             }
             for key in _WORKSPACE_FILES
         },
@@ -1085,7 +1097,7 @@ async def workspace_write(
     if workspace is None:
         raise HTTPException(status_code=503, detail="workspace is not enabled")
     try:
-        workspace.write_raw(file, body.text)
+        await workspace.write_raw(file, body.text)
     except SecretRejected as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
@@ -1107,7 +1119,7 @@ async def workspace_daily_feed(
         raise HTTPException(status_code=503, detail="workspace is not enabled")
     resolved = date or workspace.today()
     try:
-        entries = workspace.entries("daily", date_str=resolved)
+        entries = await workspace.entries("daily", date_str=resolved)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"date": resolved, "entries": [_entry_dict(e) for e in entries]}
@@ -1125,8 +1137,53 @@ async def workspace_search_feed(
     workspace = getattr(request.app.state, "workspace", None)
     if workspace is None:
         raise HTTPException(status_code=503, detail="workspace is not enabled")
-    hits = workspace.search(query, limit=min(limit, 50))
+    hits = await workspace.search(query, limit=min(limit, 50))
     return {"hits": [{"file": h.file, "id": h.id, "text": h.text, "score": h.score} for h in hits]}
+
+
+# -- workspace import/export --------------------------------------------------------
+
+
+@router.post("/api/workspace/export")
+async def workspace_export(
+    body: WorkspaceExportBody, request: Request, token: str | None = None
+) -> Response:
+    """Seal the workspace under a passphrase and stream it back. The
+    plaintext exists only in this process; the response is already sealed."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    workspace = getattr(request.app.state, "workspace", None)
+    if workspace is None:
+        raise HTTPException(status_code=503, detail="workspace is not enabled")
+    try:
+        bundle = export_bundle(await workspace.export_files(), body.passphrase)
+    except CryptoError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(
+        content=bundle,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": 'attachment; filename="aether-workspace.aeth"'},
+    )
+
+
+@router.post("/api/workspace/import")
+async def workspace_import(
+    body: WorkspaceImportBody, request: Request, token: str | None = None
+) -> dict:
+    """Open a passphrase-protected export and write its files back. A wrong
+    passphrase and a corrupt file read the same: one plain refusal."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    workspace = getattr(request.app.state, "workspace", None)
+    if workspace is None:
+        raise HTTPException(status_code=503, detail="workspace is not enabled")
+    try:
+        raw = base64.b64decode(body.bundle, validate=True)
+        files = import_bundle(raw, body.passphrase)
+        written = await workspace.import_files(files)
+    except (CryptoError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "files": written}
 
 
 # -- one-time workbench transfers -------------------------------------------------

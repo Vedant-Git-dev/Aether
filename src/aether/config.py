@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     )
 
     encryption_key: str = Field(default="", validation_alias="AETHER_ENCRYPTION_KEY")
+    # the active content-key version, written into every new sealed envelope.
+    # During a rotation the previous key stays readable.
+    encryption_key_id: str = Field(default="k1", validation_alias="AETHER_ENCRYPTION_KEY_ID")
+    encryption_key_previous: str = Field(
+        default="", validation_alias="AETHER_ENCRYPTION_KEY_PREVIOUS"
+    )
+    encryption_key_previous_id: str = Field(
+        default="", validation_alias="AETHER_ENCRYPTION_KEY_PREVIOUS_ID"
+    )
     # provider tokens use their own keyring so they can be rotated without
     # re-encrypting the content key's data
     token_encryption_key: str = Field(default="", validation_alias="AETHER_TOKEN_ENCRYPTION_KEY")
@@ -138,6 +147,26 @@ class SalienceConfig(BaseModel):
     rate_cap_per_hour: int = 20
 
 
+class MemoryConfig(BaseModel):
+    """Storage guard and the resident index budget.
+
+    Filtering, sorting and search run over in-memory indexes because the
+    user-derived columns are sealed. The hot set bounds what is resident;
+    older history is scanned in bounded cold batches. A small host should
+    lower these, a roomy one can raise them.
+    """
+
+    # off: no audit; warn: log violations and boot; enforce: refuse to boot
+    # while any plaintext content column or unknown column remains
+    schema_audit: Literal["off", "warn", "enforce"] = "enforce"
+    hot_events: int = 2_000
+    hot_chunks: int = 8_000
+    cold_batch: int = 500
+    # the new routing/retrieval pipeline; off keeps the old vector recall
+    query_pipeline: bool = False
+    default_timezone: str = "Asia/Kolkata"
+
+
 class TransportConfig(BaseModel):
     type: Literal["stdio", "http"] = "stdio"
     command: str | None = None
@@ -244,9 +273,9 @@ class WorkspaceConfig(BaseModel):
 
     enabled: bool = True
     path: str = "aether-workspace"
-    # AES-256-GCM at rest with the server's key. Turning this off later
-    # makes new files plain text again but never decrypts what was
-    # already written — those keep reading as empty until re-created.
+    # Retained so older config files keep loading. The workspace now lives
+    # in sealed database rows and always uses the content key; this switch
+    # no longer turns encryption off.
     encrypted: bool = True
 
 
@@ -326,6 +355,7 @@ class AppConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     salience: SalienceConfig = Field(default_factory=SalienceConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
     messaging: MessagingConfig = Field(default_factory=MessagingConfig)
     contacts: ContactsConfig = Field(default_factory=ContactsConfig)

@@ -6,9 +6,10 @@ here, so a non-allowlisted sender's content is dropped before it ever
 touches storage. The only trace is an audit entry saying a drop happened;
 the content itself is never written anywhere.
 
-Dedup is structural: content_hash over the canonical payload, with
-UNIQUE(source, content_hash) in the database — the same thing arriving
-twice is stored once, without a lock or a race.
+Dedup is structural: a keyed HMAC over the canonical payload, with
+UNIQUE(source_token, dedup_mac) in the database — the same thing arriving
+twice is stored once, without a lock or a race, and the tag leaks nothing
+about the content.
 
 When a sender is provided it is merged into the encrypted payload under
 "_sender" (so the salience judge and the context builder can see who it
@@ -21,7 +22,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
@@ -30,6 +31,7 @@ from ..authz.audit import AuditLog
 from ..config import ContactsConfig
 from .crypto import Cipher
 from .entities import Sender, normalize_handle
+from .indexes import IndexedEvent, MemoryIndex, decode_event_row
 
 if TYPE_CHECKING:
     from .vectors import VectorMemory
@@ -39,7 +41,9 @@ log = logging.getLogger("aether.memory.events")
 SENDER_KEY = "_sender"
 
 
-def content_hash(kind: str, payload: dict[str, Any]) -> str:
+def canonical_payload(kind: str, payload: dict[str, Any]) -> bytes:
+    """The canonical bytes dedup is computed over — one helper so the
+    legacy SHA-256 and the sealed keyed tag can never disagree."""
     blob = json.dumps(
         {"kind": kind, "payload": payload},
         sort_keys=True,
@@ -47,7 +51,11 @@ def content_hash(kind: str, payload: dict[str, Any]) -> str:
         ensure_ascii=False,
         default=str,
     )
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+    return blob.encode("utf-8")
+
+
+def content_hash(kind: str, payload: dict[str, Any]) -> str:
+    return hashlib.sha256(canonical_payload(kind, payload)).hexdigest()
 
 
 def _bare(handle: str) -> str:
@@ -122,12 +130,16 @@ class EventStore:
         audit: AuditLog,
         contacts: ContactsConfig,
         indexer: VectorMemory | None = None,
+        index: MemoryIndex | None = None,
+        cold_batch: int = 500,
     ) -> None:
         self._pool = pool
         self._cipher = cipher
         self._audit = audit
         self._contacts = contacts
         self._indexer = indexer
+        self._index = index
+        self._cold_batch = cold_batch
 
     # -- ingestion ----------------------------------------------------------
 
@@ -160,31 +172,56 @@ class EventStore:
                 "platform": sender.platform,
                 "handle": sender.handle,
             }
-        digest = content_hash(kind, stored_payload)
-        meta_json = json.dumps(meta or {}, default=str)
+        when = occurred_at or datetime.now(tz=UTC)
+        sealed_meta = {
+            "source": source,
+            "kind": kind,
+            "occurred_at": when.isoformat(),
+            "salience": 0.0,
+            "memorable": False,
+            "extra": dict(meta or {}),
+        }
 
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
-                "INSERT INTO events (source, kind, occurred_at, content_hash,"
-                " payload_enc, meta)"
-                " VALUES ($1, $2, COALESCE($3, now()), $4, $5, $6::jsonb)"
-                " ON CONFLICT (source, content_hash) DO NOTHING"
+                "INSERT INTO events (payload_enc, meta_enc, key_version,"
+                " source_token, dedup_mac)"
+                " VALUES ($1, $2, $3, $4, $5)"
+                " ON CONFLICT (source_token, dedup_mac)"
+                " WHERE source_token IS NOT NULL AND dedup_mac IS NOT NULL"
+                " DO NOTHING"
                 " RETURNING id",
-                source,
-                kind,
-                occurred_at,
-                digest,
+                b"",  # placeholder until the id exists; replaced below, same transaction
                 b"",
-                meta_json,
+                self._cipher.key_id,
+                self._cipher.blind_token("source", source),
+                self._cipher.dedup_mac(canonical_payload(kind, stored_payload)),
             )
             if row is None:
                 return IngestResult(stored=False, reason="duplicate")
             event_id = row["id"]
             blob = self._cipher.encrypt_json(stored_payload, aad=f"events:payload_enc:{event_id}")
+            sealed_meta_blob = self._cipher.encrypt_json(
+                sealed_meta, aad=f"events:meta_enc:{event_id}"
+            )
             await conn.execute(
-                "UPDATE events SET payload_enc = $1 WHERE id = $2",
+                "UPDATE events SET payload_enc = $1, meta_enc = $2 WHERE id = $3",
                 blob,
+                sealed_meta_blob,
                 event_id,
+            )
+        if self._index is not None:
+            self._index.upsert(
+                IndexedEvent(
+                    id=event_id,
+                    source=source,
+                    kind=kind,
+                    occurred_at=when,
+                    salience_score=0.0,
+                    memorable=False,
+                    payload=stored_payload,
+                    meta=dict(meta or {}),
+                )
             )
         # the single indexing choke point: outside the transaction (the FK
         # row is committed), duplicates never reach it — one event, one
@@ -211,9 +248,12 @@ class EventStore:
     # -- reads ----------------------------------------------------------------
 
     async def get(self, event_id: int) -> Event | None:
+        if self._index is not None:
+            indexed = self._index.get(event_id)
+            if indexed is not None:
+                return self._from_index(indexed)
         row = await self._pool.fetchrow(
-            "SELECT id, source, kind, occurred_at, payload_enc, salience_score,"
-            " memorable, meta FROM events WHERE id = $1",
+            "SELECT id, payload_enc, meta_enc, created_at FROM events WHERE id = $1",
             event_id,
         )
         if row is None:
@@ -221,56 +261,82 @@ class EventStore:
         return self._to_event(row)
 
     async def recent_memorable(self, limit: int = 50, hours: float | None = None) -> list[Event]:
-        sql = (
-            "SELECT id, source, kind, occurred_at, payload_enc, salience_score,"
-            " memorable, meta FROM events WHERE memorable"
+        if self._index is not None:
+            since = datetime.now(UTC) - timedelta(hours=hours) if hours is not None else None
+            if since is not None:
+                await self._index.ensure_since(
+                    self._pool, self._cipher, since, batch=self._cold_batch
+                )
+            events = self._index.recent_memorable(limit * 4)
+            if since is not None:
+                events = [event for event in events if event.occurred_at >= since]
+            return [self._from_index(event) for event in events[:limit]]
+        rows = await self._pool.fetch(
+            "SELECT id, payload_enc, meta_enc, created_at FROM events ORDER BY id DESC LIMIT $1",
+            limit * 8,
         )
-        args: list[Any] = []
-        if hours is not None:
-            sql += " AND occurred_at > now() - make_interval(hours => $1)"
-            args.append(hours)
-        sql += f" ORDER BY occurred_at DESC LIMIT ${len(args) + 1}"
-        args.append(limit)
-        rows = await self._pool.fetch(sql, *args)
-        return [self._to_event(r) for r in rows]
+        since = datetime.now(UTC) - timedelta(hours=hours) if hours is not None else None
+        events = [self._to_event(row) for row in rows]
+        events = [event for event in events if event.memorable]
+        if since is not None:
+            events = [event for event in events if event.occurred_at >= since]
+        events.sort(key=lambda event: event.occurred_at, reverse=True)
+        return events[:limit]
 
     async def count_recent(self, source: str, hours: float = 1.0) -> int:
-        return await self._pool.fetchval(
-            "SELECT COUNT(*) FROM events"
-            " WHERE source = $1 AND occurred_at > now() - make_interval(hours => $2)",
-            source,
-            hours,
+        if self._index is not None:
+            since = datetime.now(UTC) - timedelta(hours=hours)
+            await self._index.ensure_since(self._pool, self._cipher, since, batch=self._cold_batch)
+            return self._index.count_since(source, since)
+        rows = await self._pool.fetch(
+            "SELECT id, payload_enc, meta_enc, created_at FROM events ORDER BY id DESC LIMIT 5000"
         )
+        since = datetime.now(UTC) - timedelta(hours=hours)
+        count = 0
+        for row in rows:
+            event = self._to_event(row)
+            if event.source == source and event.occurred_at > since:
+                count += 1
+        return count
 
     async def list_since(self, after_id: int, limit: int = 50) -> list[Event]:
         """Events ingested after an id, oldest first — the agent loop's
         observation stream; `after_id` starts at max_id() on boot so the
         agent never replays its whole history."""
         rows = await self._pool.fetch(
-            "SELECT id, source, kind, occurred_at, payload_enc, salience_score,"
-            " memorable, meta FROM events WHERE id > $1 ORDER BY id LIMIT $2",
+            "SELECT id, payload_enc, meta_enc, created_at FROM events"
+            " WHERE id > $1 ORDER BY id LIMIT $2",
             after_id,
             limit,
         )
         return [self._to_event(r) for r in rows]
 
     async def max_id(self) -> int:
+        if self._index is not None and self._index.max_id:
+            return self._index.max_id
         return await self._pool.fetchval("SELECT COALESCE(MAX(id), 0) FROM events")
 
     async def recent(self, limit: int = 50) -> list[Event]:
         """Newest events, memorable or not — the web feed's source."""
         rows = await self._pool.fetch(
-            "SELECT id, source, kind, occurred_at, payload_enc, salience_score,"
-            " memorable, meta FROM events ORDER BY id DESC LIMIT $1",
+            "SELECT id, payload_enc, meta_enc, created_at FROM events ORDER BY id DESC LIMIT $1",
             limit,
         )
         return [self._to_event(r) for r in rows]
 
     async def count_memorable_since(self, since: datetime) -> int:
-        return await self._pool.fetchval(
-            "SELECT COUNT(*) FROM events WHERE memorable AND occurred_at >= $1",
-            since,
+        if self._index is not None:
+            await self._index.ensure_since(self._pool, self._cipher, since, batch=self._cold_batch)
+            return self._index.count_memorable_since(since)
+        rows = await self._pool.fetch(
+            "SELECT id, payload_enc, meta_enc, created_at FROM events ORDER BY id DESC LIMIT 5000"
         )
+        count = 0
+        for row in rows:
+            event = self._to_event(row)
+            if event.memorable and event.occurred_at >= since:
+                count += 1
+        return count
 
     # -- updates ---------------------------------------------------------------
 
@@ -285,38 +351,57 @@ class EventStore:
         extra = {
             k: v for k, v in {"category": category, "actionability": actionability}.items() if v
         }
-        meta_json = json.dumps(extra, default=str)
+        current = await self.get(event_id)
+        if current is None:
+            return
+        merged_extra = {**current.meta, **extra}
+        sealed_meta = {
+            "source": current.source,
+            "kind": current.kind,
+            "occurred_at": current.occurred_at.isoformat(),
+            "salience": float(score),
+            "memorable": bool(memorable),
+            "extra": merged_extra,
+        }
         await self._pool.execute(
-            "UPDATE events SET salience_score = $1, memorable = $2,"
-            " meta = COALESCE(meta, '{}'::jsonb) || $3::jsonb WHERE id = $4",
-            score,
-            memorable,
-            meta_json,
+            "UPDATE events SET meta_enc = $1, key_version = $2 WHERE id = $3",
+            self._cipher.encrypt_json(sealed_meta, aad=f"events:meta_enc:{event_id}"),
+            self._cipher.key_id,
             event_id,
         )
+        if self._index is not None:
+            self._index.update_salience(event_id, score, memorable, merged_extra)
 
     # -- internals ----------------------------------------------------------------
 
+    @staticmethod
+    def _from_index(event: IndexedEvent) -> Event:
+        return Event(
+            id=event.id,
+            source=event.source,
+            kind=event.kind,
+            occurred_at=event.occurred_at,
+            payload=event.payload,
+            salience_score=event.salience_score,
+            memorable=event.memorable,
+            meta=event.meta,
+        )
+
     def _to_event(self, row: asyncpg.Record) -> Event:
         try:
-            payload = self._cipher.decrypt_json(
-                row["payload_enc"], aad=f"events:payload_enc:{row['id']}"
-            )
+            return self._from_index(decode_event_row(self._cipher, row))
         except Exception:
             log.warning("event %s undecryptable — payload replaced with {}", row["id"])
-            payload = {}
-        # jsonb comes back from asyncpg as a raw JSON string — parse it here
-        meta = json.loads(row["meta"]) if row["meta"] else {}
-        return Event(
-            id=row["id"],
-            source=row["source"],
-            kind=row["kind"],
-            occurred_at=row["occurred_at"],
-            payload=payload,
-            salience_score=row["salience_score"],
-            memorable=row["memorable"],
-            meta=meta,
-        )
+            return Event(
+                id=row["id"],
+                source="",
+                kind="",
+                occurred_at=row.get("created_at") or datetime.now(UTC),
+                payload={},
+                salience_score=0.0,
+                memorable=False,
+                meta={},
+            )
 
 
 def start_of_today(now: datetime | None = None) -> datetime:

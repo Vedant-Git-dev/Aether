@@ -179,6 +179,11 @@ async def test_process_due_completes_and_fails_over_the_db(db) -> None:
 
     digest = await db.fetchval("SELECT result_digest FROM scheduled_actions WHERE id = $1", ok.id)
     assert digest == hashlib.sha256(b"the result").hexdigest()[:16]
+    failed_digest = await db.fetchval(
+        "SELECT result_digest FROM scheduled_actions WHERE id = $1", bad.id
+    )
+    assert failed_digest == hashlib.sha256(b"tool refused").hexdigest()[:16]
+    assert "refused" not in (failed_digest or "")
 
 
 @pytest.mark.integration

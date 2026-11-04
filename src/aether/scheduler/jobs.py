@@ -64,17 +64,21 @@ class Scheduler:
         a crash between here and fire time loses nothing."""
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
-                "INSERT INTO scheduled_actions (label, run_at, status, payload_enc)"
-                " VALUES ($1, $2, 'pending', $3) RETURNING id, created_at",
-                label,
-                run_at,
+                "INSERT INTO scheduled_actions (status, payload_enc, key_version)"
+                " VALUES ('pending', $1, $2) RETURNING id, created_at",
                 b"",  # placeholder until the id exists; replaced below, same transaction
+                self._cipher.key_id,
             )
             action_id = row["id"]
             blob = self._cipher.encrypt_json(payload, aad=_aad(action_id))
+            meta_blob = self._cipher.encrypt_json(
+                {"label": label, "run_at": run_at.isoformat()},
+                aad=f"scheduled_actions:meta_enc:{action_id}",
+            )
             await conn.execute(
-                "UPDATE scheduled_actions SET payload_enc = $1 WHERE id = $2",
+                "UPDATE scheduled_actions SET payload_enc = $1, meta_enc = $2 WHERE id = $3",
                 blob,
+                meta_blob,
                 action_id,
             )
         await self._audit.append(
@@ -95,35 +99,52 @@ class Scheduler:
 
     async def get(self, action_id: int) -> ScheduledAction | None:
         row = await self._pool.fetchrow(
-            "SELECT id, label, run_at, status, payload_enc, created_at"
+            "SELECT id, meta_enc, status, payload_enc, created_at"
             " FROM scheduled_actions WHERE id = $1",
             action_id,
         )
         return self._to_action(row) if row else None
 
     async def claim_due(self, limit: int = 20) -> list[ScheduledAction]:
-        """Atomically flip due pending rows to running and hand them back —
-        the claim IS the transition, so two workers can never double-run."""
+        """Pick the due pending rows in memory, then claim them atomically.
+        The run time lives in the sealed meta, so SQL cannot order by it;
+        the pending set is small enough to decrypt, and the claim still
+        flips status in the same statement that selects the rows."""
+        now = datetime.now(UTC)
         rows = await self._pool.fetch(
-            "UPDATE scheduled_actions SET status = 'running'"
-            " WHERE id IN (SELECT id FROM scheduled_actions"
-            "              WHERE status = 'pending' AND run_at <= now()"
-            "              ORDER BY run_at LIMIT $1)"
-            " RETURNING id, label, run_at, status, payload_enc, created_at",
-            limit,
+            "SELECT id, meta_enc, status, payload_enc, created_at"
+            " FROM scheduled_actions WHERE status = 'pending'"
         )
-        return [self._to_action(r) for r in rows]
+        due: list[tuple[datetime, int]] = []
+        for row in rows:
+            action = self._to_action(row)
+            if action.run_at <= now:
+                due.append((action.run_at, action.id))
+        due.sort(key=lambda pair: pair[0])
+        ids = [action_id for _, action_id in due[:limit]]
+        if not ids:
+            return []
+        claimed = await self._pool.fetch(
+            "UPDATE scheduled_actions SET status = 'running'"
+            " WHERE id = ANY($1::bigint[]) AND status = 'pending'"
+            " RETURNING id, meta_enc, status, payload_enc, created_at",
+            ids,
+        )
+        return [self._to_action(r) for r in claimed]
 
     async def overdue_pending(self) -> list[ScheduledAction]:
         """Still-pending rows that are already due — what `re_arm` reports
         on boot (the worker's next claim runs them; listing without claiming
         keeps re_arm read-only and safe to call anytime)."""
+        now = datetime.now(UTC)
         rows = await self._pool.fetch(
-            "SELECT id, label, run_at, status, payload_enc, created_at"
-            " FROM scheduled_actions WHERE status = 'pending' AND run_at <= now()"
-            " ORDER BY run_at",
+            "SELECT id, meta_enc, status, payload_enc, created_at"
+            " FROM scheduled_actions WHERE status = 'pending'"
         )
-        return [self._to_action(r) for r in rows]
+        actions = [self._to_action(row) for row in rows]
+        actions = [action for action in actions if action.run_at <= now]
+        actions.sort(key=lambda action: action.run_at)
+        return actions
 
     async def mark(self, action_id: int, status: str, result_digest: str = "") -> None:
         await self._pool.execute(
@@ -136,7 +157,7 @@ class Scheduler:
     async def list(self, limit: int = 50) -> list[ScheduledAction]:
         """Newest first, any status — the web panel's view."""
         rows = await self._pool.fetch(
-            "SELECT id, label, run_at, status, payload_enc, created_at"
+            "SELECT id, meta_enc, status, payload_enc, created_at"
             " FROM scheduled_actions ORDER BY id DESC LIMIT $1",
             limit,
         )
@@ -144,10 +165,21 @@ class Scheduler:
 
     def _to_action(self, row: asyncpg.Record) -> ScheduledAction:
         payload = self._cipher.decrypt_json(row["payload_enc"], aad=_aad(row["id"]))
+        label, run_at = "", row["created_at"]
+        blob = row.get("meta_enc")
+        if blob:
+            try:
+                meta = self._cipher.decrypt_json(
+                    blob, aad=f"scheduled_actions:meta_enc:{row['id']}"
+                )
+                label = str(meta.get("label", ""))
+                run_at = datetime.fromisoformat(str(meta.get("run_at", row["created_at"])))
+            except Exception:
+                log.warning("scheduled action %s meta undecryptable — treated as empty", row["id"])
         return ScheduledAction(
             id=row["id"],
-            label=row["label"],
-            run_at=row["run_at"],
+            label=label,
+            run_at=run_at,
             status=row["status"],
             payload=payload,
             created_at=row["created_at"],
@@ -163,10 +195,13 @@ async def process_due(scheduler: Scheduler, run: ActionRunner) -> int:
             result = await run(action)
             digest = hashlib.sha256(result.encode("utf-8")).hexdigest()[:16]
             await scheduler.mark(action.id, DONE, digest)
-            log.info("scheduled action %d (%s) done", action.id, action.label)
+            log.info("scheduled action %d done", action.id)
         except Exception as exc:
-            log.exception("scheduled action %d (%s) failed", action.id, action.label)
-            await scheduler.mark(action.id, FAILED, str(exc)[:200])
+            log.exception("scheduled action %d failed", action.id)
+            # the column is a digest, and an executor's error can quote the
+            # action's own content — hash it rather than write it down
+            digest = hashlib.sha256(str(exc).encode("utf-8")).hexdigest()[:16]
+            await scheduler.mark(action.id, FAILED, digest)
         ran += 1
     return ran
 

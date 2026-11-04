@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from aether.memory.crypto import generate_key_b64
+from aether.memory.crypto import Cipher, generate_key_b64
 from aether.providers.crypto import TokenKeyring
 from aether.providers.rotate_tokens import _rotate_connections, _rotate_states
 from aether.providers.store import ProviderStore
@@ -17,9 +17,13 @@ def _keyring(key_id: str = "v1") -> TokenKeyring:
     return TokenKeyring(active_id=key_id, active_key_b64=generate_key_b64())
 
 
+def _cipher() -> Cipher:
+    return Cipher.from_b64(generate_key_b64())
+
+
 @pytest.mark.integration
 async def test_provider_store_round_trip(db) -> None:
-    store = ProviderStore(db, _keyring())
+    store = ProviderStore(db, _keyring(), _cipher())
     connection = ProviderConnection(
         provider="google",
         auth_mode="oauth",
@@ -91,7 +95,7 @@ async def test_provider_store_round_trip(db) -> None:
 async def test_provider_key_rotation_reencrypts_connections_and_states(db) -> None:
     old_key = generate_key_b64()
     old = TokenKeyring(active_id="v1", active_key_b64=old_key)
-    store = ProviderStore(db, old)
+    store = ProviderStore(db, old, _cipher())
     await store.upsert(
         ProviderConnection(
             provider="google",
@@ -127,7 +131,7 @@ async def test_provider_key_rotation_reencrypts_connections_and_states(db) -> No
         "SELECT key_id FROM provider_oauth_states WHERE state_hash = 'state-2'"
     )
     assert state_row["key_id"] == "v2"
-    loaded = await ProviderStore(db, new).get("google")
+    loaded = await ProviderStore(db, new, _cipher()).get("google")
     assert loaded is not None
     assert loaded.access_token == "access-token"
     assert loaded.refresh_token == "refresh-token"

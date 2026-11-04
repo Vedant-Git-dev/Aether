@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import httpx
+import pytest
 from fakes import (
     FakeAgentSettings,
     FakeApprovals,
@@ -30,6 +31,7 @@ from aether.config import (
     PlatformToggle,
     Settings,
 )
+from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.entities import Entity, EntityNote
 from aether.memory.events import Event, IngestResult
 from aether.scheduler.jobs import ScheduledAction
@@ -1199,10 +1201,11 @@ async def test_proactive_decide_is_token_guarded() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_profile_feed_lists_confirmed_and_pending(tmp_path) -> None:
-    ws = _workspace(tmp_path)
-    ws.remember("lives in pune", kind="profile", source="user")
-    ws.remember("works on databases", kind="profile", source="agent")
+@pytest.mark.integration
+async def test_profile_feed_lists_confirmed_and_pending(db) -> None:
+    ws = await _workspace(db)
+    await ws.remember("lives in pune", kind="profile", source="user")
+    await ws.remember("works on databases", kind="profile", source="agent")
     async with _client(_app(None, workspace=ws)) as client:
         assert (await client.get("/api/profile")).status_code == 401
         response = await client.get("/api/profile", params={"token": "secret"})
@@ -1212,17 +1215,18 @@ async def test_profile_feed_lists_confirmed_and_pending(tmp_path) -> None:
     assert body["pending"][0]["status"] == "pending"
 
 
-async def test_profile_confirm_flips_pending_entries(tmp_path) -> None:
-    ws = _workspace(tmp_path)
-    ws.remember("lives in pune", kind="profile", source="user")
-    guessed = ws.remember("works on databases", kind="profile", source="agent")
+@pytest.mark.integration
+async def test_profile_confirm_flips_pending_entries(db) -> None:
+    ws = await _workspace(db)
+    await ws.remember("lives in pune", kind="profile", source="user")
+    guessed = await ws.remember("works on databases", kind="profile", source="agent")
     async with _client(_app(None, workspace=ws)) as client:
         response = await client.post(
             "/api/profile/confirm", params={"token": "secret"}, json={"ids": [guessed]}
         )
     assert response.json() == {"ok": True, "confirmed": 1}
-    assert [e.text for e in ws.profile()] == ["lives in pune", "works on databases"]
-    assert ws.pending_profile() == []
+    assert [e.text for e in await ws.profile()] == ["lives in pune", "works on databases"]
+    assert await ws.pending_profile() == []
 
 
 async def test_profile_feed_is_503_without_a_workspace_wired() -> None:
@@ -1236,14 +1240,19 @@ async def test_profile_feed_is_503_without_a_workspace_wired() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _workspace(tmp_path) -> Workspace:
-    ws = Workspace(tmp_path / "ws")
-    ws.ensure_scaffold()
+def _ws_cipher() -> Cipher:
+    return Cipher.from_b64(generate_key_b64())
+
+
+async def _workspace(db) -> Workspace:
+    ws = Workspace(db, cipher=_ws_cipher())
+    await ws.ensure_scaffold()
     return ws
 
 
-async def test_workspace_feed_is_token_guarded(tmp_path) -> None:
-    async with _client(_app(None, workspace=_workspace(tmp_path))) as client:
+@pytest.mark.integration
+async def test_workspace_feed_is_token_guarded(db) -> None:
+    async with _client(_app(None, workspace=await _workspace(db))) as client:
         assert (await client.get("/api/workspace")).status_code == 401
         assert (await client.get("/api/workspace/daily")).status_code == 401
         assert (await client.get("/api/workspace/search")).status_code == 401
@@ -1256,9 +1265,10 @@ async def test_workspace_feed_is_503_without_a_workspace_wired() -> None:
     assert response.status_code == 503
 
 
-async def test_workspace_feed_reports_every_file_with_parsed_entries(tmp_path) -> None:
-    workspace = _workspace(tmp_path)
-    workspace.remember("prefers concise notifications", "preference")
+@pytest.mark.integration
+async def test_workspace_feed_reports_every_file_with_parsed_entries(db) -> None:
+    workspace = await _workspace(db)
+    await workspace.remember("prefers concise notifications", "preference")
     async with _client(_app(None, workspace=workspace)) as client:
         response = await client.get("/api/workspace", params={"token": "secret"})
     body = response.json()
@@ -1272,8 +1282,9 @@ async def test_workspace_feed_reports_every_file_with_parsed_entries(tmp_path) -
     assert "Name: Aether" in body["files"]["identity"]["raw"]
 
 
-async def test_workspace_write_saves_a_human_edit(tmp_path) -> None:
-    workspace = _workspace(tmp_path)
+@pytest.mark.integration
+async def test_workspace_write_saves_a_human_edit(db) -> None:
+    workspace = await _workspace(db)
     async with _client(_app(None, workspace=workspace)) as client:
         response = await client.put(
             "/api/workspace/soul",
@@ -1281,11 +1292,12 @@ async def test_workspace_write_saves_a_human_edit(tmp_path) -> None:
             json={"text": "# SOUL.md\n\n- Be terse.\n"},
         )
     assert response.json() == {"ok": True}
-    assert workspace.read("soul") == "# SOUL.md\n\n- Be terse.\n"
+    assert await workspace.read("soul") == "# SOUL.md\n\n- Be terse.\n"
 
 
-async def test_workspace_write_rejects_secrets_and_bad_files(tmp_path) -> None:
-    workspace = _workspace(tmp_path)
+@pytest.mark.integration
+async def test_workspace_write_rejects_secrets_and_bad_files(db) -> None:
+    workspace = await _workspace(db)
     async with _client(_app(None, workspace=workspace)) as client:
         secret = await client.put(
             "/api/workspace/memory",
@@ -1309,9 +1321,10 @@ async def test_workspace_write_rejects_secrets_and_bad_files(tmp_path) -> None:
         assert traversal.status_code in (400, 404)  # never a filesystem write outside the workspace
 
 
-async def test_workspace_daily_feed_defaults_to_today(tmp_path) -> None:
-    workspace = _workspace(tmp_path)
-    workspace.remember("deploy went out", "daily")
+@pytest.mark.integration
+async def test_workspace_daily_feed_defaults_to_today(db) -> None:
+    workspace = await _workspace(db)
+    await workspace.remember("deploy went out", "daily")
     async with _client(_app(None, workspace=workspace)) as client:
         response = await client.get("/api/workspace/daily", params={"token": "secret"})
     body = response.json()
@@ -1319,17 +1332,19 @@ async def test_workspace_daily_feed_defaults_to_today(tmp_path) -> None:
     assert any(e["text"] == "deploy went out" for e in body["entries"])
 
 
-async def test_workspace_daily_feed_rejects_a_malformed_date(tmp_path) -> None:
-    async with _client(_app(None, workspace=_workspace(tmp_path))) as client:
+@pytest.mark.integration
+async def test_workspace_daily_feed_rejects_a_malformed_date(db) -> None:
+    async with _client(_app(None, workspace=await _workspace(db))) as client:
         response = await client.get(
             "/api/workspace/daily", params={"token": "secret", "date": "not-a-date"}
         )
     assert response.status_code == 400
 
 
-async def test_workspace_search_feed_finds_entries(tmp_path) -> None:
-    workspace = _workspace(tmp_path)
-    workspace.remember("the user is working on Aether", "fact", category="Projects")
+@pytest.mark.integration
+async def test_workspace_search_feed_finds_entries(db) -> None:
+    workspace = await _workspace(db)
+    await workspace.remember("the user is working on Aether", "fact", category="Projects")
     async with _client(_app(None, workspace=workspace)) as client:
         response = await client.get(
             "/api/workspace/search", params={"token": "secret", "query": "working on Aether"}
@@ -1963,3 +1978,64 @@ async def test_media_upload_guards_the_same_way_screen_capture_does() -> None:
         )
         assert too_big.status_code == 413
     assert agent.submitted == []
+
+
+@pytest.mark.integration
+async def test_workspace_export_and_import_round_trip(db) -> None:
+    import base64
+
+    ws = await _workspace(db)
+    await ws.remember("prefers concise notifications", "preference")
+    async with _client(_app(None, workspace=ws)) as client:
+        exported = await client.post(
+            "/api/workspace/export",
+            params={"token": "secret"},
+            json={"passphrase": "correct horse"},
+        )
+        assert exported.status_code == 200
+        assert exported.content.startswith(b"AETHWSP1")
+
+        await db.execute("TRUNCATE workspace_files RESTART IDENTITY")
+        imported = await client.post(
+            "/api/workspace/import",
+            params={"token": "secret"},
+            json={
+                "passphrase": "correct horse",
+                "bundle": base64.b64encode(exported.content).decode(),
+            },
+        )
+        assert imported.status_code == 200
+        assert imported.json()["ok"] is True
+    # a fresh store over the same database reads the restored files
+    restored = Workspace(db, cipher=ws._cipher)
+    assert "prefers concise notifications" in await restored.read("user")
+
+
+@pytest.mark.integration
+async def test_workspace_import_refuses_a_wrong_passphrase(db) -> None:
+    import base64
+
+    ws = await _workspace(db)
+    async with _client(_app(None, workspace=ws)) as client:
+        exported = await client.post(
+            "/api/workspace/export",
+            params={"token": "secret"},
+            json={"passphrase": "right"},
+        )
+        wrong = await client.post(
+            "/api/workspace/import",
+            params={"token": "secret"},
+            json={
+                "passphrase": "wrong",
+                "bundle": base64.b64encode(exported.content).decode(),
+            },
+        )
+    assert wrong.status_code == 400
+
+
+@pytest.mark.integration
+async def test_workspace_export_is_token_guarded(db) -> None:
+    ws = await _workspace(db)
+    async with _client(_app(None, workspace=ws)) as client:
+        exported = await client.post("/api/workspace/export", json={"passphrase": "pw"})
+    assert exported.status_code == 401

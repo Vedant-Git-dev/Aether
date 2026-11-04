@@ -590,22 +590,15 @@ class AgentLoop:
         """Index the events that predate vector memory (or lost a race with
         a rate limit), 50 oldest at a time: tight passes while history is
         draining, a minute's rest once caught up. A failed pass just
-        retries — indexed_at is the ledger, so nothing is ever lost. The
-        same cadence also drains the one-off job of sealing legacy
-        plaintext embeddings — both converge to no-op."""
+        retries — indexed_at is the ledger, so nothing is ever lost."""
         assert self._vectors is not None
         while self._running:
-            try:
-                legacy = await self._vectors.encrypt_legacy_chunks(500)
-            except Exception:
-                log.exception("legacy embedding encryption pass failed — retrying later")
-                legacy = 0
             try:
                 handled = await self._vectors.backfill(50)
             except Exception:
                 log.exception("vector backfill pass failed — pausing before the retry")
                 handled = None
-            await asyncio.sleep(1 if (legacy or handled) else 60)
+            await asyncio.sleep(1 if handled else 60)
 
     def notify(self) -> None:
         """Wake the loop early — used after screen captures, poll results,
@@ -920,11 +913,7 @@ class AgentLoop:
                 self._spawn_scoring(result.event_id)
                 self._last_event_id = max(self._last_event_id, result.event_id)
             if result.reason == "filtered:contacts":
-                log.info(
-                    "inbound from %s on %s filtered by the allowlist",
-                    message.handle,
-                    message.surface,
-                )
+                log.info("inbound on %s filtered by the allowlist", message.surface)
                 continue
             # (b2) files the user shared: described (images) or extracted
             # (documents) into memory here — past the allowlist, before the
@@ -1090,7 +1079,7 @@ class AgentLoop:
             armed, self._profile_confirm = self._profile_confirm, None
             if not text.startswith("/"):
                 if text.strip().lower() in ("yes", "y", "ok", "okay", "confirm", "all good"):
-                    confirmed = self._workspace.confirm_profile(armed)
+                    confirmed = await self._workspace.confirm_profile(armed)
                     reply = (
                         f"kept {confirmed} of them — thank you."
                         if confirmed
@@ -1106,7 +1095,7 @@ class AgentLoop:
         if first == "/profile":
             self._wizard = None
             self._apps_walk = None
-            await self._surfaces.send_to_user(self._profile_command(text))
+            await self._surfaces.send_to_user(await self._profile_command(text))
             return True
         if first in ("/pause", "/resume"):
             self._wizard = None
@@ -1249,7 +1238,7 @@ class AgentLoop:
 
     # -- /profile: who the user is, seeded and confirmed deterministically ----
 
-    def _profile_command(self, text: str) -> str:
+    async def _profile_command(self, text: str) -> str:
         """/profile — the deterministic front door to the user's profile.
         `/profile <one line>` seeds a confirmed entry straight from their
         own words; bare /profile shows what's confirmed and gathers
@@ -1261,7 +1250,7 @@ class AgentLoop:
         line = parts[1].strip() if len(parts) > 1 else ""
         if line:
             try:
-                self._workspace.remember(line, "profile", source="user")
+                await self._workspace.remember(line, "profile", source="user")
             except SecretRejected:
                 return "that looks like a secret or key — I won't store that."
             except ValueError:
@@ -1271,8 +1260,8 @@ class AgentLoop:
             return (
                 "Noted — part of your profile now. Say /profile anytime to see or fix what I have."
             )
-        confirmed = self._workspace.profile()
-        pending = self._workspace.pending_profile()
+        confirmed = await self._workspace.profile()
+        pending = await self._workspace.pending_profile()
         if pending:
             self._profile_confirm = [e.id for e in pending]
             listed = "\n".join(f"{i}. {e.text}" for i, e in enumerate(pending, start=1))
@@ -1654,7 +1643,7 @@ class AgentLoop:
             try:
                 await self._fire_routine(routine, event)
             except Exception:
-                log.exception("routine %d (%s) failed — continuing", routine.id, routine.label)
+                log.exception("routine %d failed — continuing", routine.id)
 
     async def _fire_routine(self, routine: Any, event: Event) -> None:
         action = routine.action or {}
@@ -1667,7 +1656,7 @@ class AgentLoop:
         try:
             result = await self._execute(call, trace=calls)
         except Exception as exc:
-            log.exception("routine %d (%s) fire failed", routine.id, routine.label)
+            log.exception("routine %d fire failed", routine.id)
             result = ToolResult(
                 tool_call_id=call.id,
                 name=call.name,
@@ -1684,7 +1673,7 @@ class AgentLoop:
             decision="info",
             rules_matched=f"routine:{routine.id}",
             params={"event_id": event.id, "event": f"{event.source}/{event.kind}"},
-            outcome=f"routine '{routine.label}' fired on {event.source}/{event.kind}",
+            outcome="routine fired",
         )
         refs = await self._notify(
             # the exact call stays in the audit row and the trace; the chat
@@ -1720,7 +1709,7 @@ class AgentLoop:
             # values or stale history
             base = f"{base}\n\n{self._attachments.capabilities_note()}"
         if self._workspace is not None:
-            block = self._workspace.context_block()
+            block = await self._workspace.context_block()
             if block:
                 base = f"{base}\n\n{block}"
         if self._agent_settings is None:
@@ -2376,7 +2365,7 @@ class AgentLoop:
                     decision="error",
                     rules_matched=ruling.matched_rule,
                     params=call.arguments,
-                    outcome=exc.plain,
+                    outcome="provider error — see the turn trace",
                 )
                 result = ToolResult(
                     tool_call_id=call.id,

@@ -307,7 +307,7 @@ class ProactiveWorker:
             await self._store.set_plan(task.id, plan)
             outcome = await skill.run(task, self._workbench, self._executor)
         except Exception as exc:
-            log.exception("proactive task %d (%s) failed", task.id, task.label)
+            log.exception("proactive task %d failed", task.id)
             await self._store.fail(task.id, str(exc)[:200])
             return
         if outcome.refused:
