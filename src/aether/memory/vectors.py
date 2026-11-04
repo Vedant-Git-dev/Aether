@@ -213,6 +213,9 @@ class VectorMemory:
                         "filename": filename,
                         "location": location,
                         "occurred_at": occurred_at.isoformat(),
+                        # kept sealed so a later key rotation can re-derive
+                        # embed_model_token without re-embedding the chunk
+                        "embed_model": self._embedder.model,
                     },
                     aad=f"memory_chunks:meta_enc:{chunk_id}",
                 )
@@ -310,15 +313,15 @@ class VectorMemory:
         """The ranking half: cosine of every chunk of this model's space
         against an already-embedded query. Vectors are encrypted, so the
         math happens here — every row decrypts to its packed vector, and
-        only the top-k pay for a text decryption too. Rows written before
-        the encryption change still carry a plain `embedding`, read until
-        the legacy pass seals them."""
+        only the top-k pay for a text decryption too. Only sealed vectors
+        are read: a row without one was never searchable and is left out
+        of the scan rather than warned about on every query."""
         if self._embedder is None:
             return []
         token = self._cipher.blind_token("embed_model", self._embedder.model)
         rows = await self._pool.fetch(
             "SELECT id, event_id, text_enc, embedding_enc, meta_enc"
-            " FROM memory_chunks WHERE embed_model_token = $1",
+            " FROM memory_chunks WHERE embed_model_token = $1 AND embedding_enc IS NOT NULL",
             token,
         )
         qnorm = vector_norm(q) or 1.0

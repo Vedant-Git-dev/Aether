@@ -11,10 +11,17 @@ Usage, against the deployment's own database:
     python -m aether.memory.seal_migrate              # dry run: pending counts
     python -m aether.memory.seal_migrate --apply      # seal every table
     python -m aether.memory.seal_migrate --verify-only
+    python -m aether.memory.seal_migrate --retokenize # after a key rotation
 
 It never prints content — only table names and counts. Run it with the same
 key and key id the application runs with. A row whose plaintext cannot be
 decrypted is left alone and counted as failed, never replaced with a guess.
+
+`--retokenize` is the post-rotation pass: sealed ciphertext keeps opening
+under the previous key, but blind-index tokens and dedup tags are derived
+from the active key. It rewrites those derived columns for the tables whose
+plaintext is recoverable from sealed content. Rows it cannot re-derive are
+counted, never guessed at.
 """
 
 from __future__ import annotations
@@ -32,6 +39,7 @@ from ..config import Settings
 from ..llm.embeddings import pack_vector, unpack_vector
 from .crypto import Cipher, CryptoError
 from .db import create_pool
+from .entities import normalize_handle
 from .events import canonical_payload
 from .storage import KEY_VERSION
 
@@ -254,13 +262,18 @@ async def _seal_chunk(conn: asyncpg.Connection, cipher: Cipher, row: asyncpg.Rec
         except CryptoError:
             return False
     else:
-        dims = None
+        # no plaintext vector and nothing sealed: this chunk was never
+        # searchable. Refuse rather than let the cutover drop the plaintext
+        # columns over a row that has no sealed vector to read.
+        return False
     meta = {
         "source": row["source"],
         "kind": row["kind"],
         "filename": row["filename"],
         "location": row["location"],
         "occurred_at": _iso(row["occurred_at"]),
+        # sealed so a later rotation can re-derive embed_model_token
+        "embed_model": row["embed_model"],
     }
     if legacy_embedding is not None:
         embedding_blob = cipher.encrypt_bytes(
@@ -411,7 +424,7 @@ JOBS: tuple[Job, ...] = (
     Job(
         "memory_chunks",
         "id, source, kind, filename, location, occurred_at, embed_model, embedding, embedding_enc",
-        "meta_enc IS NULL OR embed_model_token IS NULL",
+        "meta_enc IS NULL OR embed_model_token IS NULL OR embedding_enc IS NULL",
         apply=_seal_chunk,
     ),
     Job(
@@ -450,6 +463,224 @@ JOBS: tuple[Job, ...] = (
 )
 
 JOB_BY_TABLE = {job.table: job for job in JOBS}
+
+
+# ---------------------------------------------------------------------------
+# re-tokenizing after a content-key rotation
+# ---------------------------------------------------------------------------
+#
+# Sealed ciphertext names its key version, so values written under the
+# previous key keep opening while that key stays configured. Blind-index
+# tokens and dedup tags are different: they are derived from the *active*
+# key, and a stored token written under the previous key will not match the
+# token a rotated process computes. Every equality lookup — workspace file
+# names, handles, sources, embed-model filters, dedup — silently stops
+# matching until the derived columns are rewritten. This pass does that.
+
+
+@dataclass
+class RetokenizeResult:
+    table: str
+    updated: int = 0
+    failed: int = 0
+
+
+Retokenize = Callable[[asyncpg.Connection, Cipher, asyncpg.Record], Awaitable[bool]]
+
+
+@dataclass(frozen=True)
+class RetokenizeJob:
+    table: str
+    columns: str
+    apply: Retokenize
+
+
+async def _retoken_workspace(conn: asyncpg.Connection, cipher: Cipher, row: asyncpg.Record) -> bool:
+    try:
+        name = cipher.decrypt_text(row["name_enc"], aad=f"workspace_files:name_enc:{row['id']}")
+    except CryptoError:
+        return False
+    await conn.execute(
+        "UPDATE workspace_files SET name_token = $1 WHERE id = $2",
+        cipher.blind_token("workspace", name),
+        row["id"],
+    )
+    return True
+
+
+async def _retoken_event(conn: asyncpg.Connection, cipher: Cipher, row: asyncpg.Record) -> bool:
+    try:
+        meta = cipher.decrypt_json(row["meta_enc"], aad=f"events:meta_enc:{row['id']}")
+        payload = cipher.decrypt_json(row["payload_enc"], aad=f"events:payload_enc:{row['id']}")
+    except CryptoError:
+        return False
+    source = str(meta.get("source", ""))
+    kind = str(meta.get("kind", ""))
+    await conn.execute(
+        "UPDATE events SET source_token = $1, dedup_mac = $2 WHERE id = $3",
+        cipher.blind_token("source", source),
+        cipher.dedup_mac(canonical_payload(kind, payload)),
+        row["id"],
+    )
+    return True
+
+
+async def _retoken_handle(conn: asyncpg.Connection, cipher: Cipher, row: asyncpg.Record) -> bool:
+    try:
+        data = cipher.decrypt_json(
+            row["handle_enc"], aad=f"identity_handles:handle_enc:{row['id']}"
+        )
+    except CryptoError:
+        return False
+    platform = str(data.get("platform", ""))
+    normalized = normalize_handle(platform, str(data.get("handle", "")))
+    if not normalized:
+        return False
+    await conn.execute(
+        "UPDATE identity_handles SET platform_token = $1, normalized_token = $2 WHERE id = $3",
+        cipher.blind_token("platform", platform),
+        cipher.blind_token("handle", normalized),
+        row["id"],
+    )
+    return True
+
+
+async def _retoken_chat(conn: asyncpg.Connection, cipher: Cipher, row: asyncpg.Record) -> bool:
+    try:
+        payload = cipher.decrypt_json(
+            row["payload_enc"], aad=f"chat_messages:payload_enc:{row['id']}"
+        )
+    except CryptoError:
+        return False
+    await conn.execute(
+        "UPDATE chat_messages SET surface_token = $1 WHERE id = $2",
+        cipher.blind_token("source", str(payload.get("surface", ""))),
+        row["id"],
+    )
+    return True
+
+
+async def _retoken_chunk(conn: asyncpg.Connection, cipher: Cipher, row: asyncpg.Record) -> bool:
+    try:
+        meta = cipher.decrypt_json(row["meta_enc"], aad=f"memory_chunks:meta_enc:{row['id']}")
+    except CryptoError:
+        return False
+    model = str(meta.get("embed_model", ""))
+    if not model:
+        # sealed before the model name was recorded; only re-embedding can
+        # recover it, so count it rather than attach a guessed model
+        return False
+    await conn.execute(
+        "UPDATE memory_chunks SET embed_model_token = $1 WHERE id = $2",
+        cipher.blind_token("embed_model", model),
+        row["id"],
+    )
+    return True
+
+
+async def _retoken_proactive(conn: asyncpg.Connection, cipher: Cipher, row: asyncpg.Record) -> bool:
+    try:
+        meta = cipher.decrypt_json(row["meta_enc"], aad=f"proactive_tasks:meta_enc:{row['id']}")
+    except CryptoError:
+        return False
+    await conn.execute(
+        "UPDATE proactive_tasks SET opportunity_token = $1, day_token = $2 WHERE id = $3",
+        cipher.blind_token(
+            "opportunity", f"{meta.get('skill', '')}\x1f{meta.get('opportunity_key', '')}"
+        ),
+        cipher.blind_token("day", str(meta.get("day", ""))),
+        row["id"],
+    )
+    return True
+
+
+async def _retoken_media(conn: asyncpg.Connection, cipher: Cipher, row: asyncpg.Record) -> bool:
+    try:
+        data = cipher.decrypt_bytes(row["bytes_enc"], aad=f"media:bytes_enc:{row['id']}")
+        meta = cipher.decrypt_json(row["meta_enc"], aad=f"media_blobs:meta_enc:{row['id']}")
+    except CryptoError:
+        return False
+    await conn.execute(
+        "UPDATE media_blobs SET dedup_mac = $1, origin_token = $2 WHERE id = $3",
+        # the content tag is keyed too: without rewriting it, the same bytes
+        # re-uploaded after rotation would insert a second row
+        cipher.dedup_mac(data),
+        cipher.blind_token("source", str(meta.get("origin", ""))),
+        row["id"],
+    )
+    return True
+
+
+RETOKENIZE_JOBS: tuple[RetokenizeJob, ...] = (
+    RetokenizeJob("workspace_files", "id, name_enc", _retoken_workspace),
+    RetokenizeJob("events", "id, payload_enc, meta_enc", _retoken_event),
+    RetokenizeJob("identity_handles", "id, handle_enc", _retoken_handle),
+    RetokenizeJob("chat_messages", "id, payload_enc", _retoken_chat),
+    RetokenizeJob("memory_chunks", "id, meta_enc", _retoken_chunk),
+    RetokenizeJob("proactive_tasks", "id, meta_enc", _retoken_proactive),
+    RetokenizeJob("media_blobs", "id, bytes_enc, meta_enc", _retoken_media),
+)
+
+RETOKENIZE_BY_TABLE = {job.table: job for job in RETOKENIZE_JOBS}
+
+
+async def retokenize(
+    pool: asyncpg.Pool,
+    cipher: Cipher,
+    *,
+    batch: int = 100,
+    sleep: float = 0.0,
+    tables: set[str] | None = None,
+) -> list[RetokenizeResult]:
+    """Rewrite blind-index tokens and dedup tags under the active key.
+
+    Sealed ciphertext is left alone — it still opens under the previous key
+    — so `key_version` is not touched either: it describes the sealed blobs,
+    not the derived tokens. A row the pass cannot re-derive is counted, and
+    so is a row the unique indexes reject (a duplicate that only existed
+    because the two copies were written under different keys)."""
+    results: list[RetokenizeResult] = []
+    for job in RETOKENIZE_JOBS:
+        if tables is not None and job.table not in tables:
+            continue
+        result = RetokenizeResult(job.table)
+        offset = 0
+        while True:
+            rows = await pool.fetch(
+                f"SELECT {job.columns} FROM {job.table} ORDER BY id LIMIT $1 OFFSET $2",
+                batch,
+                offset,
+            )
+            if not rows:
+                break
+            async with pool.acquire() as conn:
+                for row in rows:
+                    try:
+                        async with conn.transaction():
+                            updated = await job.apply(conn, cipher, row)
+                    except Exception:
+                        result.failed += 1
+                        log.warning(
+                            "re-tokenizing one %s row failed",
+                            job.table,
+                            exc_info=True,
+                        )
+                        continue
+                    if updated:
+                        result.updated += 1
+                    else:
+                        result.failed += 1
+            offset += len(rows)
+            if sleep:
+                await asyncio.sleep(sleep)
+        results.append(result)
+        log.info(
+            "re-tokenize %s: %d updated, %d failed",
+            result.table,
+            result.updated,
+            result.failed,
+        )
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -576,11 +807,19 @@ async def _main(args: argparse.Namespace) -> int:
     if not settings.database_url:
         raise SystemExit("DATABASE_URL is not set")
     cipher = _cipher(settings)
+    registry = RETOKENIZE_BY_TABLE if args.retokenize else JOB_BY_TABLE
     tables = {args.table} if args.table else None
-    if tables is not None and not tables <= set(JOB_BY_TABLE):
-        raise SystemExit(f"unknown table {args.table!r}; choose from {', '.join(JOB_BY_TABLE)}")
+    if tables is not None and not tables <= set(registry):
+        raise SystemExit(f"unknown table {args.table!r}; choose from {', '.join(registry)}")
     pool = await create_pool(settings.database_url)
     try:
+        if args.retokenize:
+            results = await retokenize(
+                pool, cipher, batch=args.batch, sleep=args.sleep, tables=tables
+            )
+            for result in results:
+                print(f"{result.table}: {result.updated} re-tokenized, {result.failed} failed")
+            return 0 if all(result.failed == 0 for result in results) else 1
         if not await legacy_columns_present(pool):
             print("the sealed cutover is already applied — nothing left to seal")
             return 0
@@ -610,12 +849,19 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="write the sealed columns")
     parser.add_argument("--verify-only", action="store_true", help="report pending rows")
+    parser.add_argument(
+        "--retokenize",
+        action="store_true",
+        help="recompute blind-index tokens and dedup tags under the active key",
+    )
     parser.add_argument("--table", default="", help="one table from the job list")
     parser.add_argument("--batch", type=int, default=100)
     parser.add_argument(
         "--sleep", type=float, default=0.05, help="pause between batches, in seconds"
     )
     args = parser.parse_args(argv)
+    if args.retokenize and (args.apply or args.verify_only):
+        parser.error("--retokenize cannot be combined with --apply or --verify-only")
     logging.basicConfig(level=logging.INFO, format="%(levelname)-7s %(name)s: %(message)s")
     return asyncio.run(_main(args))
 

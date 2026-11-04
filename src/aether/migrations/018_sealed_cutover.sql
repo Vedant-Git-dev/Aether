@@ -58,7 +58,8 @@ BEGIN
     END IF;
 
     SELECT COUNT(*) INTO pending FROM memory_chunks
-      WHERE meta_enc IS NULL OR embed_model_token IS NULL;
+      WHERE meta_enc IS NULL OR embed_model_token IS NULL
+         OR embedding_enc IS NULL;
     IF pending > 0 THEN
         RAISE EXCEPTION 'sealed cutover refused: % chunk row(s) are not sealed', pending;
     END IF;

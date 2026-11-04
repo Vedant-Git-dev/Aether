@@ -298,6 +298,28 @@ def _parse_entry(line: str) -> WorkspaceEntry | None:
     )
 
 
+def parse_entries(text: str) -> list[WorkspaceEntry]:
+    """Bullet entries in order. A line with no provenance comment — something
+    a human typed straight into the file — comes back with source="human" and
+    no id, so generated and human-authored content stay visually
+    distinguishable without polluting the Markdown with a tag humans have to
+    write by hand."""
+    out: list[WorkspaceEntry] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("- "):
+            continue
+        entry = _parse_entry(line)
+        out.append(
+            entry
+            if entry is not None
+            else WorkspaceEntry(
+                id="", text=line[2:].strip(), source="human", at="", status="active"
+            )
+        )
+    return out
+
+
 def _set_entry_status(
     content: str,
     entry_ids: set[str],
@@ -471,19 +493,33 @@ class Workspace:
     async def is_empty(self) -> bool:
         return not await self._names()
 
+    async def feed(self) -> tuple[bool, dict[str, str]]:
+        """Everything the workspace panel's first paint needs, from one
+        query: whether first-run setup is still pending, and the five
+        curated files' text keyed by panel name."""
+        contents = await self._read_all()
+        files = {key: contents.get(_FILE_BY_KEY[key], "") for key in _EDITABLE_KEYS}
+        return "BOOTSTRAP.md" in contents, files
+
     async def export_files(self) -> dict[str, str]:
         """Every file's plaintext, for the passphrase-encrypted export."""
         return {name: await self._read_name(name) for name in await self._names(daily_cap=None)}
 
-    async def import_files(self, files: dict[str, str]) -> int:
+    async def import_files(self, files: dict[str, str], *, trusted: bool = False) -> int:
         """Write a decrypted export back. Only names this workspace owns
-        are accepted, so an edited bundle cannot create arbitrary rows."""
+        are accepted, so an edited bundle cannot create arbitrary rows.
+
+        `trusted` is the owner restoring their own passphrase-protected
+        bundle. The secret scan guards the agent's writes, not a restore:
+        a legacy file may legitimately contain something that looks like a
+        key, and refusing the whole import would make the backup
+        unrestorable."""
         written = 0
         for name, content in files.items():
             self._check_import_name(name)
             if not isinstance(content, str):
                 raise ValueError("every imported file must be text")
-            if looks_like_secret(content):
+            if not trusted and looks_like_secret(content):
                 raise SecretRejected(
                     f"{name} looks like it contains a secret or API key — import refused"
                 )
@@ -523,25 +559,8 @@ class Workspace:
         return await self._read_name(name) if name is not None else ""
 
     async def entries(self, file: str, *, date_str: str | None = None) -> list[WorkspaceEntry]:
-        """Parsed bullet entries for one file, in order. A line with no
-        provenance comment — something a human typed straight into the
-        file — comes back with source="human" and no id, so generated and
-        human-authored content stay visually distinguishable without
-        polluting the Markdown with a tag humans have to write by hand."""
-        out: list[WorkspaceEntry] = []
-        for raw_line in (await self.read(file, date_str=date_str)).splitlines():
-            line = raw_line.strip()
-            if not line.startswith("- "):
-                continue
-            entry = _parse_entry(line)
-            out.append(
-                entry
-                if entry is not None
-                else WorkspaceEntry(
-                    id="", text=line[2:].strip(), source="human", at="", status="active"
-                )
-            )
-        return out
+        """Parsed bullet entries for one file, in order."""
+        return parse_entries(await self.read(file, date_str=date_str))
 
     async def context_block(self) -> str:
         """IDENTITY -> SOUL -> AGENTS -> USER -> MEMORY, provenance
@@ -772,6 +791,31 @@ class Workspace:
 
     async def _row(self, name: str) -> asyncpg.Record | None:
         return await workspace_row(self._pool, self._token(name))
+
+    async def _read_all(self) -> dict[str, str]:
+        """Every stored file's text from one query — the panel's bulk read.
+        A name or content that no longer decrypts degrades to empty on that
+        file alone, exactly as a single read would."""
+        out: dict[str, str] = {}
+        for row in await workspace_rows(self._pool):
+            try:
+                name = self._cipher.decrypt_text(
+                    row["name_enc"], aad=f"workspace_files:name_enc:{row['id']}"
+                )
+            except CryptoError:
+                log.warning("workspace row %s has an unreadable name — skipped", row["id"])
+                continue
+            if not row["content_enc"]:
+                out[name] = ""
+                continue
+            try:
+                out[name] = self._cipher.decrypt_text(
+                    row["content_enc"], aad=f"workspace_files:content_enc:{row['id']}"
+                )
+            except CryptoError:
+                log.warning("workspace file %r would not decrypt — treated as empty", name)
+                out[name] = ""
+        return out
 
     async def _read_name(self, name: str) -> str:
         """One file's text, decrypted in memory. A missing row or one that

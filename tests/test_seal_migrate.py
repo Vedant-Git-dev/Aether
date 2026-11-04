@@ -123,6 +123,110 @@ async def test_an_unreadable_event_payload_is_left_alone(db) -> None:
 
 
 @pytest.mark.integration
+async def test_retokenize_moves_blind_indexes_to_the_new_key(db) -> None:
+    import secrets
+
+    from aether.authz.audit import AuditLog
+    from aether.config import ContactsConfig
+    from aether.memory.events import EventStore
+    from aether.memory.seal_migrate import retokenize
+    from aether.memory.storage import upsert_workspace_file, workspace_row
+
+    old_key, new_key = secrets.token_bytes(32), secrets.token_bytes(32)
+    old = Cipher(old_key, key_id="2026-10")
+    rotated = Cipher(new_key, key_id="2026-11", previous={"2026-10": old_key})
+
+    await upsert_workspace_file(
+        db,
+        old,
+        token=old.blind_token("workspace", "USER.md"),
+        name="USER.md",
+        content="a preference",
+    )
+    events = EventStore(db, old, AuditLog(db), ContactsConfig())
+    ingested = await events.ingest(
+        source="gmail", kind="message", payload={"text": "the invoice is due"}
+    )
+    assert ingested.event_id is not None
+
+    # before the pass the rotated tokens match nothing
+    assert await workspace_row(db, rotated.blind_token("workspace", "USER.md")) is None
+
+    results = await retokenize(db, rotated, batch=10, sleep=0, tables={"workspace_files", "events"})
+    assert [(r.table, r.updated, r.failed) for r in results] == [
+        ("workspace_files", 1, 0),
+        ("events", 1, 0),
+    ]
+
+    row = await workspace_row(db, rotated.blind_token("workspace", "USER.md"))
+    assert row is not None
+    assert (
+        rotated.decrypt_text(row["content_enc"], aad=f"workspace_files:content_enc:{row['id']}")
+        == "a preference"
+    )
+    assert await db.fetchval(
+        "SELECT source_token FROM events WHERE id = $1", ingested.event_id
+    ) == rotated.blind_token("source", "gmail")
+    # the rewritten dedup tag now catches the same event arriving again
+    rotated_events = EventStore(db, rotated, AuditLog(db), ContactsConfig())
+    again = await rotated_events.ingest(
+        source="gmail", kind="message", payload={"text": "the invoice is due"}
+    )
+    assert again.stored is False
+
+
+@pytest.mark.integration
+async def test_retokenize_rekeys_media_dedup_and_origin(db) -> None:
+    import secrets
+
+    from aether.config import MediaConfig
+    from aether.media.store import MediaStore
+    from aether.memory.seal_migrate import retokenize
+
+    old_key, new_key = secrets.token_bytes(32), secrets.token_bytes(32)
+    old = Cipher(old_key, key_id="2026-10")
+    rotated = Cipher(new_key, key_id="2026-11", previous={"2026-10": old_key})
+    payload = b"\x89PNG\r\n\x1a\n" + b"a" * 100
+    stored = await MediaStore(db, old, MediaConfig()).put(payload, origin="gmail")
+
+    results = await retokenize(db, rotated, batch=10, sleep=0, tables={"media_blobs"})
+    assert (results[0].updated, results[0].failed) == (1, 0)
+    row = await db.fetchrow(
+        "SELECT dedup_mac, origin_token FROM media_blobs WHERE id = $1", stored.media_id
+    )
+    assert row["dedup_mac"] == rotated.dedup_mac(payload)
+    assert row["origin_token"] == rotated.blind_token("source", "gmail")
+    # the same bytes uploaded after the pass dedup onto the existing row
+    again = await MediaStore(db, rotated, MediaConfig()).put(payload, origin="gmail")
+    assert again.media_id == stored.media_id
+
+
+@pytest.mark.integration
+async def test_retokenize_counts_a_chunk_without_its_sealed_model(db) -> None:
+    import secrets
+
+    from aether.memory.seal_migrate import retokenize
+
+    cipher = Cipher(secrets.token_bytes(32), key_id="2026-11")
+    event_id = await db.fetchval(
+        "INSERT INTO events (payload_enc, meta_enc, key_version) VALUES ($1, $2, 'k1')"
+        " RETURNING id",
+        b"x",
+        b"y",
+    )
+    await db.execute(
+        "INSERT INTO memory_chunks (event_id, text_enc, meta_enc, key_version)"
+        " VALUES ($1, $2, $3, 'k1')",
+        event_id,
+        b"x",
+        b"y",
+    )
+    results = await retokenize(db, cipher, batch=10, sleep=0, tables={"memory_chunks"})
+    assert results[0].updated == 0
+    assert results[0].failed == 1
+
+
+@pytest.mark.integration
 async def test_pending_counts_read_zero_after_the_cutover(db) -> None:
     # the tables are empty here; the point is that every job's count query
     # still runs against the sealed schema without referencing a gone column
