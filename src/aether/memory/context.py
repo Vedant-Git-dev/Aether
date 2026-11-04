@@ -10,6 +10,7 @@ character budget before it ever reaches a prompt.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -18,6 +19,8 @@ from ..authz.approvals import Approval, Approvals
 from ..config import AgentConfig
 from .entities import Entities, EntityNote, Sender
 from .events import Event, EventStore, start_of_today
+
+log = logging.getLogger("aether.memory.context")
 
 # ~4000 tokens of context material at 4 chars/token, split across events
 # and notes.
@@ -30,6 +33,9 @@ class AgentContext:
     notes: list[EntityNote] = field(default_factory=list)
     pending_approvals: list[Approval] = field(default_factory=list)
     today_memorable: int = 0
+    # one-off questions worth asking the user, on a solicited turn only —
+    # currently the owner-alias confirmation
+    questions: list[str] = field(default_factory=list)
 
 
 def apply_daily_cap(events: list[Event], cap: int, now: datetime | None = None) -> list[Event]:
@@ -91,7 +97,13 @@ class ContextBuilder:
         self._approvals = approvals
         self._config = config
 
-    async def build(self) -> AgentContext:
+    async def build(self, *, with_questions: bool = False) -> AgentContext:
+        """Assemble the turn's working context.
+
+        `with_questions` is set only when the user is actually present. An
+        unprompted tick must never raise one of these — mail cannot prompt the
+        user by itself, and this is a question, not an alert.
+        """
         events = await self._store.recent_memorable(limit=50)
         events = apply_daily_cap(events, self._config.daily_surface_cap)
         events = bound_events(events, _CONTEXT_BUDGET_CHARS)
@@ -107,6 +119,7 @@ class ContextBuilder:
         notes.sort(key=lambda n: n.created_at, reverse=True)
         notes = notes[:10]
 
+        questions = await self._questions() if with_questions else []
         pending = await self._approvals.list_pending()
         today_memorable = await self._store.count_memorable_since(start_of_today())
 
@@ -115,4 +128,36 @@ class ContextBuilder:
             notes=notes,
             pending_approvals=pending,
             today_memorable=today_memorable,
+            questions=questions,
         )
+
+    async def _questions(self) -> list[str]:
+        """The alias confirmations still waiting on an answer.
+
+        Reading them is failure-tolerant: a question that cannot be loaded
+        costs the turn its question, never the turn.
+        """
+        try:
+            pending = await self._entities.pending_alias_questions()
+        except Exception:
+            log.warning("could not read the pending alias questions", exc_info=True)
+            return []
+        return [alias_question_text(note.payload) for note in pending]
+
+
+def alias_question_text(payload: dict[str, Any]) -> str:
+    """One pending alias question, in the words the model should use.
+
+    It names the address and asks the one thing that is unknown, and it
+    says how to answer — the reply is recorded through the existing
+    note_entity tool, so this needs no tool of its own.
+    """
+    address = str(payload.get("address") or "an address")
+    name = str(payload.get("name") or "").strip()
+    who = f'"{name} <{address}>"' if name else f"{address}"
+    return (
+        f"ask once, in your own words, whether {who} is one of the user's own "
+        "addresses — they are not in your records yet and the name matches them. "
+        "If they confirm, call note_entity for that address with "
+        'kind="owner_alias"; if they say no, do not ask again.'
+    )

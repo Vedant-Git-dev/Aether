@@ -20,9 +20,13 @@ from aether.authz.audit import AuditLog
 from aether.chat.ws import ChatHistory
 from aether.config import ContactsConfig, MediaConfig
 from aether.media.store import MediaStore
+from aether.memory.commitments import Commitments
+from aether.memory.conclusions import Conclusions
 from aether.memory.crypto import Cipher, generate_key_b64
+from aether.memory.deliveries import Deliveries
 from aether.memory.entities import Entities, Sender
 from aether.memory.events import EventStore
+from aether.memory.focus import Focus
 from aether.proactive.store import ProactiveStore
 from aether.providers.crypto import TokenKeyring
 from aether.providers.store import ProviderStore
@@ -118,6 +122,32 @@ async def test_no_canary_leaks_into_any_column(db, caplog) -> None:
 
         chat = ChatHistory(db, cipher)
         await chat.append("telegram", "in", f"text {canary}")
+
+        commitments = Commitments(db, cipher, audit)
+        await commitments.add(
+            kind="promise",
+            text=f"send the deck with {canary}",
+            due_phrase=f"by {canary}",
+        )
+        await Entities(db, cipher, audit, FakePersonJudge([])).note(
+            1, {"kind": "general", "note": f"note {canary}", "address": f"{canary}@x.com"}
+        )
+
+        deliveries = Deliveries(db, cipher, audit)
+        delivery = await deliveries.record_queued("telegram", f"body {canary}")
+        assert delivery is not None
+        await deliveries.mark_failed(delivery.id, f"error {canary}")
+
+        conclusions = Conclusions(db, cipher)
+        await conclusions.set(f"key {canary}", f"value {canary}", source=f"src {canary}")
+
+        focus = Focus(db, cipher)
+        await focus.record_turn(
+            f"chat {canary}",
+            entities=[1],
+            offer={"text": canary, "options": [], "at": datetime.now(UTC).isoformat()},
+            attachment={"media_id": 1, "filename": f"{canary}.png", "event_id": 1},
+        )
 
         keyring = TokenKeyring.from_values(active_key_b64=generate_key_b64(), active_id="k1")
         providers = ProviderStore(db, keyring, cipher)

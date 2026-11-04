@@ -13,7 +13,7 @@
 -- ---------------------------------------------------------------------------
 -- events: payload stays sealed; meta (source, kind, timestamps, salience,
 -- summary, urgency, ...) moves into meta_enc. Dedup becomes a keyed tag and
--- the source is a blind token, because the plan seals sources too.
+-- the source is a blind token, because the storage rule seals sources too.
 -- ---------------------------------------------------------------------------
 ALTER TABLE events ADD COLUMN IF NOT EXISTS key_version TEXT NOT NULL DEFAULT 'k1';
 ALTER TABLE events ADD COLUMN IF NOT EXISTS source_token BYTEA;

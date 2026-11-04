@@ -121,6 +121,21 @@ authz:
   #     note: "Telegram sends are one tap"
 
 # ---------------------------------------------------------------------------
+# Memory
+# ---------------------------------------------------------------------------
+
+# Write-time enrichment turns each event into an urgency, a deadline, entity
+# links, commitments and a one-line summary, so "anything urgent?" and "what's
+# due?" are lookups rather than searches. Off by default until evaluation
+# proves the model cost is worth it; entity linking and the delivery rules do
+# not ride this flag (they need no model call).
+memory:
+  enrichment: false
+  # how long an answer about live state ("nothing urgent", "inbox clear")
+  # stays usable — an older answer is re-queried rather than reused
+  conclusion_ttl_seconds: 120
+
+# ---------------------------------------------------------------------------
 # Workspace
 # ---------------------------------------------------------------------------
 

@@ -304,14 +304,20 @@ class FakeSalience:
 
 
 class FakeContextBuilder:
-    """ContextBuilder double: hands back a canned AgentContext, counts builds."""
+    """ContextBuilder double: hands back a canned AgentContext, counts builds.
+
+    `with_questions` mirrors the real builder's human-turn switch, and each
+    call is recorded so a test can prove an unprompted tick asked for none.
+    """
 
     def __init__(self, context: AgentContext | None = None) -> None:
         self.context = context or AgentContext()
         self.builds = 0
+        self.question_calls: list[bool] = []
 
-    async def build(self) -> AgentContext:
+    async def build(self, *, with_questions: bool = False) -> AgentContext:
         self.builds += 1
+        self.question_calls.append(with_questions)
         return self.context
 
 
@@ -562,11 +568,36 @@ class FakeEventStore:
         self.recent_counts = dict(recent_counts or {})
         self.updates: list[tuple[int, float, bool, dict]] = []
         self.ingested: list[dict] = []
+        # every ingest call in full, including the kwargs `ingested` does not
+        # carry (occurred_at, meta, dedup_key) — kept apart so tests that
+        # assert on the `ingested` shape stay exact
+        self.ingest_calls: list[dict] = []
         # set to override what ingest() returns (e.g. filtered:contacts)
         self.ingest_result: IngestResult | None = None
 
-    async def ingest(self, *, source, kind, payload, sender=None, occurred_at=None, meta=None):
+    async def ingest(
+        self,
+        *,
+        source,
+        kind,
+        payload,
+        sender=None,
+        occurred_at=None,
+        meta=None,
+        dedup_key=None,
+    ):
         self.ingested.append({"source": source, "kind": kind, "payload": payload, "sender": sender})
+        self.ingest_calls.append(
+            {
+                "source": source,
+                "kind": kind,
+                "payload": payload,
+                "sender": sender,
+                "occurred_at": occurred_at,
+                "meta": meta,
+                "dedup_key": dedup_key,
+            }
+        )
         if self.ingest_result is not None:
             return self.ingest_result
         return IngestResult(

@@ -65,6 +65,31 @@ trail. `entities.py` resolves people across handles. `vectors.py` stores embeddi
 semantic recall. `salience.py` scores what is worth mentioning. `context.py` assembles
 the prompt context.
 
+Write-time enrichment runs inside `events.py`:
+
+- the deterministic floor in `enrich.py` raises urgency on its own words (ASAP,
+  urgent, "within N hours", "by EOD", deadline) before anything is written, so an
+  urgent mail is never invisible while a classifier is queued or absent;
+- with `memory.enrichment` on, one cheap model turn adds urgency, needs_reply,
+  action type, deadline phrases, commitments and a one-line summary, and the
+  deterministic `normalize_deadline` turns the phrases into absolute instants
+  against the event's own time and `memory.default_timezone`;
+- every address is linked to an identity through the blind index, and an owner
+  address renders "(your other address)".
+
+The enrichment lands in the same sealed `meta_enc`, and the resident index decodes
+it once, at load. `views.py` reads the structured views off that index:
+`pending_attention` (urgency desc, deadline asc, recency), the open commitments
+ordered by due time, and an entity timeline using the index's `by_entity` map.
+`focus.py` persists one sealed working set per chat, and `conclusions.py` caches
+state-of-now answers with `as_of` and `valid_until`; a conclusion past its TTL is
+never served.
+
+`deliveries.py` records every outbound send attempt (queued, sent, failed,
+abandoned). The body, message id and error are sealed. A failed send is recorded
+as an event so every turn type sees it, and the next turn re-delivers the exact
+words once before the row is abandoned.
+
 `src/aether/workspace/` is a separate, smaller Markdown layer for identity, tone,
 preferences, and curated memory. It is not the event store.
 

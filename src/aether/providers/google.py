@@ -112,6 +112,7 @@ def _plain_text(payload: dict[str, Any]) -> str:
 
 def _summary(message: dict[str, Any]) -> dict[str, Any]:
     payload = message.get("payload") or {}
+    label_ids = [str(label) for label in (message.get("labelIds") or [])]
     return {
         "id": str(message.get("id", "")),
         "thread_id": str(message.get("threadId", "")),
@@ -121,20 +122,28 @@ def _summary(message: dict[str, Any]) -> dict[str, Any]:
         "subject": _header(payload, "Subject"),
         "date": _header(payload, "Date"),
         "snippet": str(message.get("snippet", "")),
+        "label_ids": label_ids,
+        "unread": "UNREAD" in label_ids,
     }
 
 
-async def _get_summary(ctx: Any, message_id: str) -> dict[str, Any]:
+async def _get_summary(ctx: Any, message_id: str, *, full: bool = False) -> dict[str, Any]:
+    """One message's envelope. `full` also fetches the plain-text body —
+    the poll needs it (a message is enriched and chunked from its words),
+    while a list read stays metadata-only and cheap."""
     data = await ctx.json(
         "GET",
         f"/gmail/v1/users/me/messages/{message_id}",
-        params={"format": "metadata"},
+        params={"format": "full" if full else "metadata"},
     )
-    return _summary(data)
+    summary = _summary(data)
+    if full:
+        summary["body"] = _plain_text(data.get("payload") or {})
+    return summary
 
 
-async def _summaries(ctx: Any, ids: list[str]) -> list[dict[str, Any]]:
-    """Fetch metadata for a batch, bounded and best effort: one message
+async def _summaries(ctx: Any, ids: list[str], *, full: bool = False) -> list[dict[str, Any]]:
+    """Fetch envelopes for a batch, bounded and best effort: one message
     that vanished between the list and the read never sinks the batch."""
     semaphore = asyncio.Semaphore(5)
 
@@ -143,7 +152,7 @@ async def _summaries(ctx: Any, ids: list[str]) -> list[dict[str, Any]]:
             return None
         async with semaphore:
             try:
-                return await _get_summary(ctx, message_id)
+                return await _get_summary(ctx, message_id, full=full)
             except ProviderHTTPError:
                 return None
 
@@ -178,14 +187,7 @@ async def get_message(ctx: Any, params: dict[str, Any]) -> Any:
     message_id = str(params.get("message_id") or "").strip()
     if not message_id:
         return {"successful": False, "error": "a message id is required"}
-    data = await ctx.json(
-        "GET",
-        f"/gmail/v1/users/me/messages/{message_id}",
-        params={"format": "full"},
-    )
-    summary = _summary(data)
-    summary["body"] = _plain_text(data.get("payload") or {})
-    summary["label_ids"] = list(data.get("labelIds", []) or [])
+    summary = await _get_summary(ctx, message_id, full=True)
     # the same envelope list_messages uses, so the allowlist filter can
     # judge a single read too (and there is no unfiltered side channel)
     return _ok({"messages": [summary]})
@@ -270,6 +272,15 @@ async def get_profile(ctx: Any, _params: dict[str, Any]) -> Any:
 
 
 async def poll_new_mail(ctx: Any) -> Any:
+    """New mail since the last poll, each message with its body.
+
+    The body is fetched here rather than lazily because ingest dedups on
+    the message id and the first write wins: a snippet-only row could
+    never be completed afterwards. The page is bounded by maxResults, and
+    the cursor the API returns names the last record *in the page*, so a
+    burst larger than one page is picked up by the next poll instead of
+    being skipped.
+    """
     profile = await ctx.json("GET", "/gmail/v1/users/me/profile")
     history_id = str(profile.get("historyId", ""))
     last = await ctx.get_sync("history_id")
@@ -298,7 +309,7 @@ async def poll_new_mail(ctx: Any) -> Any:
             params={"maxResults": 5, "q": "newer_than:1d"},
         )
         ids = [str(item.get("id", "")) for item in recent.get("messages", []) or []]
-        summaries = await _summaries(ctx, ids)
+        summaries = await _summaries(ctx, ids, full=True)
         return _ok({"messages": summaries}) if summaries else None
     new_history = str(data.get("historyId") or last)
     ids: list[str] = []
@@ -312,7 +323,7 @@ async def poll_new_mail(ctx: Any) -> Any:
         if new_history:
             await ctx.set_sync("history_id", new_history)
         return None
-    summaries = await _summaries(ctx, ids)
+    summaries = await _summaries(ctx, ids, full=True)
     if new_history:
         await ctx.set_sync("history_id", new_history)
     return _ok({"messages": summaries}) if summaries else None

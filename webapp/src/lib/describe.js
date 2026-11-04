@@ -382,6 +382,10 @@ export function describeEvent(e) {
     const detail = p.text ? quote(plainText(p.text), 200) : "No readable text was found in it";
     return { title: who === "you" ? `You shared a document${name}` : `${who} shared a document${name}`, detail };
   }
+  if (e.kind === "delivery_failed") {
+    const where = p.surface ? appLabel(p.surface) : "a chat surface";
+    return { title: `A reply didn't reach ${where}`, detail: p.text ? quote(plainText(p.text), 200) : "" };
+  }
   if (e.kind.startsWith("poll:")) {
     const noun = DEFAULT_NOUN[app] || "updates";
     const detail = p.result !== undefined ? summarizeResult(p.result)

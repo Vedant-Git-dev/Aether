@@ -131,7 +131,11 @@ async def test_salience_write_updates_the_index(db) -> None:
     indexed = index.get(result.event_id)
     assert indexed is not None
     assert indexed.memorable and indexed.salience_score == 9.0
-    assert indexed.meta == {"actionability": "reply"}
+    # the salience fields land, and the floor's own urgency survives the
+    # merge — the salience judge must not be able to erase "urgent"
+    assert indexed.meta["actionability"] == "reply"
+    assert indexed.urgency == 2
+    assert indexed.meta["urgency_floor"] is True
 
 
 @pytest.mark.integration

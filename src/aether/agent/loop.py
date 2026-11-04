@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ..authz.approvals import APPROVED, DENIED, Approval, Approvals
 from ..authz.audit import AuditLog, verification_text
@@ -57,11 +58,16 @@ from ..llm.base import ProviderError as LLMProviderError
 from ..llm.failures import ProviderFailure, classify_provider_failure
 from ..llm.registry import ProviderRegistry
 from ..llm.types import PLAIN_PARAM, Message, ToolCall, ToolResult, ToolSpec
+from ..memory.conclusions import Conclusions
 from ..memory.context import ContextBuilder
-from ..memory.entities import Sender
+from ..memory.deliveries import FAILED, Deliveries
+from ..memory.entities import Entities, Sender
 from ..memory.events import Event, EventStore
+from ..memory.focus import Focus
+from ..memory.mail import MAIL_KIND, MAIL_SOURCE, render_mail_event, split_mail
 from ..memory.salience import Salience
 from ..memory.vectors import MemoryHit, VectorMemory
+from ..memory.views import Views, wants_attention
 from ..providers.runtime import ProviderRuntime
 from ..providers.types import ConnectResult, ProviderError, ProviderNotConfigured
 from ..restart import pending as restart_pending
@@ -90,6 +96,12 @@ from .traces import CARRY_OUT, ROUTINE, SCHEDULED, TURN, Traces
 log = logging.getLogger("aether.agent")
 
 _MAX_OBSERVATIONS = 20
+
+# A solicited turn waits this long for write-time enrichment still in
+# flight before it answers from the deterministic floor. The classifier is
+# one cheap model turn per event, so a burst can outrun the question that
+# followed it; this is the bound, not a promise to wait for every event.
+ENRICHMENT_WAIT_SECONDS = 2.0
 
 # History windowing (token control): a turn's prompt is capped at this many
 # messages — the context block and the newest triggers always stay, the
@@ -193,6 +205,33 @@ def _parse_quiet_hours(raw: str | None) -> tuple[int, int] | None:
         return None
 
 
+def _local_clock(now: datetime, timezone: str) -> str:
+    """HH:MM in the user's timezone, for a live result's "as of"."""
+    try:
+        return now.astimezone(ZoneInfo(timezone or "UTC")).strftime("%H:%M")
+    except (KeyError, ValueError):
+        return now.strftime("%H:%M UTC")
+
+
+_ATTACHMENT_KINDS = frozenset({"shared_doc", "shared_image", "shared_audio", "shared_video"})
+
+
+def _newest_attachment(observations: list[Event]) -> dict[str, Any] | None:
+    """The newest file this turn saw, for the focus object's attachment slot."""
+    for event in reversed(observations):
+        if event.kind not in _ATTACHMENT_KINDS or not isinstance(event.payload, dict):
+            continue
+        media_id = event.payload.get("media_id")
+        if media_id is None:
+            continue
+        return {
+            "media_id": media_id,
+            "filename": str(event.payload.get("filename") or ""),
+            "event_id": event.id,
+        }
+    return None
+
+
 class CaptureRequestBox:
     """A one-slot mailbox: the agent asks for a screenshot, the companion
     (polling GET /api/screen-request) takes the request and captures."""
@@ -218,10 +257,17 @@ class SurfaceFanout:
         connectors: list[MessagingConnector] | None = None,
         hub: Any = None,
         history: Any = None,
+        deliveries: Deliveries | None = None,
     ) -> None:
         self.connectors = list(connectors or [])
         self.hub = hub
         self.history = history
+        self.deliveries = deliveries
+
+    def attach_deliveries(self, deliveries: Deliveries | None) -> None:
+        """Join the delivery record to the fanout after boot builds the
+        stores — the same late-wire shape the enrichment pieces use."""
+        self.deliveries = deliveries
 
     def add_connectors(self, connectors: list[MessagingConnector]) -> None:
         self.connectors.extend(connectors)
@@ -237,41 +283,96 @@ class SurfaceFanout:
         return None
 
     async def send_to_user(
-        self, text: str, *, attachment: Attachment | None = None
+        self,
+        text: str,
+        *,
+        attachment: Attachment | None = None,
+        record: bool = True,
+        outcomes: dict[str, bool] | None = None,
     ) -> dict[str, str]:
         """Fan out to every enabled surface, collecting where the words
         landed: {connector name: platform message id}. Those ids are what
-        link a user's later "why?" back to the trace of this send. The hub
-        has no id, and a dying surface never takes the loop down — its
-        slot is just missing from the map. Media rides to the chat
-        connectors only — the hub and the transcript stay text-only; the
-        attachment is passed only when one is present, so connectors and
-        test doubles that never send files see no new kwarg."""
+        link a user's later "why?" back to the trace of this send.
+
+        An empty message is refused before anything is sent or stored.
+        Every surface attempt is recorded — queued, then sent with its
+        message id or failed with its error sealed — so a failure is a fact
+        the next turn can be told, not a swallowed log line. `record=False`
+        is for the retry path, which already owns a delivery row and must not
+        mint a new one for the same words; `outcomes`, when given, receives
+        each surface's true result so a caller can tell "landed on the web
+        but nowhere else" from "landed nowhere". The hub has no id; a dying
+        surface never takes the loop down. Media rides to the chat connectors
+        only — the hub and the transcript stay text-only; the attachment is
+        passed only when one is present, so connectors and test doubles that
+        never send files see no new kwarg."""
+        if not text or not text.strip():
+            return {}
         refs: dict[str, str] = {}
+        landed: list[str] = []
         media = {"attachment": attachment} if attachment is not None else {}
         if self.hub is not None:
+            record_row = await self._record_delivery("web", text) if record else None
             try:
                 await self.hub.broadcast(text)
-            except Exception:
+            except Exception as exc:
                 log.exception("web chat broadcast failed")
+                await self._mark_delivery(record_row, error=str(exc))
+                if outcomes is not None:
+                    outcomes["web"] = False
+            else:
+                await self._mark_delivery(record_row, message_id="")
+                landed.append("web")
+                if outcomes is not None:
+                    outcomes["web"] = True
         for connector in self.connectors:
+            record_row = await self._record_delivery(connector.name, text) if record else None
             try:
                 ref = await connector.send_to_user(text, **media)
-            except Exception:
+            except Exception as exc:
                 log.exception("%s send failed — continuing", connector.name)
+                await self._mark_delivery(record_row, error=str(exc))
+                if outcomes is not None:
+                    outcomes[connector.name] = False
                 continue
+            await self._mark_delivery(record_row, message_id=ref or "")
+            landed.append(connector.name)
+            if outcomes is not None:
+                outcomes[connector.name] = True
             if ref:
                 refs[connector.name] = ref
         # everything that actually landed joins the transcript so the next
         # turn can see its own words; the hub persists the web line itself
         # (broadcast), so only connector surfaces are written here
         if self.history is not None:
-            for name in refs:
+            for name in landed:
+                if name == "web":
+                    continue
                 try:
                     await self.history.append(name, "out", text)
                 except Exception:
                     log.exception("transcript write failed for %s — continuing", name)
         return refs
+
+    async def _record_delivery(self, surface: str, text: str) -> Any:
+        if self.deliveries is None:
+            return None
+        try:
+            return await self.deliveries.record_queued(surface, text)
+        except Exception:
+            log.warning("could not open a delivery record for %s", surface)
+            return None
+
+    async def _mark_delivery(self, record: Any, *, message_id: str = "", error: str = "") -> None:
+        if record is None or self.deliveries is None:
+            return
+        try:
+            if error:
+                await self.deliveries.mark_failed(record.id, error)
+            else:
+                await self.deliveries.mark_sent(record.id, message_id)
+        except Exception:
+            log.warning("could not close delivery record %s", getattr(record, "id", "?"))
 
     async def present_approval(
         self, approval_id: int, text: str, *, attachment: Attachment | None = None
@@ -281,6 +382,8 @@ class SurfaceFanout:
         reach the user; the decision record keeps the exact call. A
         media-carrying ask shows the media itself, passed only when
         present."""
+        if not text or not text.strip():
+            return
         media = {"attachment": attachment} if attachment is not None else {}
         for connector in self.connectors:
             try:
@@ -304,6 +407,8 @@ class SurfaceFanout:
         attached. The verdicts themselves are decided in the worker, which
         owns the task row — this fanout only carries them. Media rides to
         the chat connectors only, passed only when present."""
+        if not text or not text.strip():
+            return
         media = {"attachment": attachment} if attachment is not None else {}
         if self.hub is not None:
             try:
@@ -474,6 +579,11 @@ class AgentLoop:
         vectors: VectorMemory | None = None,
         mail_filter: MailAllowlist | None = None,
         media: Any = None,
+        entities: Entities | None = None,
+        views: Views | None = None,
+        focus: Focus | None = None,
+        conclusions: Conclusions | None = None,
+        deliveries: Deliveries | None = None,
     ) -> None:
         self._providers = providers
         # the in-flight reply to a decision, if the model is writing one —
@@ -517,6 +627,20 @@ class AgentLoop:
         # carries a stored media id shows the media itself with the ask,
         # and a blob that's gone (evicted, purged) degrades to the words
         self._media = media
+        # identities — used to claim the owner's own address when a provider
+        # connects, so "my other address" renders correctly from the first mail
+        self._entities = entities
+        # the structured views over the resident index, the per-chat focus
+        # object and the live-state conclusions
+        self._views = views
+        self._focus = focus
+        self._conclusions = conclusions
+        # the outbound-send record: a failed or empty send is a fact, not a
+        # log line, and the next turn is told about it
+        self._deliveries = deliveries
+        # the owner's own addresses, refreshed once per turn so mail renders
+        # "(your other address)" without an async lookup per event line
+        self._owner_addresses: set[str] = set()
         # the guided /config walk in progress, if any — memory only
         self._wizard: ConfigWizard | None = None
         # the guided /apps walk in progress, if any — same rules, memory only
@@ -946,6 +1070,12 @@ class AgentLoop:
                 except Exception:
                     log.exception("transcript write failed for inbound %s", message.surface)
             messages.append(message)
+
+        # (b3) a reply that never reached the user becomes an event, so every
+        # turn type — including an unprompted tick — sees the failure; and
+        # the owner addresses are cached for mail rendering below
+        await self._record_delivery_notices()
+        await self._refresh_owner_addresses()
 
         # (c) everything else ingested since last tick becomes observations
         observations = await self._events.list_since(anchor, limit=_MAX_OBSERVATIONS)
@@ -1418,7 +1548,17 @@ class AgentLoop:
     async def announce_provider_connection(self, app_key: str, identity: str = "") -> None:
         """The OAuth callback landed — move the walk to the gate's question:
         what may Aether do with this app. The answer writes an authz rule
-        with the direct provider prefix."""
+        with the direct provider prefix.
+
+        The account address the provider just reported is the owner's own,
+        so it is claimed here: without it the first mail from a
+        second address of the user's would render as a stranger's.
+        """
+        if self._entities is not None and identity.strip():
+            try:
+                await self._entities.mark_owner_address(app_key, identity.strip())
+            except Exception:
+                log.warning("%s connected but its own address could not be claimed", app_key)
         walk = self._apps_walk
         if walk is None or not walk.alive:
             walk = self._new_apps_wizard()
@@ -1533,7 +1673,14 @@ class AgentLoop:
 
         The provider runtime owns the cursor and the schedule; this path
         owns the same audit row and event ingest the MCP polls use. Gmail
-        results still pass the allowlist before the model can see them.
+        results still pass the allowlist before the model can see them, and
+        the allowlist judges the whole envelope — a sender it drops never
+        reaches the split below, so nothing filtered can be stored.
+
+        A mail poll is one event per message rather than one blob: the old
+        single row was truncated to 4000 characters and merged every
+        message of the poll into it, so nothing downstream could attribute,
+        sort or filter a single mail.
         """
         if self._provider_runtime is None:
             return
@@ -1554,6 +1701,8 @@ class AgentLoop:
                 params={},
                 outcome="provider poll",
             )
+            if await self._ingest_mail(text, result):
+                continue
             kind = result.tool.split("__", 1)[-1]
             ingest = await self._events.ingest(
                 source=result.app,
@@ -1562,6 +1711,47 @@ class AgentLoop:
             )
             if ingest.stored:
                 self.notify()
+
+    async def _ingest_mail(self, text: str, result: Any) -> bool:
+        """One event per mail in a filtered poll envelope.
+
+        The addresses stay in the payload exactly as the provider returned
+        them; no sender rides the ingest, because the mail allowlist — not
+        the contact allowlist — is what judges mail, and it has already run
+        on this envelope. Re-judging here would drop mail the user *sent*
+        to an allowlisted person, whose sender is the user themselves.
+
+        Returns False when the envelope carries no messages, so the caller
+        keeps its own shape for results this path does not model.
+        """
+        try:
+            envelope = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            envelope = result.payload
+        messages = split_mail(envelope)
+        if not messages:
+            return False
+        stored = 0
+        for message in messages:
+            ingest = await self._events.ingest(
+                source=MAIL_SOURCE,
+                kind=MAIL_KIND,
+                payload=message.payload,
+                occurred_at=message.occurred_at,
+                meta={
+                    "provider": MAIL_SOURCE,
+                    "message_id": message.message_id,
+                    "thread_id": message.thread_id,
+                    "from_address": message.sender,
+                },
+                dedup_key=message.dedup_key,
+            )
+            if ingest.stored:
+                stored += 1
+        if stored:
+            log.info("ingested %d mail message(s) from %s", stored, result.app)
+            self.notify()
+        return True
 
     # -- the late-ready reconcile ---------------------------------------------------
 
@@ -1757,6 +1947,9 @@ class AgentLoop:
             # embedding starts now and the round trip overlaps the context
             # assembly below — one API wait hidden instead of added
             recall_embed: asyncio.Task[list[float] | None] | None = None
+            await self._refresh_owner_addresses()
+            await self._await_enrichment()
+            delivery_lines = await self._redeliver_failed()
             if messages and self._vectors is not None and self._vectors.enabled:
                 try:
                     recall_query = " ".join(
@@ -1770,7 +1963,10 @@ class AgentLoop:
                     # way the turn itself must survive
                     log.exception("recall head start failed — embedding inline instead")
 
-            ctx = await self._context.build()
+            # the alias confirmation is a question, so it is only
+            # loaded when the user is actually here — an unprompted tick must
+            # never raise one
+            ctx = await self._context.build(with_questions=bool(messages))
             history: list[Message] = []
             # every meaningful question pulls its own related memories in —
             # older conversations, shared documents, whatever the question
@@ -1780,8 +1976,12 @@ class AgentLoop:
                 recalled, recall_lines = await self._recall_related(
                     messages, ctx, observations, recall_embed
                 )
-            context_block = self._format_context(ctx)
-            head = "\n\n".join(part for part in (context_block, "\n".join(recall_lines)) if part)
+            attention = await self._attention_context(messages)
+            context_block = self._format_context(ctx, attention=attention)
+            delivery_block = "\n".join(delivery_lines)
+            head = "\n\n".join(
+                part for part in (context_block, delivery_block, "\n".join(recall_lines)) if part
+            )
             if head:
                 history.append(Message.user(f"[working context]\n{head}"))
             history.extend(await self._transcript_messages(messages))
@@ -2033,6 +2233,16 @@ class AgentLoop:
                 label=self._trace_label(messages, observations),
                 payload=trace,
             )
+            # the focus object and a state-of-now conclusion are updated with
+            # the finished turn — a failure costs a reference, never
+            # the reply that already went out
+            try:
+                if messages:
+                    await self._update_focus(messages, observations, reply)
+                if reply:
+                    await self._record_state_conclusion(messages, reply)
+            except Exception:
+                log.warning("focus/conclusion update failed — continuing", exc_info=True)
 
     def _connected_apps(self) -> str:
         """The live MCP server list for the system prompt — the model sees
@@ -2167,8 +2377,13 @@ class AgentLoop:
                 out.append(Message.user(f"[{row.get('surface', '?')}] {text}"))
         return out
 
-    def _format_context(self, ctx: Any) -> str:
+    def _format_context(self, ctx: Any, attention: str = "") -> str:
         lines: list[str] = []
+        # the attention view, only when this turn's route asked for one —
+        # it packs "urgent or due items if the route asked", and a live
+        # result carries its own "as of" time
+        if attention:
+            lines.append(attention)
         for event in ctx.events[:15]:
             lines.append(f"- {self._event_line(event)}")
         for note in ctx.notes:
@@ -2181,17 +2396,260 @@ class AgentLoop:
                 "them up again; they run (or quietly don't) the moment the "
                 "user decides"
             )
+        # one-off questions to put to the user this turn, in the words the
+        # context builder chose — currently the owner-alias confirmation
+        for question in ctx.questions:
+            lines.append(f"- {question}")
         if ctx.today_memorable:
             lines.append(f"- {ctx.today_memorable} memorable event(s) so far today")
         return "\n".join(lines)
 
-    @staticmethod
-    def _event_line(event: Event) -> str:
+    def _event_line(self, event: Event) -> str:
+        """One event as the model reads it.
+
+        A mail gets its own rendering — raw headers, display names, and
+        "(your other address)" for an owner address — instead of a JSON dump
+        that loses who said what. Everything else keeps the payload preview
+        the salience judge has always scored.
+        """
+        if event.kind == MAIL_KIND:
+            try:
+                return render_mail_event(
+                    event.payload,
+                    occurred_at=event.occurred_at,
+                    salience=event.salience_score,
+                    owners=self._owner_addresses,
+                )
+            except Exception:  # a malformed payload falls back to the dump
+                log.warning("mail rendering failed for event %s — using the raw line", event.id)
         text = json.dumps(event.payload, ensure_ascii=False, default=str)
         return (
             f"{event.occurred_at:%Y-%m-%d %H:%M} {event.source}/{event.kind}"
             f" (salience {event.salience_score:.0f}): {text[:400]}"
         )
+
+    async def _refresh_owner_addresses(self) -> None:
+        """Cache the owner's own addresses for this turn's mail rendering."""
+        if self._entities is None:
+            return
+        try:
+            self._owner_addresses = await self._entities.owner_addresses()
+        except Exception:
+            log.warning("could not read the owner addresses — rendering without them")
+
+    async def _await_enrichment(self) -> None:
+        """Give enrichment still in flight a short, bounded head start.
+
+        The floor already made an urgent event visible at ingest, so this is
+        detail — a summary, a deadline, a classifier urgency — not the thing
+        that makes the event exist. A turn never waits longer than
+        `ENRICHMENT_WAIT_SECONDS`, and a wait that times out answers from the
+        floor rather than delaying the user.
+        """
+        wait = getattr(self._events, "wait_idle", None)
+        if wait is None:
+            return
+        try:
+            await asyncio.wait_for(wait(), timeout=ENRICHMENT_WAIT_SECONDS)
+        except TimeoutError:
+            log.info(
+                "enrichment still in flight after %.1fs — answering from the floor",
+                ENRICHMENT_WAIT_SECONDS,
+            )
+        except Exception:
+            log.warning("could not wait for enrichment — answering from the floor", exc_info=True)
+
+    # -- structured views, focus and delivery ---------------------------------
+
+    async def _attention_context(self, messages: list[InboundMessage]) -> str:
+        """The attention view for a turn whose words asked for it.
+
+        Only when the deterministic route trigger fired — an unprompted tick
+        and a normal question never carry it — and it says plainly that it is
+        a live result, "as of" the moment it was read.
+        """
+        if self._views is None or not messages:
+            return ""
+        if not any(wants_attention(message.text) for message in messages):
+            return ""
+        now = datetime.now(UTC)
+        items = self._views.pending_attention(now=now, limit=20)
+        body = self._views.render_attention(items, now=now)
+        stamp = _local_clock(now, self._config.memory.default_timezone)
+        lead = f"- attention (live, as of {stamp})"
+        try:
+            open_items = await self._views.commitments_view(limit=10)
+            commitments = self._views.render_commitments(open_items, now=now)
+        except Exception:
+            commitments = ""
+        blocks = [body, commitments]
+        rendered = "\n".join(block for block in blocks if block)
+        if not rendered:
+            return f"{lead}: nothing urgent or due right now"
+        indented = "\n".join(f"  {line}" for line in rendered.splitlines())
+        return f"{lead}:\n{indented}"
+
+    async def _redeliver_failed(self) -> list[str]:
+        """Re-deliver a reply that never reached the user, and say so.
+
+        The next turn is told "previous reply not delivered" with
+        facts, and re-delivers. The original failure is already recorded as
+        an event by `_record_delivery_notices`; this re-sends the exact words
+        once, then abandons the row so a permanent outage does not repeat the
+        same old reply on every later turn.
+        """
+        if self._deliveries is None:
+            return []
+        try:
+            pending = await self._deliveries.undelivered(limit=5)
+        except Exception:
+            log.warning("could not read failed deliveries", exc_info=True)
+            return []
+        lines: list[str] = []
+        for delivery in pending:
+            if delivery.status != FAILED or not delivery.body.strip():
+                continue
+            try:
+                outcomes: dict[str, bool] = {}
+                refs = await self._surfaces.send_to_user(
+                    delivery.body, record=False, outcomes=outcomes
+                )
+            except Exception:
+                refs = {}
+                outcomes = {}
+            if refs or any(outcomes.values()):
+                try:
+                    await self._deliveries.mark_sent(delivery.id)
+                except Exception:
+                    log.warning("could not mark delivery %s sent", delivery.id)
+                lines.append(
+                    "- a previous reply did not reach the user when first sent; "
+                    "it has now been re-delivered. Do not repeat it unless asked."
+                )
+            else:
+                try:
+                    await self._deliveries.mark_abandoned(delivery.id, "re-delivery failed")
+                except Exception:
+                    log.warning("could not mark delivery %s abandoned", delivery.id)
+                lines.append(
+                    "- a previous reply never reached the user and re-delivery "
+                    "failed; do not claim it was delivered."
+                )
+        return lines
+
+    async def _record_delivery_notices(self) -> None:
+        """Turn any undelivered reply into an event, once per delivery.
+
+        The transcript is not what an unprompted tick reads, and
+        `_last_event_id` is what the tick's observation stream is keyed on —
+        so an event is the only form that survives into every turn type.
+        Dedup makes the notice durable exactly once: re-ingesting
+        the same delivery is a duplicate and writes nothing.
+        """
+        if self._deliveries is None:
+            return
+        try:
+            pending = await self._deliveries.undelivered(limit=5)
+        except Exception:
+            log.warning("could not read undelivered replies", exc_info=True)
+            return
+        for delivery in pending:
+            try:
+                await self._events.ingest(
+                    source="delivery",
+                    kind="delivery_failed",
+                    payload={
+                        "delivery_id": delivery.id,
+                        "surface": delivery.surface,
+                        "status": delivery.status,
+                        "text": delivery.body[:400],
+                        "at": delivery.created_at.astimezone(UTC).isoformat(),
+                    },
+                    occurred_at=delivery.created_at,
+                    dedup_key=f"delivery:{delivery.id}",
+                )
+            except Exception:
+                log.warning("could not record a delivery notice", exc_info=True)
+
+    async def _update_focus(
+        self, messages: list[InboundMessage], observations: list[Event], reply: str
+    ) -> None:
+        """Persist what the finished turn was about.
+
+        This layer maintains the object only: the reference resolution that
+        reads it belongs to the query router. It is per chat, so an
+        unprompted tick with no chat reference updates nothing.
+        """
+        if self._focus is None or not messages:
+            return
+        chat_ref = messages[-1].chat_ref
+        if not chat_ref:
+            return
+        entities = await self._focus_entities(messages, observations)
+        offer = None
+        if reply and reply.rstrip().endswith("?"):
+            offer = {
+                "text": reply[:400],
+                "options": [],
+                "at": datetime.now(UTC).isoformat(),
+            }
+        open_task: dict[str, Any] | None = None
+        if self._views is not None:
+            try:
+                open_items = await self._views.commitments_view(limit=1)
+            except Exception:
+                open_items = []
+            if open_items:
+                first = open_items[0]
+                open_task = {
+                    "commitment_id": first.id,
+                    "summary": first.text[:200],
+                    "due_at": first.due_at.astimezone(UTC).isoformat() if first.due_at else None,
+                }
+        await self._focus.record_turn(
+            chat_ref,
+            entities=entities,
+            offer=offer,
+            open_task=open_task,
+            attachment=_newest_attachment(observations),
+        )
+
+    async def _focus_entities(
+        self, messages: list[InboundMessage], observations: list[Event]
+    ) -> list[int]:
+        """The identities this turn named, newest event first."""
+        found: list[int] = []
+        for event in reversed(observations):
+            for entity_id in event.entity_ids:
+                if entity_id not in found:
+                    found.append(entity_id)
+        if self._entities is not None:
+            for message in messages:
+                try:
+                    entity = await self._entities.resolve_exact(message.surface, message.handle)
+                except Exception:
+                    entity = None
+                if entity is not None and entity.id not in found:
+                    found.append(entity.id)
+        return found
+
+    async def _record_state_conclusion(self, messages: list[InboundMessage], reply: str) -> None:
+        """Cache a state-of-now answer with its `as_of` and a short TTL.
+
+        The deterministic route trigger is the keyword set; the value is what
+        Aether just answered, source "live". The query router reads it with
+        `get_fresh`, so an expired answer is never served as current.
+        """
+        if self._conclusions is None or not messages or not reply.strip():
+            return
+        asked = " ".join(message.text for message in messages).strip()
+        if not wants_attention(asked):
+            return
+        key = "now:" + " ".join(asked.lower().split())
+        try:
+            await self._conclusions.set(key, reply.strip(), source="live")
+        except Exception:
+            log.warning("could not record a state-of-now conclusion", exc_info=True)
 
     # -- the authorization-gated executor ---------------------------------------------
 

@@ -1,6 +1,6 @@
 """The web chat surface: one WebSocket endpoint, token-guarded, with
 server-side history persisted encrypted. Reconnection (exponential backoff
-with jitter, per proposal §6) lives in the client, web/index.html.
+with jitter) lives in the client, web/index.html.
 """
 
 from __future__ import annotations

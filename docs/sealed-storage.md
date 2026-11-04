@@ -12,7 +12,10 @@ and mail text, subjects, addresses, names, filenames, media, captions,
 summaries, facts, notes, watches, commitments, embeddings, salience and
 urgency labels, timestamps of events, sources, delivery status text, tool
 arguments and results, traces and error text that quotes content are all
-sealed.
+sealed. The write-time enrichment labels also get the same treatment
+(urgency, `needs_reply`, action type, deadlines and their original phrase),
+the one-line summary, the linked entity ids, the focus object, the
+conclusions cache and the outbound delivery body, message id and error.
 
 Decrypted data exists only in process memory. It is never written to a temp
 file, a log line, a metric label or the audit record. The audit record keeps
@@ -117,6 +120,30 @@ newest `memory.hot_events` rows and kept current by every ingest and salience
 write. A query that needs an older window cold-scans `memory.cold_batch` rows
 at a time and folds them into the same index; it never scans the whole table
 for one question. Nothing in the index is persisted.
+
+The index also carries the write-time labels decoded out of `meta_enc`
+(urgency, `needs_reply`, deadlines, summary, linked entity ids) and a
+`by_entity` map, so the attention view, the entity timeline and the commitments
+view are lookups over the hot set rather than SQL sorts over encrypted
+columns. Exactly one plaintext column was added for this: `memory_chunks.ordinal`:
+a chunk's position inside its own event. Retrieval needs the chunk before and
+after a hit, and row ids interleave across events under concurrent ingest, so
+id order is not document order. The ordinal leaks order and chunk count, never
+content.
+
+## Structured stores
+
+- `commitments` — what the user owes and is owed. Kind, status, counterparty
+  and source event are plaintext vocabulary and ids; the text, due time and
+  original phrase are sealed.
+- `focus` — one working set per chat, keyed by a blind token. The recent
+  entities, last offer, open task and last attachment are sealed.
+- `conclusions` — live-state answers keyed by a blind token, with `as_of`,
+  `valid_until` and source sealed alongside the value. An entry past
+  `valid_until` is never served.
+- `deliveries` — one row per outbound send attempt. Status is plaintext;
+  the body, platform message id and error are sealed. Errors are hashed
+  before they reach a log line.
 
 ## Logs and canaries
 

@@ -49,16 +49,22 @@ from .media.frames import FrameWatcher
 from .media.generate import ImageGenerator
 from .media.store import MediaStore
 from .media.voice import GroqTranscriber
+from .memory.commitments import Commitments
+from .memory.conclusions import Conclusions
 from .memory.context import ContextBuilder
 from .memory.crypto import Cipher, CryptoError, generate_key_b64
 from .memory.db import create_pool, run_migrations
+from .memory.deliveries import Deliveries
+from .memory.enrich import Enricher, LLMClassifier
 from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
+from .memory.focus import Focus
 from .memory.indexes import MemoryIndex
 from .memory.salience import LLMJudge, Salience
 from .memory.seal_migrate import seal_for_cutover
 from .memory.storage import StorageGuardError, enforce_schema
 from .memory.vectors import VectorMemory
+from .memory.views import Views
 from .proactive import Budget, ProactiveStore, ProactiveWorker
 from .providers.catalog import PROVIDERS
 from .providers.crypto import TokenKeyError, TokenKeyring
@@ -450,6 +456,45 @@ def create_app(
         )
         entities = Entities(pool, cipher, audit, LLMSamePersonJudge(identity_provider))
         salience = Salience(events, LLMJudge(judge_provider), config.salience)
+        # write-time enrichment. The store is built before this
+        # point — it needs nothing from the model — so the two are joined
+        # here: addresses are linked to identities unconditionally (the
+        # rendering rules depend on it and it costs no model call), and the
+        # classifier rides memory.enrichment, which is off by default.
+        commitments = Commitments(pool, cipher, audit)
+        enricher = (
+            Enricher(
+                LLMClassifier(judge_provider),
+                timezone=config.memory.default_timezone,
+            )
+            if judge_provider is not None
+            else None
+        )
+        events.attach_enrichment(
+            entities=entities,
+            commitments=commitments,
+            enricher=enricher,
+            enrichment=config.memory.enrichment,
+        )
+        app.state.commitments = commitments
+        # the structured views (attention, commitments, entity timeline), the
+        # per-chat focus object, the live-state conclusions cache and the
+        # outbound delivery record
+        views = Views(
+            memory_index,
+            commitments,
+            pool=pool,
+            cipher=cipher,
+            timezone=config.memory.default_timezone,
+            cold_batch=config.memory.cold_batch,
+        )
+        focus = Focus(pool, cipher)
+        conclusions = Conclusions(pool, cipher, ttl_seconds=config.memory.conclusion_ttl_seconds)
+        deliveries = Deliveries(pool, cipher, audit)
+        app.state.views = views
+        app.state.focus = focus
+        app.state.conclusions = conclusions
+        app.state.deliveries = deliveries
         context = ContextBuilder(events, entities, approvals, config.agent)
         scheduler = Scheduler(pool, cipher, audit)
         app.state.entities = entities
@@ -501,7 +546,7 @@ def create_app(
         app.state.chat_hub = chat_hub
         app.state.capture_box = capture_box
 
-        surfaces = SurfaceFanout(hub=chat_hub, history=chat_history)
+        surfaces = SurfaceFanout(hub=chat_hub, history=chat_history, deliveries=deliveries)
         agent = AgentLoop(
             providers=providers,
             tools=tools,
@@ -530,6 +575,11 @@ def create_app(
             vectors=vectors,
             mail_filter=mail_filter,
             media=media_store,
+            entities=entities,
+            views=views,
+            focus=focus,
+            conclusions=conclusions,
+            deliveries=deliveries,
         )
         app.state.agent = agent
         native = register_native_tools(

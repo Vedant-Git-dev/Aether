@@ -141,10 +141,14 @@ async def test_index_doc_keeps_pages_separate_and_readable(db) -> None:
     assert hits[0].location == "page 1"
     assert "roadmap" in hits[0].text
 
-    # the whole document re-reads page by page, location headers included
+    # the whole document re-reads page by page; each chunk carries its own
+    # context header, so the page is named once and the text follows it
     doc = await vectors.read_document(result.event_id)
-    assert "page 1: roadmap alpha beta" in doc
-    assert "page 2: budget gamma delta" in doc
+    assert "[Doc: deck.pdf | page 1" in doc
+    assert "roadmap alpha beta" in doc
+    assert "[Doc: deck.pdf | page 2" in doc
+    assert "budget gamma delta" in doc
+    assert doc.index("page 1") < doc.index("page 2")
 
     # generic ingest of a shared_doc event never double-chunks it
     other = await events.ingest(
@@ -236,3 +240,32 @@ async def test_search_ranks_every_sealed_row(db) -> None:
     # both score, entirely from sealed vectors
     hits = await vectors.search("alpha beetle", limit=5, min_similarity=0.1)
     assert {h.text for h in hits} == {"alpha beetle cicada", "alpha beetle dragonfly"}
+
+
+@pytest.mark.integration
+async def test_chunks_are_ordinaled_and_read_back_in_document_order(db) -> None:
+    from aether.authz.audit import AuditLog
+    from aether.config import ContactsConfig
+
+    embedder = FakeEmbedder()
+    vectors, cipher = _store(db, embedder=embedder)
+    events = EventStore(db, cipher, AuditLog(db), ContactsConfig(), indexer=vectors)
+    ingested = await events.ingest(
+        source="web", kind="shared_doc", payload={"filename": "OSY.pdf", "text": "x"}
+    )
+    parts = [("slide 1", "alpha " * 400), ("slide 2", "beta " * 400)]
+    await vectors.index_doc(ingested.event_id, "web", "OSY.pdf", parts)
+
+    rows = await db.fetch(
+        "SELECT ordinal FROM memory_chunks WHERE event_id = $1 ORDER BY ordinal",
+        ingested.event_id,
+    )
+    # positions are recorded, and they are what document order means — row
+    # ids interleave across events, so id order would not be
+    assert [row["ordinal"] for row in rows] == list(range(len(rows)))
+    assert len(rows) > 2  # the long parts split
+
+    document = await vectors.read_document(ingested.event_id)
+    # the pages come back in order, and each names itself once
+    assert document.index("slide 1") < document.index("slide 2")
+    assert document.count("Doc: OSY.pdf") == len(rows)

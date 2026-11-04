@@ -32,6 +32,12 @@ CANDIDATE_FLOOR = 75.0
 CANDIDATE_POOL = 200
 MAX_LLM_CANDIDATES = 3
 
+# entity-note kinds for the owner-alias exchange. The question is asked
+# once; the confirmation is what turns an address into one of the owner's
+# own, at the moment it is recorded.
+ALIAS_QUESTION = "alias_question"
+ALIAS_CONFIRMED = "owner_alias"
+
 
 # ---------------------------------------------------------------------------
 # handle normalization (shared with the contact allowlist in events.py)
@@ -78,10 +84,23 @@ def _identity_profile(cipher: Cipher, row: Any) -> tuple[str, float]:
 
 
 def _profile_for(cipher: Cipher, identity_id: int, blob: Any) -> tuple[str, float]:
+    profile = _profile_data(cipher, identity_id, blob)
+    return str(profile.get("display_name", "")), float(profile.get("confidence", 1.0))
+
+
+def _profile_data(cipher: Cipher, identity_id: int, blob: Any) -> dict[str, Any]:
+    """The whole sealed profile — name, confidence, and whether this
+    identity is one of the owner's own addresses."""
     if not blob:
-        return "", 1.0
+        return {"display_name": "", "confidence": 1.0, "owner": False}
     data = cipher.decrypt_json(blob, aad=f"identities:profile_enc:{identity_id}")
-    return str(data.get("display_name", "")), float(data.get("confidence", 1.0))
+    if not isinstance(data, dict):
+        return {"display_name": "", "confidence": 1.0, "owner": False}
+    return data
+
+
+def _is_owner(profile: dict[str, Any]) -> bool:
+    return bool(profile.get("owner", False))
 
 
 def _handle_ref(cipher: Cipher, row: Any) -> tuple[str, str]:
@@ -112,6 +131,23 @@ class Entity:
     display_name: str
     confidence: float
     handles: list[tuple[str, str]] = field(default_factory=list)  # (platform, raw_handle)
+    # one of the owner's own addresses — rendered as "(your other address)"
+    # and never collapsed into the primary
+    owner: bool = False
+
+
+@dataclass(frozen=True)
+class LinkedAddress:
+    """One address from an event, linked to an identity.
+
+    `alias_candidate` is the owner-alias case: the display name looks like the
+    owner's but the address is new. It is reported, never acted on — the
+    sender is never merged into the owner's identity on a guess.
+    """
+
+    entity: Entity
+    alias_candidate: bool = False
+    alias_owner_id: int | None = None
 
 
 @dataclass
@@ -213,6 +249,10 @@ class Entities:
         self._cipher = cipher
         self._audit = audit
         self._judge = judge
+        # the owner's own addresses, cached — consulted for every rendered
+        # address and invalidated the moment one is marked
+        self._owners: set[str] | None = None
+        self._owner_cache: list[Entity] | None = None
 
     # -- reads ------------------------------------------------------------
 
@@ -229,16 +269,17 @@ class Entities:
         )
         if row is None:
             return None
-        display_name, confidence = _identity_profile(self._cipher, row)
+        profile = _profile_data(self._cipher, row["id"], row.get("profile_enc"))
         handles = await self._pool.fetch(
             "SELECT id, handle_enc FROM identity_handles WHERE identity_id = $1",
             identity_id,
         )
         return Entity(
             id=row["id"],
-            display_name=display_name,
-            confidence=confidence,
+            display_name=str(profile.get("display_name", "")),
+            confidence=float(profile.get("confidence", 1.0)),
             handles=[_handle_ref(self._cipher, h) for h in handles],
+            owner=_is_owner(profile),
         )
 
     async def list_people(self, limit: int = 50) -> list[Entity]:
@@ -262,19 +303,26 @@ class Entities:
             handles_by_id.setdefault(h["identity_id"], []).append(_handle_ref(self._cipher, h))
         people: list[Entity] = []
         for r in rows:
-            display_name, confidence = _identity_profile(self._cipher, r)
+            profile = _profile_data(self._cipher, r["id"], r.get("profile_enc"))
             people.append(
                 Entity(
                     id=r["id"],
-                    display_name=display_name,
-                    confidence=confidence,
+                    display_name=str(profile.get("display_name", "")),
+                    confidence=float(profile.get("confidence", 1.0)),
                     handles=handles_by_id.get(r["id"], []),
+                    owner=_is_owner(profile),
                 )
             )
         return people
 
     async def note(self, identity_id: int, payload: dict[str, Any]) -> None:
-        """Append an encrypted relationship note for an identity."""
+        """Append an encrypted relationship note for an identity.
+
+        One note kind has a side effect: the owner-alias confirmation. When
+        the user answers the owner-alias question, the address becomes one of the
+        owner's own at that moment — otherwise the answer would sit in a
+        note and mean nothing until some later pass noticed it.
+        """
         async with self._pool.acquire() as conn, conn.transaction():
             note_id = await conn.fetchval(
                 "INSERT INTO entity_notes (identity_id, payload_enc) VALUES ($1, $2) RETURNING id",
@@ -294,6 +342,8 @@ class Entities:
             params={"identity_id": identity_id, "note_kind": payload.get("kind", "")},
             outcome="entity note added",
         )
+        if str(payload.get("kind", "")) == ALIAS_CONFIRMED:
+            await self.mark_owner(identity_id)
 
     async def notes_for(self, identity_id: int, limit: int = 10) -> list[EntityNote]:
         rows = await self._pool.fetch(
@@ -407,14 +457,13 @@ class Entities:
             "SELECT id, handle_enc FROM identity_handles WHERE identity_id = $1",
             row["identity_id"],
         )
-        display_name, confidence = _profile_for(
-            self._cipher, row["identity_id"], row["profile_enc"]
-        )
+        profile = _profile_data(self._cipher, row["identity_id"], row.get("profile_enc"))
         return Entity(
             id=row["identity_id"],
-            display_name=display_name,
-            confidence=confidence,
+            display_name=str(profile.get("display_name", "")),
+            confidence=float(profile.get("confidence", 1.0)),
             handles=[_handle_ref(self._cipher, h) for h in handles],
+            owner=_is_owner(profile),
         )
 
     async def _link(
@@ -504,4 +553,203 @@ class Entities:
             display_name=display_name or handle,
             confidence=1.0,
             handles=[(platform, handle)],
+        )
+
+    # -- write-time linking --------------------------------------------------
+
+    async def link_address(
+        self, platform: str, handle: str, display_name: str = ""
+    ) -> LinkedAddress | None:
+        """Link one address from an event, deterministically.
+
+        An exact blind-index hit, else a fresh identity — no model call, no
+        fuzzy merge. A mail arriving is not a reason to spend a turn
+        deciding who somebody is, and the expensive, fallible identity work
+        stays where a human asked for it (`resolve`).
+
+        The owner-alias case is *reported*, never acted on: a display name
+        that looks like one of the owner's own, on an address nobody has
+        seen, comes back as a candidate so the caller can ask once. The
+        sender is never folded into the owner's identity on a guess.
+        """
+        if not (handle or "").strip():
+            return None
+        existing = await self.resolve_exact(platform, handle)
+        if existing is not None:
+            return LinkedAddress(entity=existing)
+
+        entity = await self._create(
+            platform,
+            handle,
+            normalize_handle(platform, handle),
+            display_name,
+        )
+        owner = await self._owner_matching_name(display_name)
+        if owner is None:
+            return LinkedAddress(entity=entity)
+        return LinkedAddress(
+            entity=entity,
+            alias_candidate=True,
+            alias_owner_id=owner.id,
+        )
+
+    async def mark_owner(self, identity_id: int) -> bool:
+        """Record that this identity is one of the owner's own addresses.
+
+        The flag rides the sealed profile (a plaintext column would be
+        illegal for a user-derived address); it is what renders as
+        "(your other address)" and what keeps the sender distinct from the
+        owner's primary identity.
+        """
+        entity = await self.get(identity_id)
+        if entity is None:
+            return False
+        if entity.owner:
+            return True
+        await self._write_profile(
+            identity_id,
+            display_name=entity.display_name,
+            confidence=entity.confidence,
+            owner=True,
+        )
+        # both caches answer questions about owners — a new one invalidates
+        # the address set and the owner-entity list together
+        self._owners = None
+        self._owner_cache = None
+        await self._audit.append(
+            actor="system",
+            tool_name="entity_owner",
+            decision="info",
+            params={"identity_id": identity_id},
+            outcome="identity marked as one of the owner's addresses",
+        )
+        return True
+
+    async def mark_owner_address(
+        self, platform: str, handle: str, display_name: str = ""
+    ) -> Entity | None:
+        """Claim an address as the owner's own — the Gmail account address
+        on connect, so the first mail already renders correctly."""
+        linked = await self.link_address(platform, handle, display_name)
+        if linked is None:
+            return None
+        await self.mark_owner(linked.entity.id)
+        return await self.get(linked.entity.id)
+
+    async def owner_addresses(self) -> set[str]:
+        """The normalized handles of every identity marked as the owner's.
+
+        Cached: it is consulted for every rendered address and changes only
+        when the owner connects another account.
+        """
+        if self._owners is None:
+            rows = await self._pool.fetch("SELECT id, profile_enc FROM identities")
+            keys: set[str] = set()
+            for row in rows:
+                profile = _profile_data(self._cipher, row["id"], row.get("profile_enc"))
+                if not _is_owner(profile):
+                    continue
+                handles = await self._pool.fetch(
+                    "SELECT id, handle_enc FROM identity_handles WHERE identity_id = $1",
+                    row["id"],
+                )
+                for handle_row in handles:
+                    handle_platform, raw = _handle_ref(self._cipher, handle_row)
+                    normalized = normalize_handle(handle_platform, raw)
+                    if normalized:
+                        keys.add(normalized)
+            self._owners = keys
+        return set(self._owners)
+
+    async def is_owner_address(self, platform: str, handle: str) -> bool:
+        normalized = normalize_handle(platform, handle)
+        if not normalized:
+            return False
+        return normalized in await self.owner_addresses()
+
+    # -- the ask-once alias question ----------------------------------------
+
+    async def ask_alias_once(
+        self, identity_id: int, *, address: str, name: str, owner_name: str
+    ) -> bool:
+        """Record the one question about a possible owner alias.
+
+        Returns True the first time and False afterwards, so the user is
+        asked once. It is stored as an `entity_note` — append-only, sealed,
+        and read back by `notes_for`, which is what makes "once" true across
+        restarts without a new table.
+        """
+        for note in await self.notes_for(identity_id, limit=50):
+            if str(note.payload.get("kind", "")) == ALIAS_QUESTION:
+                return False
+        await self.note(
+            identity_id,
+            {"kind": ALIAS_QUESTION, "address": address, "name": name, "owner": owner_name},
+        )
+        return True
+
+    async def pending_alias_questions(self, limit: int = 3) -> list[EntityNote]:
+        """Unanswered alias questions, newest first.
+
+        Surfaced on a human turn only — mail cannot prompt
+        the user by itself, and this is a question, not an alert.
+        """
+        rows = await self._pool.fetch(
+            "SELECT id, identity_id, created_at, payload_enc FROM entity_notes"
+            " ORDER BY id DESC LIMIT 500"
+        )
+        owned = {person.id for person in await self._owner_entities()}
+        asked: dict[int, EntityNote] = {}
+        answered: set[int] = set(owned)
+        for row in rows:
+            try:
+                payload = self._cipher.decrypt_json(
+                    row["payload_enc"], aad=f"entity_notes:payload_enc:{row['id']}"
+                )
+            except Exception:
+                continue
+            kind = str(payload.get("kind", ""))
+            identity_id = int(row["identity_id"])
+            if kind == ALIAS_CONFIRMED:
+                answered.add(identity_id)
+            elif kind == ALIAS_QUESTION and identity_id not in asked:
+                asked[identity_id] = EntityNote(
+                    id=row["id"],
+                    identity_id=identity_id,
+                    created_at=row["created_at"],
+                    payload=payload,
+                )
+        pending = [note for identity_id, note in asked.items() if identity_id not in answered]
+        pending.sort(key=lambda note: note.created_at, reverse=True)
+        return pending[:limit]
+
+    async def _owner_matching_name(self, display_name: str) -> Entity | None:
+        """An owner identity whose name looks like this one's, or None."""
+        wanted = (display_name or "").strip().lower()
+        if not wanted:
+            return None
+        for owner in await self._owner_entities():
+            name = (owner.display_name or "").strip().lower()
+            if name and fuzz.token_set_ratio(wanted, name) >= CANDIDATE_FLOOR:
+                return owner
+        return None
+
+    async def _owner_entities(self) -> list[Entity]:
+        if self._owner_cache is None:
+            self._owner_cache = [
+                person for person in await self.list_people(limit=CANDIDATE_POOL) if person.owner
+            ]
+        return self._owner_cache
+
+    async def _write_profile(
+        self, identity_id: int, *, display_name: str, confidence: float, owner: bool
+    ) -> None:
+        await self._pool.execute(
+            "UPDATE identities SET profile_enc = $1, key_version = $2 WHERE id = $3",
+            self._cipher.encrypt_json(
+                {"display_name": display_name, "confidence": confidence, "owner": owner},
+                aad=f"identities:profile_enc:{identity_id}",
+            ),
+            self._cipher.key_id,
+            identity_id,
         )
