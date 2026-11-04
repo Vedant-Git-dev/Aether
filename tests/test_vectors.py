@@ -153,7 +153,7 @@ async def test_index_doc_keeps_pages_separate_and_readable(db) -> None:
         payload={"filename": "other.pdf", "text": "gamma delta epsilon"},
     )
     assert other.stored and other.event_id is not None
-    rows = await db.fetch("SELECT filename FROM memory_chunks WHERE event_id = $1", other.event_id)
+    rows = await db.fetch("SELECT id FROM memory_chunks WHERE event_id = $1", other.event_id)
     assert rows == [], "the generic hook must leave shared_doc to the rich path"
 
 
@@ -207,10 +207,9 @@ async def test_indexed_embeddings_are_ciphertext_at_rest(db) -> None:
     assert result.stored
     await vectors.wait_idle()
 
-    row = await db.fetchrow("SELECT id, embedding, norm, embedding_enc FROM memory_chunks")
+    row = await db.fetchrow("SELECT id, embedding_enc FROM memory_chunks")
     assert row is not None
-    # nothing plain remains — the vector lives only in the sealed blob
-    assert row["embedding"] is None and row["norm"] is None
+    # the vector lives only in the sealed blob
     assert row["embedding_enc"] is not None
     # and the blob decrypts, under its own AAD, back to the packed vector
     raw = cipher.decrypt_bytes(row["embedding_enc"], aad=f"chunks:embedding_enc:{row['id']}")
@@ -218,45 +217,7 @@ async def test_indexed_embeddings_are_ciphertext_at_rest(db) -> None:
 
 
 @pytest.mark.integration
-async def test_legacy_plaintext_embeddings_seal_in_place(db) -> None:
-    from aether.authz.audit import AuditLog
-    from aether.config import ContactsConfig
-    from aether.llm.embeddings import unpack_vector
-
-    embedder = FakeEmbedder()
-    vectors, cipher = _store(db, embedder=embedder)
-    events = EventStore(db, cipher, AuditLog(db), ContactsConfig(), indexer=vectors)
-    result = await events.ingest(
-        source="telegram", kind="chat_message", payload={"text": "legacy row"}
-    )
-    assert result.stored
-    await vectors.wait_idle()
-    # rewind the row to its pre-encryption shape: plain vector, no sealed one
-    plain = embedder._vector("legacy row")
-    await db.execute(
-        "UPDATE memory_chunks SET embedding_enc = NULL, embedding = $1::real[], norm = $2",
-        plain,
-        1.0,
-    )
-
-    handled = await vectors.encrypt_legacy_chunks(batch=10)
-    assert handled == 1
-    assert await vectors.encrypt_legacy_chunks(batch=10) == 0  # converged
-
-    row = await db.fetchrow("SELECT id, embedding, embedding_enc FROM memory_chunks")
-    assert row["embedding"] is None
-    sealed = unpack_vector(
-        cipher.decrypt_bytes(row["embedding_enc"], aad=f"chunks:embedding_enc:{row['id']}")
-    )
-    # float-identical to the vector it started as — sealed, not re-embedded
-    assert sealed == plain
-    # and the sealed row still comes back from search
-    hits = await vectors.search("legacy row", limit=3)
-    assert hits and "legacy row" in hits[0].text
-
-
-@pytest.mark.integration
-async def test_search_ranks_encrypted_and_legacy_rows_together(db) -> None:
+async def test_search_ranks_every_sealed_row(db) -> None:
     from aether.authz.audit import AuditLog
     from aether.config import ContactsConfig
 
@@ -271,15 +232,7 @@ async def test_search_ranks_encrypted_and_legacy_rows_together(db) -> None:
     )
     assert first.stored and second.stored
     await vectors.wait_idle()
-    # leave the second row mid-transition: plain vector, sealed blob gone
-    await db.execute(
-        "UPDATE memory_chunks SET embedding_enc = NULL, embedding = $1::real[], norm = $2"
-        " WHERE event_id = $3",
-        embedder._vector("alpha beetle dragonfly"),
-        1.0,
-        second.event_id,
-    )
 
-    # both score — one from ciphertext, one from the legacy plain column
+    # both score, entirely from sealed vectors
     hits = await vectors.search("alpha beetle", limit=5, min_similarity=0.1)
     assert {h.text for h in hits} == {"alpha beetle cicada", "alpha beetle dragonfly"}

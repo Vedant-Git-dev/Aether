@@ -871,6 +871,13 @@ class FakeWorkspace:
         return (now - timedelta(minutes=minutes)).isoformat(timespec="seconds")
 
     def __init__(self, now: datetime) -> None:
+        self.files = {
+            "identity": "# IDENTITY.md\n\n- Name: Aether\n",
+            "soul": "# SOUL.md\n\n- Communicate plainly.\n",
+            "agents": "# AGENTS.md\n\n- Use the workspace sparingly.\n",
+            "user": "# USER.md\n",
+            "memory": "# MEMORY.md\n",
+        }
         self.entries = [
             WorkspaceEntry(
                 id="p-you",
@@ -904,19 +911,44 @@ class FakeWorkspace:
             ),
         ]
 
-    def profile(self) -> list[WorkspaceEntry]:
+    async def profile(self) -> list[WorkspaceEntry]:
         return [e for e in self.entries if e.status == "confirmed"]
 
-    def pending_profile(self) -> list[WorkspaceEntry]:
+    async def pending_profile(self) -> list[WorkspaceEntry]:
         return [e for e in self.entries if e.status == "pending"]
 
-    def confirm_profile(self, entry_ids: list[str]) -> int:
+    async def confirm_profile(self, entry_ids: list[str]) -> int:
         confirmed = 0
         for i, entry in enumerate(self.entries):
             if entry.id in entry_ids and entry.status == "pending":
                 self.entries[i] = replace(entry, status="confirmed")
                 confirmed += 1
         return confirmed
+
+    async def needs_bootstrap(self) -> bool:
+        return False
+
+    async def read(self, file: str, *, date_str: str | None = None) -> str:
+        return self.files.get(file, "")
+
+    async def entries(self, file: str, *, date_str: str | None = None) -> list[WorkspaceEntry]:
+        return []
+
+    async def write_raw(self, file: str, text: str) -> None:
+        self.files[file] = text
+
+    async def search(self, query: str, limit: int = 10) -> list:
+        return []
+
+    def today(self) -> str:
+        return datetime.now(UTC).date().isoformat()
+
+    async def export_files(self) -> dict[str, str]:
+        return dict(self.files)
+
+    async def import_files(self, files: dict[str, str]) -> int:
+        self.files.update(files)
+        return len(files)
 
 
 class FakeConfigManager:

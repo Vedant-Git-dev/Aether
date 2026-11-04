@@ -14,12 +14,12 @@ event memory, which stays the source of truth for observed history.
     memory/YYYY-MM-DD.md — daily working notes, promoted into MEMORY.md
                            when something turns out to matter
 
-At rest these files are encrypted with the same AES-256-GCM key as the
-database (a deployment can turn that off). The trade is honest: raw disk
-editing is gone — edits go through the control center or the workspace
-tools, which decrypt in memory — and a file whose key no longer exists
-reads as empty, never as text. File names and sizes stay visible
-metadata, the same trade the database rows already make.
+Every file is one sealed row in `workspace_files`: the name is a keyed
+blind token plus a sealed display copy, the content is sealed with AAD
+bound to the row id, and decryption happens in memory only. There is no
+readable copy on disk. `import_from_disk` moves an old file-backed
+workspace into the table once and removes the files after each row
+commits.
 
 Every entry carries provenance in an inline HTML comment —
 `<!-- id:... source:... at:... status:... -->` — so a written fact never
@@ -29,6 +29,7 @@ superseded instead of piling up as a contradiction.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import secrets
@@ -36,9 +37,16 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import asyncpg
 from rapidfuzz import fuzz
 
 from ..memory.crypto import Cipher, CryptoError
+from ..memory.storage import (
+    delete_workspace_file,
+    upsert_workspace_file,
+    workspace_row,
+    workspace_rows,
+)
 
 log = logging.getLogger("aether.workspace")
 
@@ -380,109 +388,148 @@ def _append_under_heading(content: str, heading: str, line: str) -> str:
 
 
 class Workspace:
-    """Filesystem-backed. All reads/writes are plain, synchronous file I/O
-    — the files are small and local, same spirit as config.py reading
-    config.yaml straight off disk. With a cipher, every file sits on disk
-    as an AES-256-GCM blob and is decrypted only in memory, so
-    context_block and every workspace tool work unchanged."""
+    """Database-backed: one sealed record per file in `workspace_files`.
 
-    def __init__(self, root: str | Path, *, cipher: Cipher | None = None) -> None:
-        self.root = Path(root)
-        # no cipher = the deployment's off switch: plain text files again
-        self.cipher = cipher
+    A file's name is a keyed blind token (equality lookup) plus a sealed
+    display copy; its content is sealed with AAD bound to the row id. Reads
+    decrypt in memory only. There is no readable copy on disk — the old
+    file workspace is imported once and removed (see `import_from_disk`).
+    """
+
+    def __init__(self, pool: asyncpg.Pool, *, cipher: Cipher) -> None:
+        self._pool = pool
+        self._cipher = cipher
 
     # -- lifecycle --------------------------------------------------------
 
-    def ensure_scaffold(self) -> bool:
-        """Create the workspace directory and default files if missing.
-        Returns True the first time this workspace is created — the
-        caller's cue that first-run bootstrap applies. A workspace that
-        already exists only backfills a fixed file a user happens to have
-        deleted; it never resurrects a BOOTSTRAP.md the agent removed on
-        purpose. Raises WorkspaceWriteError if the directory itself can't
-        be created (permissions, a full disk) — the caller decides whether
-        that's fatal; the workspace is an enhancement, not core plumbing."""
-        first_run = not self.root.exists()
-        try:
-            self.root.mkdir(parents=True, exist_ok=True)
-            (self.root / "memory").mkdir(exist_ok=True)
-            for filename, default in _DEFAULTS.items():
-                path = self.root / filename
-                if not path.exists():
-                    self._write(path, filename, default)
-            if first_run:
-                bootstrap = self.root / "BOOTSTRAP.md"
-                if not bootstrap.exists():
-                    self._write(bootstrap, "BOOTSTRAP.md", _BOOTSTRAP_DEFAULT)
-        except OSError as exc:
-            raise WorkspaceWriteError(
-                f"could not set up the workspace at {self.root}: {exc}"
-            ) from exc
+    async def ensure_scaffold(self) -> bool:
+        """Write the default files if the workspace is empty. Returns True
+        the first time it is created — the caller's cue that first-run
+        bootstrap applies. A workspace that already exists only backfills a
+        fixed file a user happens to have deleted; it never resurrects a
+        BOOTSTRAP.md the agent removed on purpose."""
+        existing = await self._names()
+        first_run = not existing
+        for filename, default in _DEFAULTS.items():
+            if filename not in existing:
+                await self._put(filename, default)
+        if first_run:
+            await self._put("BOOTSTRAP.md", _BOOTSTRAP_DEFAULT)
         return first_run
 
-    def migrate_plaintext(self) -> int:
-        """The one-time boot step for a workspace that just gained
-        encryption: rewrite every plaintext file encrypted, in place.
-        Already-encrypted files are left alone, and a file that can't be
-        rewritten stays plaintext and readable — nothing is ever destroyed.
-        Returns how many files were converted."""
-        if self.cipher is None:
+    async def import_from_disk(self, root: str | Path) -> int:
+        """One-time move of an old file-backed workspace into sealed rows.
+        Reads plaintext and legacy encrypted files alike, writes each row,
+        then removes the file only after the row is committed. A file that
+        cannot be read is left exactly where it is. Returns how many files
+        moved."""
+        root = Path(root)
+        if not root.is_dir():
             return 0
-        converted = 0
-        for name in self._file_names(daily_cap=None):
-            path = self.root / name
+        names = [filename for filename, _ in _CONTEXT_FILES]
+        if (root / "BOOTSTRAP.md").exists():
+            names.append("BOOTSTRAP.md")
+        memory_dir = root / "memory"
+        if memory_dir.is_dir():
+            names.extend(
+                f"memory/{path.name}" for path in sorted(memory_dir.glob("*.md"), reverse=True)
+            )
+        moved = 0
+        for name in names:
+            path = root / name
             try:
                 raw = path.read_bytes()
             except (FileNotFoundError, OSError):
                 continue
+            text = ""
             if raw.startswith(_ENC_MAGIC):
-                continue
+                try:
+                    text = self._cipher.decrypt_text(raw[len(_ENC_MAGIC) :], aad=_aad(name))
+                except CryptoError:
+                    log.warning("workspace file %s would not decrypt — left on disk", name)
+                    continue
+            else:
+                try:
+                    text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    log.warning("workspace file %s is not text — left on disk", name)
+                    continue
+            await self._put(name, text)
             try:
-                text = raw.decode("utf-8")
-            except UnicodeDecodeError:
-                continue  # binary junk — the read path already treats it as empty
-            try:
-                self._write(path, name, text)
-            except WorkspaceWriteError:
-                continue
-            converted += 1
-            log.info("workspace file %s rewritten encrypted at rest", name)
-        return converted
+                path.unlink()
+            except OSError as exc:
+                log.warning(
+                    "workspace file %s moved to the database but not removed (%s)", name, exc
+                )
+            moved += 1
+        # the directories are empty now; a non-empty one is left alone
+        for directory in (root / "memory", root):
+            with contextlib.suppress(OSError):
+                directory.rmdir()
+        return moved
 
-    def needs_bootstrap(self) -> bool:
-        return (self.root / "BOOTSTRAP.md").exists()
+    async def is_empty(self) -> bool:
+        return not await self._names()
 
-    def finish_bootstrap(self) -> bool:
-        path = self.root / "BOOTSTRAP.md"
-        if not path.exists():
-            return False
-        try:
-            path.unlink()
-        except OSError as exc:
-            raise WorkspaceWriteError(f"could not remove BOOTSTRAP.md: {exc}") from exc
-        return True
+    async def export_files(self) -> dict[str, str]:
+        """Every file's plaintext, for the passphrase-encrypted export."""
+        return {name: await self._read_name(name) for name in await self._names(daily_cap=None)}
+
+    async def import_files(self, files: dict[str, str]) -> int:
+        """Write a decrypted export back. Only names this workspace owns
+        are accepted, so an edited bundle cannot create arbitrary rows."""
+        written = 0
+        for name, content in files.items():
+            self._check_import_name(name)
+            if not isinstance(content, str):
+                raise ValueError("every imported file must be text")
+            if looks_like_secret(content):
+                raise SecretRejected(
+                    f"{name} looks like it contains a secret or API key — import refused"
+                )
+            await self._put(name, content)
+            written += 1
+        return written
+
+    @staticmethod
+    def _check_import_name(name: str) -> None:
+        if name in set(_FILE_BY_KEY.values()) or name == "BOOTSTRAP.md":
+            return
+        prefix, _, suffix = name.partition("/")
+        if prefix == "memory" and suffix.endswith(".md") and _DATE_RE.match(suffix[:-3]):
+            return
+        raise ValueError(f"the export contains an unknown file: {name!r}")
+
+    async def needs_bootstrap(self) -> bool:
+        return await self._row("BOOTSTRAP.md") is not None
+
+    async def finish_bootstrap(self) -> bool:
+        existed = await self.needs_bootstrap()
+        if existed:
+            await self._delete("BOOTSTRAP.md")
+        return existed
 
     def today(self) -> str:
         return datetime.now(UTC).date().isoformat()
 
     # -- reading ------------------------------------------------------------
 
-    def read(self, file: str, *, date_str: str | None = None) -> str:
-        """Raw file content (provenance comments kept) — "" if missing,
-        unreadable, or malformed. `file` is one of
+    async def read(self, file: str, *, date_str: str | None = None) -> str:
+        """Raw file content (provenance comments kept) — "" if missing or
+        no longer decryptable. `file` is one of
         identity/soul/agents/user/memory/bootstrap/daily; `daily` needs
         `date_str` (YYYY-MM-DD), defaulting to today."""
-        path = self._resolve(file, date_str)
-        return self._read(path[0], path[1]) if path is not None else ""
+        name = self._resolve(file, date_str)
+        return await self._read_name(name) if name is not None else ""
 
-    def entries(self, file: str, *, date_str: str | None = None) -> list[WorkspaceEntry]:
+    async def entries(self, file: str, *, date_str: str | None = None) -> list[WorkspaceEntry]:
         """Parsed bullet entries for one file, in order. A line with no
         provenance comment — something a human typed straight into the
         file — comes back with source="human" and no id, so generated and
         human-authored content stay visually distinguishable without
         polluting the Markdown with a tag humans have to write by hand."""
         out: list[WorkspaceEntry] = []
-        for raw_line in self.read(file, date_str=date_str).splitlines():
+        for raw_line in (await self.read(file, date_str=date_str)).splitlines():
             line = raw_line.strip()
             if not line.startswith("- "):
                 continue
@@ -496,7 +543,7 @@ class Workspace:
             )
         return out
 
-    def context_block(self) -> str:
+    async def context_block(self) -> str:
         """IDENTITY -> SOUL -> AGENTS -> USER -> MEMORY, provenance
         stripped, bounded to a compact budget — plus BOOTSTRAP.md while
         first-run setup is still pending. A missing or malformed file
@@ -504,9 +551,7 @@ class Workspace:
         sections: list[str] = []
         used = 0
         for filename, heading in _CONTEXT_FILES:
-            body = _strip_provenance(
-                _drop_pending(self._read(self.root / filename, filename))
-            ).strip()
+            body = _strip_provenance(_drop_pending(await self._read_name(filename))).strip()
             if not body:
                 continue
             block = f"## {heading} ({filename})\n{body}"
@@ -514,7 +559,7 @@ class Workspace:
                 break
             sections.append(block)
             used += len(block)
-        bootstrap = self._read(self.root / "BOOTSTRAP.md", "BOOTSTRAP.md").strip()
+        bootstrap = (await self._read_name("BOOTSTRAP.md")).strip()
         if bootstrap:
             sections.append(f"## First-run setup (BOOTSTRAP.md)\n{bootstrap}")
         if not sections:
@@ -523,7 +568,7 @@ class Workspace:
 
     # -- writing ------------------------------------------------------------
 
-    def remember(
+    async def remember(
         self,
         text: str,
         kind: str,
@@ -540,7 +585,7 @@ class Workspace:
         inferred it — pending until confirm_profile (or a /profile yes)
         flips it. Raises SecretRejected if the text looks like an API key,
         password, or token, ValueError for bad input, and
-        WorkspaceWriteError if the file couldn't be saved — never silently
+        WorkspaceWriteError if the row couldn't be saved — never silently
         drops a write."""
         text = text.strip()
         if not text:
@@ -564,8 +609,7 @@ class Workspace:
         )
 
         if kind == "profile":
-            path = self.root / "USER.md"
-            content = self._read(path, "USER.md") or _USER_DEFAULT
+            content = await self._read_name("USER.md") or _USER_DEFAULT
             if supersedes:
                 content = _set_entry_status(
                     content,
@@ -574,75 +618,66 @@ class Workspace:
                     from_statuses=frozenset({"active", "pending"}),
                 )
             content = _append_under_heading(content, "Profile", line)
-            self._write(path, "USER.md", content)
+            await self._put("USER.md", content)
         elif kind == "preference":
-            path = self.root / "USER.md"
-            content = self._read(path, "USER.md") or _USER_DEFAULT
+            content = await self._read_name("USER.md") or _USER_DEFAULT
             if supersedes:
                 content = _set_entry_status(content, set(supersedes), "superseded")
             content = _append_under_heading(content, "Preferences", line)
-            self._write(path, "USER.md", content)
+            await self._put("USER.md", content)
         elif kind == "fact":
-            path = self.root / "MEMORY.md"
-            content = self._read(path, "MEMORY.md") or _MEMORY_DEFAULT
+            content = await self._read_name("MEMORY.md") or _MEMORY_DEFAULT
             content = _append_under_heading(content, (category or "Notes").strip(), line)
-            self._write(path, "MEMORY.md", content)
+            await self._put("MEMORY.md", content)
         else:  # daily
             day = when or datetime.now(UTC).date()
             name = f"memory/{day.isoformat()}.md"
-            path = self._daily_path(day.isoformat())
-            try:
-                path.parent.mkdir(exist_ok=True)
-            except OSError as exc:
-                raise WorkspaceWriteError(f"could not create {path.parent}: {exc}") from exc
-            content = self._read(path, name) or f"# {day.isoformat()}\n"
+            content = await self._read_name(name) or f"# {day.isoformat()}\n"
             content = content.rstrip("\n") + "\n" + line + "\n"
-            self._write(path, name, content)
+            await self._put(name, content)
         return entry_id
 
     # -- profile: durable facts about the user, pending until confirmed ----
 
-    def profile(self) -> list[WorkspaceEntry]:
+    async def profile(self) -> list[WorkspaceEntry]:
         """The confirmed profile — who the user is, as they have signed off
         on it. Pending guesses and superseded corrections are excluded."""
-        content = self._read(self.root / "USER.md", "USER.md")
+        content = await self._read_name("USER.md")
         return [e for e in _section_entries(content, "Profile") if e.status == "confirmed"]
 
-    def pending_profile(self) -> list[WorkspaceEntry]:
+    async def pending_profile(self) -> list[WorkspaceEntry]:
         """Profile entries the agent inferred that are still waiting for
         one yes — the batch the confirmation message lists."""
-        content = self._read(self.root / "USER.md", "USER.md")
+        content = await self._read_name("USER.md")
         return [e for e in _section_entries(content, "Profile") if e.status == "pending"]
 
-    def confirm_profile(self, entry_ids: list[str]) -> int:
+    async def confirm_profile(self, entry_ids: list[str]) -> int:
         """Flip pending profile entries to confirmed. Entries that were
         already confirmed, superseded, or unknown are left alone; returns
         how many actually flipped."""
         ids = {i for i in entry_ids if i}
         if not ids:
             return 0
-        path = self.root / "USER.md"
-        content = self._read(path, "USER.md")
+        content = await self._read_name("USER.md")
         if not content:
             return 0
         targets = {e.id for e in _section_entries(content, "Profile") if e.status == "pending"}
         targets &= ids
         if not targets:
             return 0
-        self._write(
-            path,
+        await self._put(
             "USER.md",
             _set_entry_status(content, targets, "confirmed", from_statuses=frozenset({"pending"})),
         )
         return len(targets)
 
-    def promote(self, date_str: str, entry_id: str, *, category: str | None = None) -> bool:
+    async def promote(self, date_str: str, entry_id: str, *, category: str | None = None) -> bool:
         """Copy one active daily entry into MEMORY.md, carrying its
         provenance forward, and mark the original 'promoted' (never
         deleted — the daily log stays an immutable record)."""
-        daily_path = self._daily_path(date_str)
+        self._check_date(date_str)
         daily_name = f"memory/{date_str}.md"
-        content = self._read(daily_path, daily_name)
+        content = await self._read_name(daily_name)
         if not content:
             return False
         found: WorkspaceEntry | None = None
@@ -653,10 +688,9 @@ class Workspace:
                 break
         if found is None:
             return False
-        self._write(daily_path, daily_name, _set_entry_status(content, {entry_id}, "promoted"))
+        await self._put(daily_name, _set_entry_status(content, {entry_id}, "promoted"))
 
-        memory_path = self.root / "MEMORY.md"
-        mem_content = self._read(memory_path, "MEMORY.md") or _MEMORY_DEFAULT
+        mem_content = await self._read_name("MEMORY.md") or _MEMORY_DEFAULT
         new_line = _format_entry(
             found.text,
             entry_id=_new_id(),
@@ -666,25 +700,25 @@ class Workspace:
             extra={"promoted_from": f"{date_str}#{entry_id}"},
         )
         mem_content = _append_under_heading(mem_content, (category or "Notes").strip(), new_line)
-        self._write(memory_path, "MEMORY.md", mem_content)
+        await self._put("MEMORY.md", mem_content)
         return True
 
-    def write_raw(self, file: str, text: str) -> None:
+    async def write_raw(self, file: str, text: str) -> None:
         """Replace one of the five curated files wholesale — the human
         edit path (a control-center save, or the agent's workspace_rewrite
         tool for identity/soul only). Restricted to a fixed set of keys: a
-        caller can never point this at an arbitrary path, and it refuses
+        caller can never point this at an arbitrary row, and it refuses
         anything that looks like a secret, same as remember()."""
         key = file.strip().lower()
         if key not in _EDITABLE_KEYS:
             raise ValueError(f"file must be one of {_EDITABLE_KEYS}, got {file!r}")
         if looks_like_secret(text):
             raise SecretRejected("that looks like a secret or API key — refusing to store it")
-        self._write(self.root / _FILE_BY_KEY[key], _FILE_BY_KEY[key], text)
+        await self._put(_FILE_BY_KEY[key], text)
 
     # -- search -----------------------------------------------------------
 
-    def search(self, query: str, limit: int = 10) -> list[WorkspaceHit]:
+    async def search(self, query: str, limit: int = 10) -> list[WorkspaceHit]:
         """Deterministic fuzzy keyword search across every workspace file —
         the fixed five, BOOTSTRAP.md if present, and daily notes (most
         recent first, capped so an old workspace can't make every search
@@ -693,7 +727,10 @@ class Workspace:
         if not query:
             return []
         scored: list[tuple[float, WorkspaceHit]] = []
-        for relpath, content in self._iter_files():
+        for name in await self._names():
+            content = await self._read_name(name)
+            if not content:
+                continue
             for raw_line in content.splitlines():
                 line = raw_line.strip()
                 if not line or line.startswith("#"):
@@ -708,7 +745,7 @@ class Workspace:
                         (
                             score,
                             WorkspaceHit(
-                                file=relpath, id=entry.id if entry else "", text=text, score=score
+                                file=name, id=entry.id if entry else "", text=text, score=score
                             ),
                         )
                     )
@@ -717,80 +754,80 @@ class Workspace:
 
     # -- internals ----------------------------------------------------------
 
-    def _read(self, path: Path, name: str) -> str:
-        """One file's text, decrypting when this workspace encrypts at
-        rest. Never raises: a missing file, an unreadable one, or one that
-        no longer decrypts (a rotated-away key) degrades to empty — the
-        agent keeps running, it just sees less context."""
-        try:
-            raw = path.read_bytes()
-        except FileNotFoundError:
-            return ""
-        except OSError as exc:
-            log.warning("workspace file %s unreadable (%s) — treated as empty", path, exc)
-            return ""
-        if self.cipher is not None and raw.startswith(_ENC_MAGIC):
-            try:
-                return self.cipher.decrypt_text(raw[len(_ENC_MAGIC) :], _aad(name))
-            except CryptoError as exc:
-                log.warning(
-                    "workspace file %s would not decrypt (%s) — treated as empty", path, exc
-                )
-                return ""
-        # no cipher, or plaintext bytes — a hand-written file still reads,
-        # and stays readable until the store's next write encrypts it
-        try:
-            return raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            log.warning("workspace file %s is not text (%s) — treated as empty", path, exc)
-            return ""
-
-    def _write(self, path: Path, name: str, content: str) -> None:
-        """One file, sealed as an AES-256-GCM blob when a cipher is set.
-        Raises WorkspaceWriteError when the disk refuses — never silently
-        drops a write."""
-        try:
-            data = (
-                _ENC_MAGIC + self.cipher.encrypt_text(content, _aad(name))
-                if self.cipher is not None
-                else content.encode("utf-8")
-            )
-            path.write_bytes(data)
-        except (OSError, CryptoError) as exc:
-            log.warning("could not write workspace file %s (%s)", path, exc)
-            raise WorkspaceWriteError(f"could not write {path.name}: {exc}") from exc
-
-    def _daily_path(self, date_str: str) -> Path:
+    @staticmethod
+    def _check_date(date_str: str) -> None:
         if not _DATE_RE.match(date_str):
             raise ValueError(f"date must look like YYYY-MM-DD, got {date_str!r}")
-        return self.root / "memory" / f"{date_str}.md"
 
-    def _resolve(self, file: str, date_str: str | None) -> tuple[Path, str] | None:
+    def _resolve(self, file: str, date_str: str | None) -> str | None:
         key = file.strip().lower()
         if key == "daily":
             day = date_str or datetime.now(UTC).date().isoformat()
-            return self._daily_path(day), f"memory/{day}.md"
-        filename = _FILE_BY_KEY.get(key)
-        return (self.root / filename, filename) if filename else None
+            self._check_date(day)
+            return f"memory/{day}.md"
+        return _FILE_BY_KEY.get(key)
 
-    def _file_names(self, *, daily_cap: int | None = 60) -> list[str]:
-        """Every workspace file's root-relative name: the fixed set, a
-        pending BOOTSTRAP.md, and the daily notes (most recent first).
-        Search caps the dailies so an old workspace can't make it slow;
-        the one-time migration passes None — it converts every file."""
-        names = [filename for filename, _ in _CONTEXT_FILES]
-        if (self.root / "BOOTSTRAP.md").exists():
-            names.append("BOOTSTRAP.md")
-        daily_dir = self.root / "memory"
-        if daily_dir.is_dir():
-            dailies = sorted(daily_dir.glob("*.md"), reverse=True)
-            if daily_cap is not None:
-                dailies = dailies[:daily_cap]
-            names.extend(f"memory/{path.name}" for path in dailies)
-        return names
+    def _token(self, name: str) -> bytes:
+        return self._cipher.blind_token("workspace", name)
 
-    def _iter_files(self):
-        for name in self._file_names():
-            content = self._read(self.root / name, name)
-            if content:
-                yield name, content
+    async def _row(self, name: str) -> asyncpg.Record | None:
+        return await workspace_row(self._pool, self._token(name))
+
+    async def _read_name(self, name: str) -> str:
+        """One file's text, decrypted in memory. A missing row or one that
+        no longer decrypts degrades to empty — the agent keeps running, it
+        just sees less context."""
+        row = await self._row(name)
+        if row is None or not row["content_enc"]:
+            return ""
+        try:
+            return self._cipher.decrypt_text(
+                row["content_enc"], aad=f"workspace_files:content_enc:{row['id']}"
+            )
+        except CryptoError:
+            log.warning("workspace file %r would not decrypt — treated as empty", name)
+            return ""
+
+    async def _put(self, name: str, content: str) -> None:
+        """Upsert one file. Raises WorkspaceWriteError when the database
+        refuses — never silently drops a write."""
+        try:
+            await upsert_workspace_file(
+                self._pool,
+                self._cipher,
+                token=self._token(name),
+                name=name,
+                content=content,
+            )
+        except (asyncpg.PostgresError, CryptoError) as exc:
+            log.warning("could not write workspace file %r (%s)", name, exc)
+            raise WorkspaceWriteError(f"could not save {name}: {exc}") from exc
+
+    async def _delete(self, name: str) -> None:
+        await delete_workspace_file(self._pool, self._token(name))
+
+    async def _names(self, *, daily_cap: int | None = 60) -> list[str]:
+        """Every stored file name in display order: the fixed set,
+        BOOTSTRAP.md if pending, then daily notes most recent first (capped
+        for search), then anything else imported by hand."""
+        rows = await workspace_rows(self._pool)
+        names: list[str] = []
+        for row in rows:
+            try:
+                names.append(
+                    self._cipher.decrypt_text(
+                        row["name_enc"], aad=f"workspace_files:name_enc:{row['id']}"
+                    )
+                )
+            except CryptoError:
+                log.warning("workspace row %s has an unreadable name — skipped", row["id"])
+        present = set(names)
+        ordered = [filename for filename, _ in _CONTEXT_FILES if filename in present]
+        if "BOOTSTRAP.md" in present:
+            ordered.append("BOOTSTRAP.md")
+        dailies = sorted((n for n in present if n.startswith("memory/")), reverse=True)
+        if daily_cap is not None:
+            dailies = dailies[:daily_cap]
+        ordered.extend(dailies)
+        ordered.extend(sorted(present - set(ordered)))
+        return ordered

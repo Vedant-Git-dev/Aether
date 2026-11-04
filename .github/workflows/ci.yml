@@ -37,7 +37,7 @@ jobs:
       - name: sealed-storage guard
         # no install needed: the script reads src/ and imports only the
         # dependency-free allowlist registry
-        run: python scripts/check_storage_guard.py
+        run: python scripts/check_storage_guard.py --strict
 
   unit-tests:
     name: unit tests (Python ${{ matrix.python }})

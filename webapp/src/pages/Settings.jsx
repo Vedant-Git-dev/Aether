@@ -8,6 +8,7 @@ import Icon from "../components/Icon.jsx";
 import ModelPicker from "../components/ModelPicker.jsx";
 import CredentialInput from "../components/SettingsCredential.jsx";
 import SettingsProfile from "../components/SettingsProfile.jsx";
+import SettingsWorkspaceFiles from "../components/SettingsWorkspaceFiles.jsx";
 import { Button, Toggle } from "../components/ui.jsx";
 import {
   QuietInput,
@@ -563,6 +564,7 @@ export default function SettingsPage() {
     }
 
     if (section.key === "profile") return <SettingsProfile key="profile" />;
+    if (section.key === "workspace") return <SettingsWorkspaceFiles key="workspace" />;
 
     if (section.key === "personality") {
       return (

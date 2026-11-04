@@ -59,6 +59,7 @@ from aether.config import (
 from aether.connectors.base import InboundMessage
 from aether.connectors.registry import ToolRegistry
 from aether.llm.types import ImageBlock, ToolCall, ToolResult, ToolSpec, Turn
+from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.events import Event, IngestResult
 from aether.memory.vectors import MemoryHit
 from aether.providers.types import ConnectResult, PollResult
@@ -1644,10 +1645,10 @@ async def test_system_prompt_is_unchanged_with_no_settings_store_wired() -> None
     )
 
 
-async def test_system_prompt_carries_the_workspace_context(tmp_path) -> None:
-    workspace = Workspace(tmp_path / "ws")
-    workspace.ensure_scaffold()
-    workspace.remember("prefers concise notifications", "preference")
+async def test_system_prompt_carries_the_workspace_context(db) -> None:
+    workspace = Workspace(db, cipher=Cipher.from_b64(generate_key_b64()))
+    await workspace.ensure_scaffold()
+    await workspace.remember("prefers concise notifications", "preference")
     kit = LoopKit(None, workspace=workspace)
     prompt = await kit.loop._system_prompt()
     base = SYSTEM_PROMPT.format(owner="the user", apps=kit.loop._connected_apps())

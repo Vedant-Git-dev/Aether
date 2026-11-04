@@ -30,7 +30,7 @@ import asyncio
 import logging
 from collections.abc import Coroutine
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -164,7 +164,7 @@ class VectorMemory:
         for location, text in parts:
             for piece in split_text(text):
                 chunks.append((location, piece))
-        when = await self._pool.fetchval("SELECT occurred_at FROM events WHERE id = $1", event_id)
+        when = await self._event_time(event_id)
         await self._index_chunks(event_id, source, "shared_doc", filename, chunks, when)
         await self._mark_indexed(event_id)
 
@@ -190,22 +190,14 @@ class VectorMemory:
         async with self._pool.acquire() as conn, conn.transaction():
             for (location, text), vector in zip(parts, vectors, strict=True):
                 row = await conn.fetchrow(
-                    "INSERT INTO memory_chunks (event_id, source, kind, filename,"
-                    " location, text_enc, embed_model, occurred_at, key_version,"
-                    " embed_model_token, dims)"
-                    " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
-                    " RETURNING id",
+                    "INSERT INTO memory_chunks (event_id, text_enc, embed_model_token,"
+                    " dims, key_version)"
+                    " VALUES ($1, $2, $3, $4, $5) RETURNING id",
                     event_id,
-                    source,
-                    kind,
-                    filename,
-                    location,
                     b"",
-                    self._embedder.model,
-                    occurred_at,
-                    self._cipher.key_id,
                     self._cipher.blind_token("embed_model", self._embedder.model),
                     len(vector),
+                    self._cipher.key_id,
                 )
                 if row is None:
                     raise RuntimeError(f"chunk insert for event {event_id} returned no id")
@@ -250,7 +242,7 @@ class VectorMemory:
         if not self.enabled:
             return None
         rows = await self._pool.fetch(
-            "SELECT id, source, kind, payload_enc, occurred_at FROM events"
+            "SELECT id, payload_enc, meta_enc, created_at FROM events"
             " WHERE indexed_at IS NULL ORDER BY id LIMIT $1",
             batch,
         )
@@ -264,7 +256,7 @@ class VectorMemory:
                 )
             except Exception:
                 payload = {}
-            kind = row["kind"]
+            source, kind, occurred_at = self._event_meta(row)
             if kind in _RICH_INDEX_KINDS:
                 # an old shared document: the attachment processor indexed
                 # new ones at ingest; here the preview is all that exists
@@ -272,43 +264,17 @@ class VectorMemory:
                 parts = [("", piece) for piece in text]
                 await self._index_chunks(
                     row["id"],
-                    row["source"],
+                    source,
                     kind,
                     str(payload.get("filename") or ""),
                     parts,
-                    row["occurred_at"],
+                    occurred_at,
                 )
             else:
                 # _chunk_text already returns (location, text) parts
-                parts = _chunk_text(row["source"], kind, payload)
-                await self._index_chunks(
-                    row["id"], row["source"], kind, "", parts, row["occurred_at"]
-                )
+                parts = _chunk_text(source, kind, payload)
+                await self._index_chunks(row["id"], source, kind, "", parts, occurred_at)
             await self._mark_indexed(row["id"])
-        return len(rows)
-
-    async def encrypt_legacy_chunks(self, batch: int = 500) -> int:
-        """Seal the embeddings that predate encryption, in place, with no
-        re-embedding API calls: read the plain vector, seal it under the
-        row's AAD, null the legacy columns. Returns how many rows were
-        handled (0 = converged). Driven by the loop's backfill task, so it
-        self-paces and survives restarts."""
-        rows = await self._pool.fetch(
-            "SELECT id, embedding FROM memory_chunks"
-            " WHERE embedding IS NOT NULL AND embedding_enc IS NULL"
-            " ORDER BY id LIMIT $1",
-            batch,
-        )
-        for row in rows:
-            blob = self._cipher.encrypt_bytes(
-                pack_vector(list(row["embedding"])), aad=f"chunks:embedding_enc:{row['id']}"
-            )
-            await self._pool.execute(
-                "UPDATE memory_chunks SET embedding_enc = $1,"
-                " embedding = NULL, norm = NULL WHERE id = $2",
-                blob,
-                row["id"],
-            )
         return len(rows)
 
     # -- retrieval -----------------------------------------------------------------
@@ -351,31 +317,19 @@ class VectorMemory:
             return []
         token = self._cipher.blind_token("embed_model", self._embedder.model)
         rows = await self._pool.fetch(
-            "SELECT id, event_id, source, kind, filename, location, text_enc,"
-            " embedding_enc, embedding, occurred_at, meta_enc"
+            "SELECT id, event_id, text_enc, embedding_enc, meta_enc"
             " FROM memory_chunks WHERE embed_model_token = $1",
             token,
         )
-        if not rows:
-            # the migration window: chunks the sealer has not reached yet
-            rows = await self._pool.fetch(
-                "SELECT id, event_id, source, kind, filename, location, text_enc,"
-                " embedding_enc, embedding, occurred_at, meta_enc"
-                " FROM memory_chunks WHERE embed_model = $1",
-                self._embedder.model,
-            )
         qnorm = vector_norm(q) or 1.0
         ranked: list[tuple[float, asyncpg.Record]] = []
         for row in rows:
             try:
-                if row["embedding_enc"] is not None:
-                    vector = unpack_vector(
-                        self._cipher.decrypt_bytes(
-                            row["embedding_enc"], aad=f"chunks:embedding_enc:{row['id']}"
-                        )
+                vector = unpack_vector(
+                    self._cipher.decrypt_bytes(
+                        row["embedding_enc"], aad=f"chunks:embedding_enc:{row['id']}"
                     )
-                else:
-                    vector = list(row["embedding"] or [])
+                )
                 if not vector:
                     continue
                 score = sum(u * v for u, v in zip(q, vector, strict=False)) / (
@@ -401,41 +355,57 @@ class VectorMemory:
                 MemoryHit(
                     event_id=row["event_id"],
                     chunk_id=row["id"],
-                    source=str(meta.get("source", row["source"])),
-                    kind=str(meta.get("kind", row["kind"])),
-                    filename=str(meta.get("filename", row["filename"])),
-                    location=str(meta.get("location", row["location"])),
+                    source=str(meta.get("source", "")),
+                    kind=str(meta.get("kind", "")),
+                    filename=str(meta.get("filename", "")),
+                    location=str(meta.get("location", "")),
                     text=text,
                     score=score,
-                    occurred_at=row["occurred_at"],
+                    occurred_at=_meta_time(meta.get("occurred_at")),
                 )
             )
         return hits
 
     def _chunk_meta(self, row: asyncpg.Record) -> dict[str, Any]:
-        """The sealed chunk metadata, or the plaintext columns during the
-        migration window."""
+        """The sealed chunk metadata."""
         blob = row.get("meta_enc")
-        if blob:
+        if not blob:
+            return {}
+        try:
+            return self._cipher.decrypt_json(blob, aad=f"memory_chunks:meta_enc:{row['id']}")
+        except Exception:
+            log.warning("chunk %s metadata undecryptable — treating as empty", row["id"])
+            return {}
+
+    async def _event_time(self, event_id: int) -> datetime:
+        row = await self._pool.fetchrow(
+            "SELECT id, meta_enc, created_at FROM events WHERE id = $1", event_id
+        )
+        if row is None:
+            return datetime.now(UTC)
+        return self._event_meta(row)[2]
+
+    def _event_meta(self, row: asyncpg.Record) -> tuple[str, str, datetime]:
+        if row.get("meta_enc"):
             try:
-                return self._cipher.decrypt_json(blob, aad=f"memory_chunks:meta_enc:{row['id']}")
+                meta = self._cipher.decrypt_json(
+                    row["meta_enc"], aad=f"events:meta_enc:{row['id']}"
+                )
+                return (
+                    str(meta.get("source", "")),
+                    str(meta.get("kind", "")),
+                    _meta_time(meta.get("occurred_at"), row.get("created_at")),
+                )
             except Exception:
-                log.warning("chunk %s metadata undecryptable — using columns", row["id"])
-        return {
-            "source": row["source"],
-            "kind": row["kind"],
-            "filename": row["filename"],
-            "location": row["location"],
-            "occurred_at": row["occurred_at"].isoformat(),
-        }
+                log.warning("event %s metadata undecryptable — indexing as unknown", row["id"])
+        return "", "", row.get("created_at") or datetime.now(UTC)
 
     async def read_document(self, event_id: int) -> str:
         """Every stored chunk of one event, joined with its location
         headers — the full untruncated document, page by page. The
         channel memory_search uses to re-read a shared document by id."""
         rows = await self._pool.fetch(
-            "SELECT id, location, text_enc, meta_enc FROM memory_chunks"
-            " WHERE event_id = $1 ORDER BY id",
+            "SELECT id, text_enc, meta_enc FROM memory_chunks WHERE event_id = $1 ORDER BY id",
             event_id,
         )
         parts: list[str] = []
@@ -446,10 +416,19 @@ class VectorMemory:
                 )
             except Exception:
                 continue
-            location = str(self._chunk_meta(row).get("location", row["location"]))
+            location = str(self._chunk_meta(row).get("location", ""))
             header = f"{location}: " if location else ""
             parts.append(header + text)
         return "\n\n".join(parts)
+
+
+def _meta_time(value: Any, fallback: datetime | None = None) -> datetime:
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            pass
+    return fallback or datetime.now(UTC)
 
 
 def _chunk_text(source: str, kind: str, payload: dict[str, Any]) -> list[tuple[str, str]]:

@@ -64,11 +64,10 @@ class Scheduler:
         a crash between here and fire time loses nothing."""
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
-                "INSERT INTO scheduled_actions (label, run_at, status, payload_enc)"
-                " VALUES ($1, $2, 'pending', $3) RETURNING id, created_at",
-                label,
-                run_at,
+                "INSERT INTO scheduled_actions (status, payload_enc, key_version)"
+                " VALUES ('pending', $1, $2) RETURNING id, created_at",
                 b"",  # placeholder until the id exists; replaced below, same transaction
+                self._cipher.key_id,
             )
             action_id = row["id"]
             blob = self._cipher.encrypt_json(payload, aad=_aad(action_id))
@@ -77,11 +76,9 @@ class Scheduler:
                 aad=f"scheduled_actions:meta_enc:{action_id}",
             )
             await conn.execute(
-                "UPDATE scheduled_actions SET payload_enc = $1, meta_enc = $2,"
-                " key_version = $3 WHERE id = $4",
+                "UPDATE scheduled_actions SET payload_enc = $1, meta_enc = $2 WHERE id = $3",
                 blob,
                 meta_blob,
-                self._cipher.key_id,
                 action_id,
             )
         await self._audit.append(
@@ -102,7 +99,7 @@ class Scheduler:
 
     async def get(self, action_id: int) -> ScheduledAction | None:
         row = await self._pool.fetchrow(
-            "SELECT id, label, meta_enc, run_at, status, payload_enc, created_at"
+            "SELECT id, meta_enc, status, payload_enc, created_at"
             " FROM scheduled_actions WHERE id = $1",
             action_id,
         )
@@ -115,7 +112,7 @@ class Scheduler:
         flips status in the same statement that selects the rows."""
         now = datetime.now(UTC)
         rows = await self._pool.fetch(
-            "SELECT id, label, meta_enc, run_at, status, payload_enc, created_at"
+            "SELECT id, meta_enc, status, payload_enc, created_at"
             " FROM scheduled_actions WHERE status = 'pending'"
         )
         due: list[tuple[datetime, int]] = []
@@ -130,7 +127,7 @@ class Scheduler:
         claimed = await self._pool.fetch(
             "UPDATE scheduled_actions SET status = 'running'"
             " WHERE id = ANY($1::bigint[]) AND status = 'pending'"
-            " RETURNING id, label, meta_enc, run_at, status, payload_enc, created_at",
+            " RETURNING id, meta_enc, status, payload_enc, created_at",
             ids,
         )
         return [self._to_action(r) for r in claimed]
@@ -141,7 +138,7 @@ class Scheduler:
         keeps re_arm read-only and safe to call anytime)."""
         now = datetime.now(UTC)
         rows = await self._pool.fetch(
-            "SELECT id, label, meta_enc, run_at, status, payload_enc, created_at"
+            "SELECT id, meta_enc, status, payload_enc, created_at"
             " FROM scheduled_actions WHERE status = 'pending'"
         )
         actions = [self._to_action(row) for row in rows]
@@ -160,7 +157,7 @@ class Scheduler:
     async def list(self, limit: int = 50) -> list[ScheduledAction]:
         """Newest first, any status — the web panel's view."""
         rows = await self._pool.fetch(
-            "SELECT id, label, meta_enc, run_at, status, payload_enc, created_at"
+            "SELECT id, meta_enc, status, payload_enc, created_at"
             " FROM scheduled_actions ORDER BY id DESC LIMIT $1",
             limit,
         )
@@ -168,20 +165,17 @@ class Scheduler:
 
     def _to_action(self, row: asyncpg.Record) -> ScheduledAction:
         payload = self._cipher.decrypt_json(row["payload_enc"], aad=_aad(row["id"]))
-        label, run_at = str(row["label"]), row["run_at"]
+        label, run_at = "", row["created_at"]
         blob = row.get("meta_enc")
         if blob:
             try:
                 meta = self._cipher.decrypt_json(
                     blob, aad=f"scheduled_actions:meta_enc:{row['id']}"
                 )
-                label = str(meta.get("label", label))
-                run_at = datetime.fromisoformat(str(meta.get("run_at", run_at)))
+                label = str(meta.get("label", ""))
+                run_at = datetime.fromisoformat(str(meta.get("run_at", row["created_at"])))
             except Exception:
-                log.warning(
-                    "scheduled action %s meta undecryptable — using the plaintext copy",
-                    row["id"],
-                )
+                log.warning("scheduled action %s meta undecryptable — treated as empty", row["id"])
         return ScheduledAction(
             id=row["id"],
             label=label,

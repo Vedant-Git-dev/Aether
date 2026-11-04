@@ -71,19 +71,17 @@ class Traces:
         row id via AAD, in the same transaction."""
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
-                "INSERT INTO decision_traces (kind, label, trace_enc)"
+                "INSERT INTO decision_traces (kind, trace_enc, key_version)"
                 " VALUES ($1, $2, $3) RETURNING id, created_at",
                 kind,
-                label,
                 b"",  # placeholder until the id exists; replaced below, same transaction
+                self._cipher.key_id,
             )
             trace_id = row["id"]
             await conn.execute(
-                "UPDATE decision_traces SET trace_enc = $1, label_enc = $2,"
-                " key_version = $3 WHERE id = $4",
+                "UPDATE decision_traces SET trace_enc = $1, label_enc = $2 WHERE id = $3",
                 self._cipher.encrypt_json(payload, aad=_aad(trace_id)),
                 self._cipher.encrypt_text(label, aad=f"decision_traces:label_enc:{trace_id}"),
-                self._cipher.key_id,
                 trace_id,
             )
         return Trace(
@@ -96,8 +94,7 @@ class Traces:
 
     async def get(self, trace_id: int) -> Trace | None:
         row = await self._pool.fetchrow(
-            "SELECT id, kind, label, label_enc, trace_enc, created_at FROM decision_traces"
-            " WHERE id = $1",
+            "SELECT id, kind, label_enc, trace_enc, created_at FROM decision_traces WHERE id = $1",
             trace_id,
         )
         return self._to_trace(row) if row else None
@@ -105,7 +102,7 @@ class Traces:
     async def recent(self, limit: int = 20) -> list[Trace]:
         """Newest first — the explain tool's and the web panel's view."""
         rows = await self._pool.fetch(
-            "SELECT id, kind, label, label_enc, trace_enc, created_at FROM decision_traces"
+            "SELECT id, kind, label_enc, trace_enc, created_at FROM decision_traces"
             " ORDER BY id DESC LIMIT $1",
             limit,
         )
@@ -119,10 +116,8 @@ class Traces:
             except Exception:
                 if row["id"] not in self._warned:
                     self._warned.add(row["id"])
-                    log.warning(
-                        "trace %s label undecryptable — using the plaintext copy", row["id"]
-                    )
-        return str(row["label"])
+                    log.warning("trace %s label undecryptable — treated as empty", row["id"])
+        return ""
 
     def _to_trace(self, row: asyncpg.Record) -> Trace:
         trace_id = row["id"]

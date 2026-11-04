@@ -30,10 +30,9 @@ class ChatHistory:
     async def append(self, surface: str, direction: str, text: str) -> None:
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
-                "INSERT INTO chat_messages (surface, direction, payload_enc,"
+                "INSERT INTO chat_messages (direction, payload_enc,"
                 " surface_token, key_version)"
-                " VALUES ($1, $2, $3, $4, $5) RETURNING id",
-                surface,
+                " VALUES ($1, $2, $3, $4) RETURNING id",
                 direction,
                 b"",  # placeholder until the id exists; replaced below, same transaction
                 self._cipher.blind_token("source", surface),
@@ -51,7 +50,7 @@ class ChatHistory:
 
     async def recent(self, limit: int = 50) -> list[dict[str, Any]]:
         rows = await self._pool.fetch(
-            "SELECT id, surface, surface_token, direction, created_at, payload_enc"
+            "SELECT id, direction, created_at, payload_enc"
             " FROM chat_messages ORDER BY id DESC LIMIT $1",
             limit,
         )
@@ -65,7 +64,7 @@ class ChatHistory:
                 continue
             out.append(
                 {
-                    "surface": str(payload.get("surface", row["surface"])),
+                    "surface": str(payload.get("surface", "")),
                     "direction": row["direction"],
                     "text": payload.get("text", ""),
                     "at": row["created_at"].isoformat(),

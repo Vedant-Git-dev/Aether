@@ -108,16 +108,14 @@ class ProactiveStore:
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "INSERT INTO proactive_tasks"
-                " (skill, label, status, opportunity_key, opportunity_enc, day,"
-                "  label_enc, meta_enc, opportunity_token, day_token, key_version)"
-                " VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8, $9, $10)"
-                " ON CONFLICT (skill, opportunity_key) DO NOTHING"
+                " (skill, status, opportunity_enc, label_enc, meta_enc,"
+                "  opportunity_token, day_token, key_version)"
+                " VALUES ($1, 'pending', $2, $3, $4, $5, $6, $7)"
+                " ON CONFLICT (skill, opportunity_token)"
+                " WHERE opportunity_token IS NOT NULL DO NOTHING"
                 " RETURNING id, created_at",
                 skill,
-                label,
-                key,
-                b"",  # placeholder until the id exists; replaced below, same transaction
-                day,
+                b"",  # placeholders until the id exists; replaced below, same transaction
                 b"",
                 b"",
                 self._cipher.blind_token("opportunity", f"{skill}\x1f{key}"),
@@ -329,33 +327,33 @@ class ProactiveStore:
                 else self._cipher.decrypt_text(blob, aad=aad)
             )
 
-        label = str(row["label"])
+        label = ""
         try:
             sealed_label = dec("label_enc")
             if sealed_label:
                 label = str(sealed_label)
         except Exception:
-            log.warning("task %s label undecryptable — using the plaintext copy", task_id)
+            log.warning("task %s label undecryptable — treated as empty", task_id)
 
         meta: dict[str, Any] = {}
         try:
             meta = dec("meta_enc", json=True) or {}
         except Exception:
-            log.warning("task %s meta undecryptable — using the plaintext copy", task_id)
+            log.warning("task %s meta undecryptable — treated as empty", task_id)
 
         return ProactiveTask(
             id=task_id,
             skill=row["skill"],
             label=label,
             status=row["status"],
-            opportunity_key=str(meta.get("opportunity_key", row["opportunity_key"])),
+            opportunity_key=str(meta.get("opportunity_key", "")),
             opportunity=dec("opportunity_enc", json=True),
             plan=dec("plan_enc", json=True),
             result=dec("result_enc"),
             feedback=row["feedback"],
             feedback_note=dec("feedback_note_enc"),
             provider=row["provider"],
-            day=str(meta.get("day", row["day"])),
+            day=str(meta.get("day", "")),
             # the stored-media reference a result carries — None unless
             # the build that owns the column (I) wrote one
             media_id=row["media_id"],

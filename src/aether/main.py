@@ -56,6 +56,7 @@ from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
 from .memory.indexes import MemoryIndex
 from .memory.salience import LLMJudge, Salience
+from .memory.seal_migrate import seal_for_cutover
 from .memory.storage import StorageGuardError, enforce_schema
 from .memory.vectors import VectorMemory
 from .proactive import Budget, ProactiveStore, ProactiveWorker
@@ -147,7 +148,20 @@ def create_app(
 
         # --- database ------------------------------------------------------
         pool = await create_pool(settings.database_url)
-        applied = await run_migrations(pool)
+
+        # a deploy seals and cuts over in one boot: the sealer runs between
+        # the expand migration and the drop migration, so nobody has to
+        # remember a manual step. A failure stops the boot instead of
+        # letting the cutover erase unsealed content.
+        async def _seal_before_migration(version: str) -> None:
+            if version != "018_sealed_cutover":
+                return
+            try:
+                await seal_for_cutover(pool, cipher)
+            except RuntimeError as exc:
+                raise StartupError(str(exc)) from exc
+
+        applied = await run_migrations(pool, before=_seal_before_migration)
         log.info("database ready (migrations applied this boot: %s)", applied or "none")
         # the storage guard: refuse to run on a schema that still stores
         # user-derived content in plain columns. Warns during the migration
@@ -457,29 +471,26 @@ def create_app(
         # every boot and would eat the files on the next restart.
         workspace: Workspace | None = None
         if config.workspace.enabled:
-            encrypt = config.workspace.encrypted and bool(settings.encryption_key)
-            if config.workspace.encrypted and not encrypt:
-                log.warning(
-                    "workspace staying plain text — the ephemeral dev key would "
-                    "make encrypted files unreadable on the next boot"
-                )
-            candidate = Workspace(config.workspace.path, cipher=cipher if encrypt else None)
+            candidate = Workspace(pool, cipher=cipher)
             try:
-                first_run = candidate.ensure_scaffold()
+                moved = 0
+                if await candidate.is_empty():
+                    # the one-time move off disk; rows commit before a file
+                    # is removed, so a failure never destroys the old copy
+                    moved = await candidate.import_from_disk(config.workspace.path)
+                first_run = await candidate.ensure_scaffold()
             except WorkspaceWriteError as exc:
                 log.warning("workspace unavailable (%s) — continuing without it", exc)
             else:
                 workspace = candidate
-                if encrypt:
-                    migrated = candidate.migrate_plaintext()
-                    if migrated:
-                        await audit.append(
-                            actor="system",
-                            tool_name="workspace",
-                            decision="allow",
-                            outcome=f"encrypted {migrated} plaintext workspace file(s) at rest",
-                        )
-                log.info("workspace ready at %s (first run: %s)", workspace.root, first_run)
+                if moved:
+                    await audit.append(
+                        actor="system",
+                        tool_name="workspace",
+                        decision="allow",
+                        outcome=f"moved {moved} workspace file(s) into sealed storage",
+                    )
+                log.info("workspace ready (first run: %s)", first_run)
         app.state.workspace = workspace
 
         # --- chat + the agent ------------------------------------------------

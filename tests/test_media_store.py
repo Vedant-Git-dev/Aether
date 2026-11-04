@@ -174,18 +174,18 @@ async def test_an_undelivered_result_protects_until_verdicted(db) -> None:
     store = _store(db, MediaConfig(storage_quota_mb=1))
     kept = await store.put(b"\x89PNG" + b"a" * 600_000, filename="kept.png")
     await db.execute(
-        "INSERT INTO proactive_tasks (skill, label, opportunity_key, opportunity_enc,"
-        " day, media_id, result_enc)"
-        " VALUES ('media', 'l', 'k1', $1, '2026-10-18', $2, $3)",
+        "INSERT INTO proactive_tasks (skill, opportunity_token, opportunity_enc,"
+        " media_id, result_enc, meta_enc)"
+        " VALUES ('media', $1, $2, $3, $4, $5)",
+        b"\x01",
         b"x",
         kept.media_id,
         b"r",
+        b"m",
     )
     with pytest.raises(MediaStoreFull):  # result stored, verdict not yet given
         await store.put(b"\x89PNG" + b"b" * 600_000, filename="next.png")
-    await db.execute(
-        "UPDATE proactive_tasks SET feedback = 'approved' WHERE opportunity_key = 'k1'"
-    )
+    await db.execute("UPDATE proactive_tasks SET feedback = 'approved' WHERE skill = 'media'")
     await store.put(b"\x89PNG" + b"b" * 600_000, filename="next.png")  # now it fits
     assert await store.get(kept.media_id) is None
 
@@ -201,12 +201,14 @@ async def test_two_references_protect_until_both_are_gone(db) -> None:
         shared.media_id,
     )
     await db.execute(
-        "INSERT INTO proactive_tasks (skill, label, opportunity_key, opportunity_enc,"
-        " day, media_id, result_enc)"
-        " VALUES ('media', 'l', 'k2', $1, '2026-10-18', $2, $3)",
+        "INSERT INTO proactive_tasks (skill, opportunity_token, opportunity_enc,"
+        " media_id, result_enc, meta_enc)"
+        " VALUES ('media', $1, $2, $3, $4, $5)",
+        b"\x02",
         b"x",
         shared.media_id,
         b"r",
+        b"m",
     )
     await db.execute("UPDATE pending_approvals SET status = 'denied'")  # one gone
     with pytest.raises(MediaStoreFull):  # the task still holds the reference
