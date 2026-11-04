@@ -50,17 +50,21 @@ from .media.generate import ImageGenerator
 from .media.store import MediaStore
 from .media.voice import GroqTranscriber
 from .memory.commitments import Commitments
+from .memory.conclusions import Conclusions
 from .memory.context import ContextBuilder
 from .memory.crypto import Cipher, CryptoError, generate_key_b64
 from .memory.db import create_pool, run_migrations
+from .memory.deliveries import Deliveries
 from .memory.enrich import Enricher, LLMClassifier
 from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
+from .memory.focus import Focus
 from .memory.indexes import MemoryIndex
 from .memory.salience import LLMJudge, Salience
 from .memory.seal_migrate import seal_for_cutover
 from .memory.storage import StorageGuardError, enforce_schema
 from .memory.vectors import VectorMemory
+from .memory.views import Views
 from .proactive import Budget, ProactiveStore, ProactiveWorker
 from .providers.catalog import PROVIDERS
 from .providers.crypto import TokenKeyError, TokenKeyring
@@ -473,6 +477,24 @@ def create_app(
             enrichment=config.memory.enrichment,
         )
         app.state.commitments = commitments
+        # the structured views (attention, commitments, entity timeline), the
+        # per-chat focus object, the live-state conclusions cache and the
+        # outbound delivery record (plan §3, §5, §8)
+        views = Views(
+            memory_index,
+            commitments,
+            pool=pool,
+            cipher=cipher,
+            timezone=config.memory.default_timezone,
+            cold_batch=config.memory.cold_batch,
+        )
+        focus = Focus(pool, cipher)
+        conclusions = Conclusions(pool, cipher, ttl_seconds=config.memory.conclusion_ttl_seconds)
+        deliveries = Deliveries(pool, cipher, audit)
+        app.state.views = views
+        app.state.focus = focus
+        app.state.conclusions = conclusions
+        app.state.deliveries = deliveries
         context = ContextBuilder(events, entities, approvals, config.agent)
         scheduler = Scheduler(pool, cipher, audit)
         app.state.entities = entities
@@ -524,7 +546,7 @@ def create_app(
         app.state.chat_hub = chat_hub
         app.state.capture_box = capture_box
 
-        surfaces = SurfaceFanout(hub=chat_hub, history=chat_history)
+        surfaces = SurfaceFanout(hub=chat_hub, history=chat_history, deliveries=deliveries)
         agent = AgentLoop(
             providers=providers,
             tools=tools,
@@ -554,6 +576,10 @@ def create_app(
             mail_filter=mail_filter,
             media=media_store,
             entities=entities,
+            views=views,
+            focus=focus,
+            conclusions=conclusions,
+            deliveries=deliveries,
         )
         app.state.agent = agent
         native = register_native_tools(

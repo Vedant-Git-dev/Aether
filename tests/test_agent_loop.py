@@ -1176,6 +1176,141 @@ async def test_send_to_user_persists_each_delivered_surface() -> None:
     assert transcript.appended == [("telegram", "out", "going out")]
 
 
+# ---------------------------------------------------------------------------
+# delivery failures (plan §8): an event every turn type can see, a retry once
+# ---------------------------------------------------------------------------
+
+
+class _FailedDeliveries:
+    def __init__(self, pending: list[Any]) -> None:
+        self.pending = list(pending)
+        self.sent: list[int] = []
+        self.abandoned: list[int] = []
+
+    async def undelivered(self, limit: int = 10):
+        return self.pending[:limit]
+
+    async def mark_sent(self, delivery_id: int, message_id: str = "") -> None:
+        self.sent.append(delivery_id)
+
+    async def mark_abandoned(self, delivery_id: int, error: str = "") -> None:
+        self.abandoned.append(delivery_id)
+
+
+def _failed_delivery(delivery_id: int = 7, body: str = "the words") -> Any:
+    return SimpleNamespace(
+        id=delivery_id,
+        status="failed",
+        body=body,
+        surface="telegram",
+        created_at=datetime.now(UTC),
+    )
+
+
+async def test_a_failed_delivery_becomes_an_event_once() -> None:
+    kit = LoopKit(None)
+    kit.loop._deliveries = _FailedDeliveries([_failed_delivery()])
+
+    await kit.loop._record_delivery_notices()
+
+    notices = [call for call in kit.events.ingest_calls if call["kind"] == "delivery_failed"]
+    assert len(notices) == 1
+    assert notices[0]["dedup_key"] == "delivery:7"
+    assert notices[0]["payload"]["text"] == "the words"
+
+
+async def test_a_failed_reply_is_redelivered_and_marked_sent() -> None:
+    kit = LoopKit(None)
+    deliveries = _FailedDeliveries([_failed_delivery()])
+    kit.loop._deliveries = deliveries
+
+    lines = await kit.loop._redeliver_failed()
+
+    assert kit.connector.sent == ["the words"]
+    assert deliveries.sent == [7]
+    assert "re-delivered" in lines[0]
+
+
+async def test_a_failed_redelivery_is_abandoned_not_retried_forever() -> None:
+    class FailingConnector(FakeSurfaceConnector):
+        async def send_to_user(self, text: str) -> str:
+            raise RuntimeError("still down")
+
+    kit = LoopKit(None)
+    kit.loop._surfaces = SurfaceFanout([FailingConnector("telegram")])
+    deliveries = _FailedDeliveries([_failed_delivery()])
+    kit.loop._deliveries = deliveries
+
+    lines = await kit.loop._redeliver_failed()
+
+    assert deliveries.sent == []
+    assert deliveries.abandoned == [7]
+    assert "do not claim it was delivered" in lines[0]
+
+
+# ---------------------------------------------------------------------------
+# the attention view and the focus object (plan §3, §5, C4)
+# ---------------------------------------------------------------------------
+
+
+async def test_an_urgent_question_gets_an_as_of_attention_line() -> None:
+    from aether.memory.indexes import IndexedEvent, MemoryIndex
+    from aether.memory.views import Views
+
+    index = MemoryIndex()
+    index.upsert(
+        IndexedEvent(
+            id=1,
+            source="gmail",
+            kind="mail",
+            occurred_at=datetime.now(UTC),
+            salience_score=0.0,
+            memorable=False,
+            payload={},
+            meta={},
+            urgency=3,
+            summary="invoice is due",
+        )
+    )
+    kit = LoopKit(None)
+    kit.loop._views = Views(index, timezone="UTC")
+
+    text = await kit.loop._attention_context([_msg("is anything urgent?")])
+
+    assert "as of" in text
+    assert "invoice is due" in text
+
+
+async def test_an_ordinary_question_carries_no_attention_line() -> None:
+    from aether.memory.indexes import MemoryIndex
+    from aether.memory.views import Views
+
+    kit = LoopKit(None)
+    kit.loop._views = Views(MemoryIndex(), timezone="UTC")
+
+    assert await kit.loop._attention_context([_msg("what's the weather?")]) == ""
+
+
+async def test_a_finished_turn_updates_the_focus_object() -> None:
+    class _Focus:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def record_turn(self, chat_ref, **kwargs):
+            self.calls.append({"chat_ref": chat_ref, **kwargs})
+
+    focus = _Focus()
+    kit = LoopKit(None)
+    kit.loop._focus = focus
+    kit.loop._views = None
+
+    await kit.loop._update_focus([_msg("send it tomorrow")], [], "Which message should I send?")
+
+    assert focus.calls[0]["chat_ref"] == "1"
+    assert focus.calls[0]["offer"]["text"] == "Which message should I send?"
+    assert len(focus.calls[0]["entities"]) <= 8
+
+
 async def test_a_failing_transcript_never_breaks_a_send() -> None:
     class BrokenTranscript(FakeTranscript):
         async def append(self, surface: str, direction: str, text: str) -> None:

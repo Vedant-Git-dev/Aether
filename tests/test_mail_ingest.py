@@ -331,6 +331,62 @@ def test_a_chunk_header_leaves_out_what_it_does_not_have() -> None:
 
 
 # ---------------------------------------------------------------------------
+# rendering (§8): raw headers, owner addresses marked, never collapsed
+# ---------------------------------------------------------------------------
+
+
+def test_a_mail_line_shows_name_and_address() -> None:
+    from aether.memory.mail import render_mail_event
+
+    line = render_mail_event(
+        {
+            "subject": "Invoice",
+            "sender": "Rahul Sharma <rahul@example.com>",
+            "to": "me@example.com",
+            "body": "please find attached",
+        },
+        occurred_at=SENT,
+    )
+
+    assert "Rahul Sharma <rahul@example.com>" in line
+    assert "subject: Invoice" in line
+    assert "please find attached" in line
+
+
+def test_the_owners_other_address_is_marked_not_collapsed() -> None:
+    from aether.memory.mail import render_mail_event
+
+    line = render_mail_event(
+        {
+            "subject": "From my other account",
+            "sender": "Vedant <vedant.work@example.com>",
+            "to": "me@example.com",
+        },
+        occurred_at=SENT,
+        owners={"vedant.work@example.com"},
+    )
+
+    # the address is still shown raw, with the owner note beside it
+    assert "Vedant <vedant.work@example.com> (your other address)" in line
+    assert "me@example.com" in line
+
+
+def test_a_quoted_reply_is_not_rendered_into_the_line() -> None:
+    from aether.memory.mail import render_mail_event
+
+    line = render_mail_event(
+        {
+            "sender": "Rahul <rahul@example.com>",
+            "body": "yes please\n\nOn Tue, Nov 3 2026 at 11:46 Rahul wrote:\n> old words",
+        },
+        occurred_at=SENT,
+    )
+
+    assert "yes please" in line
+    assert "old words" not in line
+
+
+# ---------------------------------------------------------------------------
 # dedup on the provider's message id (real store)
 # ---------------------------------------------------------------------------
 

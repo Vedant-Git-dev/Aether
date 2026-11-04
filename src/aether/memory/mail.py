@@ -162,6 +162,71 @@ def _raw(value: Any) -> str:
     return str(value or "")
 
 
+def format_address(address: str, name: str, owners: Any = ()) -> str:
+    """One rendered address, with "(your other address)" when it is the
+    user's own (plan §8).
+
+    The address is always shown as it arrived — never collapsed into the
+    owner's primary address and never hidden behind the display name, so a
+    mail from a second account still reads as that account.
+    """
+    addr = (address or "").strip()
+    if not addr:
+        return ""
+    label = f"{name.strip()} <{addr}>" if name and name.strip() else addr
+    owned = owners if isinstance(owners, (set, frozenset, list, tuple)) else ()
+    if addr.lower() in {str(entry).strip().lower() for entry in owned}:
+        label += " (your other address)"
+    return label
+
+
+def _format_list(raw: Any, owners: Any) -> list[str]:
+    return [
+        rendered
+        for rendered in (
+            format_address(address.address, address.name, owners)
+            for address in parse_addresses(raw)
+        )
+        if rendered
+    ]
+
+
+def render_mail_event(
+    payload: dict[str, Any],
+    *,
+    occurred_at: Any,
+    salience: float = 0.0,
+    owners: Any = (),
+    body_limit: int = 400,
+) -> str:
+    """A mail line for the model: who, to whom, when, and the new words.
+
+    Quoted reply history is cut (plan §4.5) so the line leads with what this
+    message actually says; the raw headers are kept, and an owner address is
+    marked rather than folded into the primary one (§8).
+    """
+    subject = str(payload.get("subject") or "").strip()
+    sender = _format_list(payload.get("sender"), owners)
+    to = _format_list(payload.get("to"), owners)
+    cc = _format_list(payload.get("cc"), owners)
+    body = strip_quoted(str(payload.get("body") or payload.get("snippet") or "")).strip()
+    stamp = occurred_at.strftime("%Y-%m-%d %H:%M") if isinstance(occurred_at, datetime) else ""
+    head = f"{stamp} {MAIL_SOURCE}/{MAIL_KIND} (salience {salience:.0f})"
+    parts: list[str] = []
+    if subject:
+        parts.append(f"subject: {subject}")
+    if sender:
+        parts.append("from " + ", ".join(sender))
+    if to:
+        parts.append("to " + ", ".join(to))
+    if cc:
+        parts.append("cc " + ", ".join(cc))
+    line = f"{head}: " + ("; ".join(parts) if parts else "(no headers)")
+    if body:
+        line += f" — {body[:body_limit]}"
+    return line
+
+
 # The shapes a quoted reply announces itself with. They are cut from the
 # text the index sees (plan §4.5) — a thread's history embedded in every
 # later message would otherwise make each reply retrieve as every earlier
