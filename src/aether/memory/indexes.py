@@ -85,6 +85,10 @@ class MemoryIndex:
         self._max_id = 0
         # oldest occurrence time the index is known to cover; None = nothing
         self._covers_from: datetime | None = None
+        # next cold-scan bound: fetch rows with id < this, whether or not the
+        # previous batch yielded anything indexable. Keeps an all-unreadable
+        # batch from being re-queried forever.
+        self._scan_from: int | None = None
         self.skipped = 0
 
     # -- lookups ------------------------------------------------------------
@@ -192,6 +196,7 @@ class MemoryIndex:
         self._order.clear()
         self._max_id = 0
         self._covers_from = None
+        self._scan_from = None
         self.skipped = 0
         for row in reversed(rows):
             try:
@@ -221,7 +226,9 @@ class MemoryIndex:
         for _ in range(max_batches):
             if self.covers(since):
                 return
-            oldest_id = min(self._events) if self._events else 0
+            oldest_id = self._scan_from
+            if oldest_id is None:
+                oldest_id = min(self._events) if self._events else 0
             if oldest_id <= 1:
                 self._covers_from = datetime.min.replace(tzinfo=UTC)
                 return
@@ -233,13 +240,26 @@ class MemoryIndex:
             if not rows:
                 self._covers_from = datetime.min.replace(tzinfo=UTC)
                 return
+            oldest: datetime | None = None
             for row in reversed(rows):
                 try:
-                    self.upsert(decode_event_row(cipher, row))
+                    event = decode_event_row(cipher, row)
                 except Exception:
                     self.skipped += 1
                     log.warning("event %s undecryptable — left out of the index", row["id"])
-            if not rows:
-                return
-            oldest = decode_event_row(cipher, rows[-1]).occurred_at
-            self._covers_from = min(self._covers_from or oldest, oldest)
+                    continue
+                self.upsert(event)
+                if oldest is None or event.occurred_at < oldest:
+                    oldest = event.occurred_at
+            # advance past this batch even when nothing in it decoded, so a
+            # run of unreadable rows cannot stall the scan on the same window
+            self._scan_from = int(rows[-1]["id"])
+            if oldest is None:
+                # nothing decoded: bound coverage by the plaintext created_at
+                # of the oldest row rather than trusting an unreadable time
+                created = rows[-1].get("created_at")
+                oldest = created if isinstance(created, datetime) else None
+            if oldest is not None:
+                self._covers_from = (
+                    oldest if self._covers_from is None else min(self._covers_from, oldest)
+                )

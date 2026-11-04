@@ -9,6 +9,7 @@ routes (and only those) are open by design.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hmac
 import logging
@@ -28,7 +29,7 @@ from ..memory.crypto import CryptoError
 from ..proactive import DONE
 from ..providers.types import ProviderError
 from ..settings_catalog import ALL_FIELD_PATHS, credential_for, settings_feed
-from ..workspace import SecretRejected, WorkspaceEntry, WorkspaceWriteError
+from ..workspace import SecretRejected, WorkspaceEntry, WorkspaceWriteError, parse_entries
 from ..workspace.transfer import export_bundle, import_bundle
 
 log = logging.getLogger("aether.api")
@@ -1072,14 +1073,15 @@ async def workspace_feed(request: Request, token: str | None = None) -> dict:
     workspace = getattr(request.app.state, "workspace", None)
     if workspace is None:
         raise HTTPException(status_code=503, detail="workspace is not enabled")
+    needs_bootstrap, raw = await workspace.feed()
     return {
-        "needs_bootstrap": await workspace.needs_bootstrap(),
+        "needs_bootstrap": needs_bootstrap,
         "files": {
             key: {
-                "raw": await workspace.read(key),
-                "entries": [_entry_dict(e) for e in await workspace.entries(key)],
+                "raw": text,
+                "entries": [_entry_dict(e) for e in parse_entries(text)],
             }
-            for key in _WORKSPACE_FILES
+            for key, text in raw.items()
         },
     }
 
@@ -1156,7 +1158,11 @@ async def workspace_export(
     if workspace is None:
         raise HTTPException(status_code=503, detail="workspace is not enabled")
     try:
-        bundle = export_bundle(await workspace.export_files(), body.passphrase)
+        # scrypt is CPU-bound and memory-hard; keep it off the event loop so
+        # an export does not stall the agent tick, chat, or other requests
+        bundle = await asyncio.to_thread(
+            export_bundle, await workspace.export_files(), body.passphrase
+        )
     except CryptoError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Response(
@@ -1178,12 +1184,17 @@ async def workspace_import(
     if workspace is None:
         raise HTTPException(status_code=503, detail="workspace is not enabled")
     try:
-        raw = base64.b64decode(body.bundle, validate=True)
-        files = import_bundle(raw, body.passphrase)
-        written = await workspace.import_files(files)
+        files = await asyncio.to_thread(_open_bundle, body.bundle, body.passphrase)
+        # the owner restoring their own passphrase-protected bundle: the
+        # secret scan guards agent writes, not a restore
+        written = await workspace.import_files(files, trusted=True)
     except (CryptoError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "files": written}
+
+
+def _open_bundle(bundle_b64: str, passphrase: str) -> dict[str, str]:
+    return import_bundle(base64.b64decode(bundle_b64, validate=True), passphrase)
 
 
 # -- one-time workbench transfers -------------------------------------------------

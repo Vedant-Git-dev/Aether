@@ -99,6 +99,26 @@ async def test_cold_scan_reaches_older_history(db) -> None:
 
 
 @pytest.mark.integration
+async def test_cold_scan_survives_an_unreadable_event(db) -> None:
+    cipher = _cipher()
+    store = EventStore(db, cipher, AuditLog(db), ContactsConfig())
+    for hour in (6, 8):
+        await store.ingest(
+            source="gmail", kind="message", payload={"text": f"mail {hour}"}, occurred_at=_at(hour)
+        )
+    oldest = await db.fetchval("SELECT MIN(id) FROM events")
+    await db.execute("UPDATE events SET meta_enc = $1 WHERE id = $2", b"not sealed", oldest)
+
+    index = MemoryIndex()
+    assert await index.rebuild(db, cipher, hot_limit=1) == 1
+    # the cold scan must skip the bad row, not raise out of ensure_since
+    await index.ensure_since(db, cipher, _at(0), batch=1, max_batches=4)
+    assert index.skipped == 1
+    assert index.covers(_at(0))
+    assert [event.occurred_at for event in index.since_time(_at(0))] == [_at(8)]
+
+
+@pytest.mark.integration
 async def test_salience_write_updates_the_index(db) -> None:
     cipher = _cipher()
     index = MemoryIndex()

@@ -759,3 +759,19 @@ async def test_import_files_refuses_a_name_outside_the_workspace(db) -> None:
         await ws.import_files({"memory/not-a-date.md": "x"})
     with pytest.raises(SecretRejected):
         await ws.import_files({"USER.md": "api_key: sk-abcdefghijklmnopqrstuvwxyz012345"})
+
+
+@pytest.mark.integration
+async def test_a_trusted_import_restores_a_bundle_that_trips_the_secret_scan(db) -> None:
+    # a legacy file can legitimately contain something that looks like a key;
+    # an owner restoring their own export must not be locked out of it
+    ws = _ws(db)
+    await ws.ensure_scaffold()
+    await ws.import_files({"USER.md": "api_key: sk-abcdefghijklmnopqrstuvwxyz012345"}, trusted=True)
+    files = await ws.export_files()
+    assert "sk-abcdefghijklmnopqrstuvwxyz012345" in files["USER.md"]
+
+    await db.execute("TRUNCATE workspace_files RESTART IDENTITY")
+    restored = _ws(db)
+    assert await restored.import_files(files, trusted=True) == len(files)
+    assert "sk-abcdefghijklmnopqrstuvwxyz012345" in await restored.read("user")
