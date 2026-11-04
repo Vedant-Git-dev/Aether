@@ -6,6 +6,7 @@ leaves the guesses pending until the model supersedes them."""
 
 from __future__ import annotations
 
+import pytest
 from fakes import FakeProvider
 from test_agent_loop import LoopKit, _msg
 
@@ -23,6 +24,7 @@ async def _rig(
     return LoopKit(provider, workspace=ws), provider, ws
 
 
+@pytest.mark.integration
 async def test_a_profile_line_seeds_confirmed_without_waking_the_model(db) -> None:
     kit, provider, ws = await _rig(db)
     kit.loop.submit_message(_msg("/profile I live in Lisbon"))
@@ -35,6 +37,7 @@ async def test_a_profile_line_seeds_confirmed_without_waking_the_model(db) -> No
     assert kit.events.ingested == []  # and nothing became memory
 
 
+@pytest.mark.integration
 async def test_bare_profile_gathers_pending_into_one_batched_confirmation(db) -> None:
     kit, provider, ws = await _rig(db)
     await ws.remember("works with marine electronics", "profile", source="agent")
@@ -51,6 +54,7 @@ async def test_bare_profile_gathers_pending_into_one_batched_confirmation(db) ->
     assert provider.calls == []
 
 
+@pytest.mark.integration
 async def test_one_yes_confirms_the_whole_batch(db) -> None:
     kit, provider, ws = await _rig(db)
     await ws.remember("works with marine electronics", "profile", source="agent")
@@ -66,6 +70,7 @@ async def test_one_yes_confirms_the_whole_batch(db) -> None:
     assert provider.calls == []
 
 
+@pytest.mark.integration
 async def test_a_correction_is_normal_chat_and_the_guesses_stay_pending(db) -> None:
     provider = FakeProvider([Turn(text="fixed the profile")])
     kit, provider, ws = await _rig(db, provider=provider)
@@ -80,6 +85,7 @@ async def test_a_correction_is_normal_chat_and_the_guesses_stay_pending(db) -> N
     assert kit.loop._profile_confirm is None  # and the wait is over
 
 
+@pytest.mark.integration
 async def test_a_yes_that_isnt_a_bare_yes_is_still_a_correction(db) -> None:
     provider = FakeProvider([Turn(text="just chatting now")])
     kit, provider, ws = await _rig(db, provider=provider)
@@ -94,6 +100,7 @@ async def test_a_yes_that_isnt_a_bare_yes_is_still_a_correction(db) -> None:
     assert [e.text for e in await ws.pending_profile()] == ["a night owl"]
 
 
+@pytest.mark.integration
 async def test_a_command_while_the_confirmation_waited_just_ends_the_wait(db) -> None:
     provider = FakeProvider([Turn(text="talked")])
     kit, provider, ws = await _rig(db, provider=provider)
