@@ -31,7 +31,7 @@ from ..authz.audit import AuditLog
 from ..config import ContactsConfig
 from .crypto import Cipher
 from .entities import Sender, normalize_handle
-from .indexes import IndexedEvent, MemoryIndex, decode_event_row
+from .indexes import IndexedEvent, MemoryIndex, decode_event_row, decode_extra
 
 if TYPE_CHECKING:
     from .vectors import VectorMemory
@@ -108,6 +108,14 @@ class Event:
     salience_score: float
     memorable: bool
     meta: dict[str, Any]
+    # write-time enrichment (plan §4): decoded out of the sealed meta so a
+    # reader never has to know which dict key holds which label
+    urgency: int = 0
+    needs_reply: bool = False
+    noise: bool = False
+    deadline_at: datetime | None = None
+    summary: str = ""
+    entity_ids: tuple[int, ...] = ()
 
 
 @dataclass
@@ -221,6 +229,7 @@ class EventStore:
                 event_id,
             )
         if self._index is not None:
+            extra = dict(meta or {})
             self._index.upsert(
                 IndexedEvent(
                     id=event_id,
@@ -230,7 +239,8 @@ class EventStore:
                     salience_score=0.0,
                     memorable=False,
                     payload=stored_payload,
-                    meta=dict(meta or {}),
+                    meta=extra,
+                    **decode_extra(extra),
                 )
             )
         # the single indexing choke point: outside the transaction (the FK
@@ -395,6 +405,12 @@ class EventStore:
             salience_score=event.salience_score,
             memorable=event.memorable,
             meta=event.meta,
+            urgency=event.urgency,
+            needs_reply=event.needs_reply,
+            noise=event.noise,
+            deadline_at=event.deadline_at,
+            summary=event.summary,
+            entity_ids=event.entity_ids,
         )
 
     def _to_event(self, row: asyncpg.Record) -> Event:

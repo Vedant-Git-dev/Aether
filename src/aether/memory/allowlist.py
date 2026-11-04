@@ -93,7 +93,18 @@ PLAINTEXT_ALLOWLIST: dict[str, frozenset[str]] = {
     "oauth_tokens": frozenset({"provider", "scopes", "expires_at", "updated_at", "key_version"}),
     "app_secrets": frozenset({"name", "updated_at", "key_version"}),
     "memory_chunks": frozenset(
-        {"id", "event_id", "key_version", "embed_model_token", "dims", "created_at"}
+        {
+            "id",
+            "event_id",
+            "key_version",
+            "embed_model_token",
+            "dims",
+            # position inside its own event — retrieval needs the chunk
+            # before and after a hit, and row ids interleave across events
+            # under concurrent ingest, so id order is not document order
+            "ordinal",
+            "created_at",
+        }
     ),
     "daily_counters": frozenset(
         {

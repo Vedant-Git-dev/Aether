@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import bisect
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -30,7 +30,15 @@ log = logging.getLogger("aether.memory.indexes")
 
 @dataclass(frozen=True)
 class IndexedEvent:
-    """One event as the index holds it — decrypted, in process memory only."""
+    """One event as the index holds it — decrypted, in process memory only.
+
+    The enrichment fields are decoded out of `meta` (which is the sealed
+    `extra` dict) rather than read from it on every question: an attention
+    view sorts the whole hot set, and a dict lookup per event per sort is
+    work the index can do once, at decode time. `meta` stays the raw dict,
+    so a salience write and an enrichment write compose instead of
+    clobbering each other.
+    """
 
     id: int
     source: str
@@ -40,6 +48,49 @@ class IndexedEvent:
     memorable: bool
     payload: dict[str, Any] = field(default_factory=dict)
     meta: dict[str, Any] = field(default_factory=dict)
+    # -- write-time enrichment (plan §4) --
+    urgency: int = 0
+    needs_reply: bool = False
+    noise: bool = False
+    deadline_at: datetime | None = None
+    summary: str = ""
+    entity_ids: tuple[int, ...] = ()
+
+    def with_extra(self, extra: dict[str, Any]) -> IndexedEvent:
+        """The same event with its sealed extra replaced — the one place a
+        salience or enrichment write re-derives the decoded fields, so the
+        two can never disagree about what the extra says."""
+        return replace(self, meta=dict(extra), **decode_extra(extra))
+
+
+def decode_extra(extra: Any) -> dict[str, Any]:
+    """The enrichment fields inside one sealed `extra` dict.
+
+    Every value is coerced rather than trusted: this reads back whatever
+    an older version of the writer put there, and a malformed field must
+    degrade to its default instead of taking a whole turn down.
+    """
+    data = extra if isinstance(extra, dict) else {}
+    deadline = data.get("deadline_at")
+    parsed = _optional_time(deadline)
+    entities: list[int] = []
+    for item in data.get("entities") or []:
+        try:
+            entities.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    try:
+        urgency = int(data.get("urgency") or 0)
+    except (TypeError, ValueError):
+        urgency = 0
+    return {
+        "urgency": max(0, min(3, urgency)),
+        "needs_reply": bool(data.get("needs_reply", False)),
+        "noise": bool(data.get("noise", False)),
+        "deadline_at": parsed,
+        "summary": str(data.get("summary") or ""),
+        "entity_ids": tuple(dict.fromkeys(entities)),
+    }
 
 
 def decode_event_row(cipher: Cipher, row: asyncpg.Record) -> IndexedEvent:
@@ -50,6 +101,7 @@ def decode_event_row(cipher: Cipher, row: asyncpg.Record) -> IndexedEvent:
     if not row.get("meta_enc"):
         raise CryptoError(f"event {event_id} has no sealed metadata")
     meta = cipher.decrypt_json(row["meta_enc"], aad=f"events:meta_enc:{event_id}")
+    extra = dict(meta.get("extra") or {})
     return IndexedEvent(
         id=event_id,
         source=str(meta.get("source", "")),
@@ -58,8 +110,20 @@ def decode_event_row(cipher: Cipher, row: asyncpg.Record) -> IndexedEvent:
         salience_score=float(meta.get("salience", 0.0)),
         memorable=bool(meta.get("memorable", False)),
         payload=payload,
-        meta=dict(meta.get("extra") or {}),
+        meta=extra,
+        **decode_extra(extra),
     )
+
+
+def _optional_time(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
 
 
 def _parse_time(value: Any, fallback: datetime) -> datetime:
@@ -82,6 +146,11 @@ class MemoryIndex:
     def __init__(self) -> None:
         self._events: dict[int, IndexedEvent] = {}
         self._order: list[tuple[datetime, int]] = []
+        # entity id -> the events that reference it, for the person route's
+        # timeline. Maintained alongside the event table rather than derived
+        # on demand: the question "everything with X" is a lookup, not a
+        # scan of the whole hot set.
+        self._by_entity: dict[int, set[int]] = {}
         self._max_id = 0
         # oldest occurrence time the index is known to cover; None = nothing
         self._covers_from: datetime | None = None
@@ -150,8 +219,10 @@ class MemoryIndex:
             at = bisect.bisect_left(self._order, old)
             if at < len(self._order) and self._order[at] == old:
                 self._order.pop(at)
+            self._unindex_entities(previous)
         bisect.insort(self._order, (event.occurred_at, event.id))
         self._events[event.id] = event
+        self._index_entities(event)
         self._max_id = max(self._max_id, event.id)
         if self._covers_from is None or event.occurred_at < self._covers_from:
             self._covers_from = event.occurred_at
@@ -162,16 +233,42 @@ class MemoryIndex:
         event = self._events.get(event_id)
         if event is None:
             return
-        self._events[event_id] = IndexedEvent(
-            id=event.id,
-            source=event.source,
-            kind=event.kind,
-            occurred_at=event.occurred_at,
-            salience_score=score,
-            memorable=memorable,
-            payload=event.payload,
-            meta=extra,
-        )
+        self._unindex_entities(event)
+        updated = replace(event.with_extra(extra), salience_score=score, memorable=memorable)
+        self._events[event_id] = updated
+        self._index_entities(updated)
+
+    def update_extra(self, event_id: int, extra: dict[str, Any]) -> None:
+        """Fold an enrichment write into a resident event — the same path a
+        salience write takes, so the decoded fields follow the sealed dict."""
+        event = self._events.get(event_id)
+        if event is None:
+            return
+        self._unindex_entities(event)
+        updated = event.with_extra(extra)
+        self._events[event_id] = updated
+        self._index_entities(updated)
+
+    # -- entity lookups ------------------------------------------------------
+
+    def events_for_entity(self, entity_id: int) -> list[IndexedEvent]:
+        """Every resident event that references an identity, newest first."""
+        found = [self._events[i] for i in self._by_entity.get(entity_id, ()) if i in self._events]
+        found.sort(key=lambda event: (event.occurred_at, event.id), reverse=True)
+        return found
+
+    def _index_entities(self, event: IndexedEvent) -> None:
+        for entity_id in event.entity_ids:
+            self._by_entity.setdefault(entity_id, set()).add(event.id)
+
+    def _unindex_entities(self, event: IndexedEvent) -> None:
+        for entity_id in event.entity_ids:
+            ids = self._by_entity.get(entity_id)
+            if ids is None:
+                continue
+            ids.discard(event.id)
+            if not ids:
+                del self._by_entity[entity_id]
 
     def _trim(self, hot_limit: int) -> None:
         """Keep the newest `hot_limit` events resident; older ones leave the
@@ -180,6 +277,7 @@ class MemoryIndex:
             return
         keep = {event_id for _, event_id in self._order[-hot_limit:]}
         for event_id in [i for i in self._events if i not in keep]:
+            self._unindex_entities(self._events[event_id])
             del self._events[event_id]
         self._order = [(when, event_id) for when, event_id in self._order if event_id in keep]
         self._covers_from = self._order[0][0] if self._order else None
@@ -194,6 +292,7 @@ class MemoryIndex:
         )
         self._events.clear()
         self._order.clear()
+        self._by_entity.clear()
         self._max_id = 0
         self._covers_from = None
         self._scan_from = None
