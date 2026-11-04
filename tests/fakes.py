@@ -562,11 +562,36 @@ class FakeEventStore:
         self.recent_counts = dict(recent_counts or {})
         self.updates: list[tuple[int, float, bool, dict]] = []
         self.ingested: list[dict] = []
+        # every ingest call in full, including the kwargs `ingested` does not
+        # carry (occurred_at, meta, dedup_key) — kept apart so tests that
+        # assert on the `ingested` shape stay exact
+        self.ingest_calls: list[dict] = []
         # set to override what ingest() returns (e.g. filtered:contacts)
         self.ingest_result: IngestResult | None = None
 
-    async def ingest(self, *, source, kind, payload, sender=None, occurred_at=None, meta=None):
+    async def ingest(
+        self,
+        *,
+        source,
+        kind,
+        payload,
+        sender=None,
+        occurred_at=None,
+        meta=None,
+        dedup_key=None,
+    ):
         self.ingested.append({"source": source, "kind": kind, "payload": payload, "sender": sender})
+        self.ingest_calls.append(
+            {
+                "source": source,
+                "kind": kind,
+                "payload": payload,
+                "sender": sender,
+                "occurred_at": occurred_at,
+                "meta": meta,
+                "dedup_key": dedup_key,
+            }
+        )
         if self.ingest_result is not None:
             return self.ingest_result
         return IngestResult(

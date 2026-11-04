@@ -152,6 +152,7 @@ class EventStore:
         sender: Sender | None = None,
         occurred_at: datetime | None = None,
         meta: dict[str, Any] | None = None,
+        dedup_key: str | None = None,
     ) -> IngestResult:
         if sender is not None and not is_allowlisted(self._contacts, sender.platform, sender):
             await self._audit.append(
@@ -181,6 +182,15 @@ class EventStore:
             "memorable": False,
             "extra": dict(meta or {}),
         }
+        if dedup_key is not None:
+            # the source's own identity for this thing (a provider message
+            # id), tagged on its own instead of over the payload — a refetch
+            # that changed the body is still the same message, and the poll
+            # and the tool path agree on it. The key is hashed into the tag
+            # and never stored; only the HMAC reaches the column.
+            dedup_tag = self._cipher.dedup_mac(b"dedup:" + dedup_key.encode("utf-8"))
+        else:
+            dedup_tag = self._cipher.dedup_mac(canonical_payload(kind, stored_payload))
 
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
@@ -195,7 +205,7 @@ class EventStore:
                 b"",
                 self._cipher.key_id,
                 self._cipher.blind_token("source", source),
-                self._cipher.dedup_mac(canonical_payload(kind, stored_payload)),
+                dedup_tag,
             )
             if row is None:
                 return IngestResult(stored=False, reason="duplicate")

@@ -60,6 +60,7 @@ from ..llm.types import PLAIN_PARAM, Message, ToolCall, ToolResult, ToolSpec
 from ..memory.context import ContextBuilder
 from ..memory.entities import Sender
 from ..memory.events import Event, EventStore
+from ..memory.mail import MAIL_KIND, MAIL_SOURCE, split_mail
 from ..memory.salience import Salience
 from ..memory.vectors import MemoryHit, VectorMemory
 from ..providers.runtime import ProviderRuntime
@@ -1533,7 +1534,14 @@ class AgentLoop:
 
         The provider runtime owns the cursor and the schedule; this path
         owns the same audit row and event ingest the MCP polls use. Gmail
-        results still pass the allowlist before the model can see them.
+        results still pass the allowlist before the model can see them, and
+        the allowlist judges the whole envelope — a sender it drops never
+        reaches the split below, so nothing filtered can be stored.
+
+        A mail poll is one event per message rather than one blob: the old
+        single row was truncated to 4000 characters and merged every
+        message of the poll into it, so nothing downstream could attribute,
+        sort or filter a single mail.
         """
         if self._provider_runtime is None:
             return
@@ -1554,6 +1562,8 @@ class AgentLoop:
                 params={},
                 outcome="provider poll",
             )
+            if await self._ingest_mail(text, result):
+                continue
             kind = result.tool.split("__", 1)[-1]
             ingest = await self._events.ingest(
                 source=result.app,
@@ -1562,6 +1572,47 @@ class AgentLoop:
             )
             if ingest.stored:
                 self.notify()
+
+    async def _ingest_mail(self, text: str, result: Any) -> bool:
+        """One event per mail in a filtered poll envelope.
+
+        The addresses stay in the payload exactly as the provider returned
+        them; no sender rides the ingest, because the mail allowlist — not
+        the contact allowlist — is what judges mail, and it has already run
+        on this envelope. Re-judging here would drop mail the user *sent*
+        to an allowlisted person, whose sender is the user themselves.
+
+        Returns False when the envelope carries no messages, so the caller
+        keeps its own shape for results this path does not model.
+        """
+        try:
+            envelope = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            envelope = result.payload
+        messages = split_mail(envelope)
+        if not messages:
+            return False
+        stored = 0
+        for message in messages:
+            ingest = await self._events.ingest(
+                source=MAIL_SOURCE,
+                kind=MAIL_KIND,
+                payload=message.payload,
+                occurred_at=message.occurred_at,
+                meta={
+                    "provider": MAIL_SOURCE,
+                    "message_id": message.message_id,
+                    "thread_id": message.thread_id,
+                    "from_address": message.sender,
+                },
+                dedup_key=message.dedup_key,
+            )
+            if ingest.stored:
+                stored += 1
+        if stored:
+            log.info("ingested %d mail message(s) from %s", stored, result.app)
+            self.notify()
+        return True
 
     # -- the late-ready reconcile ---------------------------------------------------
 
