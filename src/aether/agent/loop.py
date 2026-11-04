@@ -288,8 +288,8 @@ class SurfaceFanout:
         landed: {connector name: platform message id}. Those ids are what
         link a user's later "why?" back to the trace of this send.
 
-        An empty message is refused before anything is sent or stored (plan
-        §8). Every surface attempt is recorded — queued, then sent with its
+        An empty message is refused before anything is sent or stored.
+        Every surface attempt is recorded — queued, then sent with its
         message id or failed with its error sealed — so a failure is a fact
         the next turn can be told, not a swallowed log line. `record=False`
         is for the retry path, which already owns a delivery row and must not
@@ -625,12 +625,12 @@ class AgentLoop:
         # connects, so "my other address" renders correctly from the first mail
         self._entities = entities
         # the structured views over the resident index, the per-chat focus
-        # object and the live-state conclusions (plan §3, §5)
+        # object and the live-state conclusions
         self._views = views
         self._focus = focus
         self._conclusions = conclusions
         # the outbound-send record: a failed or empty send is a fact, not a
-        # log line, and the next turn is told about it (plan §8)
+        # log line, and the next turn is told about it
         self._deliveries = deliveries
         # the owner's own addresses, refreshed once per turn so mail renders
         # "(your other address)" without an async lookup per event line
@@ -1545,7 +1545,7 @@ class AgentLoop:
         with the direct provider prefix.
 
         The account address the provider just reported is the owner's own,
-        so it is claimed here (plan §8): without it the first mail from a
+        so it is claimed here: without it the first mail from a
         second address of the user's would render as a stranger's.
         """
         if self._entities is not None and identity.strip():
@@ -1956,7 +1956,7 @@ class AgentLoop:
                     # way the turn itself must survive
                     log.exception("recall head start failed — embedding inline instead")
 
-            # the alias confirmation (plan §4.2) is a question, so it is only
+            # the alias confirmation is a question, so it is only
             # loaded when the user is actually here — an unprompted tick must
             # never raise one
             ctx = await self._context.build(with_questions=bool(messages))
@@ -2227,7 +2227,7 @@ class AgentLoop:
                 payload=trace,
             )
             # the focus object and a state-of-now conclusion are updated with
-            # the finished turn — a failure costs a reference (Phase 2), never
+            # the finished turn — a failure costs a reference, never
             # the reply that already went out
             try:
                 if messages:
@@ -2373,8 +2373,8 @@ class AgentLoop:
     def _format_context(self, ctx: Any, attention: str = "") -> str:
         lines: list[str] = []
         # the attention view, only when this turn's route asked for one —
-        # plan §5 packs "urgent or due items if the route asked" (§8 says a
-        # live result carries its own "as of" time)
+        # it packs "urgent or due items if the route asked", and a live
+        # result carries its own "as of" time
         if attention:
             lines.append(attention)
         for event in ctx.events[:15]:
@@ -2400,7 +2400,7 @@ class AgentLoop:
     def _event_line(self, event: Event) -> str:
         """One event as the model reads it.
 
-        A mail gets the §8 rendering — raw headers, display names, and
+        A mail gets its own rendering — raw headers, display names, and
         "(your other address)" for an owner address — instead of a JSON dump
         that loses who said what. Everything else keeps the payload preview
         the salience judge has always scored.
@@ -2430,14 +2430,14 @@ class AgentLoop:
         except Exception:
             log.warning("could not read the owner addresses — rendering without them")
 
-    # -- structured views, focus and delivery (plan §4, §5, §8) ---------------
+    # -- structured views, focus and delivery ---------------------------------
 
     async def _attention_context(self, messages: list[InboundMessage]) -> str:
         """The attention view for a turn whose words asked for it.
 
         Only when the deterministic route trigger fired — an unprompted tick
         and a normal question never carry it — and it says plainly that it is
-        a live result, "as of" the moment it was read (plan §5).
+        a live result, "as of" the moment it was read.
         """
         if self._views is None or not messages:
             return ""
@@ -2463,7 +2463,7 @@ class AgentLoop:
     async def _redeliver_failed(self) -> list[str]:
         """Re-deliver a reply that never reached the user, and say so.
 
-        Plan §8: the next turn is told "previous reply not delivered" with
+        The next turn is told "previous reply not delivered" with
         facts, and re-delivers. The original failure is already recorded as
         an event by `_record_delivery_notices`; this re-sends the exact words
         once, then abandons the row so a permanent outage does not repeat the
@@ -2513,8 +2513,8 @@ class AgentLoop:
 
         The transcript is not what an unprompted tick reads, and
         `_last_event_id` is what the tick's observation stream is keyed on —
-        so an event is the only form that survives into every turn type
-        (plan §5). Dedup makes the notice durable exactly once: re-ingesting
+        so an event is the only form that survives into every turn type.
+        Dedup makes the notice durable exactly once: re-ingesting
         the same delivery is a duplicate and writes nothing.
         """
         if self._deliveries is None:
@@ -2545,11 +2545,11 @@ class AgentLoop:
     async def _update_focus(
         self, messages: list[InboundMessage], observations: list[Event], reply: str
     ) -> None:
-        """Persist what the finished turn was about (plan §3, §5).
+        """Persist what the finished turn was about.
 
-        Phase 1 maintains the object only: the reference resolution that
-        reads it is Phase 2's router. It is per chat, so an unprompted tick
-        with no chat reference updates nothing.
+        This layer maintains the object only: the reference resolution that
+        reads it belongs to the query router. It is per chat, so an
+        unprompted tick with no chat reference updates nothing.
         """
         if self._focus is None or not messages:
             return
@@ -2608,8 +2608,8 @@ class AgentLoop:
         """Cache a state-of-now answer with its `as_of` and a short TTL.
 
         The deterministic route trigger is the keyword set; the value is what
-        Aether just answered, source "live". Phase 2 reads it with
-        `get_fresh`, so an expired answer is never served as current (§5).
+        Aether just answered, source "live". The query router reads it with
+        `get_fresh`, so an expired answer is never served as current.
         """
         if self._conclusions is None or not messages or not reply.strip():
             return

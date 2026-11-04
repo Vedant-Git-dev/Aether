@@ -1,4 +1,4 @@
-"""Scheduled actions — proposal §6: written to Postgres at creation time,
+"""Scheduled actions — written to Postgres at creation time,
 never held only in memory, so "send this at 6pm" survives a crash and a
 restart runs everything the process missed while it was down.
 

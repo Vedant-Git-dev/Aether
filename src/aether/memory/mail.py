@@ -4,7 +4,7 @@ The Gmail poll used to land as a single JSON blob truncated to 4000
 characters, so several messages in one poll collided into one row and the
 tail was silently cut. A mail is now one event, carrying the raw
 From/To/Cc values the provider returned — display names and addresses
-intact, never collapsed into the owner's own address (§8) — plus the
+intact, never collapsed into the owner's own address — plus the
 body, so the write-time enrichment that follows has a single message to
 read.
 
@@ -130,7 +130,7 @@ def split_mail(payload: Any, *, now: datetime | None = None) -> list[MailEvent]:
 def mail_payload(message: dict[str, Any]) -> dict[str, Any]:
     """The event payload for one message.
 
-    The headers stay as the provider handed them (§8 keeps them raw), and
+    The headers stay as the provider handed them (raw headers are kept), and
     `sender`/`to`/`cc` keep the Gmail allowlist's own field names and
     string shapes, so the filter judges exactly what it judged before.
     """
@@ -164,7 +164,7 @@ def _raw(value: Any) -> str:
 
 def format_address(address: str, name: str, owners: Any = ()) -> str:
     """One rendered address, with "(your other address)" when it is the
-    user's own (plan §8).
+    user's own.
 
     The address is always shown as it arrived — never collapsed into the
     owner's primary address and never hidden behind the display name, so a
@@ -201,9 +201,9 @@ def render_mail_event(
 ) -> str:
     """A mail line for the model: who, to whom, when, and the new words.
 
-    Quoted reply history is cut (plan §4.5) so the line leads with what this
+    Quoted reply history is cut so the line leads with what this
     message actually says; the raw headers are kept, and an owner address is
-    marked rather than folded into the primary one (§8).
+    marked rather than folded into the primary one.
     """
     subject = str(payload.get("subject") or "").strip()
     sender = _format_list(payload.get("sender"), owners)
@@ -228,7 +228,7 @@ def render_mail_event(
 
 
 # The shapes a quoted reply announces itself with. They are cut from the
-# text the index sees (plan §4.5) — a thread's history embedded in every
+# text the index sees — a thread's history embedded in every
 # later message would otherwise make each reply retrieve as every earlier
 # one, and drown the new words.
 _QUOTE_STARTS = (

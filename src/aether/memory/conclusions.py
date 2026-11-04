@@ -1,6 +1,6 @@
 """The conclusions cache: answers about live state, with a shelf life.
 
-Plan §3 and §5. A conclusion is what Aether decided a moment ago about
+A conclusion is what Aether decided a moment ago about
 something that changes — "nothing urgent", "the inbox is clear", "the build
 is green". It is keyed by a blind token over the question's shape, and its
 value is sealed with the time it was true (`as_of`) and the time it stops
@@ -132,7 +132,7 @@ class Conclusions:
         """The conclusion only while it is still true.
 
         An expired value is not served — the caller must ask the live source
-        again rather than repeat a state that has moved on (§5 freshness).
+        again rather than repeat a state that has moved on.
         """
         now = now or datetime.now(UTC)
         found = await self.get(key)

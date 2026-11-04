@@ -1,4 +1,4 @@
-"""Write-time enrichment at the ingest path (plan §4).
+"""Write-time enrichment at the ingest path.
 
 The properties that matter here are the ones that keep the pipeline honest
 when something is slow or broken:

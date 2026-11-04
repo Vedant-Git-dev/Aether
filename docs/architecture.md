@@ -65,7 +65,7 @@ trail. `entities.py` resolves people across handles. `vectors.py` stores embeddi
 semantic recall. `salience.py` scores what is worth mentioning. `context.py` assembles
 the prompt context.
 
-Write-time enrichment (plan §4) runs inside `events.py`:
+Write-time enrichment runs inside `events.py`:
 
 - the deterministic floor in `enrich.py` raises urgency on its own words (ASAP,
   urgent, "within N hours", "by EOD", deadline) before anything is written, so an

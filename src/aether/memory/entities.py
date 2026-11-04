@@ -32,7 +32,7 @@ CANDIDATE_FLOOR = 75.0
 CANDIDATE_POOL = 200
 MAX_LLM_CANDIDATES = 3
 
-# entity-note kinds for the §4.2 alias exchange. The question is asked
+# entity-note kinds for the owner-alias exchange. The question is asked
 # once; the confirmation is what turns an address into one of the owner's
 # own, at the moment it is recorded.
 ALIAS_QUESTION = "alias_question"
@@ -90,7 +90,7 @@ def _profile_for(cipher: Cipher, identity_id: int, blob: Any) -> tuple[str, floa
 
 def _profile_data(cipher: Cipher, identity_id: int, blob: Any) -> dict[str, Any]:
     """The whole sealed profile — name, confidence, and whether this
-    identity is one of the owner's own addresses (plan §8)."""
+    identity is one of the owner's own addresses."""
     if not blob:
         return {"display_name": "", "confidence": 1.0, "owner": False}
     data = cipher.decrypt_json(blob, aad=f"identities:profile_enc:{identity_id}")
@@ -132,7 +132,7 @@ class Entity:
     confidence: float
     handles: list[tuple[str, str]] = field(default_factory=list)  # (platform, raw_handle)
     # one of the owner's own addresses — rendered as "(your other address)"
-    # and never collapsed into the primary, per plan §8
+    # and never collapsed into the primary
     owner: bool = False
 
 
@@ -140,7 +140,7 @@ class Entity:
 class LinkedAddress:
     """One address from an event, linked to an identity.
 
-    `alias_candidate` is the §4.2 case: the display name looks like the
+    `alias_candidate` is the owner-alias case: the display name looks like the
     owner's but the address is new. It is reported, never acted on — the
     sender is never merged into the owner's identity on a guess.
     """
@@ -319,7 +319,7 @@ class Entities:
         """Append an encrypted relationship note for an identity.
 
         One note kind has a side effect: the owner-alias confirmation. When
-        the user answers the §4.2 question, the address becomes one of the
+        the user answers the owner-alias question, the address becomes one of the
         owner's own at that moment — otherwise the answer would sit in a
         note and mean nothing until some later pass noticed it.
         """
@@ -555,7 +555,7 @@ class Entities:
             handles=[(platform, handle)],
         )
 
-    # -- write-time linking (plan §4.2) --------------------------------------
+    # -- write-time linking --------------------------------------------------
 
     async def link_address(
         self, platform: str, handle: str, display_name: str = ""
@@ -567,7 +567,7 @@ class Entities:
         deciding who somebody is, and the expensive, fallible identity work
         stays where a human asked for it (`resolve`).
 
-        The §4.2 alias case is *reported*, never acted on: a display name
+        The owner-alias case is *reported*, never acted on: a display name
         that looks like one of the owner's own, on an address nobody has
         seen, comes back as a candidate so the caller can ask once. The
         sender is never folded into the owner's identity on a guess.
@@ -691,7 +691,7 @@ class Entities:
     async def pending_alias_questions(self, limit: int = 3) -> list[EntityNote]:
         """Unanswered alias questions, newest first.
 
-        Surfaced on a human turn only — plan §6 forbids mail from prompting
+        Surfaced on a human turn only — mail cannot prompt
         the user by itself, and this is a question, not an alert.
         """
         rows = await self._pool.fetch(

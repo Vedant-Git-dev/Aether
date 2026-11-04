@@ -1,4 +1,4 @@
-"""Delivery records: one row per outbound send attempt (plan §8, C5).
+"""Delivery records: one row per outbound send attempt.
 
 The old fanout logged a failed surface and carried on, and the transcript
 recorded a success either way — so a reply that never reached the user was
@@ -60,7 +60,7 @@ class Deliveries:
 
     async def record_queued(self, surface: str, text: str) -> Delivery | None:
         """Open one attempt. An empty body is refused, never stored — the
-        same rule the fanout enforces before it calls this (plan §8)."""
+        same rule the fanout enforces before it calls this."""
         body = (text or "").strip()
         if not body:
             return None

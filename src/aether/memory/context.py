@@ -34,7 +34,7 @@ class AgentContext:
     pending_approvals: list[Approval] = field(default_factory=list)
     today_memorable: int = 0
     # one-off questions worth asking the user, on a solicited turn only —
-    # currently the §4.2 alias confirmation
+    # currently the owner-alias confirmation
     questions: list[str] = field(default_factory=list)
 
 
@@ -101,9 +101,8 @@ class ContextBuilder:
         """Assemble the turn's working context.
 
         `with_questions` is set only when the user is actually present. An
-        unprompted tick must never raise one of these — plan §6 is explicit
-        that mail cannot prompt the user by itself, and this is a question,
-        not an alert.
+        unprompted tick must never raise one of these — mail cannot prompt the
+        user by itself, and this is a question, not an alert.
         """
         events = await self._store.recent_memorable(limit=50)
         events = apply_daily_cap(events, self._config.daily_surface_cap)

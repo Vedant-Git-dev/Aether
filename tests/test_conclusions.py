@@ -1,7 +1,7 @@
 """The conclusions cache: answers about live state, with a shelf life.
 
 The whole contract is that a state-of-now answer expires — an expired
-conclusion must never be served as current (plan §5). These run against a
+conclusion must never be served as current. These run against a
 real database so the ciphertext-at-rest is proven too.
 """
 

@@ -1177,7 +1177,7 @@ async def test_send_to_user_persists_each_delivered_surface() -> None:
 
 
 # ---------------------------------------------------------------------------
-# delivery failures (plan §8): an event every turn type can see, a retry once
+# delivery failures: an event every turn type can see, a retry once
 # ---------------------------------------------------------------------------
 
 
@@ -1249,7 +1249,7 @@ async def test_a_failed_redelivery_is_abandoned_not_retried_forever() -> None:
 
 
 # ---------------------------------------------------------------------------
-# the attention view and the focus object (plan §3, §5, C4)
+# the attention view and the focus object
 # ---------------------------------------------------------------------------
 
 

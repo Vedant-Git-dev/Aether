@@ -48,7 +48,7 @@ class IndexedEvent:
     memorable: bool
     payload: dict[str, Any] = field(default_factory=dict)
     meta: dict[str, Any] = field(default_factory=dict)
-    # -- write-time enrichment (plan §4) --
+    # -- write-time enrichment --
     urgency: int = 0
     needs_reply: bool = False
     noise: bool = False

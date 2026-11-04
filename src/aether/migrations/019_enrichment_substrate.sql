@@ -1,4 +1,4 @@
--- Phase 1: write-time enrichment substrate.
+-- Write-time enrichment substrate.
 --
 -- One column, and it is not user-derived: a chunk's position inside its
 -- own event. Retrieval needs neighbour expansion (the chunk before and
@@ -7,7 +7,7 @@
 -- document ordering. Leaking the order and the count of a document's
 -- chunks is the whole of what this exposes; no text, no name, no time.
 --
--- Everything else Phase 1 needs already has a sealed home:
+-- Everything else this enrichment needs already has a sealed home:
 --   urgency / deadline / summary / entities  -> events.meta_enc
 --   the owner-alias flag                     -> identities.profile_enc
 --   the asked-once alias marker              -> entity_notes

@@ -1,6 +1,6 @@
 """The delivery record: every outbound send attempt, sealed.
 
-Plan §8. An empty message is never sent or stored; a failure is a durable
+An empty message is never sent or stored; a failure is a durable
 fact the next turn can be told, not a swallowed log line. These run against
 a real database to prove the status vocabulary and ciphertext-at-rest.
 """
@@ -86,7 +86,7 @@ async def test_the_body_and_error_are_ciphertext_at_rest(db) -> None:
 
 
 # ---------------------------------------------------------------------------
-# the fanout's side of the rule (plan §8) — a fake recorder, no database
+# the fanout's side of the rule — a fake recorder, no database
 # ---------------------------------------------------------------------------
 
 

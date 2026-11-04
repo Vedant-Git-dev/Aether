@@ -1,6 +1,6 @@
 """Commitments: what the user owes, and what they are owed.
 
-Plan §3 and §4.3. A commitment is extracted at ingest — greeted by the
+A commitment is extracted at ingest — greeted by the
 classifier alongside urgency and deadlines — and stored here so "what did
 I promise X" and "what's due" are lookups rather than searches.
 
@@ -33,7 +33,7 @@ OPEN = "open"
 DONE = "done"
 CANCELLED = "cancelled"
 
-# kind vocabulary (plaintext) — the four shapes plan §3 names
+# kind vocabulary (plaintext) — the four commitment shapes
 KINDS = ("task", "request", "promise", "awaiting_reply")
 
 

@@ -48,7 +48,7 @@ log = logging.getLogger("aether.memory.vectors")
 _RICH_INDEX_KINDS = frozenset({"shared_doc"})
 
 # A chunk is the unit retrieval reasons over, so its size is a retrieval
-# choice: about 250-400 tokens (plan §4.5) with 15% overlap, which keeps a
+# choice: about 250-400 tokens with 15% overlap, which keeps a
 # citation tight enough to point at and wide enough to be worth reading.
 CHUNK_CHARS = 1_400
 CHUNK_OVERLAP = 210
@@ -95,7 +95,7 @@ def split_text(text: str, max_chars: int = CHUNK_CHARS, overlap: int = CHUNK_OVE
 
 
 def chunk_header(*, name: str = "", location: str = "", sender: str = "", when: Any = None) -> str:
-    """The context line a chunk carries into the index (plan §4.5).
+    """The context line a chunk carries into the index.
 
     A chunk retrieved on its own has to say what it is: which document or
     message, which page, who it came from and when. Without it a page of a
@@ -192,7 +192,7 @@ class VectorMemory:
 
         Each chunk carries a context header naming the document and the
         page it came from, so a page retrieved on its own can still be
-        cited (plan §4.5).
+        cited.
         """
         if not self.enabled:
             return
@@ -214,7 +214,7 @@ class VectorMemory:
         normally it wins vector slots from real mail on any question its
         words happen to touch. Once the classifier has judged it noise,
         what is kept is the one-line summary, so it stays recallable without
-        competing (plan §4.5).
+        competing.
         """
         if not self.enabled or not (summary or "").strip():
             return
@@ -469,7 +469,7 @@ class VectorMemory:
         untruncated document, page by page. The channel memory_search uses
         to re-read a shared document by id.
 
-        Chunks written since phase 1 carry their own context header, so the
+        Chunks written since the header landed carry their own context header, so the
         location is prefixed only for the older rows that do not — otherwise
         a page would announce itself twice.
         """
@@ -542,7 +542,7 @@ def _chunk_text(
 def _mail_chunks(payload: dict[str, Any], occurred_at: datetime | None) -> list[str]:
     """One mail, chunked with its own header.
 
-    The quoted replies are cut first (plan §4.5): a thread's history rides
+    The quoted replies are cut first: a thread's history rides
     inside every later message, and indexed whole it would make each reply
     retrieve as all the earlier ones. The header then names the message,
     its sender and its time, so a single chunk can be cited on its own.

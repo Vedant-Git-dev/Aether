@@ -12,7 +12,7 @@ and mail text, subjects, addresses, names, filenames, media, captions,
 summaries, facts, notes, watches, commitments, embeddings, salience and
 urgency labels, timestamps of events, sources, delivery status text, tool
 arguments and results, traces and error text that quotes content are all
-sealed. Phase 1 adds the same treatment to the write-time enrichment labels
+sealed. The write-time enrichment labels also get the same treatment
 (urgency, `needs_reply`, action type, deadlines and their original phrase),
 the one-line summary, the linked entity ids, the focus object, the
 conclusions cache and the outbound delivery body, message id and error.
@@ -125,13 +125,13 @@ The index also carries the write-time labels decoded out of `meta_enc`
 (urgency, `needs_reply`, deadlines, summary, linked entity ids) and a
 `by_entity` map, so the attention view, the entity timeline and the commitments
 view are lookups over the hot set rather than SQL sorts over encrypted
-columns. Phase 1 adds exactly one plaintext column, `memory_chunks.ordinal`:
+columns. Exactly one plaintext column was added for this: `memory_chunks.ordinal`:
 a chunk's position inside its own event. Retrieval needs the chunk before and
 after a hit, and row ids interleave across events under concurrent ingest, so
 id order is not document order. The ordinal leaks order and chunk count, never
 content.
 
-## Structured stores added in Phase 1
+## Structured stores
 
 - `commitments` — what the user owes and is owed. Kind, status, counterparty
   and source event are plaintext vocabulary and ids; the text, due time and

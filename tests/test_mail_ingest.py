@@ -255,7 +255,7 @@ async def test_a_poll_with_nothing_splittable_keeps_the_blob_shape() -> None:
 
 
 # ---------------------------------------------------------------------------
-# chunking a mail (plan §4.5)
+# chunking a mail
 # ---------------------------------------------------------------------------
 
 
@@ -331,7 +331,7 @@ def test_a_chunk_header_leaves_out_what_it_does_not_have() -> None:
 
 
 # ---------------------------------------------------------------------------
-# rendering (§8): raw headers, owner addresses marked, never collapsed
+# rendering: raw headers, owner addresses marked, never collapsed
 # ---------------------------------------------------------------------------
 
 

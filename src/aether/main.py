@@ -456,7 +456,7 @@ def create_app(
         )
         entities = Entities(pool, cipher, audit, LLMSamePersonJudge(identity_provider))
         salience = Salience(events, LLMJudge(judge_provider), config.salience)
-        # write-time enrichment (plan §4). The store is built before this
+        # write-time enrichment. The store is built before this
         # point — it needs nothing from the model — so the two are joined
         # here: addresses are linked to identities unconditionally (the
         # rendering rules depend on it and it costs no model call), and the
@@ -479,7 +479,7 @@ def create_app(
         app.state.commitments = commitments
         # the structured views (attention, commitments, entity timeline), the
         # per-chat focus object, the live-state conclusions cache and the
-        # outbound delivery record (plan §3, §5, §8)
+        # outbound delivery record
         views = Views(
             memory_index,
             commitments,

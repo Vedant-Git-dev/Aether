@@ -1,4 +1,4 @@
-"""Structured views over the resident index (plan §3, §5, C4).
+"""Structured views over the resident index.
 
 Filtering and sorting cannot run in SQL once the values are sealed, so the
 views every "what's urgent?", "what's due?" and "everything with X" question
@@ -11,10 +11,10 @@ reads from are built in process memory over `MemoryIndex`:
 
 These are substrate: with `memory.enrichment` off nothing ever carries a
 urgency or a deadline, so the attention view reads empty rather than
-guessing. Phase 2's router is what turns a question into one of these calls;
+guessing. A query router is what turns a question into one of these calls;
 this module only answers them. `wants_attention` is the deterministic half
-of that route — the keyword trigger plan §5.3 names — so a Phase 1 turn can
-already surface the view it has.
+of that route — the keyword trigger — so a turn can already surface the view
+it has.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from .commitments import Commitment, Commitments
 from .crypto import Cipher
 from .indexes import IndexedEvent, MemoryIndex
 
-# The words plan §5.3 lists as the attention trigger ("kuch urgent hai?",
+# The words the attention route uses as its trigger ("kuch urgent hai?",
 # "what's pending", "due today"). Cheap and deterministic: the route is a
 # lookup, not a model call, and a false positive costs one view read.
 _ATTENTION_TERMS = (

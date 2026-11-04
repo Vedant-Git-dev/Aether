@@ -1,6 +1,6 @@
 """Write-time enrichment: understand an event once, so questions are lookups.
 
-Plan §4. Two stages, in this order and for a reason:
+Two stages, in this order and for a reason:
 
 1. **The heuristic floor** is deterministic and runs inside the ingest path.
    Words like "ASAP", "urgent", "within 2 hours", "by EOD" or "deadline"
@@ -42,7 +42,7 @@ MAX_URGENCY = 3
 FLOOR_URGENCY = 2
 SUMMARY_CHARS = 140
 
-# The deterministic floor's vocabulary (plan §4.3). Deliberately short and
+# The deterministic floor's vocabulary. Deliberately short and
 # literal: a false positive costs one wasted look, a false negative hides
 # an urgent message.
 FLOOR_TERMS = (

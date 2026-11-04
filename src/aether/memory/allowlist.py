@@ -5,7 +5,7 @@ before the package's runtime dependencies are installed. `memory/storage.py`
 owns the async side (the boot audit and the sealed write path) and
 re-exports everything here.
 
-The rule is the plan's section 1: only opaque ids, sequence numbers, key
+The rule: only opaque ids, sequence numbers, key
 versions, ciphertext, keyed blind-index tokens, status vocabulary and
 schema bookkeeping may sit in a plain column. Everything the user wrote,
 received, or that was derived from it is sealed.

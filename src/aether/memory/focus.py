@@ -1,13 +1,13 @@
-"""The focus object: what the last turn was about (plan §3, §5, C4).
+"""The focus object: what the last turn was about.
 
 One row per chat, keyed by a blind token over the chat reference. The state
 is sealed — it names the user's people, their last offer and their last
 attachment — and it exists so a later turn can resolve "it", "that", "send
 then" and "the assignment" without a search.
 
-Phase 1 only persists and maintains the object. The deterministic reference
-resolution that reads it (§5.1) is Phase 2's router; this module is the
-storage and the bounded shape, not the resolution.
+This layer only persists and maintains the object. The deterministic
+reference resolution that reads it belongs to the query router; this module
+is the storage and the bounded shape, not the resolution.
 """
 
 from __future__ import annotations

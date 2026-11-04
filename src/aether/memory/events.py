@@ -112,7 +112,7 @@ class Event:
     salience_score: float
     memorable: bool
     meta: dict[str, Any]
-    # write-time enrichment (plan §4): decoded out of the sealed meta so a
+    # write-time enrichment: decoded out of the sealed meta so a
     # reader never has to know which dict key holds which label
     urgency: int = 0
     needs_reply: bool = False
@@ -230,7 +230,7 @@ class EventStore:
         when = occurred_at or datetime.now(tz=UTC)
         extra = dict(meta or {})
         # The deterministic floor runs here, synchronously, before anything
-        # is written (plan §4.3): whatever else is late — the classifier, the
+        # is written: whatever else is late — the classifier, the
         # embedder, the network — an event whose own words say "urgent" is
         # never invisible. It is not behind the enrichment flag because the
         # one thing that must not fail is the one thing that cannot fail.
@@ -322,7 +322,7 @@ class EventStore:
             self._spawn_enrichment(event_id, kind, stored_payload, when)
         return IngestResult(stored=True, reason="new", event_id=event_id)
 
-    # -- write-time enrichment (plan §4) --------------------------------------
+    # -- write-time enrichment -----------------------------------------------
 
     def _spawn_enrichment(
         self, event_id: int, kind: str, payload: dict[str, Any], occurred_at: datetime
@@ -403,7 +403,7 @@ class EventStore:
                 if linked.entity.id not in seen:
                     seen.append(linked.entity.id)
                 if linked.alias_candidate and linked.alias_owner_id is not None:
-                    # §4.2: ask once, and only on a later human turn
+                    # ask once, and only on a later human turn
                     await self._entities.ask_alias_once(
                         linked.entity.id,
                         address=address.address,
