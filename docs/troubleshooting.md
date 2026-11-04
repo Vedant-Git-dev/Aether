@@ -3,6 +3,11 @@
 Start with the startup log and `/status`. Both are plain language and neither costs a
 model call.
 
+If you are setting up for the first time, run `scripts/setup.sh` (or
+`scripts\setup.bat`). The wizard collects the database URL, generates the keys and
+writes sealed copies to `~/.aether-setup`; see
+[docs/hosted-setup.md](hosted-setup.md). The fixes below are for an existing install.
+
 ## Boot stops immediately
 
 ### `DATABASE_URL is not set`
