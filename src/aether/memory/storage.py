@@ -198,3 +198,52 @@ class SealedStore:
 
     def unseal(self, blob: bytes, *, table: str, column: str, row_id: Any) -> Any:
         return self._cipher.decrypt_json(blob, aad=f"{table}:{column}:{row_id}")
+
+
+# ---------------------------------------------------------------------------
+# the workspace's sealed file rows
+# ---------------------------------------------------------------------------
+# The workspace owns the content logic; these four functions own the SQL, so
+# the storage guard's "SQL lives in the storage API" rule holds.
+
+
+async def workspace_row(pool: asyncpg.Pool, token: bytes) -> asyncpg.Record | None:
+    return await pool.fetchrow(
+        "SELECT id, name_enc, content_enc FROM workspace_files WHERE name_token = $1",
+        token,
+    )
+
+
+async def workspace_rows(pool: asyncpg.Pool) -> list[asyncpg.Record]:
+    return await pool.fetch("SELECT id, name_enc FROM workspace_files")
+
+
+async def upsert_workspace_file(
+    pool: asyncpg.Pool, cipher: Cipher, *, token: bytes, name: str, content: str
+) -> None:
+    """Insert the row first so the AAD can bind to its id, then seal both
+    the display name and the content."""
+    async with pool.acquire() as conn, conn.transaction():
+        row = await conn.fetchrow("SELECT id FROM workspace_files WHERE name_token = $1", token)
+        if row is None:
+            row = await conn.fetchrow(
+                "INSERT INTO workspace_files (name_token, name_enc, content_enc,"
+                " key_version) VALUES ($1, $2, $3, $4) RETURNING id",
+                token,
+                b"",
+                b"",
+                cipher.key_id,
+            )
+        row_id = row["id"]
+        await conn.execute(
+            "UPDATE workspace_files SET name_enc = $1, content_enc = $2,"
+            " key_version = $3, updated_at = now() WHERE id = $4",
+            cipher.encrypt_text(name, aad=f"workspace_files:name_enc:{row_id}"),
+            cipher.encrypt_text(content, aad=f"workspace_files:content_enc:{row_id}"),
+            cipher.key_id,
+            row_id,
+        )
+
+
+async def delete_workspace_file(pool: asyncpg.Pool, token: bytes) -> None:
+    await pool.execute("DELETE FROM workspace_files WHERE name_token = $1", token)

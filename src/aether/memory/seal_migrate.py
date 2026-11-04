@@ -37,6 +37,38 @@ from .storage import KEY_VERSION
 
 log = logging.getLogger("aether.memory.seal")
 
+# The columns `018_sealed_cutover.sql` drops. Kept here so the CLI can say
+# "already cut over" instead of running queries against a gone column.
+LEGACY_COLUMNS: dict[str, frozenset[str]] = {
+    "events": frozenset(
+        {"source", "kind", "occurred_at", "content_hash", "salience_score", "memorable", "meta"}
+    ),
+    "identities": frozenset({"display_name", "confidence"}),
+    "identity_handles": frozenset({"platform", "raw_handle", "normalized"}),
+    "chat_messages": frozenset({"surface"}),
+    "pending_approvals": frozenset({"rules_matched", "note"}),
+    "scheduled_actions": frozenset({"label", "run_at"}),
+    "routines": frozenset({"label"}),
+    "decision_traces": frozenset({"label"}),
+    "memory_chunks": frozenset(
+        {
+            "source",
+            "kind",
+            "filename",
+            "location",
+            "occurred_at",
+            "embed_model",
+            "embedding",
+            "norm",
+        }
+    ),
+    "proactive_tasks": frozenset({"label", "opportunity_key", "day"}),
+    "media_blobs": frozenset({"filename", "media_type", "width", "height", "duration_s", "origin"}),
+    "provider_connections": frozenset({"account_label", "account_id", "last_error"}),
+    "provider_sync_state": frozenset({"value"}),
+    "connector_cursors": frozenset({"last_seen"}),
+}
+
 Apply = Callable[[asyncpg.Connection, Cipher, asyncpg.Record], Awaitable[bool]]
 
 
@@ -489,6 +521,40 @@ async def backfill(
     return results
 
 
+async def seal_for_cutover(
+    pool: asyncpg.Pool, cipher: Cipher, *, batch: int = 100, sleep: float = 0.0
+) -> list[TableResult]:
+    """The automatic deploy step: seal every legacy row before `018` drops
+    the plaintext columns. Raises rather than letting the cutover run over
+    unsealed content, so a bad key stops the boot instead of erasing data."""
+    results = await backfill(pool, cipher, batch=batch, sleep=sleep)
+    remaining = sum(result.remaining for result in results)
+    failed = sum(result.failed for result in results)
+    if remaining or failed:
+        raise RuntimeError(
+            "sealed storage cutover refused: "
+            f"{remaining} row(s) still pending, {failed} could not be sealed — "
+            "run `python -m aether.memory.seal_migrate --apply` with the right key"
+        )
+    sealed = sum(result.sealed for result in results)
+    log.info("sealed storage cutover: %d row(s) sealed across %d table(s)", sealed, len(results))
+    return results
+
+
+async def legacy_columns_present(pool: asyncpg.Pool) -> bool:
+    """True while any table in the migration ledger still has a plaintext
+    column — the CLI's cue that the cutover has already happened."""
+    rows = await pool.fetch(
+        "SELECT table_name, column_name FROM information_schema.columns"
+        " WHERE table_schema = 'public'"
+    )
+    for record in rows:
+        table = str(record["table_name"])
+        if str(record["column_name"]) in LEGACY_COLUMNS.get(table, frozenset()):
+            return True
+    return False
+
+
 def _cipher(settings: Settings) -> Cipher:
     if not settings.encryption_key:
         raise SystemExit(
@@ -515,6 +581,9 @@ async def _main(args: argparse.Namespace) -> int:
         raise SystemExit(f"unknown table {args.table!r}; choose from {', '.join(JOB_BY_TABLE)}")
     pool = await create_pool(settings.database_url)
     try:
+        if not await legacy_columns_present(pool):
+            print("the sealed cutover is already applied — nothing left to seal")
+            return 0
         if args.verify_only:
             counts = await pending_counts(pool, tables)
             for table, count in counts.items():

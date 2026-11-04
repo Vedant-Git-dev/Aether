@@ -1167,7 +1167,7 @@ def register_native_tools(
             return "workspace_read needs a file: identity, soul, agents, user, memory, bootstrap, or daily."
         date_str = str(params.get("date", "")).strip() or None
         try:
-            text = workspace.read(file, date_str=date_str)
+            text = await workspace.read(file, date_str=date_str)
         except ValueError as exc:
             return str(exc)
         return text or f"{file} is empty."
@@ -1179,7 +1179,7 @@ def register_native_tools(
         limit = _parse_int_param(params, "limit", 5)
         if limit is None:
             return "workspace_search needs limit to be a number."
-        hits = workspace.search(query, limit=limit)
+        hits = await workspace.search(query, limit=limit)
         if not hits:
             return "No matching workspace memory."
         return "\n".join(f"[{h.file}#{h.id or '-'}] {h.text}" for h in hits)
@@ -1191,7 +1191,7 @@ def register_native_tools(
             return "workspace_remember needs text and a kind: preference, fact, daily, or profile."
         source = str(params.get("source") or "agent").strip().lower()
         try:
-            entry_id = workspace.remember(
+            entry_id = await workspace.remember(
                 text,
                 kind,
                 source=source,
@@ -1211,7 +1211,7 @@ def register_native_tools(
         if not date_str or not entry_id:
             return "workspace_promote needs a date (YYYY-MM-DD) and an entry_id."
         try:
-            ok = workspace.promote(
+            ok = await workspace.promote(
                 date_str, entry_id, category=str(params.get("category") or "").strip() or None
             )
         except ValueError as exc:
@@ -1236,7 +1236,7 @@ def register_native_tools(
         if not text:
             return "workspace_rewrite needs text."
         try:
-            workspace.write_raw(file, text)
+            await workspace.write_raw(file, text)
         except SecretRejected as exc:
             return f"not saved: {exc}"
         except WorkspaceWriteError as exc:
@@ -1245,7 +1245,7 @@ def register_native_tools(
 
     async def workspace_finish_bootstrap(params: dict[str, Any]) -> str:
         try:
-            done = workspace.finish_bootstrap()
+            done = await workspace.finish_bootstrap()
         except WorkspaceWriteError as exc:
             return f"not finished — {exc}"
         return "First-run setup marked complete." if done else "No first-run setup was pending."

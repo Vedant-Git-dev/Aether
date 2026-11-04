@@ -44,12 +44,19 @@ by ciphertext) still decrypt; the sealer upgrades them.
 
 ## Sealing existing history
 
-The expand migration (`017_sealed_storage.sql`) adds the sealed columns and
-leaves the plaintext in place. The sealer fills them, verifies each round trip,
-and reports what remains. The cutover migration that drops the plaintext
-columns ships with the stores that read the sealed copies.
+The expand migration (`017_sealed_storage.sql`) adds the sealed columns. The
+cutover (`018_sealed_cutover.sql`) drops the plaintext originals. A deploy does
+both in one boot: `run_migrations` invokes the sealer after `017` and before
+`018`, so no manual step is required. If the sealer cannot seal a row the boot
+stops and `018` never runs — a bad key cannot erase data. On a fresh database
+the sealer finds nothing and the cutover applies immediately.
 
-Run it with the same `AETHER_ENCRYPTION_KEY` and key id the application uses.
+`018` also refuses to drop anything while a sealed copy is missing, so the
+same guarantee holds if the SQL is ever applied by hand. The startup audit
+default is now `enforce`: a column outside the registry stops the boot.
+
+The CLI remains for a manual pass or a pre-deploy check. Run it with the same
+`AETHER_ENCRYPTION_KEY` and key id the application uses.
 
 ```bash
 # how much is left
@@ -71,10 +78,35 @@ A row whose plaintext cannot be decrypted is left untouched and counted as
 failed; it is never replaced with a guess. Nothing is printed but table names
 and counts.
 
-Take a database backup before `--apply`. The plan's own caveat applies: a
-backup, WAL segment or provider snapshot may keep an old plaintext copy until
-it expires. The fresh-database cutover path exists for deployments that need a
-clean boundary.
+## What is not guaranteed
+
+The ciphertext protects a leaked database dump, a stolen backup or a breached
+storage provider. It does not protect the running process: whoever can read
+`AETHER_ENCRYPTION_KEY` and query the database can read the same rows the app
+does.
+
+Historical copies can outlive the cutover. A database backup, a WAL segment, a
+provider snapshot or a Neon point-in-time restore taken before `018` may keep
+the old plaintext columns until that retention window expires. Re-encrypting
+the live tables does not rewrite those copies. For a clean boundary, take a
+fresh database after the cutover and retire the old restore points; there is
+no way to reach into an existing provider snapshot and rewrite it.
+
+## Workspace files
+
+The five curated Markdown files plus daily notes are one sealed row each in
+`workspace_files`. The display name is sealed too; only a keyed blind token
+(the name lookup) and the row id stay plaintext. A missing key or a rotated-away
+row reads as empty and never as text. On the first boot after the upgrade, a
+file-backed workspace is imported row by row, and each file is deleted only
+after its row commits.
+
+The panel editor reads `/api/workspace` and saves through
+`PUT /api/workspace/{file}`; decryption happens on the server and in the
+browser tab, never in a temp file. `POST /api/workspace/export` returns a
+scrypt+AES-256-GCM bundle sealed under a passphrase you choose;
+`POST /api/workspace/import` opens one. A wrong passphrase and a corrupt
+bundle read the same: one plain refusal.
 
 ## The in-memory index
 

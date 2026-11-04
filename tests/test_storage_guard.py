@@ -43,7 +43,7 @@ def _load_guard_script():
 def test_classify_the_three_classes() -> None:
     assert classify("events", "payload_enc") == "sealed"
     assert classify("events", "source_token") == "plaintext"
-    assert classify("events", "meta") == "legacy"
+    assert classify("events", "source") == "unknown"
     assert classify("events", "no_such_column") == "unknown"
     assert classify("no_such_table", "id") == "unknown_table"
 
@@ -65,9 +65,8 @@ def test_every_sealed_column_is_named_enc() -> None:
 def test_check_write_refuses_sealed_and_unknown() -> None:
     with pytest.raises(StorageGuardError, match="sealed"):
         check_write("events", ["payload_enc"])
-    with pytest.raises(StorageGuardError, match="legacy"):
-        check_write("events", ["meta"])
     with pytest.raises(StorageGuardError, match="classify"):
+        check_write("events", ["source"])
         check_write("events", ["surprise"])
     check_write("events", ["source_token", "dedup_mac"])
 
@@ -98,7 +97,7 @@ def test_audit_reports_legacy_unknown_and_wrong_types() -> None:
         _row("mystery", "id"),
     ]
     problems = audit_columns(rows)
-    assert any("events.source" in p and "legacy" in p for p in problems)
+    assert any("events.source" in p and "not classified" in p for p in problems)
     assert any("events.surprise" in p and "not classified" in p for p in problems)
     assert any("events.payload_enc" in p and "not bytea" in p for p in problems)
     assert any("mystery" in p and "registry" in p for p in problems)
@@ -143,9 +142,9 @@ def test_lint_flags_new_plaintext_columns_and_accepts_sealed(tmp_path: Path) -> 
         encoding="utf-8",
     )
     findings = guard.check_file(module, strict=False, root=tmp_path)
-    assert findings == []  # legacy is tolerated during the migration window
+    assert any("not classified" in f.message for f in findings)
     strict = guard.check_file(module, strict=True, root=tmp_path)
-    assert any("legacy plaintext" in f.message for f in strict)
+    assert any("not classified" in f.message for f in strict)
 
 
 def test_lint_flags_unclassified_writes(tmp_path: Path) -> None:
@@ -172,17 +171,20 @@ def test_lint_passes_on_this_repository() -> None:
 
 
 @pytest.mark.integration
-async def test_live_schema_still_has_the_legacy_ledger(db) -> None:
-    violations = await schema_violations(db)
-    assert any("events.source" in v for v in violations)
-    assert any("memory_chunks.filename" in v for v in violations)
+async def test_live_schema_is_clean_after_the_cutover(db) -> None:
+    assert await schema_violations(db) == []
 
 
 @pytest.mark.integration
-async def test_enforce_refuses_and_off_skips(db) -> None:
-    with pytest.raises(StorageGuardError, match="schema audit failed"):
-        await enforce_schema(db, "enforce")
+async def test_enforce_refuses_a_rogue_table_and_off_skips(db) -> None:
+    assert await enforce_schema(db, "enforce") == []
     assert await enforce_schema(db, "off") == []
+    await db.execute("CREATE TABLE rogue_probe (id BIGINT PRIMARY KEY)")
+    try:
+        with pytest.raises(StorageGuardError, match="schema audit failed"):
+            await enforce_schema(db, "enforce")
+    finally:
+        await db.execute("DROP TABLE rogue_probe")
 
 
 @pytest.mark.integration
@@ -190,7 +192,7 @@ async def test_sealed_store_binds_to_the_row(db) -> None:
     cipher = Cipher(b"s" * 32)
     store = SealedStore(db, cipher)
     identity_id = await db.fetchval(
-        "INSERT INTO identities (display_name) VALUES ('someone') RETURNING id"
+        "INSERT INTO identities (profile_enc) VALUES ($1::bytea) RETURNING id", b""
     )
     row = await store.insert(
         "entity_notes",

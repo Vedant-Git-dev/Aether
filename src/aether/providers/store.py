@@ -46,13 +46,13 @@ def _sync_aad(provider: str, app: str, key: str) -> str:
     return f"provider_sync_state:value_enc:{provider}\x1f{app}\x1f{key}"
 
 
-def _open_text(cipher: Cipher | None, blob: Any, fallback: str, aad: str) -> str:
+def _open_text(cipher: Cipher | None, blob: Any, aad: str) -> str:
     if cipher is not None and blob:
         try:
             return cipher.decrypt_text(blob, aad=aad)
         except CryptoError:
-            log.warning("provider field undecryptable — using the plaintext copy")
-    return str(fallback or "")
+            log.warning("provider field undecryptable — treated as empty")
+    return ""
 
 
 class ProviderStore:
@@ -65,10 +65,10 @@ class ProviderStore:
 
     async def get(self, provider: str) -> ProviderConnection | None:
         row = await self._pool.fetchrow(
-            "SELECT provider, auth_mode, account_label, account_id, access_enc,"
-            " refresh_enc, key_id, token_type, scopes, expires_at, refresh_expires_at,"
-            " status, last_refreshed_at, last_error, account_label_enc,"
-            " account_id_enc, last_error_enc, created_at, updated_at"
+            "SELECT provider, auth_mode, access_enc, refresh_enc, key_id,"
+            " token_type, scopes, expires_at, refresh_expires_at, status,"
+            " last_refreshed_at, account_label_enc, account_id_enc,"
+            " last_error_enc, created_at, updated_at"
             " FROM provider_connections WHERE provider = $1",
             provider,
         )
@@ -78,10 +78,10 @@ class ProviderStore:
 
     async def list(self) -> list[ProviderConnection]:
         rows = await self._pool.fetch(
-            "SELECT provider, auth_mode, account_label, account_id, access_enc,"
-            " refresh_enc, key_id, token_type, scopes, expires_at, refresh_expires_at,"
-            " status, last_refreshed_at, last_error, account_label_enc,"
-            " account_id_enc, last_error_enc, created_at, updated_at"
+            "SELECT provider, auth_mode, access_enc, refresh_enc, key_id,"
+            " token_type, scopes, expires_at, refresh_expires_at, status,"
+            " last_refreshed_at, account_label_enc, account_id_enc,"
+            " last_error_enc, created_at, updated_at"
             " FROM provider_connections ORDER BY provider"
         )
         out: list[ProviderConnection] = []
@@ -96,13 +96,11 @@ class ProviderStore:
                         account_label=_open_text(
                             self._cipher,
                             row.get("account_label_enc"),
-                            row["account_label"],
                             _account_aad(row["provider"], "account_label_enc"),
                         ),
                         account_id=_open_text(
                             self._cipher,
                             row.get("account_id_enc"),
-                            row["account_id"],
                             _account_aad(row["provider"], "account_id_enc"),
                         ),
                         key_id=row["key_id"],
@@ -135,16 +133,14 @@ class ProviderStore:
             )
         await self._pool.execute(
             "INSERT INTO provider_connections"
-            " (provider, auth_mode, account_label, account_id, access_enc, refresh_enc,"
-            "  key_id, token_type, scopes, expires_at, refresh_expires_at, status,"
-            "  last_refreshed_at, last_error, updated_at, account_label_enc,"
-            "  account_id_enc, last_error_enc, key_version)"
-            " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,"
-            "  now(), $15, $16, $17, $18)"
+            " (provider, auth_mode, access_enc, refresh_enc, key_id, token_type,"
+            "  scopes, expires_at, refresh_expires_at, status, last_refreshed_at,"
+            "  updated_at, account_label_enc, account_id_enc, last_error_enc,"
+            "  key_version)"
+            " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now(),"
+            "  $12, $13, $14, $15)"
             " ON CONFLICT (provider) DO UPDATE SET"
             "  auth_mode = EXCLUDED.auth_mode,"
-            "  account_label = EXCLUDED.account_label,"
-            "  account_id = EXCLUDED.account_id,"
             "  access_enc = EXCLUDED.access_enc,"
             "  refresh_enc = EXCLUDED.refresh_enc,"
             "  key_id = EXCLUDED.key_id,"
@@ -154,7 +150,6 @@ class ProviderStore:
             "  refresh_expires_at = EXCLUDED.refresh_expires_at,"
             "  status = EXCLUDED.status,"
             "  last_refreshed_at = EXCLUDED.last_refreshed_at,"
-            "  last_error = EXCLUDED.last_error,"
             "  account_label_enc = EXCLUDED.account_label_enc,"
             "  account_id_enc = EXCLUDED.account_id_enc,"
             "  last_error_enc = EXCLUDED.last_error_enc,"
@@ -162,8 +157,6 @@ class ProviderStore:
             "  updated_at = now()",
             connection.provider,
             connection.auth_mode,
-            connection.account_label,
-            connection.account_id,
             access_enc,
             refresh_enc,
             key_id,
@@ -173,7 +166,6 @@ class ProviderStore:
             connection.refresh_expires_at,
             connection.status,
             connection.last_refreshed_at,
-            connection.last_error,
             self._seal_account(connection.account_label, connection.provider, "account_label_enc"),
             self._seal_account(connection.account_id, connection.provider, "account_id_enc"),
             self._seal_account(connection.last_error, connection.provider, "last_error_enc"),
@@ -202,8 +194,8 @@ class ProviderStore:
             "UPDATE provider_connections SET"
             " access_enc = $2, refresh_enc = $3, key_id = $4, scopes = $5,"
             " expires_at = $6, refresh_expires_at = $7, status = $8,"
-            " last_refreshed_at = now(), last_error = $9, last_error_enc = $10,"
-            " key_version = $11, updated_at = now()"
+            " last_refreshed_at = now(), last_error_enc = $9,"
+            " key_version = $10, updated_at = now()"
             " WHERE provider = $1",
             provider,
             access_enc,
@@ -213,7 +205,6 @@ class ProviderStore:
             expires_at,
             refresh_expires_at,
             status,
-            last_error,
             self._seal_account(last_error, provider, "last_error_enc"),
             self._cipher.key_id if self._cipher is not None else "k1",
         )
@@ -221,12 +212,11 @@ class ProviderStore:
 
     async def set_status(self, provider: str, status: str, error: str = "") -> None:
         await self._pool.execute(
-            "UPDATE provider_connections SET status = $2, last_error = $3,"
-            " last_error_enc = $4, key_version = $5, updated_at = now()"
+            "UPDATE provider_connections SET status = $2, last_error_enc = $3,"
+            " key_version = $4, updated_at = now()"
             " WHERE provider = $1",
             provider,
             status,
-            error,
             self._seal_account(error, provider, "last_error_enc"),
             self._cipher.key_id if self._cipher is not None else "k1",
         )
@@ -307,42 +297,34 @@ class ProviderStore:
 
     async def get_sync(self, provider: str, app: str, key: str) -> str | None:
         row = await self._pool.fetchrow(
-            "SELECT value, value_enc FROM provider_sync_state"
+            "SELECT value_enc FROM provider_sync_state"
             " WHERE provider = $1 AND app = $2 AND key = $3",
             provider,
             app,
             key,
         )
-        if row is None:
+        if row is None or row["value_enc"] is None or self._cipher is None:
             return None
-        if row["value_enc"] and self._cipher is not None:
-            try:
-                return self._cipher.decrypt_text(
-                    row["value_enc"], aad=_sync_aad(provider, app, key)
-                )
-            except CryptoError:
-                log.warning("sync cursor for %s/%s/%s is undecryptable", provider, app, key)
-                return None
-        return str(row["value"])
+        try:
+            return self._cipher.decrypt_text(row["value_enc"], aad=_sync_aad(provider, app, key))
+        except CryptoError:
+            log.warning("sync cursor for %s/%s/%s is undecryptable", provider, app, key)
+            return None
 
     async def set_sync(self, provider: str, app: str, key: str, value: str) -> None:
-        blob = (
-            self._cipher.encrypt_text(value, aad=_sync_aad(provider, app, key))
-            if self._cipher is not None
-            else None
-        )
+        if self._cipher is None:
+            raise RuntimeError("the content cipher is not configured — cannot seal a sync cursor")
         await self._pool.execute(
             "INSERT INTO provider_sync_state"
-            " (provider, app, key, value, value_enc, key_version, updated_at)"
-            " VALUES ($1, $2, $3, $4, $5, $6, now())"
+            " (provider, app, key, value_enc, key_version, updated_at)"
+            " VALUES ($1, $2, $3, $4, $5, now())"
             " ON CONFLICT (provider, app, key) DO UPDATE SET"
-            " value = EXCLUDED.value, value_enc = EXCLUDED.value_enc,"
+            " value_enc = EXCLUDED.value_enc,"
             " key_version = EXCLUDED.key_version, updated_at = now()",
             provider,
             app,
             key,
-            value,
-            blob,
+            self._cipher.encrypt_text(value, aad=_sync_aad(provider, app, key)),
             self._cipher.key_id if self._cipher is not None else "k1",
         )
 
@@ -365,13 +347,11 @@ class ProviderStore:
             account_label=_open_text(
                 self._cipher,
                 row.get("account_label_enc"),
-                row["account_label"],
                 _account_aad(provider, "account_label_enc"),
             ),
             account_id=_open_text(
                 self._cipher,
                 row.get("account_id_enc"),
-                row["account_id"],
                 _account_aad(provider, "account_id_enc"),
             ),
             access_token=access,
@@ -386,7 +366,6 @@ class ProviderStore:
             last_error=_open_text(
                 self._cipher,
                 row.get("last_error_enc"),
-                row["last_error"],
                 _account_aad(provider, "last_error_enc"),
             ),
             created_at=row["created_at"],

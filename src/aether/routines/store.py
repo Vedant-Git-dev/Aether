@@ -104,22 +104,20 @@ class Routines:
         one: the row itself deserves a trail entry."""
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
-                "INSERT INTO routines (label, trigger_enc, action_enc,"
-                " cooldown_seconds) VALUES ($1, $2, $3, $4)"
-                " RETURNING id, created_at",
-                label,
+                "INSERT INTO routines (trigger_enc, action_enc, cooldown_seconds,"
+                " key_version) VALUES ($1, $2, $3, $4) RETURNING id, created_at",
                 b"",  # placeholders until the id exists; replaced below, same transaction
                 b"",
                 cooldown_seconds,
+                self._cipher.key_id,
             )
             routine_id = row["id"]
             await conn.execute(
-                "UPDATE routines SET trigger_enc = $1, action_enc = $2, label_enc = $3,"
-                " key_version = $4 WHERE id = $5",
+                "UPDATE routines SET trigger_enc = $1, action_enc = $2, label_enc = $3"
+                " WHERE id = $4",
                 self._cipher.encrypt_json(trigger, aad=_aad(routine_id, "trigger_enc")),
                 self._cipher.encrypt_json(action, aad=_aad(routine_id, "action_enc")),
                 self._cipher.encrypt_text(label, aad=f"routines:label_enc:{routine_id}"),
-                self._cipher.key_id,
                 routine_id,
             )
         await self._audit.append(
@@ -147,7 +145,7 @@ class Routines:
 
     async def get(self, routine_id: int) -> Routine | None:
         row = await self._pool.fetchrow(
-            "SELECT id, label, label_enc, trigger_enc, action_enc, enabled,"
+            "SELECT id, label_enc, trigger_enc, action_enc, enabled,"
             " cooldown_seconds,"
             " fire_count, last_fired_at, created_at FROM routines WHERE id = $1",
             routine_id,
@@ -157,7 +155,7 @@ class Routines:
     async def list(self, limit: int = 50) -> list[Routine]:
         """Newest first, any status — the listing tool's view."""
         rows = await self._pool.fetch(
-            "SELECT id, label, label_enc, trigger_enc, action_enc, enabled,"
+            "SELECT id, label_enc, trigger_enc, action_enc, enabled,"
             " cooldown_seconds,"
             " fire_count, last_fired_at, created_at"
             " FROM routines ORDER BY id DESC LIMIT $1",
@@ -169,7 +167,7 @@ class Routines:
         """What the loop evaluates, oldest first so earlier-taught routines
         fire in the order the user taught them."""
         rows = await self._pool.fetch(
-            "SELECT id, label, label_enc, trigger_enc, action_enc, enabled,"
+            "SELECT id, label_enc, trigger_enc, action_enc, enabled,"
             " cooldown_seconds,"
             " fire_count, last_fired_at, created_at"
             " FROM routines WHERE enabled ORDER BY id"
@@ -186,7 +184,7 @@ class Routines:
     async def set_enabled(self, routine_id: int, enabled: bool) -> Routine | None:
         row = await self._pool.fetchrow(
             "UPDATE routines SET enabled = $1 WHERE id = $2"
-            " RETURNING id, label, label_enc, trigger_enc, action_enc, enabled,"
+            " RETURNING id, label_enc, trigger_enc, action_enc, enabled,"
             " cooldown_seconds, fire_count, last_fired_at, created_at",
             enabled,
             routine_id,
@@ -205,8 +203,8 @@ class Routines:
             try:
                 return self._cipher.decrypt_text(blob, aad=f"routines:label_enc:{row['id']}")
             except Exception:
-                log.warning("routine %s label undecryptable — using the plaintext copy", row["id"])
-        return str(row["label"])
+                log.warning("routine %s label undecryptable — treated as empty", row["id"])
+        return ""
 
     def _to_routine(self, row: asyncpg.Record) -> Routine:
         routine_id = row["id"]

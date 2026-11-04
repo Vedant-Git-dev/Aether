@@ -1,10 +1,9 @@
 """The canary scan: one unique string through every write path, then a sweep
-of every column, and no plaintext copy anywhere it should not be.
+of every column, and no plaintext copy anywhere.
 
-Until the cutover drops the legacy columns, a canary is expected inside the
-legacy plaintext columns the stores dual-write; it must not appear in any
-allowlisted or sealed column, and the sealed payload must still decrypt to
-contain it. The log capture must never see it.
+The cutover dropped the legacy columns, so the sweep must come back empty:
+a canary anywhere is a leak. The sealed payload must still decrypt to
+contain it, and the log capture must never see it.
 """
 
 from __future__ import annotations
@@ -24,12 +23,12 @@ from aether.media.store import MediaStore
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.entities import Entities, Sender
 from aether.memory.events import EventStore
-from aether.memory.storage import LEGACY_PLAINTEXT
 from aether.proactive.store import ProactiveStore
 from aether.providers.crypto import TokenKeyring
 from aether.providers.store import ProviderStore
 from aether.routines.store import Routines
 from aether.scheduler.jobs import Scheduler
+from aether.workspace.store import Workspace
 
 _IDENT = re.compile(r"^[a-z_][a-z0-9_]*$")
 
@@ -58,14 +57,8 @@ async def _sweep(db, needle: str) -> list[str]:
     return found
 
 
-def _legacy_columns() -> set[str]:
-    return {
-        f"{table}.{column}" for table, columns in LEGACY_PLAINTEXT.items() for column in columns
-    }
-
-
 @pytest.mark.integration
-async def test_no_canary_leaks_outside_the_legacy_ledger(db, caplog) -> None:
+async def test_no_canary_leaks_into_any_column(db, caplog) -> None:
     canary = "AETHER-CANARY-7f3a91"
     cipher = Cipher.from_b64(generate_key_b64())
     audit = AuditLog(db)
@@ -130,12 +123,12 @@ async def test_no_canary_leaks_outside_the_legacy_ledger(db, caplog) -> None:
         providers = ProviderStore(db, keyring, cipher)
         await providers.set_sync("gmail", "files", "pageToken", f"cursor {canary}")
 
+        workspace = Workspace(db, cipher=cipher)
+        await workspace.ensure_scaffold()
+        await workspace.remember(f"a note with {canary} in it", "fact")
+
     leaked = await _sweep(db, canary)
-    outside_legacy = sorted(set(leaked) - _legacy_columns())
-    assert outside_legacy == [], f"canary in a non-legacy column: {outside_legacy}"
-    # the legacy dual-writes are the only place it may still sit, and the
-    # cutover is what removes them
-    assert leaked, "expected the canary in the legacy plaintext columns before the cutover"
+    assert leaked == [], f"canary in a column: {leaked}"
 
     # the sealed copy really holds the content, under the cipher
     row = await db.fetchrow(
@@ -145,6 +138,7 @@ async def test_no_canary_leaks_outside_the_legacy_ledger(db, caplog) -> None:
     assert canary in payload["text"]
     meta = cipher.decrypt_json(row["meta_enc"], aad=f"events:meta_enc:{event.event_id}")
     assert canary in meta["extra"]["category"]
+    assert canary in await workspace.read("memory")
 
     # and nothing in the captured log lines
     assert canary not in caplog.text

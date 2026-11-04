@@ -72,29 +72,26 @@ def normalize_handle(platform: str, handle: str) -> str:
 
 
 def _identity_profile(cipher: Cipher, row: Any) -> tuple[str, float]:
-    """Name and confidence from the sealed profile, with the plaintext
-    columns as the migration-window fallback."""
-    blob = row.get("profile_enc")
-    return _profile_for(cipher, row["id"], blob, str(row["display_name"]), float(row["confidence"]))
+    """Name and confidence from the sealed profile."""
+    identity_id = row.get("id", row.get("identity_id"))
+    return _profile_for(cipher, identity_id, row.get("profile_enc"))
 
 
-def _profile_for(
-    cipher: Cipher, identity_id: int, blob: Any, fallback_name: str, fallback_confidence: float
-) -> tuple[str, float]:
-    if blob:
-        data = cipher.decrypt_json(blob, aad=f"identities:profile_enc:{identity_id}")
-        return str(data.get("display_name", "")), float(data.get("confidence", 1.0))
-    return fallback_name, fallback_confidence
+def _profile_for(cipher: Cipher, identity_id: int, blob: Any) -> tuple[str, float]:
+    if not blob:
+        return "", 1.0
+    data = cipher.decrypt_json(blob, aad=f"identities:profile_enc:{identity_id}")
+    return str(data.get("display_name", "")), float(data.get("confidence", 1.0))
 
 
 def _handle_ref(cipher: Cipher, row: Any) -> tuple[str, str]:
     """(platform, raw_handle) for one identity_handles row."""
     blob = row.get("handle_enc")
-    if blob:
-        handle_id = row.get("id", row.get("handle_id"))
-        data = cipher.decrypt_json(blob, aad=f"identity_handles:handle_enc:{handle_id}")
-        return str(data.get("platform", "")), str(data.get("handle", ""))
-    return str(row["platform"]), str(row["raw_handle"])
+    if not blob:
+        return "", ""
+    handle_id = row.get("id", row.get("handle_id"))
+    data = cipher.decrypt_json(blob, aad=f"identity_handles:handle_enc:{handle_id}")
+    return str(data.get("platform", "")), str(data.get("handle", ""))
 
 
 # ---------------------------------------------------------------------------
@@ -227,16 +224,14 @@ class Entities:
 
     async def get(self, identity_id: int) -> Entity | None:
         row = await self._pool.fetchrow(
-            "SELECT id, display_name, confidence, profile_enc FROM identities"
-            " WHERE id = $1 AND merged_into_id IS NULL",
+            "SELECT id, profile_enc FROM identities WHERE id = $1 AND merged_into_id IS NULL",
             identity_id,
         )
         if row is None:
             return None
         display_name, confidence = _identity_profile(self._cipher, row)
         handles = await self._pool.fetch(
-            "SELECT id, platform, raw_handle, handle_enc FROM identity_handles"
-            " WHERE identity_id = $1",
+            "SELECT id, handle_enc FROM identity_handles WHERE identity_id = $1",
             identity_id,
         )
         return Entity(
@@ -250,7 +245,7 @@ class Entities:
         """Everyone Aether has resolved an identity for, most recent first —
         the read side of the "who is this" cross-platform linking."""
         rows = await self._pool.fetch(
-            "SELECT id, display_name, confidence, profile_enc FROM identities"
+            "SELECT id, profile_enc FROM identities"
             " WHERE merged_into_id IS NULL ORDER BY created_at DESC LIMIT $1",
             limit,
         )
@@ -258,7 +253,7 @@ class Entities:
             return []
         ids = [r["id"] for r in rows]
         handle_rows = await self._pool.fetch(
-            "SELECT id, identity_id, platform, raw_handle, handle_enc FROM identity_handles"
+            "SELECT id, identity_id, handle_enc FROM identity_handles"
             " WHERE identity_id = ANY($1::bigint[])",
             ids,
         )
@@ -338,8 +333,7 @@ class Entities:
 
         new = PersonRef(platform, handle, display_name)
         rows = await self._pool.fetch(
-            "SELECT ih.id AS handle_id, ih.platform, ih.raw_handle, ih.handle_enc,"
-            " ih.identity_id, i.display_name, i.confidence, i.profile_enc"
+            "SELECT ih.id AS handle_id, ih.handle_enc, ih.identity_id, i.profile_enc"
             " FROM identity_handles ih JOIN identities i ON i.id = ih.identity_id"
             " WHERE i.merged_into_id IS NULL ORDER BY ih.id DESC LIMIT $1",
             CANDIDATE_POOL,
@@ -347,13 +341,7 @@ class Entities:
         candidates: list[tuple[float, int, PersonRef]] = []
         for row in rows:
             handle_platform, raw_handle = _handle_ref(self._cipher, row)
-            name, _ = _profile_for(
-                self._cipher,
-                row["identity_id"],
-                row["profile_enc"],
-                str(row["display_name"]),
-                float(row["confidence"]),
-            )
+            name, _ = _profile_for(self._cipher, row["identity_id"], row["profile_enc"])
             ref = PersonRef(handle_platform, raw_handle, name)
             score = candidate_score(new, ref)
             if score >= CANDIDATE_FLOOR:
@@ -389,7 +377,7 @@ class Entities:
                 duplicate_id,
             )
             await conn.execute(
-                "UPDATE identities SET merged_into_id = $1, confidence = 0"
+                "UPDATE identities SET merged_into_id = $1"
                 " WHERE id = $2 AND merged_into_id IS NULL",
                 primary_id,
                 duplicate_id,
@@ -407,36 +395,20 @@ class Entities:
     async def _by_normalized(self, normalized: str) -> Entity | None:
         token = self._cipher.blind_token("handle", normalized)
         row = await self._pool.fetchrow(
-            "SELECT ih.identity_id, i.display_name,"
-            " i.confidence, i.profile_enc"
+            "SELECT ih.identity_id, i.profile_enc"
             " FROM identity_handles ih"
             " JOIN identities i ON i.id = ih.identity_id"
             " WHERE ih.normalized_token = $1 AND i.merged_into_id IS NULL",
             token,
         )
         if row is None:
-            # the migration window: a handle the sealer has not reached yet
-            row = await self._pool.fetchrow(
-                "SELECT ih.identity_id, i.display_name,"
-                " i.confidence, i.profile_enc"
-                " FROM identity_handles ih"
-                " JOIN identities i ON i.id = ih.identity_id"
-                " WHERE ih.normalized = $1 AND i.merged_into_id IS NULL",
-                normalized,
-            )
-        if row is None:
             return None
         handles = await self._pool.fetch(
-            "SELECT id, platform, raw_handle, handle_enc FROM identity_handles"
-            " WHERE identity_id = $1",
+            "SELECT id, handle_enc FROM identity_handles WHERE identity_id = $1",
             row["identity_id"],
         )
         display_name, confidence = _profile_for(
-            self._cipher,
-            row["identity_id"],
-            row["profile_enc"],
-            str(row["display_name"]),
-            float(row["confidence"]),
+            self._cipher, row["identity_id"], row["profile_enc"]
         )
         return Entity(
             id=row["identity_id"],
@@ -450,16 +422,16 @@ class Entities:
     ) -> None:
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
-                "INSERT INTO identity_handles (identity_id, platform, raw_handle, normalized,"
-                " platform_token, normalized_token, key_version)"
-                " VALUES ($1, $2, $3, $4, $5, $6, $7)"
-                " ON CONFLICT (platform, normalized) DO NOTHING RETURNING id",
+                "INSERT INTO identity_handles (identity_id, platform_token,"
+                " normalized_token, handle_enc, key_version)"
+                " VALUES ($1, $2, $3, $4, $5)"
+                " ON CONFLICT (platform_token, normalized_token)"
+                " WHERE platform_token IS NOT NULL AND normalized_token IS NOT NULL"
+                " DO NOTHING RETURNING id",
                 identity_id,
-                platform,
-                handle,
-                normalized,
                 self._cipher.blind_token("platform", platform),
                 self._cipher.blind_token("handle", normalized),
+                b"",
                 self._cipher.key_id,
             )
             if row is not None:
@@ -485,8 +457,8 @@ class Entities:
     ) -> Entity:
         async with self._pool.acquire() as conn, conn.transaction():
             identity_id = await conn.fetchval(
-                "INSERT INTO identities (display_name) VALUES ($1) RETURNING id",
-                display_name or handle,
+                "INSERT INTO identities (profile_enc) VALUES ($1) RETURNING id",
+                b"",  # placeholder until the id exists; replaced below, same transaction
             )
             await conn.execute(
                 "UPDATE identities SET profile_enc = $1, key_version = $2 WHERE id = $3",
@@ -498,16 +470,16 @@ class Entities:
                 identity_id,
             )
             handle_row = await conn.fetchrow(
-                "INSERT INTO identity_handles (identity_id, platform, raw_handle, normalized,"
-                " platform_token, normalized_token, key_version)"
-                " VALUES ($1, $2, $3, $4, $5, $6, $7)"
-                " ON CONFLICT (platform, normalized) DO NOTHING RETURNING id",
+                "INSERT INTO identity_handles (identity_id, platform_token,"
+                " normalized_token, handle_enc, key_version)"
+                " VALUES ($1, $2, $3, $4, $5)"
+                " ON CONFLICT (platform_token, normalized_token)"
+                " WHERE platform_token IS NOT NULL AND normalized_token IS NOT NULL"
+                " DO NOTHING RETURNING id",
                 identity_id,
-                platform,
-                handle,
-                normalized,
                 self._cipher.blind_token("platform", platform),
                 self._cipher.blind_token("handle", normalized),
+                b"",
                 self._cipher.key_id,
             )
             if handle_row is not None:

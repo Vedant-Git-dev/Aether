@@ -158,7 +158,7 @@ class MemoryConfig(BaseModel):
 
     # off: no audit; warn: log violations and boot; enforce: refuse to boot
     # while any plaintext content column or unknown column remains
-    schema_audit: Literal["off", "warn", "enforce"] = "warn"
+    schema_audit: Literal["off", "warn", "enforce"] = "enforce"
     hot_events: int = 2_000
     hot_chunks: int = 8_000
     cold_batch: int = 500
@@ -273,9 +273,9 @@ class WorkspaceConfig(BaseModel):
 
     enabled: bool = True
     path: str = "aether-workspace"
-    # AES-256-GCM at rest with the server's key. Turning this off later
-    # makes new files plain text again but never decrypts what was
-    # already written — those keep reading as empty until re-created.
+    # Retained so older config files keep loading. The workspace now lives
+    # in sealed database rows and always uses the content key; this switch
+    # no longer turns encryption off.
     encrypted: bool = True
 
 

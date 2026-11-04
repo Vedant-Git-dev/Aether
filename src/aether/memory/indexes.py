@@ -16,7 +16,6 @@ This module deliberately does not import `events.Event`: the store converts an
 from __future__ import annotations
 
 import bisect
-import json
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -24,7 +23,7 @@ from typing import Any
 
 import asyncpg
 
-from .crypto import Cipher
+from .crypto import Cipher, CryptoError
 
 log = logging.getLogger("aether.memory.indexes")
 
@@ -44,32 +43,22 @@ class IndexedEvent:
 
 
 def decode_event_row(cipher: Cipher, row: asyncpg.Record) -> IndexedEvent:
-    """One events row, sealed copy preferred, plaintext columns only as the
-    migration-window fallback. Raises CryptoError on unreadable content so
-    callers can skip and count it."""
+    """One events row, sealed only. Raises CryptoError on unreadable content
+    so callers can skip and count it."""
     event_id = int(row["id"])
     payload = cipher.decrypt_json(row["payload_enc"], aad=f"events:payload_enc:{event_id}")
-    if row.get("meta_enc"):
-        meta = cipher.decrypt_json(row["meta_enc"], aad=f"events:meta_enc:{event_id}")
-        return IndexedEvent(
-            id=event_id,
-            source=str(meta.get("source", "")),
-            kind=str(meta.get("kind", "")),
-            occurred_at=_parse_time(meta.get("occurred_at"), row["occurred_at"]),
-            salience_score=float(meta.get("salience", 0.0)),
-            memorable=bool(meta.get("memorable", False)),
-            payload=payload,
-            meta=dict(meta.get("extra") or {}),
-        )
+    if not row.get("meta_enc"):
+        raise CryptoError(f"event {event_id} has no sealed metadata")
+    meta = cipher.decrypt_json(row["meta_enc"], aad=f"events:meta_enc:{event_id}")
     return IndexedEvent(
         id=event_id,
-        source=str(row["source"]),
-        kind=str(row["kind"]),
-        occurred_at=row["occurred_at"],
-        salience_score=float(row["salience_score"]),
-        memorable=bool(row["memorable"]),
+        source=str(meta.get("source", "")),
+        kind=str(meta.get("kind", "")),
+        occurred_at=_parse_time(meta.get("occurred_at"), row.get("created_at")),
+        salience_score=float(meta.get("salience", 0.0)),
+        memorable=bool(meta.get("memorable", False)),
         payload=payload,
-        meta=json.loads(row["meta"]) if row["meta"] else {},
+        meta=dict(meta.get("extra") or {}),
     )
 
 
@@ -84,9 +73,7 @@ def _parse_time(value: Any, fallback: datetime) -> datetime:
     return fallback
 
 
-_EVENT_COLUMNS = (
-    "id, source, kind, occurred_at, payload_enc, meta_enc, salience_score, memorable, meta"
-)
+_EVENT_COLUMNS = "id, payload_enc, meta_enc, created_at"
 
 
 class MemoryIndex:
@@ -254,6 +241,5 @@ class MemoryIndex:
                     log.warning("event %s undecryptable — left out of the index", row["id"])
             if not rows:
                 return
-            self._covers_from = min(
-                self._covers_from or rows[-1]["occurred_at"], rows[-1]["occurred_at"]
-            )
+            oldest = decode_event_row(cipher, rows[-1]).occurred_at
+            self._covers_from = min(self._covers_from or oldest, oldest)

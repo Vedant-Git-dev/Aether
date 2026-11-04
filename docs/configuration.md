@@ -214,12 +214,15 @@ senders.
 | Key | Default | Notes |
 | --- | --- | --- |
 | `enabled` | `true` | |
-| `path` | `aether-workspace` | Relative to the working directory |
-| `encrypted` | `true` | AES-256-GCM at rest |
+| `path` | `aether-workspace` | One-time import source; the files then live in Postgres |
+| `encrypted` | `true` | Retained for older config files; the database store always seals |
 
 Files: `IDENTITY.md`, `SOUL.md`, `AGENTS.md`, `USER.md`, `MEMORY.md`, and
-`memory/YYYY-MM-DD.md`. They are encrypted individually and bound to their names.
-Turning encryption off later does not decrypt files already written.
+`memory/YYYY-MM-DD.md`. Each is one sealed row in `workspace_files`, bound to
+its row id, with a keyed blind token for the name. On the first boot after
+upgrading, a file-backed workspace at `path` is imported and its files are
+removed; nothing readable stays on disk. Edit them in Settings, Workspace
+files, or through the workspace tools. Export and import use a passphrase.
 
 ### `proactive`
 

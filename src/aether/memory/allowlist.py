@@ -241,46 +241,19 @@ SEALED_COLUMNS: dict[str, frozenset[str]] = {
     "workspace_files": frozenset({"name_enc", "content_enc"}),
 }
 
-# The migration ledger. Every entry is a plaintext column that carries
-# user-derived content today and must be sealed and dropped before the
-# audit runs in enforce mode. Shrinks to empty by the end of the phase.
-LEGACY_PLAINTEXT: dict[str, frozenset[str]] = {
-    "events": frozenset(
-        {
-            "source",
-            "kind",
-            "occurred_at",
-            "content_hash",
-            "salience_score",
-            "memorable",
-            "meta",
-        }
-    ),
-    "identities": frozenset({"display_name", "confidence"}),
-    "identity_handles": frozenset({"platform", "raw_handle", "normalized"}),
-    "chat_messages": frozenset({"surface"}),
-    "pending_approvals": frozenset({"rules_matched", "note"}),
-    "scheduled_actions": frozenset({"label", "run_at"}),
-    "routines": frozenset({"label"}),
-    "decision_traces": frozenset({"label"}),
-    "memory_chunks": frozenset(
-        {
-            "source",
-            "kind",
-            "filename",
-            "location",
-            "occurred_at",
-            "embed_model",
-            "embedding",
-            "norm",
-        }
-    ),
-    "proactive_tasks": frozenset({"label", "opportunity_key", "day"}),
-    "media_blobs": frozenset({"filename", "media_type", "width", "height", "duration_s", "origin"}),
-    "provider_connections": frozenset({"account_label", "account_id", "last_error"}),
-    "provider_sync_state": frozenset({"value"}),
-    "connector_cursors": frozenset({"last_seen"}),
-}
+# The migration ledger is now empty: `018_sealed_cutover.sql` dropped every
+# plaintext original. Historical note for anyone reading an old database:
+# the cutover covered events (source, kind, occurred_at, content_hash,
+# salience_score, memorable, meta), identities (display_name, confidence),
+# identity_handles (platform, raw_handle, normalized), chat_messages
+# (surface), pending_approvals (rules_matched, note), scheduled_actions
+# (label, run_at), routines (label), decision_traces (label), memory_chunks
+# (source, kind, filename, location, occurred_at, embed_model, embedding,
+# norm), proactive_tasks (label, opportunity_key, day), media_blobs
+# (filename, media_type, width, height, duration_s, origin),
+# provider_connections (account_label, account_id, last_error),
+# provider_sync_state (value) and connector_cursors (last_seen).
+LEGACY_PLAINTEXT: dict[str, frozenset[str]] = {}
 
 
 class StorageGuardError(RuntimeError):
