@@ -920,11 +920,7 @@ class AgentLoop:
                 self._spawn_scoring(result.event_id)
                 self._last_event_id = max(self._last_event_id, result.event_id)
             if result.reason == "filtered:contacts":
-                log.info(
-                    "inbound from %s on %s filtered by the allowlist",
-                    message.handle,
-                    message.surface,
-                )
+                log.info("inbound on %s filtered by the allowlist", message.surface)
                 continue
             # (b2) files the user shared: described (images) or extracted
             # (documents) into memory here — past the allowlist, before the
@@ -1654,7 +1650,7 @@ class AgentLoop:
             try:
                 await self._fire_routine(routine, event)
             except Exception:
-                log.exception("routine %d (%s) failed — continuing", routine.id, routine.label)
+                log.exception("routine %d failed — continuing", routine.id)
 
     async def _fire_routine(self, routine: Any, event: Event) -> None:
         action = routine.action or {}
@@ -1667,7 +1663,7 @@ class AgentLoop:
         try:
             result = await self._execute(call, trace=calls)
         except Exception as exc:
-            log.exception("routine %d (%s) fire failed", routine.id, routine.label)
+            log.exception("routine %d fire failed", routine.id)
             result = ToolResult(
                 tool_call_id=call.id,
                 name=call.name,
@@ -1684,7 +1680,7 @@ class AgentLoop:
             decision="info",
             rules_matched=f"routine:{routine.id}",
             params={"event_id": event.id, "event": f"{event.source}/{event.kind}"},
-            outcome=f"routine '{routine.label}' fired on {event.source}/{event.kind}",
+            outcome="routine fired",
         )
         refs = await self._notify(
             # the exact call stays in the audit row and the trace; the chat
@@ -2376,7 +2372,7 @@ class AgentLoop:
                     decision="error",
                     rules_matched=ruling.matched_rule,
                     params=call.arguments,
-                    outcome=exc.plain,
+                    outcome="provider error — see the turn trace",
                 )
                 result = ToolResult(
                     tool_call_id=call.id,

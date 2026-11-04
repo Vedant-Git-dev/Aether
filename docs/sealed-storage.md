@@ -86,6 +86,24 @@ write. A query that needs an older window cold-scans `memory.cold_batch` rows
 at a time and folds them into the same index; it never scans the whole table
 for one question. Nothing in the index is persisted.
 
+## Logs and canaries
+
+Application code logs ids and counts, never content: no handle, label, subject,
+filename, address or error text that could quote one. A scrubber is installed on
+the root handlers and on the access log as a safety net, rewriting tokens in
+URLs, contact links, addresses, home paths, filenames and long quoted snippets
+before any handler sees the record. `tests/test_logging_setup.py` pins that
+behaviour.
+
+`tests/test_canary.py` is the end-to-end check. One unique string is pushed
+through every write path — event text and subject, sender address, note,
+approval, schedule, routine, trace, proactive task, media filename, chat line,
+sync cursor and audit outcome — and then every column of every table is swept
+for it. Outside the migration window the sweep must be empty. While the legacy
+plaintext columns still exist, the canary may appear only in the columns listed
+in `LEGACY_PLAINTEXT`; the cutover removes those. The captured log text must
+never contain it, and the sealed payload must still decrypt to contain it.
+
 ## Key rotation
 
 Set the new key as `AETHER_ENCRYPTION_KEY` with a new `AETHER_ENCRYPTION_KEY_ID`,
