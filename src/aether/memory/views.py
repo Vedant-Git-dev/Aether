@@ -49,6 +49,8 @@ _ATTENTION_TERMS = (
     "follow up",
     "follow-up",
     "action required",
+    "serious",
+    "important",
 )
 _ATTENTION_RE = re.compile(
     "|".join(rf"\b{re.escape(term)}\b" for term in _ATTENTION_TERMS), re.IGNORECASE

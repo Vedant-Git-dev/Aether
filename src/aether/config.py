@@ -173,6 +173,33 @@ class MemoryConfig(BaseModel):
     conclusion_ttl_seconds: int = 120
     # the new routing/retrieval pipeline; off keeps the old vector recall
     query_pipeline: bool = False
+    # -- retrieval ranking (plan.md section 5) -- the eval tunes these --
+    # an optional listwise rerank: one small-model call only when the
+    # candidate pool is broad and the score margin is low. Off until the
+    # evaluation shows it beats the fused order it would replace.
+    query_rerank: bool = False
+    rerank_margin: float = 0.15
+    rrf_k: int = 60
+    retrieve_pool: int = 30
+    select_pool: int = 30
+    mmr_lambda: float = 0.7
+    w_recency: float = 0.35
+    w_entity: float = 0.25
+    w_urgency: float = 0.25
+    w_salience: float = 0.15
+    half_life_mail_days: float = 3.0
+    half_life_doc_days: float = 30.0
+    # the relevance gate: a hit must reach this share of the pool's best
+    # fused score and carry an entity or query-term match, or the turn
+    # abstains with NO_RELEVANT_MEMORY
+    relevance_floor: float = 0.45
+    # a vector-only paraphrase passes the gate at or above this cosine
+    relevance_vector_floor: float = 0.5
+    pack_token_budget: int = 2_500
+    max_chunks_per_event: int = 3
+    max_packed_lines: int = 8
+    # memory_search stays a model tool; each turn may call it this many times
+    max_search_rounds: int = 3
     default_timezone: str = "Asia/Kolkata"
 
 

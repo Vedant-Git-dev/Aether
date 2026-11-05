@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, Response
@@ -60,6 +62,8 @@ from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
 from .memory.focus import Focus
 from .memory.indexes import MemoryIndex
+from .memory.lexical import LexicalIndex
+from .memory.pipeline import QueryPipeline, retrieval_config_from
 from .memory.salience import LLMJudge, Salience
 from .memory.seal_migrate import seal_for_cutover
 from .memory.storage import StorageGuardError, enforce_schema
@@ -313,6 +317,34 @@ def create_app(
         memory_index = MemoryIndex()
         await memory_index.rebuild(pool, cipher, hot_limit=config.memory.hot_events)
         app.state.memory_index = memory_index
+        # the lexical half of retrieval: an in-memory BM25 index over the
+        # same sealed chunks, rebuilt at boot and kept current by the one
+        # chunk writer. It is what answers a name, a filename or "slide 3"
+        # when the embedding path cannot
+        lexical = LexicalIndex(
+            hot_chunks=config.memory.hot_chunks,
+            cold_batch=config.memory.cold_batch,
+        )
+        await lexical.rebuild(pool, cipher)
+        app.state.lexical_index = lexical
+
+        def _chunk_listener(chunk: dict[str, Any]) -> None:
+            if chunk.get("action") == "remove":
+                lexical.remove_event(int(chunk["event_id"]))
+                return
+            lexical.add_chunk(
+                chunk_id=int(chunk["chunk_id"]),
+                event_id=int(chunk["event_id"]),
+                ordinal=int(chunk.get("ordinal") or 0),
+                source=str(chunk.get("source", "")),
+                kind=str(chunk.get("kind", "")),
+                filename=str(chunk.get("filename", "")),
+                location=str(chunk.get("location", "")),
+                occurred_at=chunk.get("occurred_at") or datetime.now(UTC),
+                text=str(chunk.get("text", "")),
+            )
+
+        vectors.add_chunk_listener(_chunk_listener)
         events = EventStore(
             pool,
             cipher,
@@ -499,6 +531,18 @@ def create_app(
         scheduler = Scheduler(pool, cipher, audit)
         app.state.entities = entities
         app.state.scheduler = scheduler
+        # the routed query pipeline — routing, lexical + vector fusion, the
+        # relevance gate and packing. Built here, gated per turn by
+        # memory.query_pipeline, with the old vector recall as fallback.
+        query_pipeline = QueryPipeline(
+            lexical=lexical,
+            index=memory_index,
+            views=views,
+            vectors=vectors,
+            cfg=retrieval_config_from(config.memory),
+            timezone=config.memory.default_timezone,
+        )
+        app.state.query_pipeline = query_pipeline
         # the proactive worker's task rows — the same audit chain as
         # everything else; the worker and its skills land later in boot
         proactive_store = ProactiveStore(pool, cipher, audit)
@@ -580,6 +624,7 @@ def create_app(
             focus=focus,
             conclusions=conclusions,
             deliveries=deliveries,
+            query_pipeline=query_pipeline,
         )
         app.state.agent = agent
         native = register_native_tools(
@@ -596,6 +641,7 @@ def create_app(
             config_manager=config_manager,
             workspace=workspace,
             vectors=vectors,
+            pipeline=query_pipeline,
             web=web_tools,
             media=media_store,
             providers=providers,

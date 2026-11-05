@@ -201,6 +201,32 @@ class SealedStore:
 
 
 # ---------------------------------------------------------------------------
+# the chunk rows the in-memory retrieval indexes are built from
+# ---------------------------------------------------------------------------
+# Chunk text is sealed, so the BM25 index decrypts it in process memory. The
+# SQL stays here for the same reason the workspace's does: one module owns it.
+
+
+async def newest_chunk_rows(pool: asyncpg.Pool, limit: int) -> list[asyncpg.Record]:
+    """The newest chunk rows by id — the boot rebuild's bounded read."""
+    return await pool.fetch(
+        "SELECT id, event_id, text_enc, meta_enc, ordinal, key_version"
+        " FROM memory_chunks ORDER BY id DESC LIMIT $1",
+        limit,
+    )
+
+
+async def older_chunk_rows(pool: asyncpg.Pool, before_id: int, limit: int) -> list[asyncpg.Record]:
+    """One cold batch of chunks older than `before_id`, newest first."""
+    return await pool.fetch(
+        "SELECT id, event_id, text_enc, meta_enc, ordinal, key_version"
+        " FROM memory_chunks WHERE id < $1 ORDER BY id DESC LIMIT $2",
+        before_id,
+        limit,
+    )
+
+
+# ---------------------------------------------------------------------------
 # the workspace's sealed file rows
 # ---------------------------------------------------------------------------
 # The workspace owns the content logic; these four functions own the SQL, so

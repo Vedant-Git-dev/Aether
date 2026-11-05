@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -128,6 +128,25 @@ class VectorMemory:
         # background index tasks in flight — tracked so the loop is never
         # garbage-collected mid-await and shutdown can drain them
         self._inflight: set[asyncio.Task[None]] = set()
+        # in-memory index halves watching the chunk writer (the lexical
+        # BM25 index registers here). One callback per commit — the only
+        # chunk writer there is, so no index can drift from the store.
+        self._chunk_listeners: list[Callable[[dict[str, Any]], None]] = []
+
+    def add_chunk_listener(self, listener: Callable[[dict[str, Any]], None]) -> None:
+        """An in-memory index that wants every committed chunk. The event
+        says "add" with (chunk_id, ordinal, location, text, source, kind,
+        filename, occurred_at) or "remove" with just event_id. Callbacks
+        are synchronous and in-memory: they run inside the indexing task,
+        and a raising listener never fails the write."""
+        self._chunk_listeners.append(listener)
+
+    def _notify(self, event: dict[str, Any]) -> None:
+        for listener in self._chunk_listeners:
+            try:
+                listener(event)
+            except Exception:
+                log.warning("chunk listener failed — its index may be behind", exc_info=True)
 
     @property
     def enabled(self) -> bool:
@@ -225,6 +244,7 @@ class VectorMemory:
             return
         source, kind, when = self._event_meta(row)
         await self._pool.execute("DELETE FROM memory_chunks WHERE event_id = $1", event_id)
+        self._notify({"action": "remove", "event_id": event_id})
         await self._index_chunks(event_id, source, kind, "", [("", summary.strip())], when)
         await self._mark_indexed(event_id)
 
@@ -247,6 +267,7 @@ class VectorMemory:
         if not parts:
             return
         vectors = await self._embedder.embed([text for _, text in parts], task="document")
+        committed: list[dict[str, Any]] = []
         async with self._pool.acquire() as conn, conn.transaction():
             for ordinal, ((location, text), vector) in enumerate(zip(parts, vectors, strict=True)):
                 row = await conn.fetchrow(
@@ -288,6 +309,29 @@ class VectorMemory:
                     meta_blob,
                     chunk_id,
                 )
+                committed.append(
+                    {
+                        "chunk_id": chunk_id,
+                        "ordinal": ordinal,
+                        "location": location,
+                        "text": text,
+                    }
+                )
+        # the transaction has committed — declare the chunks to whichever
+        # in-memory index halves are watching (a plain index add: the text
+        # never travels, it is already decrypted in this process)
+        for chunk in committed:
+            self._notify(
+                {
+                    "action": "add",
+                    "event_id": event_id,
+                    **chunk,
+                    "source": source,
+                    "kind": kind,
+                    "filename": filename,
+                    "occurred_at": occurred_at,
+                }
+            )
 
     async def _mark_indexed(self, event_id: int) -> None:
         await self._pool.execute(

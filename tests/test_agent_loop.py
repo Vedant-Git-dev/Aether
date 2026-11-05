@@ -163,6 +163,11 @@ class LoopKit:
         vectors: Any = None,
         mail_filter: Any = None,
         provider_runtime: Any = None,
+        query_pipeline: Any = None,
+        focus: Any = None,
+        entities: Any = None,
+        views: Any = None,
+        conclusions: Any = None,
     ):
         self.tools = ToolRegistry()
         self.events = FakeEventStore()
@@ -200,6 +205,11 @@ class LoopKit:
             vectors=vectors,
             mail_filter=mail_filter,
             provider_runtime=provider_runtime,
+            query_pipeline=query_pipeline,
+            focus=focus,
+            entities=entities,
+            views=views,
+            conclusions=conclusions,
         )
         if config_manager is not None:
             # the real native config tools, so a /config write goes through

@@ -79,7 +79,10 @@ async def test_rebuild_restores_time_and_count_views(db) -> None:
     got = await wired.get(first.event_id)
     assert got is not None and got.meta["category"] == "work"
     assert [event.id for event in await wired.recent_memorable(10)] == [first.event_id]
-    assert await wired.count_recent("gmail", hours=48) == 1
+    # the window is measured from the real clock, so derive it from the fixed
+    # fixture time instead of hardcoding hours that expire with the calendar
+    window = int((datetime.now(UTC) - _at(8)).total_seconds() // 3600) + 1
+    assert await wired.count_recent("gmail", hours=window) == 1
 
 
 @pytest.mark.integration
