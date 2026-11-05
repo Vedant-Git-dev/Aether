@@ -2,15 +2,13 @@ import Icon from "./Icon.jsx";
 import Clock from "./Clock.jsx";
 import { useTheme } from "../hooks/useTheme.js";
 
-// Menu (mobile only), page title, host breadcrumb, clock, theme toggle, and
-// the one brass lamp: how many actions sit waiting for a verdict. It points
-// at Tasks, where they are decided.
+// Menu (mobile only), page title, host breadcrumb, clock, and theme toggle.
 const hostLabel = () => {
   const host = location.hostname || "";
   return !host || host === "localhost" || host === "127.0.0.1" ? "local" : host;
 };
 
-export default function Topbar({ title, pendingCount, onMenu }) {
+export default function Topbar({ title, onMenu }) {
   const { theme, toggle } = useTheme();
   const themeLabel = theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
   const iconBtn =
@@ -45,17 +43,6 @@ export default function Topbar({ title, pendingCount, onMenu }) {
         >
           <Icon name={theme === "dark" ? "sun" : "moon"} className="h-4 w-4" />
         </button>
-        <a
-          href="#/tasks"
-          aria-label={pendingCount ? `${pendingCount} awaiting your approval` : "Nothing is waiting on you"}
-          title={pendingCount ? `${pendingCount} waiting on you` : "Nothing is waiting on you"}
-          className={`${iconBtn} relative gap-1.5`}
-        >
-          <Icon name="bell" className="h-4 w-4" />
-          {pendingCount > 0 && (
-            <span className="text-[12.5px] font-medium tabular-nums text-accent">{pendingCount}</span>
-          )}
-        </a>
       </div>
     </header>
   );
