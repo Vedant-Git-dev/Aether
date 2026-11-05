@@ -1,25 +1,17 @@
-// The work queue. At the top, the actions waiting on a verdict — the same
-// requests Aether sends to the chat surfaces, decidable here as well. Below
-// them, scheduled actions and the background worker's finished work, each
-// carrying the same one-tap verdicts through the same decide path.
+// The work queue: scheduled actions and what the background worker finished.
 import { useEffect, useState } from "react";
 import PageHead from "../components/PageHead.jsx";
 import { Button, Card, SectionLabel } from "../components/ui.jsx";
 import EmptyState, { NoToken } from "../components/EmptyState.jsx";
-import ApprovalCard from "../components/ApprovalCard.jsx";
 import { useToast } from "../components/Toasts.jsx";
 import { api, hasToken } from "../lib/api.js";
 import { useBusyAction } from "../lib/busy.js";
 import { fmtTime } from "../lib/format.js";
-import { useData } from "../store.jsx";
 import {
   describeTool,
   describeSkill,
   describeFeedback,
-  describeOutcome,
   plainText,
-  DECIDED_OUTCOME,
-  SETTLED_OUTCOMES,
 } from "../lib/describe.js";
 import { statusColor } from "../lib/status.js";
 
@@ -33,7 +25,6 @@ const VERDICTS = {
 
 export default function TasksPage() {
   const toast = useToast();
-  const { approvals, approvalUi, decide, audit } = useData();
   const [tasks, setTasks] = useState(null);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("all");
@@ -60,12 +51,6 @@ export default function TasksPage() {
 
   const visible = (tasks || []).filter((t) => filter === "all" || t.status === filter);
 
-  // the approvals Aether has already carried out, read from the same audit
-  // feed the audit page shows
-  const settled = (audit.entries || [])
-    .filter((e) => DECIDED_OUTCOME.test(e.outcome || "") || SETTLED_OUTCOMES.has(e.outcome))
-    .slice(0, 5);
-
   const decideTask = (id, verdict) =>
     runBusy(id, verdict, async () => {
       try {
@@ -91,43 +76,12 @@ export default function TasksPage() {
       <PageHead
         eyebrow="Work queue"
         title="Tasks"
-        sub="Actions waiting on your verdict, the actions Aether has scheduled, and what the background worker finished. You can answer a request here or in the chat Aether asked you in."
+        sub="Actions Aether has scheduled and what the background worker finished."
       />
       {!hasToken() ? (
         <Card><NoToken /></Card>
       ) : (
         <>
-          <SectionLabel className="mb-2">Waiting on you</SectionLabel>
-          {approvals.length ? (
-            <Card className="mb-8 overflow-hidden">
-              {approvals.map((a) => (
-                <ApprovalCard key={a.id} a={a} ui={approvalUi[a.id] || {}} onDecide={decide} />
-              ))}
-            </Card>
-          ) : (
-            <p className="mb-8 text-[12.5px] text-ink-3">
-              Nothing is waiting on you right now.
-            </p>
-          )}
-
-          {settled.length > 0 && (
-            <>
-              <SectionLabel className="mb-2">Recently decided</SectionLabel>
-              <Card className="mb-8 overflow-hidden">
-                {settled.map((e) => (
-                  <div
-                    key={e.seq}
-                    className="aether-row flex flex-wrap items-baseline gap-x-4 gap-y-1 px-4 py-2.5 text-[13px] min-[760px]:grid min-[760px]:grid-cols-[104px_minmax(0,1fr)_auto]"
-                  >
-                    <span className="font-mono text-[11px] tabular-nums text-ink-3">{fmtTime(e.at)}</span>
-                    <span className="min-w-0 truncate text-ink-2">{describeTool(e.tool)}</span>
-                    <span className="text-ink-3">{describeOutcome(e.outcome)}</span>
-                  </div>
-                ))}
-              </Card>
-            </>
-          )}
-
           <SectionLabel className="mb-2">Scheduled actions</SectionLabel>
           <div className="aether-toolbar mb-4 inline-flex flex-wrap gap-1 p-1">
             {TASK_STATUSES.map((status) => (

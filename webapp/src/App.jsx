@@ -4,7 +4,6 @@
 import { useEffect, useState } from "react";
 import Sidebar from "./components/Sidebar.jsx";
 import Topbar from "./components/Topbar.jsx";
-import { useData } from "./store.jsx";
 import { useHashRoute } from "./hooks/useHashRoute.js";
 import { hasToken } from "./lib/api.js";
 import SettingsPage from "./pages/Settings.jsx";
@@ -32,7 +31,6 @@ const PAGES = {
 };
 
 export default function App() {
-  const { approvals } = useData();
   const route = useHashRoute(Object.keys(PAGES));
   const [collapsed, setCollapsed] = useState(() => {
     // the full rail is the first impression; collapsing it is a choice
@@ -75,8 +73,6 @@ export default function App() {
     return next;
   });
 
-  const pendingCount = approvals.length;
-
   return (
     <div className="flex min-h-screen">
       {navOpen && (
@@ -90,12 +86,11 @@ export default function App() {
         page={route}
         collapsed={collapsed}
         navOpen={navOpen}
-        pendingCount={pendingCount}
         onCollapse={toggleCollapse}
         onNavigate={() => setNavOpen(false)}
       />
       <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar title={title} pendingCount={pendingCount} onMenu={() => setNavOpen(true)} />
+        <Topbar title={title} onMenu={() => setNavOpen(true)} />
         <main
           data-testid="page"
           className={`mx-auto w-full flex-1 px-4 pb-14 pt-6 min-[901px]:px-7 ${

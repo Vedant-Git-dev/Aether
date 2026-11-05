@@ -69,7 +69,14 @@ from .memory.seal_migrate import seal_for_cutover
 from .memory.storage import StorageGuardError, enforce_schema
 from .memory.vectors import VectorMemory
 from .memory.views import Views
-from .proactive import Budget, ProactiveStore, ProactiveWorker
+from .memory.watches import WatchStore
+from .proactive import (
+    Budget,
+    CommitmentReminders,
+    ProactivePath,
+    ProactiveStore,
+    ProactiveWorker,
+)
 from .providers.catalog import PROVIDERS
 from .providers.crypto import TokenKeyError, TokenKeyring
 from .providers.oauth import OAuthEngine
@@ -123,6 +130,16 @@ def _build_cipher(settings: Settings) -> Cipher:
         '  python -c "from aether.memory.crypto import generate_key_b64; print(generate_key_b64())"\n'
         "(or set AETHER_DEV_EPHEMERAL_KEY=1 for a throwaway dev instance)"
     )
+
+
+def _watch_channels(fanout: SurfaceFanout) -> set[str]:
+    """The surfaces a watch may name right now. Read live by the proactive
+    path, because /config can switch a connector on or off without a
+    restart; a channel that is not here never gets stored on a watch."""
+    names = {connector.name for connector in fanout.connectors}
+    if fanout.hub is not None:
+        names.add("web")
+    return names
 
 
 def create_app(
@@ -494,6 +511,10 @@ def create_app(
         # rendering rules depend on it and it costs no model call), and the
         # classifier rides memory.enrichment, which is off by default.
         commitments = Commitments(pool, cipher, audit)
+        watches = WatchStore(pool, cipher, audit)
+        commitment_reminders = CommitmentReminders(pool)
+        app.state.watches = watches
+        app.state.commitment_reminders = commitment_reminders
         enricher = (
             Enricher(
                 LLMClassifier(judge_provider),
@@ -627,6 +648,34 @@ def create_app(
             query_pipeline=query_pipeline,
         )
         app.state.agent = agent
+
+        # --- the proactive path: watches, urgent mail, reminders -----------
+        # Built after the loop because an alert is delivered through the
+        # loop's own interruption budget (quiet hours, holding, batching).
+        # The store is attached to the event store, so every ingest path —
+        # chat, mail poll, attachment — is evaluated once, on the tracked
+        # enrichment task, never in front of a reply.
+        proactive_path = ProactivePath(
+            config=config,
+            watches=watches,
+            commitments=commitments,
+            reminders=commitment_reminders,
+            notify=agent.note_to_user,
+            owners=entities.owner_addresses,
+            channels=lambda: _watch_channels(surfaces),
+            timezone=config.memory.default_timezone,
+        )
+        agent.attach_proactive_path(proactive_path)
+        events.attach_proactive(proactive_path)
+        try:
+            await proactive_path.refresh()
+        except Exception:
+            log.warning(
+                "could not load watches at boot — the first event will retry",
+                exc_info=True,
+            )
+        app.state.proactive_path = proactive_path
+
         native = register_native_tools(
             registry=tools,
             events=events,
@@ -647,6 +696,8 @@ def create_app(
             providers=providers,
             editor=editor,
             generator=image_generator,
+            proactive_path=proactive_path,
+            watch_origin=agent.watch_origin,
         )
         log.info("native tools registered: %d", native)
 

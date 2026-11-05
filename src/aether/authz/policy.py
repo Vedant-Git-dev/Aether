@@ -79,7 +79,9 @@ _INTERNAL = re.compile(
     r"^(?!.*__)(memory_\w+|note_entity|schedule_action|request_screen_capture"
     r"|look_at_media|share_media|edit_video|get_pending_approvals|send_chat_message"
     r"|create_routine|list_routines"
-    r"|set_routine_enabled|delete_routine|explain_decision|verify_integrity"
+    r"|set_routine_enabled|delete_routine"
+    r"|create_watch|list_watches|set_watch_enabled|delete_watch"
+    r"|explain_decision|verify_integrity"
     r"|get_config|workspace_\w+)$"
 )
 

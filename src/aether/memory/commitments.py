@@ -47,6 +47,7 @@ class Commitment:
     counterparty_identity_id: int | None
     source_event_id: int | None
     created_at: datetime
+    urgency: int = 0
 
 
 def _aad(commitment_id: int) -> str:
@@ -70,6 +71,7 @@ class Commitments:
         due_phrase: str = "",
         counterparty_identity_id: int | None = None,
         source_event_id: int | None = None,
+        urgency: int = 0,
         actor: str = "system",
     ) -> Commitment | None:
         """One commitment, sealed. An empty text is a bug upstream, not a
@@ -78,6 +80,7 @@ class Commitments:
         if not body:
             return None
         kind = kind if kind in KINDS else "task"
+        urgency = max(0, min(3, int(urgency or 0)))
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "INSERT INTO commitments (kind, status, body_enc, key_version,"
@@ -98,6 +101,7 @@ class Commitments:
                         "text": body[:400],
                         "due_at": due_at.astimezone(UTC).isoformat() if due_at else None,
                         "due_phrase": due_phrase,
+                        "urgency": urgency,
                     },
                     aad=_aad(commitment_id),
                 ),
@@ -119,6 +123,7 @@ class Commitments:
             counterparty_identity_id=counterparty_identity_id,
             source_event_id=source_event_id,
             created_at=row["created_at"],
+            urgency=urgency,
         )
 
     async def add_many(
@@ -127,6 +132,7 @@ class Commitments:
         *,
         source_event_id: int | None = None,
         counterparty_identity_id: int | None = None,
+        urgency: int = 0,
         actor: str = "system",
     ) -> list[Commitment]:
         """Every commitment one event yielded. One bad item never costs the
@@ -141,6 +147,7 @@ class Commitments:
                     due_phrase=str(item.get("due_phrase") or ""),
                     counterparty_identity_id=counterparty_identity_id,
                     source_event_id=source_event_id,
+                    urgency=int(item.get("urgency") or urgency),
                     actor=actor,
                 )
             except Exception:
@@ -206,6 +213,10 @@ class Commitments:
             body = self._cipher.decrypt_json(row["body_enc"], aad=_aad(row["id"]))
         except Exception:
             log.warning("commitment %s body undecryptable — treated as empty", row["id"])
+        try:
+            urgency = max(0, min(3, int(body.get("urgency") or 0)))
+        except (TypeError, ValueError):
+            urgency = 0
         return Commitment(
             id=row["id"],
             kind=row["kind"],
@@ -215,6 +226,7 @@ class Commitments:
             counterparty_identity_id=row["counterparty_identity_id"],
             source_event_id=row["source_event_id"],
             created_at=row["created_at"],
+            urgency=urgency,
         )
 
 

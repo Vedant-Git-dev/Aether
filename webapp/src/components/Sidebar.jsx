@@ -1,8 +1,6 @@
 import Icon from "./Icon.jsx";
 
-// The routes in their original order. Approvals are decided from the chat
-// surfaces Aether already talks through, so the queue lives on Tasks beside
-// the other work that waits on a verdict. The count is a plain number.
+// The routes in their original order.
 const NAV_ITEMS = [
   ["activity", "Live Activity"],
   ["tasks", "Tasks"],
@@ -32,7 +30,7 @@ function Mark({ className }) {
   );
 }
 
-export default function Sidebar({ page, collapsed, navOpen, pendingCount, onCollapse, onNavigate }) {
+export default function Sidebar({ page, collapsed, navOpen, onCollapse, onNavigate }) {
   return (
     <aside
       className={`aether-chrome fixed inset-y-0 left-0 z-40 w-60 flex-col border-r border-[var(--aether-hairline)]
@@ -64,11 +62,6 @@ export default function Sidebar({ page, collapsed, navOpen, pendingCount, onColl
             >
               <Icon name={id} className="h-4.5 w-4.5 shrink-0 opacity-75" />
               <span className={`min-w-0 truncate ${collapsed ? "min-[901px]:hidden" : ""}`}>{label}</span>
-              {id === "tasks" && pendingCount > 0 && (
-                <span className={`ml-auto pl-1 text-[12.5px] font-medium tabular-nums text-accent ${collapsed ? "min-[901px]:hidden" : ""}`}>
-                  {pendingCount}
-                </span>
-              )}
             </a>
           );
         })}
