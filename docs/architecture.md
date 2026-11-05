@@ -85,6 +85,41 @@ ordered by due time, and an entity timeline using the index's `by_entity` map.
 state-of-now answers with `as_of` and `valid_until`; a conclusion past its TTL is
 never served.
 
+Query-time retrieval is one pipeline (`memory.query_pipeline`, off by default until
+the golden-set evaluation blesses it; with it off the previous vector-only recall
+still runs):
+
+- `query.py` routes the question with rules first. A resolved reference ("send it",
+  "send then", "the sender", "the assignment") reads the focus object and skips
+  search; attention, commitment, person, document, fact and open-recall routes carry
+  `{time_range, entities, source, doc_ref, urgency_min}`; short or anaphoric
+  questions are rewritten into at most three keyword queries, cached by normalized
+  message and focus hash.
+- `lexical.py` is an in-memory BM25 index (k1 1.2, b 0.75) over the same sealed
+  chunks, with field boosts (subject and filename x3, sender name x2, context header
+  x1), an exact-phrase boost and typo tolerance over the token vocabulary. It never
+  writes; a listener on the one chunk writer keeps it current, and a restart
+  rebuilds it from the sealed rows. The resident set is bounded by
+  `memory.hot_chunks`; chunks older than that remain reachable through the vector
+  path, which scans the sealed rows.
+- `retrieve.py` runs the lists in parallel, fuses them with reciprocal rank fusion
+  (k 60) plus the recency, entity, urgency and salience weights from `memory.*`,
+  selects with MMR (lambda 0.7), keeps at most three chunks per event, expands
+  neighbour chunks and gates on a minimum normalized score plus an entity,
+  query-term or vector match. Nothing clearing the gate returns an explicit
+  "no relevant memory" block the model must say out loud.
+- `verify.py` checks the finished reply: cited ids must exist in the pack, quoted
+  text must appear in the cited chunk, and dates and numbers are checked. One
+  regeneration with feedback runs first; then a deterministic repair marks an
+  unsourced quote and adds a single hedge for unchecked details.
+
+The pack cites every chunk as `[E123 | mail | from Name <addr> | date]`, carries the
+owner's own addresses, stays inside `memory.pack_token_budget`, and states plainly
+when semantic search is unavailable instead of silently narrowing. `memory_search`
+is the same pipeline as a model tool, capped at `memory.max_search_rounds` calls per
+turn. The golden set in `tests/eval_golden.py` runs offline in CI and gates on
+recall@5, MRR, route accuracy and abstain precision/recall.
+
 `deliveries.py` records every outbound send attempt (queued, sent, failed,
 abandoned). The body, message id and error are sealed. A failed send is recorded
 as an event so every turn type sees it, and the next turn re-delivers the exact

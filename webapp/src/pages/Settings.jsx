@@ -40,10 +40,10 @@ import {
 
 function ServiceMark({ face }) {
   if (face.imgSrc) {
-    return <img src={face.imgSrc} alt="" className="h-7 w-7 shrink-0 rounded-[7px] object-contain" />;
+    return <img src={face.imgSrc} alt="" className="h-7 w-7 shrink-0 rounded-lg object-contain" />;
   }
   return (
-    <span className="aether-inset grid h-7 w-7 shrink-0 place-items-center rounded-[7px] text-ink-2">
+    <span className="aether-inset grid h-7 w-7 shrink-0 place-items-center rounded-lg text-ink-2">
       <Icon name={face.icon || "server"} className="h-4 w-4" />
     </span>
   );
@@ -403,7 +403,7 @@ export default function SettingsPage() {
           data-testid={`settings-save-${f.path}`}
           disabled={draftOf(f) === "" && !f.none_ok}
           onClick={() => saveField(f, valueToSend(f))}
-          className="rounded-[6px] px-2 py-1 text-[12px] font-medium text-accent hover:bg-accent/10 disabled:cursor-default disabled:opacity-40"
+          className="rounded-md px-2 py-1 text-[12px] font-medium text-accent hover:bg-accent/10 disabled:cursor-default disabled:opacity-40"
         >
           Save
         </button>
@@ -697,8 +697,8 @@ export default function SettingsPage() {
   );
 
   return (
-    <div className="settings-stage relative -mx-4 -my-6 min-h-[calc(100dvh-52px)] px-4 min-[901px]:-mx-6 min-[901px]:px-6">
-      <div className="mx-auto w-full max-w-[1680px]">
+    <div className="settings-stage relative -mx-4 -my-6 min-h-[calc(100dvh-52px)] px-4 min-[901px]:-mx-7 min-[901px]:px-7">
+      <div className="mx-auto w-full max-w-[1440px]">
         <SettingsWorkspace
           mobileNav={mobileNav}
           rail={

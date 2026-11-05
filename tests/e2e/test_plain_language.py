@@ -19,7 +19,6 @@ pytestmark = pytest.mark.e2e
 
 PAGES = [
     "activity",
-    "attention",
     "tasks",
     "memory",
     "audit",
@@ -137,7 +136,7 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
         == "(this file is no longer stored)"
     )
 
-    page.goto(f"{live_server}/#/attention")
+    page.goto(f"{live_server}/#/tasks")
     page.wait_for_selector('[data-testid="approval-card"]')
     page.wait_for_timeout(500)
     text = page.locator("body").inner_text()
@@ -374,7 +373,7 @@ def test_approval_cards_show_the_full_ask(page, live_server, token) -> None:
     # the content itself, long text scrolls and expands instead of
     # cutting, and a decision applies to exactly what is on screen.
     page.add_init_script(f"localStorage.setItem('aether_token', '{token}')")
-    page.goto(f"{live_server}/#/attention")
+    page.goto(f"{live_server}/#/tasks")
     page.wait_for_selector('[data-testid="approval-card"]')
     page.wait_for_timeout(500)
     cards = page.locator('[data-testid="approval-card"]')
@@ -464,7 +463,7 @@ def test_approval_cards_show_the_full_ask(page, live_server, token) -> None:
     assert patch.locator('[data-testid="deny"]').count() == 1
 
     # and the whole page still speaks plainly
-    _scan(page.locator("body").inner_text(), "attention (full asks)")
+    _scan(page.locator("body").inner_text(), "tasks (full asks)")
 
 
 def test_model_fields_are_pickers_over_the_live_catalog(page, live_server, token) -> None:

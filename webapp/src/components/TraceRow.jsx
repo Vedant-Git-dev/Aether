@@ -28,8 +28,8 @@ export default function TraceRow({ t, open, detail, onToggle }) {
           open ? "bg-subtle/45" : "hover:bg-subtle/60"
         }`}
       >
-        <span className="w-[86px] shrink-0 whitespace-nowrap font-mono text-[10.5px] text-ink-3">{fmtTime(t.at)}</span>
-        <span className="shrink-0 text-[11.5px] text-ink-3">{TRACE_KINDS[t.kind] || humanize(t.kind)}</span>
+        <span className="w-[104px] shrink-0 whitespace-nowrap font-mono text-[10.5px] text-ink-3">{fmtTime(t.at)}</span>
+        <span className="w-[92px] shrink-0 truncate text-[11.5px] text-ink-3">{TRACE_KINDS[t.kind] || humanize(t.kind)}</span>
         <span className="min-w-0 flex-1 truncate text-sm text-ink">{traceLabel(t)}</span>
         <Icon name="arrow" className={`h-3.5 w-3.5 shrink-0 text-ink-3 transition-transform ${open ? "rotate-90" : ""}`} />
       </button>

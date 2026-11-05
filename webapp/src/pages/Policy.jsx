@@ -40,7 +40,7 @@ export default function PolicyPage() {
         <>
           <div className="grid gap-4 xl:grid-cols-2 xl:items-start">
             <Card className="p-5">
-              <h3 className="mb-3 text-[13px] font-semibold text-ink">Your rules — checked first</h3>
+              <h3 className="mb-3 text-[13px] font-medium text-ink">Your rules — checked first</h3>
               {policy.rules.length === 0 ? (
                 <EmptyState title="No custom rules yet." sub="Aether follows the standard rules below." />
               ) : (
@@ -63,7 +63,7 @@ export default function PolicyPage() {
             </Card>
 
             <Card className="p-5">
-              <h3 className="mb-3 text-[13px] font-semibold text-ink">Standard rules</h3>
+              <h3 className="mb-3 text-[13px] font-medium text-ink">Standard rules</h3>
               {policy.builtin_rules.map((r, i) => {
                 const [title, description] = BUILTIN_PLAIN[r.id]
                   || [humanize(String(r.id).replace(/^(builtin|default):/, "")), r.description];

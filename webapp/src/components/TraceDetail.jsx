@@ -29,7 +29,7 @@ function CallRow({ c }) {
       ) : null}
       {c.approval_id ? (
         <div className="mt-1 text-xs text-ink-3">
-          Parked as <a href="#/attention" className="text-accent underline">approval #{c.approval_id}</a>
+          Parked as <a href="#/tasks" className="text-accent underline">approval #{c.approval_id}</a>
         </div>
       ) : null}
     </div>
@@ -106,7 +106,7 @@ export default function TraceDetail({ t }) {
 
       {Array.isArray(p.reasoning) && p.reasoning.length > 0 && (
         <>
-          <div className="surface-head mt-4">What it thought</div>
+          <div className="surface-head mt-5">What it thought</div>
           {/* the loop can repeat a line across steps — collapse consecutive dupes */}
           {p.reasoning.filter((r, i) => i === 0 || r !== p.reasoning[i - 1]).map((r, i) => (
             <div key={i} className="mt-1 text-xs text-ink-2">{plainText(r)}</div>

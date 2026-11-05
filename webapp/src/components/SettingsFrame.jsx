@@ -46,7 +46,7 @@ export function SettingsSearch({ query, onQuery, testId = "settings-search", cla
 
   return (
     <label
-      className={`settings-search flex h-9 items-center gap-2 rounded-[8px] px-2.5 ${className}`}
+      className={`settings-search flex h-9 items-center gap-2 rounded-lg px-2.5 ${className}`}
     >
       <Icon name="search" className="h-3.5 w-3.5 shrink-0 text-ink-3" />
       <input
@@ -100,7 +100,7 @@ export function SettingsRail({ groups, active, query, onQuery, onSelect }) {
           if (group.items.length === 0) return null;
           return (
             <div key={group.label} className="mt-3 first:mt-1">
-              <div className="px-2.5 pb-1.5 text-[10.5px] font-semibold uppercase tracking-[0.11em] text-ink-3">
+              <div className="px-2.5 pb-1.5 pt-1 text-[11.5px] font-medium text-ink-3">
                 {group.label}
               </div>
               {group.items.map((item) => (
@@ -111,7 +111,7 @@ export function SettingsRail({ groups, active, query, onQuery, onSelect }) {
                   data-active={active === item.key ? "1" : "0"}
                   aria-current={active === item.key ? "true" : undefined}
                   onClick={() => onSelect(item.key)}
-                  className="settings-nav-item flex h-8 w-full items-center gap-2.5 rounded-[7px] px-2.5 text-left text-[12.5px] font-medium"
+                  className="settings-nav-item flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[12.5px] font-medium"
                 >
                   <Icon name={item.icon} className="h-4 w-4 shrink-0 opacity-80" />
                   <span className="min-w-0 truncate">{item.title}</span>
@@ -137,7 +137,7 @@ export function SettingsRail({ groups, active, query, onQuery, onSelect }) {
         <button
           type="button"
           onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-          className="settings-nav-item flex h-8 w-full items-center gap-2.5 rounded-[7px] px-2.5 text-[12px] font-medium"
+          className="settings-nav-item flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-[12px] font-medium"
         >
           <Icon name="arrow-up" className="h-4 w-4 shrink-0 opacity-80" />
           <span>Back to top</span>
@@ -167,7 +167,7 @@ export function SettingsSection({ id, title, note, badge, testId, children }) {
       <div className="flex items-baseline justify-between gap-4">
         <h2
           id={`settings-${id}-title`}
-          className="text-[15px] font-semibold tracking-[-0.01em] text-ink"
+          className="text-[15px] font-semibold text-ink"
         >
           {title}
         </h2>
@@ -256,7 +256,7 @@ export function Segmented({ label, value, options, onChange }) {
 
 export function SettingsNotice({ title, children }) {
   return (
-    <div className="mt-3 rounded-[8px] border border-[var(--aether-hairline)] bg-subtle/40 px-3.5 py-3">
+    <div className="mt-3 rounded-lg border border-[var(--aether-hairline)] bg-subtle/40 px-3.5 py-3">
       {title ? <div className="text-[12.5px] font-medium text-ink">{title}</div> : null}
       <div className="mt-0.5 text-[12px] leading-relaxed text-ink-2">{children}</div>
     </div>

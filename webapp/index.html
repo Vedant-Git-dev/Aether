@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#f4f5f8">
+<meta name="theme-color" content="#f6f6f8">
 <meta name="color-scheme" content="light dark">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -23,13 +23,13 @@
       : pref;
     document.documentElement.dataset.theme = t;
     var meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.content = t === "dark" ? "#111318" : "#f4f5f8";
+    if (meta) meta.content = t === "dark" ? "#121316" : "#f6f6f8";
   } catch (e) { document.documentElement.dataset.theme = "light"; }
 })();
 </script>
 <title>Aether</title>
-<link rel="icon" href="/aether-mark.jpg">
-<link rel="apple-touch-icon" href="/aether-mark.jpg">
+<link rel="icon" type="image/svg+xml" href="/aether-mark.svg">
+<link rel="apple-touch-icon" href="/aether-mark.png">
 </head>
 <body>
 <div id="root"></div>

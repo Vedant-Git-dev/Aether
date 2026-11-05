@@ -2,7 +2,6 @@
 // that inherit currentColor, so every semantic text color just works.
 const ICONS = {
   activity: <path d="M3 12h4l2.5-7 5 14 2.5-7H21"/>,
-  attention: <><path d="M12 4 2 20h20L12 4z"/><path d="M12 10v4M12 17h.01"/></>,
   audit: <><rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M8 8h8M8 12h8M8 16h5"/></>,
   traces: <><circle cx="5" cy="5" r="2"/><circle cx="5" cy="12" r="2"/><circle cx="5" cy="19" r="2"/><path d="M9.5 5H19M9.5 12h6.5M9.5 19H19"/></>,
   policy: <path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/>,
@@ -50,7 +49,7 @@ export default function Icon({ name, className }) {
   const body = ICONS[name];
   if (!body) return null;
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"
       className={className} aria-hidden="true">{body}</svg>
   );
 }

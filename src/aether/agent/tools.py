@@ -849,6 +849,7 @@ def register_native_tools(
     config_manager: Any = None,
     workspace: Any = None,
     vectors: Any = None,
+    pipeline: Any = None,
     web: Any = None,
     media: Any = None,
     providers: Any = None,
@@ -1043,6 +1044,14 @@ def register_native_tools(
             return _clip(json.dumps(event.payload, default=str, ensure_ascii=False), 2000)
         if not query:
             return "memory_search needs a query."
+        # the routed pipeline first: lexical + optional vector, fused and
+        # gated, with the explicit "no matching memories" abstain. It works
+        # even when the embedding layer is down — never a silent no-op.
+        if pipeline is not None:
+            try:
+                return await pipeline.search_text(query)
+            except Exception:
+                log.warning("routed memory search failed — trying the vector path", exc_info=True)
         # semantic or nothing — a missing or failing embedding layer gets
         # the same plain reply a dead model turn gets, so the user hears
         # one honest message instead of a degraded guess

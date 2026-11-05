@@ -148,6 +148,25 @@ web panel and no external connectors.
 | `turn_timeout_seconds` | `600` | One reply's hard ceiling |
 | `max_searches_per_day` | `25` | Shared by chat and background work |
 | `quiet_hours` | empty | `"23:00-08:00"`, local time, wraps midnight |
+
+### `memory`
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `query_pipeline` | `false` | Enables the routed retrieval pipeline; off keeps the vector-only recall |
+| `enrichment` | `false` | Opt-in model classification at write time; the deterministic floor always runs |
+| `hot_events` | `2000` | Resident event index size; lower it on a small host |
+| `hot_chunks` | `8000` | Resident BM25 chunk budget: about 190 MB at 8,000 chunks (measured), scaling linearly; lower it on a small host |
+| `cold_batch` | `500` | Rows per bounded cold scan |
+| `conclusion_ttl_seconds` | `120` | How long a live-state answer stays usable |
+| `rrf_k` | `60` | Reciprocal-rank-fusion constant |
+| `mmr_lambda` | `0.7` | Relevance versus diversity in selection (0.7 keeps relevance ahead) |
+| `w_recency` / `w_entity` / `w_urgency` / `w_salience` | `0.35` / `0.25` / `0.25` / `0.15` | Ranking signal weights, tuned by the golden set |
+| `half_life_mail_days` / `half_life_doc_days` | `3` / `30` | Recency decay half-lives by content type |
+| `relevance_floor` | `0.45` | Gate: a hit must reach this share of the pool's best fused score |
+| `pack_token_budget` | `2500` | Prompt budget for packed memory |
+| `max_search_rounds` | `3` | How many times the model may call `memory_search` in one turn |
+| `default_timezone` | `Asia/Kolkata` | Deadline rendering and time normalization |
 | `quiet_urgent_salience` | `8.0` | Only observations at or above this break quiet hours |
 
 ### `salience`

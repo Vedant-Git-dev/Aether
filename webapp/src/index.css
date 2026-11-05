@@ -3,27 +3,29 @@
    (bg-card, text-ink-2, border-line) follow the theme with no per-element
    dark: prefixes anywhere.
 
-   The mood is quiet depth rather than flat paper: hairline borders carry
-   structure, translucent surfaces sit over a low atmospheric wash, and
-   colour still carries meaning in text. Motion is limited to the short
-   state changes a control needs; nothing decorative moves. */
+   The mood is an early-morning control desk: flat graphite and ink surfaces,
+   instrument hairlines, and one brass signal lamp that appears only where
+   Aether is waiting on a human. No glass, no wash, no glow. Motion is limited
+   to the short state changes a control needs; nothing decorative moves. */
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: ui-monospace, "Cascadia Mono", Consolas, "Lucida Console", monospace;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
 
-  --color-surface: #f4f5f8;
-  --color-card: rgba(255, 255, 255, 0.78);
-  --color-subtle: rgba(238, 240, 244, 0.58);
-  --color-line: rgba(54, 65, 85, 0.10);
-  --color-line-strong: rgba(54, 65, 85, 0.22);
+  --color-surface: #f6f6f8;
+  --color-card: #ffffff;
+  --color-subtle: #f0f1f4;
+  --color-line: rgba(22, 24, 28, 0.10);
+  --color-line-strong: rgba(22, 24, 28, 0.22);
 
-  --color-ink: #15181e;
-  --color-ink-2: #535b68;
-  --color-ink-3: #666e7a;
+  --color-ink: #16181c;
+  --color-ink-2: #4f545d;
+  --color-ink-3: #71767f;
 
-  --color-accent: #3556c9;
+  /* the one accent: a brass signal lamp. It marks what is waiting on you,
+     what you can act on, and what is selected — never a fill, never decor. */
+  --color-accent: #8a5a00;
   --color-on-accent: #ffffff;
 
   --color-success: #157a3e;
@@ -32,18 +34,18 @@
 }
 
 [data-theme="dark"] {
-  --color-surface: #111318;
-  --color-card: rgba(24, 27, 33, 0.78);
-  --color-subtle: rgba(30, 34, 42, 0.58);
-  --color-line: rgba(255, 255, 255, 0.075);
-  --color-line-strong: rgba(255, 255, 255, 0.18);
+  --color-surface: #121316;
+  --color-card: #17181c;
+  --color-subtle: #1f2127;
+  --color-line: rgba(255, 255, 255, 0.08);
+  --color-line-strong: rgba(255, 255, 255, 0.20);
 
-  --color-ink: #eceef2;
-  --color-ink-2: #a5abb6;
-  --color-ink-3: #818a97;
+  --color-ink: #ecedf0;
+  --color-ink-2: #a2a6ae;
+  --color-ink-3: #7c828c;
 
-  --color-accent: #8aa4ff;
-  --color-on-accent: #101319;
+  --color-accent: #d9a441;
+  --color-on-accent: #17181c;
 
   --color-success: #55c585;
   --color-warning: #d9a441;
@@ -52,32 +54,23 @@
 
 :root {
   color-scheme: light;
-  --aether-stage:
-    radial-gradient(72% 64% at 12% 0%, rgba(98, 126, 216, 0.20), transparent 64%),
-    radial-gradient(58% 58% at 92% 12%, rgba(80, 154, 196, 0.13), transparent 68%),
-    radial-gradient(76% 70% at 58% 108%, rgba(117, 94, 196, 0.12), transparent 68%),
-    linear-gradient(180deg, #f4f6fa 0%, #e9edf3 100%);
-  --aether-hairline: rgba(54, 65, 85, 0.10);
-  --aether-raise: 0 1px 2px rgba(22, 31, 51, 0.09);
-  --aether-chrome: rgba(248, 249, 252, 0.78);
+  --aether-rail: #fbfbfc;
+  --aether-hairline: rgba(22, 24, 28, 0.10);
+  --aether-raise: 0 1px 2px rgba(16, 20, 28, 0.05);
   --aether-popover: #ffffff;
-  --aether-inset: inset 0 1px 0 rgba(255, 255, 255, 0.55);
-  --aether-card-shadow: 0 24px 60px -44px rgba(31, 42, 68, 0.30);
+  --aether-card-shadow: none;
+  /* a switch is a state, not a call for attention — it stays on the ramp */
+  --aether-switch-on: #2f343c;
 }
 
 [data-theme="dark"] {
   color-scheme: dark;
-  --aether-stage:
-    radial-gradient(68% 62% at 10% -4%, rgba(79, 108, 206, 0.28), transparent 66%),
-    radial-gradient(52% 54% at 94% 10%, rgba(38, 115, 158, 0.16), transparent 68%),
-    radial-gradient(74% 68% at 56% 108%, rgba(91, 65, 172, 0.18), transparent 70%),
-    linear-gradient(180deg, #0b0e14 0%, #0e1118 100%);
-  --aether-hairline: rgba(255, 255, 255, 0.075);
-  --aether-raise: 0 1px 2px rgba(0, 0, 0, 0.32);
-  --aether-chrome: rgba(15, 18, 24, 0.78);
-  --aether-popover: #171a20;
-  --aether-inset: inset 0 1px 0 rgba(255, 255, 255, 0.035);
-  --aether-card-shadow: 0 24px 60px -44px rgba(0, 0, 0, 0.55);
+  --aether-rail: #0e0f12;
+  --aether-hairline: rgba(255, 255, 255, 0.08);
+  --aether-raise: none;
+  --aether-popover: #1b1d22;
+  --aether-card-shadow: none;
+  --aether-switch-on: #5b616b;
 }
 
 *:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
@@ -86,10 +79,6 @@ body {
   margin: 0;
   min-height: 100vh;
   background-color: var(--color-surface);
-  background-image: var(--aether-stage);
-  background-attachment: fixed;
-  background-repeat: no-repeat;
-  background-size: cover;
   color: var(--color-ink);
   font: 14px/1.5 var(--font-sans);
   -webkit-font-smoothing: antialiased;
@@ -98,26 +87,22 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* The shared shell and surface language: chrome floats over the wash,
-   cards are quiet glass, controls sit on a defined hairline. */
+/* The shared shell and surface language: flat solids, one hairline, and a
+   single soft shadow on light surfaces. Nothing floats or blurs. */
 .aether-chrome {
-  background: var(--aether-chrome);
-  -webkit-backdrop-filter: blur(24px) saturate(1.2);
-  backdrop-filter: blur(24px) saturate(1.2);
+  background: var(--aether-rail);
 }
 .aether-card {
   background: var(--color-card);
   border: 1px solid var(--aether-hairline);
-  border-radius: 10px;
-  box-shadow: var(--aether-card-shadow), var(--aether-inset);
-  -webkit-backdrop-filter: blur(20px) saturate(1.15);
-  backdrop-filter: blur(20px) saturate(1.15);
+  border-radius: 12px;
+  box-shadow: var(--aether-card-shadow);
 }
 .aether-popover {
   background: var(--aether-popover);
   border: 1px solid var(--aether-hairline);
-  border-radius: 10px;
-  box-shadow: var(--aether-card-shadow);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
 }
 /* the toast keeps its meaning-coded edge on top of the quiet popover */
 .aether-popover.border-l-danger {
@@ -127,27 +112,25 @@ body {
   border-left: 2px solid var(--color-success);
 }
 .aether-inset {
-  background: color-mix(in srgb, var(--color-subtle) 55%, transparent);
+  background: var(--color-subtle);
   border: 1px solid var(--aether-hairline);
   border-radius: 8px;
 }
 .aether-field {
-  background: color-mix(in srgb, var(--color-card) 82%, transparent);
+  background: var(--color-card);
   border: 1px solid var(--color-line-strong);
-  border-radius: 7px;
+  border-radius: 8px;
   color: var(--color-ink);
-  transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 .aether-field:hover {
-  background: color-mix(in srgb, var(--color-card) 92%, transparent);
-  border-color: color-mix(in srgb, var(--color-line-strong) 80%, var(--color-ink-3));
+  border-color: color-mix(in srgb, var(--color-line-strong) 70%, var(--color-ink-3));
 }
 .aether-field:focus,
 .aether-field:focus-visible {
-  background: var(--aether-popover);
   border-color: var(--color-accent);
   outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 16%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 14%, transparent);
 }
 .aether-field:disabled { opacity: 0.5; cursor: default; }
 .aether-select {
@@ -163,55 +146,42 @@ body {
 /* Tables stay tables: airy rows, one hairline, no nested boxes. */
 .aether-card table { width: 100%; border-collapse: collapse; }
 .aether-card thead tr { border-bottom: 1px solid var(--aether-hairline); }
-.aether-card thead th {
-  padding: 10px 12px;
-  color: var(--color-ink-3);
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-}
-.aether-card tbody td { padding-top: 9px; padding-bottom: 9px; }
 .aether-card tbody tr:hover { background: color-mix(in srgb, var(--color-ink) 3%, transparent); }
 
+/* The active channel: a surface step and a hairline, with the lamp lit on the
+   icon only. No pill, no ring, no glow. */
 .aether-nav-active {
-  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 14%, transparent),
-    var(--aether-raise);
+  background: color-mix(in srgb, var(--color-ink) 6%, transparent);
+  box-shadow: inset 0 0 0 1px var(--aether-hairline);
 }
 .aether-nav-active svg { color: var(--color-accent); opacity: 1; }
 
-/* filter bars and tab strips share the same quiet glass edge */
+/* filter bars and tab strips share the same quiet edge */
 .aether-toolbar {
-  background: color-mix(in srgb, var(--color-card) 86%, transparent);
+  background: var(--color-card);
   border: 1px solid var(--aether-hairline);
   border-radius: 10px;
-  box-shadow: var(--aether-raise), var(--aether-inset);
-  -webkit-backdrop-filter: blur(18px) saturate(1.15);
-  backdrop-filter: blur(18px) saturate(1.15);
+  box-shadow: var(--aether-raise);
 }
 
 .aether-tab {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  height: 28px;
+  gap: 6px;
+  height: 30px;
   padding: 0 10px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 7px;
   color: var(--color-ink-2);
   font-size: 12.5px;
-  font-weight: 500;
-  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease,
-    box-shadow 140ms ease;
+  font-weight: 400;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 .aether-tab:hover { color: var(--color-ink); background: color-mix(in srgb, var(--color-ink) 5%, transparent); }
 .aether-tab[data-active="1"] {
-  background: var(--color-card);
+  background: var(--color-subtle);
   border-color: var(--aether-hairline);
   color: var(--color-ink);
-  box-shadow: var(--aether-raise);
 }
 
 /* one list row: a hairline seam and a hover that barely lifts */
@@ -261,25 +231,20 @@ input[type="number"]::-webkit-inner-spin-button {
 .settings-nav-item:hover { color: var(--color-ink); background: color-mix(in srgb, var(--color-ink) 5%, transparent); }
 .settings-nav-item[data-active="1"] {
   color: var(--color-ink);
-  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 14%, transparent),
-    var(--aether-raise);
+  background: color-mix(in srgb, var(--color-ink) 6%, transparent);
+  box-shadow: inset 0 0 0 1px var(--aether-hairline);
 }
 .settings-nav-item[data-active="1"] svg {
   color: var(--color-accent);
   opacity: 1;
 }
-[data-theme="dark"] .settings-nav-item[data-active="1"] {
-  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
-}
 
 .settings-search {
-  background: color-mix(in srgb, var(--color-subtle) 78%, transparent);
+  background: var(--color-subtle);
   border: 1px solid transparent;
 }
 .settings-search:focus-within {
-  background: var(--aether-popover);
+  background: var(--color-card);
   border-color: var(--color-line-strong);
 }
 
@@ -291,22 +256,22 @@ input[type="number"]::-webkit-inner-spin-button {
 .quiet-field {
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: 8px;
   color: var(--color-ink-2);
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 .quiet-field:hover {
-  background: color-mix(in srgb, var(--color-subtle) 68%, transparent);
+  background: var(--color-subtle);
   border-color: var(--aether-hairline);
   color: var(--color-ink);
 }
 .quiet-field:focus,
 .quiet-field:focus-visible {
-  background: var(--aether-popover);
+  background: var(--color-card);
   border-color: var(--color-line-strong);
   color: var(--color-ink);
   outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 16%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 14%, transparent);
 }
 .quiet-field:disabled { opacity: 0.45; cursor: default; }
 
@@ -314,16 +279,16 @@ input[type="number"]::-webkit-inner-spin-button {
    most of the time, so the row must still say where to type */
 .quiet-field-edge {
   border-color: var(--aether-hairline);
-  background: color-mix(in srgb, var(--color-subtle) 42%, transparent);
+  background: var(--color-subtle);
 }
 .quiet-field-edge:hover {
   border-color: var(--color-line-strong);
-  background: color-mix(in srgb, var(--color-subtle) 62%, transparent);
+  background: var(--color-subtle);
 }
 .quiet-field-edge:focus,
 .quiet-field-edge:focus-visible {
   border-color: var(--color-line-strong);
-  background: var(--aether-popover);
+  background: var(--color-card);
 }
 
 .quiet-select {
@@ -344,12 +309,12 @@ input[type="number"]::-webkit-inner-spin-button {
   appearance: none;
   -webkit-appearance: none;
   position: relative;
-  width: 38px;
-  height: 22px;
+  width: 36px;
+  height: 20px;
   flex: none;
   border: 1px solid transparent;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--color-ink-3) 34%, transparent);
+  background: color-mix(in srgb, var(--color-ink-3) 40%, transparent);
   cursor: pointer;
   transition: background-color 160ms ease;
 }
@@ -358,18 +323,18 @@ input[type="number"]::-webkit-inner-spin-button {
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   border-radius: 999px;
   background: #ffffff;
   box-shadow: 0 1px 2px rgba(10, 14, 22, 0.28);
   transition: transform 160ms ease;
 }
-.aether-switch:checked { background: var(--color-accent); }
+.aether-switch:checked { background: var(--aether-switch-on); }
 .aether-switch:checked::after { transform: translateX(16px); }
 .aether-switch:disabled { opacity: 0.4; cursor: default; }
 .aether-switch-button { padding: 0; border: 1px solid transparent; }
-.aether-switch-button[aria-checked="true"] { background: var(--color-accent); }
+.aether-switch-button[aria-checked="true"] { background: var(--aether-switch-on); }
 .aether-switch-button[aria-checked="true"]::after { transform: translateX(16px); }
 [data-theme="dark"] .aether-switch::after { background: #f5f6f9; }
 
@@ -380,8 +345,8 @@ input[type="number"]::-webkit-inner-spin-button {
   gap: 2px;
   padding: 2px;
   border: 1px solid var(--aether-hairline);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--color-subtle) 70%, transparent);
+  border-radius: 9px;
+  background: var(--color-subtle);
 }
 .segmented > button {
   display: inline-flex;
@@ -392,12 +357,12 @@ input[type="number"]::-webkit-inner-spin-button {
   height: 26px;
   padding: 0 9px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 7px;
   background: transparent;
   color: var(--color-ink-3);
   font-size: 12px;
-  font-weight: 500;
-  transition: background-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+  font-weight: 400;
+  transition: background-color 140ms ease, color 140ms ease;
 }
 .segmented > button:hover { color: var(--color-ink); }
 .segmented > button[data-active="1"] {
@@ -406,16 +371,15 @@ input[type="number"]::-webkit-inner-spin-button {
   box-shadow: var(--aether-raise);
 }
 
-/* the surface table: hairline rows, no boxes */
+/* small column heads and quiet section labels: sentence case, no tracking */
 .surface-head {
   color: var(--color-ink-3);
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0;
 }
 .surface-row { border-top: 1px solid var(--aether-hairline); }
-.surface-row:hover { background: color-mix(in srgb, var(--color-subtle) 42%, transparent); }
+.surface-row:hover { background: color-mix(in srgb, var(--color-ink) 3%, transparent); }
 
 @media (prefers-reduced-motion: reduce) {
   .settings-nav-item,

@@ -271,7 +271,7 @@ class FakeAudit:
                 "created_at": now - timedelta(hours=1),
                 "entry_hash": "b8e4d2f19a3c7e0b5d8f2a6c9e1b4d7f0a3c6e9b2d5f8a1c4e7b0d3f6a9c2e5b",
             },
-            # decided rows — the attention page's "recently decided" strip reads these
+            # decided rows — the tasks page's "recently decided" strip reads these
             {
                 "seq": 3,
                 "actor": "user",

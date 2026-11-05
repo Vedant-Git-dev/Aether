@@ -30,7 +30,6 @@ def test_every_nav_route_loads(page, live_server, token) -> None:
 
     routes = {
         "activity": "Live Activity",
-        "attention": "Attention Required",
         "tasks": "Tasks",
         "memory": "Memory & Context",
         "audit": "Audit Log",
@@ -71,7 +70,7 @@ def test_apps_page_hides_settings_and_the_legacy_hub(page, live_server, token) -
 
 def test_approve_reaches_the_fake_backend_and_the_card_disappears(page, live_server, token) -> None:
     _set_token(page, token)
-    page.goto(f"{live_server}/#/attention")
+    page.goto(f"{live_server}/#/tasks")
     page.wait_for_selector('[data-testid="approval-card"]')
     assert page.locator('[data-testid="approval-card"]').count() == 6
 
@@ -138,6 +137,6 @@ def test_trace_row_expands_to_show_its_detail(page, live_server, token) -> None:
 
 
 def test_no_token_shows_the_honest_empty_state_not_a_crash(page, live_server) -> None:
-    page.goto(f"{live_server}/#/attention")
+    page.goto(f"{live_server}/#/tasks")
     page.wait_for_selector("text=No API token set")
     assert page.locator('[data-testid="approval-card"]').count() == 0

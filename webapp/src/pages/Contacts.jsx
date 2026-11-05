@@ -15,8 +15,8 @@ import { personName, platformLabel } from "../lib/describe.js";
 // what each app's list governs, in the app's own words
 const APP_HINTS = {
   gmail: "While filtering is on, Aether only reads mail from these people — plus mail you sent them, and mail you sent yourself. Everything else is dropped before Aether ever sees it.",
-  telegram: "Only these people's Telegram messages reach Aether while filtering is on.",
-  discord: "Only these people's Discord messages reach Aether while filtering is on.",
+  telegram: "Messages from anyone else are dropped before Aether ever sees them.",
+  discord: "Messages from anyone else are dropped before Aether ever sees them.",
 };
 
 const appTitle = (key) => platformLabel(key === "gmail" ? "email" : key);

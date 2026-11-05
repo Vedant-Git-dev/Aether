@@ -65,8 +65,10 @@ from ..memory.entities import Entities, Sender
 from ..memory.events import Event, EventStore
 from ..memory.focus import Focus
 from ..memory.mail import MAIL_KIND, MAIL_SOURCE, render_mail_event, split_mail
+from ..memory.pipeline import QueryPipeline
 from ..memory.salience import Salience
 from ..memory.vectors import MemoryHit, VectorMemory
+from ..memory.verify import feedback, repair_reply, verify_reply
 from ..memory.views import Views, wants_attention
 from ..providers.runtime import ProviderRuntime
 from ..providers.types import ConnectResult, ProviderError, ProviderNotConfigured
@@ -230,6 +232,17 @@ def _newest_attachment(observations: list[Event]) -> dict[str, Any] | None:
             "event_id": event.id,
         }
     return None
+
+
+def _event_search_text(event: Event) -> str:
+    """The words an unprompted tick's observation contributes to routing —
+    the same meaningful fields the chunker reads, never a JSON dump."""
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    for key in ("text", "body", "snippet", "subject", "description", "caption"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:600]
+    return ""
 
 
 class CaptureRequestBox:
@@ -584,6 +597,7 @@ class AgentLoop:
         focus: Focus | None = None,
         conclusions: Conclusions | None = None,
         deliveries: Deliveries | None = None,
+        query_pipeline: QueryPipeline | None = None,
     ) -> None:
         self._providers = providers
         # the in-flight reply to a decision, if the model is writing one —
@@ -635,6 +649,10 @@ class AgentLoop:
         self._views = views
         self._focus = focus
         self._conclusions = conclusions
+        # the routed query pipeline (routing, lexical + vector fusion, gate,
+        # packing). Behind memory.query_pipeline; without it the old vector
+        # recall above still serves each turn.
+        self._query_pipeline = query_pipeline
         # the outbound-send record: a failed or empty send is a fact, not a
         # log line, and the next turn is told about it
         self._deliveries = deliveries
@@ -1942,6 +1960,7 @@ class AgentLoop:
             return
 
         recalled: list[dict[str, Any]] = []
+        pipeline_result: Any = None
         if resume is None:
             # the recall query depends only on the message texts, so its
             # embedding starts now and the round trip overlaps the context
@@ -1970,13 +1989,38 @@ class AgentLoop:
             history: list[Message] = []
             # every meaningful question pulls its own related memories in —
             # older conversations, shared documents, whatever the question
-            # touches — without the model having to think to ask
+            # touches — without the model having to think to ask. The routed
+            # pipeline (memory.query_pipeline) replaces the vector-only recall
+            # and owns the attention block when it is on; otherwise the old
+            # path answers exactly as before.
             recall_lines: list[str] = []
-            if messages:
-                recalled, recall_lines = await self._recall_related(
-                    messages, ctx, observations, recall_embed
+            pipeline_result = None
+            pipeline_on = self._query_pipeline is not None and self._config.memory.query_pipeline
+            # an unprompted tick retrieves too: urgent observations ask the
+            # attention view on the proactive path
+            force_attention = bool(
+                not messages and observations and any(e.urgency >= 1 for e in observations)
+            )
+            if pipeline_on and (messages or observations):
+                pipeline_result = await self._pipeline_context(
+                    messages,
+                    ctx,
+                    observations,
+                    recall_embed,
+                    force_attention=force_attention,
                 )
-            attention = await self._attention_context(messages)
+                if pipeline_result is not None:
+                    recalled = pipeline_result.packed.trace
+                    if pipeline_result.block:
+                        recall_lines = [pipeline_result.block]
+            else:
+                if messages:
+                    recalled, recall_lines = await self._recall_related(
+                        messages, ctx, observations, recall_embed
+                    )
+            attention = (
+                "" if pipeline_result is not None else await self._attention_context(messages)
+            )
             context_block = self._format_context(ctx, attention=attention)
             delivery_block = "\n".join(delivery_lines)
             head = "\n\n".join(
@@ -2038,6 +2082,8 @@ class AgentLoop:
             },
             "calls": calls,
         }
+        if pipeline_result is not None and pipeline_result.packed.notes:
+            trace["retrieval_notes"] = list(pipeline_result.packed.notes)
         if resume is not None:
             # a resumed attempt points at the dead one, so the record reads
             # as one ask with a gap, not two separate requests
@@ -2138,6 +2184,25 @@ class AgentLoop:
             reply = final.text.strip()
             delivered = _delivered_by_tool(calls)
             parked = _parked_this_turn(calls)
+            # the verifier checks every memory claim in the reply against the
+            # packed chunks: one regeneration with feedback, then a
+            # deterministic repair. It only runs for a reply that will
+            # actually reach the user — a tool that already delivered, or a
+            # parked approval card, has no reply to check.
+            verification: dict[str, Any] | None = None
+            if (
+                reply
+                and messages
+                and pipeline_result is not None
+                and pipeline_result.packed.gate in ("ok", "no_relevant_memory")
+                and not delivered
+                and not parked
+            ):
+                reply, verification = await self._verified_reply(
+                    provider, reply, full_history, pipeline_result
+                )
+            if verification is not None:
+                trace["verification"] = verification
             if reply and not delivered and not parked:
                 if messages:
                     # the user spoke first — a reply is solicited, it never
@@ -2250,6 +2315,151 @@ class AgentLoop:
         "mail isn't connected" instead of an invented capability."""
         servers = self._tools.mcp_servers()
         return ", ".join(servers) if servers else "none"
+
+    async def _pipeline_context(
+        self,
+        messages: list[InboundMessage],
+        ctx: Any,
+        observations: list[Event],
+        query_embed: asyncio.Task[list[float] | None] | None,
+        *,
+        force_attention: bool = False,
+    ) -> Any:
+        """Run the routed pipeline for this turn: resolve, retrieve, fuse,
+        gate and pack. Returns None on failure — the turn continues with
+        whatever base context it already has, exactly like the old recall."""
+        if self._query_pipeline is None:
+            return None
+        chat_ref = messages[-1].chat_ref if messages else ""
+        focus_state = None
+        if self._focus is not None and chat_ref:
+            try:
+                focus_state = await self._focus.get(chat_ref)
+            except Exception:
+                log.warning("could not read the focus object for routing", exc_info=True)
+        entity_names = await self._entity_names(focus_state)
+        excluded = {e.id for e in ctx.events}
+        excluded |= {e.id for e in observations if e.kind == "chat_message"}
+        text = " ".join(
+            [m.text for m in messages] + [m.reply_to_text for m in messages if m.reply_to_text]
+        ).strip()
+        if not text:
+            # an unprompted tick retrieves too: its observations are the
+            # question, and the proactive path answers from the views
+            text = " ".join(
+                (event.summary or _event_search_text(event)) for event in observations
+            ).strip()
+        if not text:
+            return None
+        try:
+            return await self._query_pipeline.run(
+                text,
+                focus=focus_state,
+                entity_names=entity_names,
+                query_embed=query_embed,
+                exclude_event_ids=excluded,
+                owner_addresses=self._owner_addresses,
+                force_attention=force_attention,
+            )
+        except Exception:
+            log.exception("query pipeline failed — continuing without routed recall")
+            return None
+
+    async def _entity_names(self, focus_state: Any) -> dict[int, str]:
+        """Display names for the focus object's people, so a name in the
+        question can become an entity filter instead of a word."""
+        names: dict[int, str] = {}
+        if self._entities is None or focus_state is None:
+            return names
+        for entity_id in focus_state.recent_entities:
+            try:
+                entity = await self._entities.get(entity_id)
+            except Exception:
+                continue
+            if entity is None:
+                continue
+            label = (entity.display_name or "").strip()
+            if not label and entity.handles:
+                label = str(entity.handles[0][1] or "").strip()
+            if label:
+                names[entity_id] = label
+        return names
+
+    async def _verified_reply(
+        self,
+        provider: Provider,
+        reply: str,
+        history: list[Message],
+        pipeline_result: Any,
+    ) -> tuple[str, dict[str, Any]]:
+        """Check the reply against the pack, regenerate once on failure, then
+        repair deterministically. Verification never costs the turn: a broken
+        verifier logs and sends the reply it already had."""
+        packed = pipeline_result.packed
+        # the conversation is part of what a reply may quote — the user's
+        # own words and the model's earlier lines are not memory claims
+        conversation = "\n".join(
+            text
+            for text in ((getattr(message, "text", "") or "").strip() for message in history[-24:])
+            if text and text != reply
+        )
+        extra_corpus = conversation[-8_000:]
+        try:
+            violations = verify_reply(
+                reply,
+                chunks_by_event=packed.chunks_by_event,
+                known_event_ids=set(packed.event_ids),
+                extra_corpus=extra_corpus,
+            )
+        except Exception:
+            log.warning(
+                "citation verification failed — sending the reply as written", exc_info=True
+            )
+            return reply, {"ok": False, "error": "verifier failed"}
+        if not violations:
+            return reply, {"ok": True, "violations": []}
+        record: dict[str, Any] = {
+            "ok": False,
+            "violations": [{"kind": v.kind, "detail": v.detail} for v in violations],
+        }
+        # one regeneration, text only — no tools, so nothing runs twice.
+        # Bounded: a hung provider must not hold the turn open after the
+        # answer is already written.
+        candidate = ""
+        try:
+            system = await self._system_prompt()
+            attempt = await asyncio.wait_for(
+                provider.complete(
+                    system,
+                    list(history) + [Message.user(feedback(violations))],
+                    [],
+                ),
+                timeout=min(60.0, self._config.agent.turn_timeout_seconds),
+            )
+            candidate = attempt.text.strip()
+        except Exception:
+            log.warning("verification regeneration failed — repairing in place", exc_info=True)
+        if candidate:
+            try:
+                second = verify_reply(
+                    candidate,
+                    chunks_by_event=packed.chunks_by_event,
+                    known_event_ids=set(packed.event_ids),
+                    extra_corpus=extra_corpus,
+                )
+            except Exception:
+                second = violations
+            record["regenerated"] = True
+            if not second:
+                record["ok"] = True
+                return candidate, record
+            repaired = repair_reply(candidate, second)
+            record["repaired"] = True
+            record["violations"] = [{"kind": v.kind, "detail": v.detail} for v in second]
+            return repaired.text, record
+        repaired = repair_reply(reply, violations)
+        record["repaired"] = True
+        return repaired.text, record
 
     async def _recall_related(
         self,
@@ -2755,6 +2965,24 @@ class AgentLoop:
                 else None
             ),
         )
+
+        # memory_search stays a model tool, capped per turn: the third round
+        # is the last one, so a model that keeps rephrasing cannot loop the
+        # same question through retrieval for the whole turn budget
+        if call.name == "memory_search" and trace is not None:
+            used = sum(1 for entry in trace if entry.get("name") == "memory_search")
+            if used >= self._config.memory.max_search_rounds:
+                result = ToolResult(
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=(
+                        "memory_search has been used the maximum number of times "
+                        "this turn — answer from the memory already in front of you."
+                    ),
+                    is_error=True,
+                )
+                self._note_call(trace, call, result)
+                return result
 
         if ruling.decision is Decision.DENY:
             seq = await self._audit.append(
