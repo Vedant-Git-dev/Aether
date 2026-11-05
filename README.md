@@ -1,53 +1,30 @@
+<div align="center">
+
 # Aether
 
-**A personal agent you can give write access to, because it shows its work.**
+### A personal agent you can give write access to, because it shows its work.
+
+**The model proposes. Code decides. The record proves it.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/Vedant-Git-dev/Aether/actions/workflows/ci.yml/badge.svg)](https://github.com/Vedant-Git-dev/Aether/actions/workflows/ci.yml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](pyproject.toml)
+[![Self-hosted](https://img.shields.io/badge/self--hosted-yes-success.svg)](#installation)
 
-Aether is a self-hosted personal agent that reads your mail, calendar, and chat,
-remembers what is happening across them, and takes actions on your behalf. Before
-anything runs, deterministic code classifies it against a policy you wrote:
-low-stakes reads go ahead, and anything that sends, changes, or deletes waits for one
-tap in chat. Every authorization decision is appended to a hash-chained audit log you
-can verify with `/verify`.
+[**Install**](#installation) · [**Quick start**](docs/quickstart.md) · [**Configuration**](docs/configuration.md) · [**Architecture**](docs/architecture.md) · [**Security**](#security-model-and-what-we-do-not-claim)
 
-## What is Aether
+</div>
 
-Aether is built for the part most assistants skip: letting the agent act without asking
-you to trust it blindly. The model proposes; code decides; the record proves what
-happened.
+---
 
-- **Policy decides, not the model.** Regular expressions on tool names and call
-  parameters, evaluated before execution. No LLM in the decision path.
-- **One-tap approvals.** Higher-stakes calls park in the web panel, Telegram, or Discord
-  with the exact action and its parameters.
-- **Tamper-evident audit.** Each record commits to every record before it with SHA-256.
-  `/verify` re-walks the chain and reports the first break.
-- **Cross-app memory.** Events are deduplicated, people are resolved across handles, and
-  recall is semantic when the free embedding model is configured.
-- **Bring your own model.** Anthropic, OpenAI, Google Gemini, NVIDIA NIM, or a local
-  Ollama model, with separate slots for images, audio, and video.
+Most assistants make you choose: keep the agent read-only and useless, or hand it your
+accounts and hope. **Aether is built for the part they skip.**
 
-## A day with Aether
-
-On Monday you tell a recruiter you will send your availability by Thursday. Thursday is
-busy, and the thread goes quiet.
-
-**Without Aether:** the promise stays in your head until it is too late.
-
-**With Aether**, with the background worker on, the follow-up skill finds the promise in
-memory (a memorable event with a marker such as "I will" or "follow up"), drafts from its
-words, and proposes `gmail__send_email`. The policy parks the outbound send, an approval
-card arrives with the recipient, subject, and body, and you tap Approve. The skill re-checks
-that the source event still exists before firing; if the thread moved on, the draft is
-dropped and you are told why. The audit row records the rule, the decision, and who
-approved it.
-
-With the worker off, the same thing happens when you ask in chat. The gate is identical.
-
-## Demo
+It is a self-hosted agent that connects to your apps, remembers what is happening across
+all of them, and takes actions on your behalf, through native integrations and any MCP
+server. But before *anything* runs, deterministic code checks it against a policy **you**
+wrote. Reads go ahead. Anything that sends, changes, or deletes waits for **one tap** in
+chat. Every decision lands in a hash-chained audit log you can verify with `/verify`.
 
 ```text
 You       Reply to Sam's email and confirm Friday at 10:00.
@@ -60,8 +37,81 @@ You       Approve
 Aether    Sent. The decision record shows the rule that matched and your approval.
 ```
 
-The same decision appears on the Audit page with a `chain ok` badge and in the expanded
-Decision Trace with every tool call and its ruling.
+## Get started
+
+**Set up the real thing.** A keyboard-driven wizard asks the questions, generates your
+secrets, and writes a ready config:
+
+
+<summary><b>On Linux/macOS</b></summary>
+<br>
+
+```bash
+git clone https://github.com/Vedant-Git-dev/Aether.git
+cd Aether
+./scripts/setup.sh
+```
+
+<summary><b>On Windows (PowerShell)</b></summary>
+<br>
+
+```powershell
+git clone https://github.com/Vedant-Git-dev/Aether.git
+cd Aether
+.\scripts\setup.bat
+```
+
+**Just want to look around first?** Run the real panel against fake in-memory data. No
+database, no API key, nothing saved:
+
+```bash
+git clone https://github.com/Vedant-Git-dev/Aether.git && cd Aether
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+cd webapp && npm ci && npm run build && cd ..
+python tests/e2e/dev_server.py
+```
+
+Open `http://127.0.0.1:8731`, paste the token `secret` under **Settings > Access**, and
+try the approval flow. Full details are in [Installation](#installation).
+
+---
+
+## Why Aether
+
+- **Policy decides, not the model.** Regular expressions on tool names and call
+  parameters, evaluated before execution. There is no LLM in the decision path.
+- **One-tap approvals.** Higher-stakes calls park in the web panel, Telegram, or Discord
+  with the exact action and its parameters.
+- **Tamper-evident audit.** Each record commits to every record before it with SHA-256.
+  `/verify` re-walks the chain and reports the first break.
+- **Cross-app memory.** Events are deduplicated, people are resolved across handles, and
+  recall is semantic when the free embedding model is configured.
+- **Bring your own model.** Anthropic, OpenAI, Google Gemini, NVIDIA NIM, or a local
+  Ollama model, with separate slots for images, audio, and video.
+- **Yours to host.** One asyncio process and Postgres. No hosted instance, no vendor in
+  the middle.
+
+## A day with Aether
+
+On Monday you tell a recruiter you will send your availability by Thursday. Thursday is
+busy, and the thread goes quiet.
+
+| | What happens |
+| --- | --- |
+| **Without Aether** | The promise stays in your head until it is too late. |
+| **With Aether** | The follow-up skill finds the promise in memory (an event with a marker such as "I will" or "follow up"), drafts from its words, and proposes `gmail__send_email`. The policy parks the send, an approval card arrives with the recipient, subject, and body, and you tap **Approve**. |
+
+Before firing, the skill re-checks that the source event still exists. If the thread
+moved on, the draft is dropped and you are told why. The audit row records the rule, the
+decision, and who approved it.
+
+With the background worker off, the same thing happens when you ask in chat. The gate is
+identical.
+
+> [!TIP]
+> The same decision appears on the **Audit** page with a `chain ok` badge, and in the
+> expanded **Decision Trace** with every tool call and its ruling.
 
 ## How an action flows
 
@@ -96,17 +146,17 @@ flowchart TD
 ### Trust and control
 
 - **Deterministic authorization.** First matching rule wins; no model in the path. See [the policy guide](docs/policy.md).
-- **One-tap approvals.** Approve or deny from the panel, Telegram, or Discord; requests expire after 24 hours by default.
+- **One-tap approvals.** Approve or deny from the panel, Telegram, or Discord. Requests expire after 24 hours by default.
 - **Tamper-evident audit.** SHA-256 chain over every decision, verified with `/verify`.
-- **Contact allowlists.** A cross-app list plus per-app lists for Gmail, Telegram, and Discord; non-allowlisted senders are dropped at ingestion.
+- **Contact allowlists.** A cross-app list plus per-app lists for Gmail, Telegram, and Discord. Non-allowlisted senders are dropped at ingestion.
 - **Security changes park.** Contacts, authz, messaging, and MCP changes always wait for approval, even from chat.
 
 ### Memory and understanding
 
 - **Deduplicated event memory.** A repeated poll result is stored once.
 - **Cross-platform identity.** The same person under different handles is merged into one entity.
-- **Salience scoring.** A first-pass model, or the main model, decides what is worth mentioning; it can be turned off independently.
-- **A workspace you confirm.** Markdown identity, tone, preferences, and durable memory; inferred profile entries wait until you say yes.
+- **Salience scoring.** A first-pass model, or the main model, decides what is worth mentioning. It can be turned off independently.
+- **A workspace you confirm.** Markdown identity, tone, preferences, and durable memory. Inferred profile entries wait until you say yes.
 - **Semantic recall.** Gemini embeddings make memory searchable by meaning.
 - **Files become memory.** Images, PDFs, documents, audio, and video frames are described or extracted into encrypted events.
 
@@ -122,17 +172,24 @@ flowchart TD
 ### Flexibility
 
 - **Model per role.** Route images, audio, video, the first pass, and embeddings separately.
-- **Three ways to configure.** `config.yaml`, the Settings panel, or `/config` in chat; chat changes persist and reset to the YAML baseline.
+- **Three ways to configure.** `config.yaml`, the Settings panel, or `/config` in chat. Chat changes persist and can be reset to the YAML baseline.
 - **Self-host anywhere.** One asyncio process and Postgres. A Render blueprint is included.
 - **Persistent schedules.** Scheduled actions and routines survive restarts and re-arm on boot.
 
+---
+
 ## Installation
 
-Aether needs Python 3.12+ and a Postgres database. A free Neon database works; so
-does a local one. Node 22+ is only needed when you build the panel yourself — the
-deploy engine builds it on Render. There is no hosted instance and no SQLite mode.
+Aether needs **Python 3.12+** and a **Postgres** database. A free [Neon](https://neon.tech)
+database works, and so does a local one. **Node 22+** is only needed when you build the
+panel yourself; the deploy engine builds it on Render.
 
-### Requirements
+> [!NOTE]
+> There is no hosted instance and no SQLite mode. Everything runs on your machine or in
+> your own cloud account.
+
+<details>
+<summary><b>Requirements by platform</b></summary>
 
 | Component | Linux | Windows (PowerShell) |
 | --- | --- | --- |
@@ -140,16 +197,17 @@ deploy engine builds it on Render. There is no hosted instance and no SQLite mod
 | Postgres | `sudo apt-get install -y postgresql` | `winget install PostgreSQL.PostgreSQL` |
 | Node 22+ (local panel only) | `sudo apt-get install -y nodejs npm` | `winget install OpenJS.NodeJS.LTS` |
 
-Use your distro's package manager when it is not `apt` (`dnf`, `pacman`, `apk`).
-On macOS: `brew install python@3.12 postgresql node`. Node 22+ may need
-NodeSource or `nvm` on older distributions. The setup wizard checks the Python
-version and installs its own `rich` and `prompt_toolkit` dependencies (into a
-private venv when the system Python refuses `pip`); it does not install Python or
-Postgres for you.
+Use your distro's package manager when it is not `apt` (`dnf`, `pacman`, `apk`). On
+macOS: `brew install python@3.12 postgresql node`. Node 22+ may need NodeSource or `nvm`
+on older distributions.
 
-### Install and configure
+The setup wizard checks the Python version and installs its own `rich` and
+`prompt_toolkit` dependencies (into a private venv when the system Python refuses
+`pip`). It does not install Python or Postgres for you.
 
-Linux and macOS:
+</details>
+
+### 1. Install and configure
 
 ```bash
 git clone https://github.com/Vedant-Git-dev/Aether.git
@@ -157,7 +215,8 @@ cd Aether
 ./scripts/setup.sh
 ```
 
-Windows, in PowerShell (or `scripts\setup.bat` from `cmd.exe`):
+<details>
+<summary><b>Windows (PowerShell, or <code>scripts\setup.bat</code> from <code>cmd.exe</code>)</b></summary>
 
 ```powershell
 git clone https://github.com/Vedant-Git-dev/Aether.git
@@ -165,13 +224,13 @@ cd Aether
 .\scripts\setup.bat
 ```
 
-The wizard checks and installs its Python dependencies, then asks the questions
-with arrow keys, Space and Enter. Secrets are masked, and no question needs a
-typed number or y/n. It writes the answers, the generated secrets and a ready
-`config.generated.yaml` to `~/.aether-setup`.
+</details>
 
-For a scripted install, add `--yes` to accept every default, or point at an
-answers file:
+The wizard asks its questions with arrow keys, Space, and Enter. Secrets are masked, and
+no question needs a typed number or y/n. It writes your answers, the generated secrets,
+and a ready `config.generated.yaml` to `~/.aether-setup`.
+
+For a scripted install, accept every default with `--yes`, or point at an answers file:
 
 ```bash
 ./scripts/setup.sh --yes
@@ -183,33 +242,31 @@ answers file:
 .\scripts\setup.bat --answers answers.toml
 ```
 
-### Deploy
-
-Linux and macOS:
+### 2. Deploy
 
 ```bash
 ./scripts/deploy.sh --answers ~/.aether-setup/answers.env
 ```
 
-Windows, in PowerShell:
-
 ```powershell
 .\scripts\deploy.bat --answers "$env:USERPROFILE\.aether-setup\answers.env"
 ```
 
-With a Render API key and your own fork, the deploy engine creates or updates the
-Render service, waits for the first build, verifies `/healthz` and the panel, and
-creates the uptime monitor. Without a key (or with the public upstream repo), it
-writes the Blueprint and prints the exact dashboard steps instead.
+With a Render API key and your own fork, the deploy engine creates or updates the Render
+service, waits for the first build, verifies `/healthz` and the panel, and creates the
+uptime monitor. Without a key (or with the public upstream repo), it writes the Blueprint
+and prints the exact dashboard steps instead.
 
-Open the deployed URL, paste the token under **Settings > Access**, and send
-`/status`. It reports the resolved models, pending approvals, and queue depth
-without a model call. Back up `~/.aether-setup/secrets.env`: losing
-`AETHER_ENCRYPTION_KEY` makes every stored message, memory, and token unrecoverable.
+Open the deployed URL, paste the token under **Settings > Access**, and send `/status`.
+It reports the resolved models, pending approvals, and queue depth without a model call.
+
+> [!CAUTION]
+> **Back up `~/.aether-setup/secrets.env`.** Losing `AETHER_ENCRYPTION_KEY` makes every
+> stored message, memory, and token unrecoverable.
 
 ### Run locally instead
 
-The wizard's generated config and secrets are plain files. On Linux or macOS:
+The wizard's generated config and secrets are plain files.
 
 ```bash
 cp ~/.aether-setup/config.generated.yaml config.yaml
@@ -218,7 +275,8 @@ cd webapp && npm ci && npm run build && cd ..
 aether
 ```
 
-On Windows, in PowerShell:
+<details>
+<summary><b>Windows (PowerShell)</b></summary>
 
 ```powershell
 Copy-Item "$env:USERPROFILE\.aether-setup\config.generated.yaml" config.yaml
@@ -230,19 +288,19 @@ cd webapp; npm ci; npm run build; cd ..
 aether
 ```
 
-For a local Postgres, choose **existing** for the database question and paste the
-local connection string (for example `postgresql:///aether`).
+</details>
 
-The full question list, `--answers`, `--yes`, `--dry-run` and `--no-animation` are
-in [docs/hosted-setup.md](docs/hosted-setup.md). The manual, step-by-step install is
-in [docs/quickstart.md](docs/quickstart.md).
+For a local Postgres, choose **existing** for the database question and paste the local
+connection string (for example `postgresql:///aether`).
+
+The full question list, `--answers`, `--yes`, `--dry-run`, and `--no-animation` are in
+[docs/hosted-setup.md](docs/hosted-setup.md). Prefer to do every step by hand? Follow
+the [manual install](docs/quickstart.md).
 
 ### Try the panel without a database
 
-Real app, real panel, in-memory fixtures. It does not run the agent, call a model,
-or persist anything.
-
-Linux and macOS:
+Real app, real panel, in-memory fixtures. It does not run the agent, call a model, or
+persist anything.
 
 ```bash
 git clone https://github.com/Vedant-Git-dev/Aether.git
@@ -253,7 +311,8 @@ cd webapp && npm ci && npm run build && cd ..
 python tests/e2e/dev_server.py
 ```
 
-Windows, in PowerShell:
+<details>
+<summary><b>Windows (PowerShell)</b></summary>
 
 ```powershell
 git clone https://github.com/Vedant-Git-dev/Aether.git
@@ -265,12 +324,14 @@ cd webapp; npm ci; npm run build; cd ..
 python tests/e2e/dev_server.py
 ```
 
-Expected: `Uvicorn running on http://127.0.0.1:8731`. Open it and paste the token
-`secret` under **Settings > Access**. The data is fake and nothing is saved.
+</details>
+
+Expected: `Uvicorn running on http://127.0.0.1:8731`. Open it and paste the token `secret`
+under **Settings > Access**. The data is fake and nothing is saved.
 
 ### First connectors
 
-Connect from the Apps page or the chat walk:
+Connect from the **Apps** page or the chat walk:
 
 ```text
 /apps add gmail
@@ -280,12 +341,17 @@ A pasted value is consumed before the model sees it, stored encrypted, and never
 back. MCP servers can be declared in `config.yaml`; see
 [docs/configuration.md](docs/configuration.md).
 
-Optional services:
+### Optional services
 
-`TAVILY_API_KEY` enables web search (without it, `web_search` refuses and `web_fetch`
-still works). `GROQ_API_KEY` enables voice transcription. Modal, Vercel, or a GitHub
-Actions batch queue enable background jobs. `GEMINI_API_KEY` with a Gemini embedding
-model enables semantic memory. Screen capture needs Wayland, `grim`, and an image model.
+| Capability | Needs |
+| --- | --- |
+| Web search | `TAVILY_API_KEY`. Without it, `web_search` refuses and `web_fetch` still works. |
+| Voice transcription | `GROQ_API_KEY` |
+| Background jobs | Modal, Vercel, or a GitHub Actions batch queue |
+| Semantic memory | `GEMINI_API_KEY` with a Gemini embedding model |
+| Screen capture | Wayland, `grim`, and an image model |
+
+---
 
 ## Configuration
 
@@ -297,10 +363,10 @@ chat or the panel are stored in Postgres and override the YAML until reset.
 | `.env` | Secrets | `DATABASE_URL`, `AETHER_ENCRYPTION_KEY`, `AETHER_TOKEN`, provider keys, bot tokens, OAuth apps, Tavily, Groq, sandbox keys |
 | `config.yaml` | Structure | `llm.*`, `agent.*`, `salience.*`, `mcp_servers`, `messaging.*`, `contacts.*`, `authz.*`, `workspace.*`, `proactive.*`, `workbench.*`, `media.*`, `providers.*` |
 
-Every field and environment variable is in
+Every field and environment variable is documented in
 [docs/configuration.md](docs/configuration.md).
 
-### Policy example
+### Write your own policy
 
 Rules are regexes over the tool name, optionally over the canonical JSON parameters.
 First match wins. Anything they do not cover falls through to the built-in ladder.
@@ -321,12 +387,15 @@ authz:
 ```
 
 Provider tools are named `app__tool` (`gmail__send_email`, `github__create_issue`). MCP
-tools are `server__tool`. Native tools keep their own names. The built-in ladder is
-fail-safe: an unrecognized tool parks. See [docs/policy.md](docs/policy.md).
+tools are `server__tool`. Native tools keep their own names.
+
+> [!IMPORTANT]
+> The built-in ladder is fail-safe: **an unrecognized tool parks.** See
+> [docs/policy.md](docs/policy.md).
 
 ### Model slots
 
-A named model carries its provider as `provider/model`; a bare id uses `llm.provider`.
+A named model carries its provider as `provider/model`. A bare id uses `llm.provider`.
 
 | Slot | Key | Values |
 | --- | --- | --- |
@@ -339,33 +408,29 @@ A named model carries its provider as `provider/model`; a bare id uses `llm.prov
 
 `base` is accepted as a legacy spelling of `default`. See [docs/models.md](docs/models.md).
 
+---
+
 ## Security model and what we do not claim
 
 Aether asks for a lot of access, so it states plainly where the guarantees end.
 
-- **Encryption at rest.** AES-256-GCM with a server-held key. It protects stored history
-  against a database-level compromise such as a leaked backup. It does not protect against
-  a compromised server process.
-- **Secrets.** The same encrypted store. Provider tokens use a separate keyring so they
-  can be rotated; the audit log stores a parameter digest, never values.
-- **Model providers.** They see prompts, recent context, tool results, and files in a
-  perception call. Choose a provider and retention policy you accept; there is no
-  end-to-end encryption.
-- **Sandboxes.** Receive only the files a job needs, never the database URL, encryption
-  key, or provider tokens.
-- **Web content.** Fetched pages and searches cannot change policy; they reach the profile
-  only as a proposal you confirm.
-- **Screen capture.** Perception only: a screenshot is described, and no action tools are
-  registered for the screen.
-- **Free-tier hosting.** Schedules persist and re-arm on boot, but do not fire while the
-  process is asleep.
-- **Single owner.** `AETHER_TOKEN` is shared by the API, web chat, and companion. Aether is
-  not multi-tenant.
+| Area | What you get |
+| --- | --- |
+| **Encryption at rest** | AES-256-GCM with a server-held key. Protects stored history against a database-level compromise such as a leaked backup. Does **not** protect against a compromised server process. |
+| **Secrets** | The same encrypted store. Provider tokens use a separate keyring so they can be rotated. The audit log stores a parameter digest, never values. |
+| **Model providers** | They see prompts, recent context, tool results, and files in a perception call. Choose a provider and retention policy you accept; there is no end-to-end encryption. |
+| **Sandboxes** | Receive only the files a job needs, never the database URL, encryption key, or provider tokens. |
+| **Web content** | Fetched pages and searches cannot change policy. They reach the profile only as a proposal you confirm. |
+| **Screen capture** | Perception only. A screenshot is described, and no action tools are registered for the screen. |
+| **Free-tier hosting** | Schedules persist and re-arm on boot, but do not fire while the process is asleep. |
+| **Single owner** | `AETHER_TOKEN` is shared by the API, web chat, and companion. Aether is not multi-tenant. |
 
-What we do not claim: no independent security audit, no end-to-end encryption, no
+**What we do not claim:** no independent security audit, no end-to-end encryption, no
 protection from a compromised host, no guarantee that a model provider excludes your
-data from training, and no hosted service-level agreement. Report vulnerabilities through
-[SECURITY.md](SECURITY.md), not a public issue.
+data from training, and no hosted service-level agreement.
+
+> [!WARNING]
+> Report vulnerabilities through [SECURITY.md](SECURITY.md), not a public issue.
 
 ## Architecture
 
@@ -399,7 +464,8 @@ flowchart TB
 A full component and persistence walkthrough is in
 [docs/architecture.md](docs/architecture.md).
 
-### Repository map
+<details>
+<summary><b>Repository map</b></summary>
 
 | Path | Purpose |
 | --- | --- |
@@ -417,6 +483,8 @@ A full component and persistence walkthrough is in
 | `webapp/` | React and Tailwind panel source, built into `src/aether/web/` |
 | `tests/`, `companion/`, `docs/` | Unit, integration, and browser tests; Wayland capture CLI; guides |
 
+</details>
+
 ## How it compares
 
 | Attribute | Aether | What to check in an alternative |
@@ -430,7 +498,7 @@ A full component and persistence walkthrough is in
 
 ## Roadmap
 
-Shipped:
+**Shipped**
 
 - [x] Deterministic policy gate, one-tap approvals, and hash-chained audit with `/verify`
 - [x] Gmail, Calendar, Drive, Docs, GitHub, and LinkedIn providers
@@ -439,12 +507,51 @@ Shipped:
 - [x] Background worker with budgets, verdicts, self-pause, and a sandbox ladder
 - [x] Image generation, video edits, voice transcription, and the web panel
 
-Planned, in no particular order:
+**Planned, in no particular order**
 
 - [ ] A dedicated secrets manager for the encryption key
 - [ ] Provider zero-data-retention options
 - [ ] Screen capture beyond Wayland
 - [ ] A hosted public demo
+
+## FAQ
+
+<details>
+<summary><b>Does it run on my laptop?</b></summary>
+
+Yes. You need Python 3.12+, Node 22 to build the panel, and Postgres (local or free
+Neon). Screen capture needs Wayland and `grim`; everything else is platform-independent.
+
+</details>
+
+<details>
+<summary><b>Which data goes to which provider?</b></summary>
+
+Your LLM sees prompts, context, tool results, and files in a perception call. Embeddings
+go to Gemini, searches to Tavily, image prompts to Pollinations or Gemini, and voice
+notes to Groq when no audio model is set. Sandboxes receive only their task files. OAuth
+tokens stay in the encrypted store.
+
+</details>
+
+<details>
+<summary><b>What happens if the server restarts?</b></summary>
+
+Encrypted rows persist. The scheduler re-arms, a running background task returns to
+pending, and approvals keep their expiry clock. An in-flight model turn is lost and not
+retried automatically. Chat and panel settings continue to override `config.yaml`.
+
+</details>
+
+<details>
+<summary><b>What does it cost on free tiers?</b></summary>
+
+Neon has a free Postgres tier, Render has a free web tier with 750 instance-hours and
+spin-down, Tavily has free search credits, and Modal and Vercel have free starting
+credits. Model tokens are billed by your provider. GitHub's free plan includes 2,000
+Actions minutes for the batch queue. Terms change, so check current pricing.
+
+</details>
 
 ## Contributing
 
@@ -459,29 +566,8 @@ issues through [SECURITY.md](SECURITY.md), not a public issue.
 [MIT](LICENSE). Built on FastAPI, asyncpg, Pydantic, the official Anthropic, OpenAI,
 Google GenAI, and MCP SDKs, python-telegram-bot, py-cord, and a React and Vite panel.
 
-## FAQ
+<div align="center">
 
-**Does it run on my laptop?**
+**If Aether earns your trust, a ⭐ helps others find it.**
 
-Yes. You need Python 3.12+, Node 22 to build the panel, and Postgres (local or free Neon).
-Screen capture needs Wayland and `grim`; everything else is platform-independent.
-
-**Which data goes to which provider?**
-
-Your LLM sees prompts, context, tool results, and files in a perception call. Embeddings go
-to Gemini, searches to Tavily, image prompts to Pollinations or Gemini, and voice notes to
-Groq when no audio model is set. Sandboxes receive only their task files. OAuth tokens stay
-in the encrypted store.
-
-**What happens if the server restarts?**
-
-Encrypted rows persist. The scheduler re-arms, a running background task returns to
-pending, and approvals keep their expiry clock. An in-flight model turn is lost and not
-retried automatically. Chat and panel settings continue to override `config.yaml`.
-
-**What does it cost on free tiers?**
-
-Neon has a free Postgres tier, Render has a free web tier with 750 instance-hours and
-spin-down, Tavily has free search credits, and Modal and Vercel have free starting credits.
-Model tokens are billed by your provider; GitHub's free plan includes 2,000 Actions minutes
-for the batch queue. Terms change, so check current pricing.
+</div>

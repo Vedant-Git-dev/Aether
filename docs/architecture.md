@@ -1,8 +1,21 @@
 # Architecture
 
-Aether is one asyncio process. The API, the web panel, the agent loop, the scheduler,
+Aether is **one asyncio process**. The API, the web panel, the agent loop, the scheduler,
 the background worker, and the connectors share a single event loop and one Postgres
 pool. There is no queue broker, no separate worker service, and no cache tier.
+
+**On this page**
+
+- [Boot order](#boot-order)
+- [Components](#components)
+- [Data flow](#data-flow)
+- [Persistence](#persistence)
+- [Encryption](#encryption)
+- [Concurrency and restart behavior](#concurrency-and-restart-behavior)
+- [Failure behavior](#failure-behavior)
+- [Where to start reading](#where-to-start-reading)
+
+---
 
 ## Boot order
 
@@ -24,10 +37,23 @@ pool. There is no queue broker, no separate worker service, and no cache tier.
 14. Start messaging connectors.
 15. Start the agent loop, the scheduler worker, and the background worker.
 
-A missing optional component logs why and the rest keeps starting. A missing core
-component stops boot with the reason.
+> [!NOTE]
+> A missing **optional** component logs why and the rest keeps starting. A missing
+> **core** component stops boot with the reason.
+
+---
 
 ## Components
+
+| Component | Lives in | Responsibility |
+| --- | --- | --- |
+| [Agent loop](#agent-loop) | `src/aether/agent/` | The turn engine |
+| [Authorization](#authorization) | `src/aether/authz/` | Policy, approvals, audit |
+| [Connectors and providers](#connectors-and-providers) | `src/aether/connectors/`, `src/aether/providers/` | MCP, tool registry, direct apps |
+| [Memory](#memory) | `src/aether/memory/`, `src/aether/workspace/` | Events, entities, retrieval, workspace |
+| [Media](#media) | `src/aether/media/` | Media store, generation, transcription |
+| [Background work](#background-work) | `src/aether/proactive/`, `src/aether/skills/`, `src/aether/workbench/` | Opportunities, skills, sandboxes |
+| [Scheduling](#scheduling) | `src/aether/scheduler/`, `src/aether/routines/` | Scheduled actions and routines |
 
 ### Agent loop
 
@@ -36,22 +62,31 @@ handles commands before ingest, calls the model, and executes proposed tools thr
 policy gate. A turn has a hard timeout (`agent.turn_timeout_seconds`). Chat commands are
 answered before any model call.
 
-Native tools live in `src/aether/agent/tools.py`: memory search, entity notes,
-scheduling, routines, screen-capture requests, media lookup and sharing, image
-generation, video edits, config reads and writes, workspace reads and writes, web fetch
-and search, traces, and audit verification.
+Native tools live in `src/aether/agent/tools.py`:
+
+- memory search and entity notes
+- scheduling and routines
+- screen-capture requests
+- media lookup and sharing
+- image generation and video edits
+- config reads and writes
+- workspace reads and writes
+- web fetch and search
+- traces and audit verification
 
 ### Authorization
 
-`src/aether/authz/policy.py` classifies each call. `approvals.py` parks calls and
-carries out a fresh decision. `audit.py` appends a hash-chained record and verifies the
-chain.
+| File | Role |
+| --- | --- |
+| `src/aether/authz/policy.py` | Classifies each call |
+| `src/aether/authz/approvals.py` | Parks calls and carries out a fresh decision |
+| `src/aether/authz/audit.py` | Appends a hash-chained record and verifies the chain |
 
 ### Connectors and providers
 
-`src/aether/connectors/mcp_host.py` runs MCP servers over stdio or HTTP and exposes
-their tools. `registry.py` is the single flat namespace the model sees. Native tools,
-direct provider tools, and MCP tools all route through it.
+`src/aether/connectors/mcp_host.py` runs MCP servers over stdio or HTTP and exposes their
+tools. `registry.py` is the single flat namespace the model sees. Native tools, direct
+provider tools, and MCP tools all route through it.
 
 `src/aether/providers/` holds the direct app integrations: Google (Gmail, Calendar,
 Drive, Docs), GitHub, and LinkedIn. Each declares its tools, their effect (`read`,
@@ -60,70 +95,91 @@ encrypted store under a separate keyring.
 
 ### Memory
 
-`src/aether/memory/events.py` stores deduplicated events with encryption and an audit
-trail. `entities.py` resolves people across handles. `vectors.py` stores embeddings for
-semantic recall. `salience.py` scores what is worth mentioning. `context.py` assembles
-the prompt context.
+| File | Role |
+| --- | --- |
+| `events.py` | Deduplicated events with encryption and an audit trail |
+| `entities.py` | Resolves people across handles |
+| `vectors.py` | Stores embeddings for semantic recall |
+| `salience.py` | Scores what is worth mentioning |
+| `context.py` | Assembles the prompt context |
+| `views.py` | Structured views read off the resident index |
+| `focus.py` | One sealed working set per chat |
+| `conclusions.py` | Caches state-of-now answers with `as_of` and `valid_until` |
+| `deliveries.py` | Records every outbound send attempt |
 
-Write-time enrichment runs inside `events.py`:
+All of these live in `src/aether/memory/`.
 
-- the deterministic floor in `enrich.py` raises urgency on its own words (ASAP,
-  urgent, "within N hours", "by EOD", deadline) before anything is written, so an
-  urgent mail is never invisible while a classifier is queued or absent;
-- with `memory.enrichment` on, one cheap model turn adds urgency, needs_reply,
-  action type, deadline phrases, commitments and a one-line summary, and the
-  deterministic `normalize_deadline` turns the phrases into absolute instants
-  against the event's own time and `memory.default_timezone`;
-- every address is linked to an identity through the blind index, and an owner
-  address renders "(your other address)".
+#### Write-time enrichment
 
-The enrichment lands in the same sealed `meta_enc`, and the resident index decodes
-it once, at load. `views.py` reads the structured views off that index:
-`pending_attention` (urgency desc, deadline asc, recency), the open commitments
-ordered by due time, and an entity timeline using the index's `by_entity` map.
-`focus.py` persists one sealed working set per chat, and `conclusions.py` caches
-state-of-now answers with `as_of` and `valid_until`; a conclusion past its TTL is
-never served.
+Enrichment runs inside `events.py`:
 
-Query-time retrieval is one pipeline (`memory.query_pipeline`, off by default until
-the golden-set evaluation blesses it; with it off the previous vector-only recall
-still runs):
+- **Deterministic floor.** `enrich.py` raises urgency on its own words (ASAP, urgent,
+  "within N hours", "by EOD", deadline) before anything is written, so an urgent mail is
+  never invisible while a classifier is queued or absent.
+- **Model enrichment.** With `memory.enrichment` on, one cheap model turn adds urgency,
+  `needs_reply`, action type, deadline phrases, commitments, and a one-line summary. The
+  deterministic `normalize_deadline` turns the phrases into absolute instants against
+  the event's own time and `memory.default_timezone`.
+- **Identity linking.** Every address is linked to an identity through the blind index,
+  and an owner address renders "(your other address)".
 
-- `query.py` routes the question with rules first. A resolved reference ("send it",
-  "send then", "the sender", "the assignment") reads the focus object and skips
-  search; attention, commitment, person, document, fact and open-recall routes carry
-  `{time_range, entities, source, doc_ref, urgency_min}`; short or anaphoric
-  questions are rewritten into at most three keyword queries, cached by normalized
-  message and focus hash.
-- `lexical.py` is an in-memory BM25 index (k1 1.2, b 0.75) over the same sealed
-  chunks, with field boosts (subject and filename x3, sender name x2, context header
-  x1), an exact-phrase boost and typo tolerance over the token vocabulary. It never
-  writes; a listener on the one chunk writer keeps it current, and a restart
-  rebuilds it from the sealed rows. The resident set is bounded by
-  `memory.hot_chunks`; chunks older than that remain reachable through the vector
-  path, which scans the sealed rows.
-- `retrieve.py` runs the lists in parallel, fuses them with reciprocal rank fusion
-  (k 60) plus the recency, entity, urgency and salience weights from `memory.*`,
-  selects with MMR (lambda 0.7), keeps at most three chunks per event, expands
-  neighbour chunks and gates on a minimum normalized score plus an entity,
-  query-term or vector match. Nothing clearing the gate returns an explicit
-  "no relevant memory" block the model must say out loud.
-- `verify.py` checks the finished reply: cited ids must exist in the pack, quoted
-  text must appear in the cited chunk, and dates and numbers are checked. One
-  regeneration with feedback runs first; then a deterministic repair marks an
-  unsourced quote and adds a single hedge for unchecked details.
+The enrichment lands in the same sealed `meta_enc`, and the resident index decodes it
+once, at load. `views.py` reads the structured views off that index:
+
+- `pending_attention`: urgency descending, deadline ascending, then recency
+- open commitments, ordered by due time
+- an entity timeline, using the index's `by_entity` map
+
+`focus.py` persists one sealed working set per chat. `conclusions.py` caches
+state-of-now answers, and a conclusion past its TTL is never served.
+
+#### Query-time retrieval
+
+Retrieval is one pipeline, controlled by `memory.query_pipeline`. It is **off by
+default** until the golden-set evaluation blesses it. With it off, the previous
+vector-only recall still runs.
+
+1. **Route** (`query.py`). Rules route the question first.
+   - A resolved reference ("send it", "send then", "the sender", "the assignment") reads
+     the focus object and skips search.
+   - Attention, commitment, person, document, fact, and open-recall routes carry
+     `{time_range, entities, source, doc_ref, urgency_min}`.
+   - Short or anaphoric questions are rewritten into at most three keyword queries,
+     cached by normalized message and focus hash.
+2. **Search lexically** (`lexical.py`). An in-memory BM25 index (k1 1.2, b 0.75) over the
+   same sealed chunks, with field boosts (subject and filename x3, sender name x2,
+   context header x1), an exact-phrase boost, and typo tolerance over the token
+   vocabulary. It never writes. A listener on the one chunk writer keeps it current, and
+   a restart rebuilds it from the sealed rows. The resident set is bounded by
+   `memory.hot_chunks`; older chunks remain reachable through the vector path, which
+   scans the sealed rows.
+3. **Fuse and select** (`retrieve.py`). Runs the lists in parallel and fuses them with
+   reciprocal rank fusion (k 60) plus the recency, entity, urgency, and salience weights
+   from `memory.*`. It selects with MMR (lambda 0.7), keeps at most three chunks per
+   event, expands neighbour chunks, and gates on a minimum normalized score plus an
+   entity, query-term, or vector match. Nothing clearing the gate returns an explicit
+   "no relevant memory" block the model must say out loud.
+4. **Verify** (`verify.py`). Checks the finished reply: cited ids must exist in the pack,
+   quoted text must appear in the cited chunk, and dates and numbers are checked. One
+   regeneration with feedback runs first. Then a deterministic repair marks an
+   unsourced quote and adds a single hedge for unchecked details.
 
 The pack cites every chunk as `[E123 | mail | from Name <addr> | date]`, carries the
-owner's own addresses, stays inside `memory.pack_token_budget`, and states plainly
-when semantic search is unavailable instead of silently narrowing. `memory_search`
-is the same pipeline as a model tool, capped at `memory.max_search_rounds` calls per
-turn. The golden set in `tests/eval_golden.py` runs offline in CI and gates on
-recall@5, MRR, route accuracy and abstain precision/recall.
+owner's own addresses, stays inside `memory.pack_token_budget`, and states plainly when
+semantic search is unavailable instead of silently narrowing.
 
-`deliveries.py` records every outbound send attempt (queued, sent, failed,
-abandoned). The body, message id and error are sealed. A failed send is recorded
-as an event so every turn type sees it, and the next turn re-delivers the exact
-words once before the row is abandoned.
+`memory_search` is the same pipeline as a model tool, capped at `memory.max_search_rounds`
+calls per turn. The golden set in `tests/eval_golden.py` runs offline in CI and gates on
+recall@5, MRR, route accuracy, and abstain precision and recall.
+
+#### Deliveries
+
+`deliveries.py` records every outbound send attempt (queued, sent, failed, abandoned).
+The body, message id, and error are sealed. A failed send is recorded as an event so
+every turn type sees it, and the next turn re-delivers the exact words once before the
+row is abandoned.
+
+#### Workspace
 
 `src/aether/workspace/` is a separate, smaller Markdown layer for identity, tone,
 preferences, and curated memory. It is not the event store.
@@ -138,11 +194,14 @@ editing, frame extraction, and Groq transcription.
 
 `src/aether/proactive/` detects opportunities, claims them, budgets tokens and sandbox
 time, runs skills, stores results, and records verdicts. `src/aether/skills/` holds the
-three shipped skills: follow-ups, research, and media. The same package carries the
-proactive path: `path.py` evaluates the user's watches on every ingest, sends one
-deduplicated, rate-limited alert per match (with a default urgent-mail policy), and
-fires commitment reminders on their urgency-scaled leads. Only the user's own words can
-arm a watch; an email can never create one.
+three shipped skills: **follow-ups**, **research**, and **media**.
+
+The same package carries the proactive path. `path.py` evaluates the user's watches on
+every ingest, sends one deduplicated, rate-limited alert per match (with a default
+urgent-mail policy), and fires commitment reminders on their urgency-scaled leads.
+
+> [!IMPORTANT]
+> Only the user's own words can arm a watch. An email can never create one.
 
 `src/aether/workbench/` routes sandbox jobs across Modal, Vercel, and a GitHub Actions
 batch queue. Routing is code; the model is not consulted.
@@ -152,6 +211,8 @@ batch queue. Routing is code; the model is not consulted.
 `src/aether/scheduler/` persists scheduled actions and re-arms them at boot.
 `src/aether/routines/` stores event-triggered instructions that fire when a matching
 event arrives.
+
+---
 
 ## Data flow
 
@@ -184,6 +245,8 @@ sequenceDiagram
     L->>S: reply
 ```
 
+---
+
 ## Persistence
 
 Migrations live in `src/aether/migrations/` and run in filename order. The runner
@@ -214,6 +277,9 @@ Provider OAuth tokens use a separate keyring (`providers/crypto.py`). This lets 
 rotate the token key without re-encrypting message history. The rotation tool is
 `python -m aether.providers.rotate_tokens`.
 
+See the [configuration reference](configuration.md#content-key-rotation) for the key
+variables and rotation steps.
+
 ## Concurrency and restart behavior
 
 - One process owns the agent loop. Turns are serialized; tool calls within a turn may
@@ -241,9 +307,11 @@ rotate the token key without re-encrypting message history. The rotation tool is
 
 ## Where to start reading
 
-- `src/aether/main.py` for wiring.
-- `src/aether/agent/loop.py` for the turn.
-- `src/aether/authz/policy.py` for the gate.
-- `src/aether/connectors/registry.py` for tool dispatch.
-- `src/aether/memory/events.py` for storage.
-- `tests/` for the expected behavior of each.
+| If you want to understand... | Read |
+| --- | --- |
+| Wiring | `src/aether/main.py` |
+| The turn | `src/aether/agent/loop.py` |
+| The gate | `src/aether/authz/policy.py` |
+| Tool dispatch | `src/aether/connectors/registry.py` |
+| Storage | `src/aether/memory/events.py` |
+| Expected behavior of each | `tests/` |
