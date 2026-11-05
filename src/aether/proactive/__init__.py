@@ -17,6 +17,7 @@ through the policy gate.
 """
 
 from .budget import Budget
+from .path import CommitmentReminders, ProactivePath, reminder_due
 from .store import (
     APPROVED,
     DISCARDED,
@@ -34,15 +35,18 @@ from .worker import ProactiveWorker, RunOutcome
 __all__ = [
     "APPROVED",
     "Budget",
+    "CommitmentReminders",
     "DISCARDED",
     "DONE",
     "FAILED",
     "Opportunity",
     "PENDING",
+    "ProactivePath",
     "ProactiveStore",
     "ProactiveTask",
     "ProactiveWorker",
     "REVISED",
     "RunOutcome",
     "RUNNING",
+    "reminder_due",
 ]

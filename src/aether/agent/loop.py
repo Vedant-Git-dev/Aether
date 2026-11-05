@@ -27,13 +27,13 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import secrets
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from ..authz.approvals import APPROVED, DENIED, Approval, Approvals
 from ..authz.audit import AuditLog, verification_text
@@ -51,6 +51,7 @@ from ..connectors.base import (
 )
 from ..connectors.mail_allowlist import MailAllowlist
 from ..connectors.mcp_host import MCPHost
+from ..connectors.polling import next_poll_delay
 from ..connectors.registry import ToolRegistry
 from ..llm.agent import run_tool_loop
 from ..llm.base import Provider
@@ -67,6 +68,9 @@ from ..memory.focus import Focus
 from ..memory.mail import MAIL_KIND, MAIL_SOURCE, render_mail_event, split_mail
 from ..memory.pipeline import QueryPipeline
 from ..memory.salience import Salience
+from ..memory.timewindow import in_quiet_window as _in_quiet_window
+from ..memory.timewindow import local_clock as _local_clock
+from ..memory.timewindow import parse_quiet_hours as _parse_quiet_hours
 from ..memory.vectors import MemoryHit, VectorMemory
 from ..memory.verify import feedback, repair_reply, verify_reply
 from ..memory.views import Views, wants_attention
@@ -98,6 +102,17 @@ from .traces import CARRY_OUT, ROUTINE, SCHEDULED, TURN, Traces
 log = logging.getLogger("aether.agent")
 
 _MAX_OBSERVATIONS = 20
+
+# The words a user's own message uses when they want a standing watch.
+# Only a message matching one of these makes `watch_origin()` return
+# "owner" — the deterministic half of "email content can never create or
+# change a watch" (plan.md section 6, test 12.11).
+_WATCH_INTENT = re.compile(
+    r"\b(keep\s+(checking|watching|an\s+eye)|watch\s+(for|out)|alert\s+me|"
+    r"notify\s+me|tell\s+me\s+(if|when|whenever)|let\s+me\s+know\s+(if|when)|"
+    r"monitor|keep\s+me\s+(posted|informed))\b",
+    re.IGNORECASE,
+)
 
 # A solicited turn waits this long for write-time enrichment still in
 # flight before it answers from the deterministic floor. The classifier is
@@ -184,35 +199,6 @@ _PLATFORM_TOKENS = {
     "telegram": ("TELEGRAM_BOT_TOKEN",),
     "discord": ("DISCORD_BOT_TOKEN",),
 }
-
-
-def _parse_quiet_hours(raw: str | None) -> tuple[int, int] | None:
-    """Parse "HH:MM-HH:MM" (local time) into minutes since midnight. The
-    window may wrap midnight ("23:00-08:00"); a malformed value is logged
-    and ignored — a budget the config file can't explain is worse than none."""
-    if not raw:
-        return None
-    start_text, sep, end_text = raw.partition("-")
-    try:
-        if not sep:
-            raise ValueError(f"quiet_hours {raw!r} must look like 'HH:MM-HH:MM'")
-        start_h, start_m = (int(part) for part in start_text.strip().split(":"))
-        end_h, end_m = (int(part) for part in end_text.strip().split(":"))
-        window = (start_h * 60 + start_m, end_h * 60 + end_m)
-        if not all(0 <= m < 24 * 60 for m in window):
-            raise ValueError(f"quiet_hours {raw!r} is outside a day")
-        return window
-    except ValueError as exc:
-        log.warning("%s — quiet hours disabled", exc)
-        return None
-
-
-def _local_clock(now: datetime, timezone: str) -> str:
-    """HH:MM in the user's timezone, for a live result's "as of"."""
-    try:
-        return now.astimezone(ZoneInfo(timezone or "UTC")).strftime("%H:%M")
-    except (KeyError, ValueError):
-        return now.strftime("%H:%M UTC")
 
 
 _ATTACHMENT_KINDS = frozenset({"shared_doc", "shared_image", "shared_audio", "shared_video"})
@@ -302,6 +288,7 @@ class SurfaceFanout:
         attachment: Attachment | None = None,
         record: bool = True,
         outcomes: dict[str, bool] | None = None,
+        only: set[str] | None = None,
     ) -> dict[str, str]:
         """Fan out to every enabled surface, collecting where the words
         landed: {connector name: platform message id}. Those ids are what
@@ -314,17 +301,19 @@ class SurfaceFanout:
         is for the retry path, which already owns a delivery row and must not
         mint a new one for the same words; `outcomes`, when given, receives
         each surface's true result so a caller can tell "landed on the web
-        but nowhere else" from "landed nowhere". The hub has no id; a dying
-        surface never takes the loop down. Media rides to the chat connectors
-        only — the hub and the transcript stay text-only; the attachment is
-        passed only when one is present, so connectors and test doubles that
-        never send files see no new kwarg."""
+        but nowhere else" from "landed nowhere". `only`, when given, is the
+        channel a watch named — the words go to those surfaces and no
+        others. The hub has no id; a dying surface never takes the loop
+        down. Media rides to the chat connectors only — the hub and the
+        transcript stay text-only; the attachment is passed only when one
+        is present, so connectors and test doubles that never send files
+        see no new kwarg."""
         if not text or not text.strip():
             return {}
         refs: dict[str, str] = {}
         landed: list[str] = []
         media = {"attachment": attachment} if attachment is not None else {}
-        if self.hub is not None:
+        if self.hub is not None and (only is None or "web" in only):
             record_row = await self._record_delivery("web", text) if record else None
             try:
                 await self.hub.broadcast(text)
@@ -339,6 +328,8 @@ class SurfaceFanout:
                 if outcomes is not None:
                     outcomes["web"] = True
         for connector in self.connectors:
+            if only is not None and connector.name not in only:
+                continue
             record_row = await self._record_delivery(connector.name, text) if record else None
             try:
                 ref = await connector.send_to_user(text, **media)
@@ -598,6 +589,7 @@ class AgentLoop:
         conclusions: Conclusions | None = None,
         deliveries: Deliveries | None = None,
         query_pipeline: QueryPipeline | None = None,
+        proactive_path: Any = None,
     ) -> None:
         self._providers = providers
         # the in-flight reply to a decision, if the model is writing one —
@@ -653,6 +645,13 @@ class AgentLoop:
         # packing). Behind memory.query_pipeline; without it the old vector
         # recall above still serves each turn.
         self._query_pipeline = query_pipeline
+        # the proactive path: watches, urgent-mail cards and reminders.
+        # Late-wired like the enrichment pieces, because the path delivers
+        # through this loop's own interruption budget.
+        self._proactive_path = proactive_path
+        # the messages the current turn answers — empty for an unprompted
+        # tick, which is what keeps mail content from arming a watch
+        self._turn_messages: list[InboundMessage] = []
         # the outbound-send record: a failed or empty send is a fact, not a
         # log line, and the next turn is told about it
         self._deliveries = deliveries
@@ -765,16 +764,7 @@ class AgentLoop:
     def _quiet_now(self) -> bool:
         """True when local time is inside the quiet window — the user means
         *their* night, so this reads the clock naively."""
-        if self._quiet is None:
-            return False
-        now = datetime.now()
-        minutes = now.hour * 60 + now.minute
-        start, end = self._quiet
-        if start == end:
-            return True  # a degenerate window is a 24h hold — config's choice
-        if start < end:
-            return start <= minutes < end
-        return minutes >= start or minutes < end  # wraps midnight
+        return _in_quiet_window(self._quiet, datetime.now())
 
     def reparse_quiet_hours(self) -> None:
         """A chat-made change to agent.quiet_hours, applied now — the
@@ -783,14 +773,17 @@ class AgentLoop:
         here)."""
         self._quiet = _parse_quiet_hours(self._config.agent.quiet_hours)
 
-    async def _notify(self, text: str, *, urgent: float = 0.0) -> dict[str, str] | None:
+    async def _notify(
+        self, text: str, *, urgent: float = 0.0, channel: str = ""
+    ) -> dict[str, str] | None:
         """Send an unprompted note under the interruption budget: during
         quiet hours it waits (batched, shipped when the window ends) unless
         it is urgent enough on the 0-10 salience scale. Solicited words —
         replies to the user, approvals, scheduled deliveries — never come
-        through here. Returns where the words landed, or None when they
-        are being held (or empty) — held words haven't reached a surface,
-        so there is nothing to link yet."""
+        through here. `channel`, when given, is the one surface a watch
+        named; empty means every surface. Returns where the words landed,
+        or None when they are being held (or empty) — held words haven't
+        reached a surface, so there is nothing to link yet."""
         if not text.strip():
             return None
         if self._quiet_now() and urgent < self._config.agent.quiet_urgent_salience:
@@ -799,14 +792,34 @@ class AgentLoop:
             # itself, and it ships whole when the window ends
             log.info("held for quiet hours (%d chars)", len(text))
             return None
-        return await self._surfaces.send_to_user(text)
+        only = {channel} if channel else None
+        return await self._surfaces.send_to_user(text, only=only)
 
-    async def note_to_user(self, text: str, *, urgent: float = 0.0) -> dict[str, str] | None:
+    async def note_to_user(
+        self, text: str, *, urgent: float = 0.0, channel: str = ""
+    ) -> dict[str, str] | None:
         """The unprompted-note seam for the rest of the app — the
         background worker's plain notifications ride the same
         interruption budget (quiet hours, holding, batching) as the
-        loop's own words, so they can never nag around the user's night."""
-        return await self._notify(text, urgent=urgent)
+        loop's own words, so they can never nag around the user's night.
+        `channel` narrows a watch alert to the surface it named."""
+        return await self._notify(text, urgent=urgent, channel=channel)
+
+    def attach_proactive_path(self, path: Any) -> None:
+        """Join the proactive path after boot builds it — the same
+        late-wire shape as the enrichment pieces, because the path
+        delivers through this loop's interruption budget."""
+        self._proactive_path = path
+
+    def watch_origin(self) -> str:
+        """`owner` only when the user's own message this turn asked to be
+        watched; `context` for an unprompted tick, a routine or the
+        background worker. The watch tools refuse anything but `owner`, so
+        an instruction inside an email can never arm or change one."""
+        for message in self._turn_messages:
+            if _WATCH_INTENT.search(message.text or ""):
+                return "owner"
+        return "context"
 
     async def present_result(
         self,
@@ -864,6 +877,16 @@ class AgentLoop:
             remaining = (soonest - datetime.now(UTC)).total_seconds()
             wait = min(wait, max(0.05, remaining))
         return wait
+
+    async def _run_proactive_tick(self) -> None:
+        """Flush held alerts and fire due reminders. Never lets a broken
+        proactive path cost the tick: the words already sent stand."""
+        if self._proactive_path is None:
+            return
+        try:
+            await self._proactive_path.tick()
+        except Exception:
+            log.warning("proactive path tick failed — continuing", exc_info=True)
 
     async def _run_due_resumes(self) -> None:
         """Try every pending turn whose wait is over, oldest first. Each
@@ -1132,6 +1155,7 @@ class AgentLoop:
                 await self._run_due_provider_polls()
             # a retry that came due while the queue was busy still runs
             await self._run_due_resumes()
+            await self._run_proactive_tick()
             return
 
         await self._turn(messages, observations)
@@ -1145,6 +1169,9 @@ class AgentLoop:
         # a retry that came due during this turn, or one the turn itself
         # just failed, runs now rather than waiting out the next tick
         await self._run_due_resumes()
+        # reminders and alerts held by a quiet window — never in front of
+        # the words someone is waiting on
+        await self._run_proactive_tick()
 
         # a tick that never suspended (a provider-less turn, say) still
         # lets the scorers it spawned take their first step here, so none
@@ -1638,14 +1665,15 @@ class AgentLoop:
         """Run every configured poll that is due. The polls double as the
         connector watchdog's heartbeat: consecutive failures mark a server
         down (announced once), and the next good poll announces the
-        recovery."""
+        recovery. Intervals carry a little jitter, and a failing feed backs
+        off instead of retrying at full speed every tick."""
         if not self._poll_targets:
             return
         now = datetime.now(UTC)
+        jitter = self._config.proactive.poll_jitter
         for key, (server, poll) in list(self._poll_targets.items()):
             if now < self._next_poll.get(key, now):
                 continue
-            self._next_poll[key] = now + timedelta(minutes=poll.every_minutes)
             qualified = f"{server}__{poll.tool}"
             try:
                 result = await self._host.call(qualified, poll.args)  # type: ignore[union-attr]
@@ -1653,6 +1681,9 @@ class AgentLoop:
                 log.warning("source poll %s failed: %s", qualified, exc)
                 failures = self._poll_failures.get(server, 0) + 1
                 self._poll_failures[server] = failures
+                self._next_poll[key] = now + timedelta(
+                    minutes=next_poll_delay(poll.every_minutes, failures=failures, jitter=jitter)
+                )
                 if failures >= POLL_FAILURES_BEFORE_DOWN and server not in self._down:
                     self._down.add(server)
                     await self._notify(
@@ -1660,6 +1691,9 @@ class AgentLoop:
                         "relying on it and will say when it's back."
                     )
                 continue
+            self._next_poll[key] = now + timedelta(
+                minutes=next_poll_delay(poll.every_minutes, failures=0, jitter=jitter)
+            )
             # a good poll is the heartbeat: the failure count resets, and a
             # server that was announced down gets its recovery announced
             self._poll_failures.pop(server, None)
@@ -2165,6 +2199,9 @@ class AgentLoop:
         # can resume from the exact step that died instead of starting over
         loop_history: list[Message] = []
         attempt = 1 if resume is None else resume.attempts + 1
+        # what this turn answers, for the watch tools' provenance check —
+        # an unprompted tick leaves it empty, so an email cannot arm a watch
+        self._turn_messages = list(messages)
         try:
             # one turn's hard ceiling: a hung provider or a runaway tool
             # loop ends here (the wait cancels whatever was stuck) instead
@@ -2274,6 +2311,9 @@ class AgentLoop:
                 await self._surfaces.send_to_user(FAILURE_REPLY)
             raise
         finally:
+            # the turn is over; a later routine or worker call must read as
+            # context, never as the user's own instruction
+            self._turn_messages = []
             # the pulse dies with the turn, whatever ended it — awaited so
             # the cancelled task never outlives the turn as a dangling
             # pending warning at loop close

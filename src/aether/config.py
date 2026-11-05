@@ -318,7 +318,13 @@ class WorkspaceConfig(BaseModel):
 class ProactiveConfig(BaseModel):
     """The background worker — off by default, every cap a hard stop.
     The worker reads this section live on every cycle, so a change made
-    in chat or the panel applies from the next cycle without a restart."""
+    in chat or the panel applies from the next cycle without a restart.
+
+    Watches and commitment reminders are part of the same section because
+    they share the interruption budget, but they do not ride
+    ``enabled``: a watch the user asked for is their instruction, not the
+    worker's own initiative.
+    """
 
     enabled: bool = False
     # how often the worker looks around; a cycle that finds nothing
@@ -332,6 +338,21 @@ class ProactiveConfig(BaseModel):
     notify_daily_cap: int = 5
     # which skills the worker may run; names not in the registry are ignored
     skills: list[str] = Field(default_factory=lambda: ["followups", "research", "media"])
+    # -- the proactive path (plan.md section 6) --
+    # watches the user asked for, plus the default urgent-mail card. Both
+    # run independently of the worker switch above.
+    watches_enabled: bool = True
+    urgent_mail_alerts: bool = True
+    # urgency 2 is "act soon"; the floor already raises a message whose own
+    # words say urgent, so this fires even when enrichment is off
+    urgent_urgency_min: int = Field(default=2, ge=0, le=3)
+    # every alert the path sends, watches and the default policy together
+    max_alerts_per_hour: int = 6
+    # due reminders (24h/2h/15m scaled by urgency, then one overdue)
+    reminders_enabled: bool = True
+    # polling spreads its checks by this share of the interval, so several
+    # reconnects never hammer a provider in lockstep
+    poll_jitter: float = Field(default=0.15, ge=0.0, le=0.5)
 
 
 class WorkbenchConfig(BaseModel):

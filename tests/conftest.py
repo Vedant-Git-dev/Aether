@@ -25,7 +25,8 @@ _TABLES = (
     "config_overrides, oauth_tokens, app_secrets, memory_chunks, daily_counters, "
     "workbench_transfers, workbench_minutes, proactive_tasks, media_blobs, "
     "processed_updates, provider_connections, provider_oauth_states, "
-    "provider_sync_state, facts, commitments, watches, summaries, focus, "
+    "provider_sync_state, facts, commitments, commitment_reminders, watches, summaries, "
+    "focus, "
     "conclusions, deliveries, workspace_files"
 )
 

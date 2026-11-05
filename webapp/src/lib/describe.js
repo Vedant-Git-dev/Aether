@@ -63,6 +63,9 @@ export const OUTCOME_LABELS = {
   "task done": "Finished a piece of background work",
   "task failed": "A piece of background work failed",
   "task feedback recorded": "Noted your verdict on background work",
+  // the proactive path: a watch the user asked for
+  "watch armed": "Started watching for what you asked about",
+  "watch removed": "Stopped watching",
 };
 
 export const TRACE_KINDS = {
@@ -161,6 +164,11 @@ const NATIVE_TOOLS = {
   list_routines: "Listing routines",
   set_routine_enabled: "Enabling or disabling a routine",
   delete_routine: "Deleting a routine",
+  create_watch: "Arming a watch",
+  list_watches: "Listing watches",
+  set_watch_enabled: "Enabling or pausing a watch",
+  delete_watch: "Removing a watch",
+  watch: "A watch you asked for",
   web_fetch: "Reading a web page",
   web_search: "Searching the web",
   proactive_task: "Background work",

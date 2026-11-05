@@ -13,6 +13,7 @@ import httpx
 
 from ..authz.audit import AuditLog
 from ..config import AppConfig
+from ..connectors.polling import next_poll_delay
 from ..connectors.registry import ToolRegistry
 from ..llm.types import ToolSpec, with_plain_param
 from ..secret_env import EnvResolver
@@ -596,29 +597,48 @@ class ProviderRuntime:
                     interval = self._poll_interval(app)
                     if interval <= 0:
                         continue
+                    failures_raw = await self._store.get_sync(
+                        provider.key, app.key, f"poll:{poll.key}:failures"
+                    )
+                    try:
+                        failures = max(0, int(failures_raw or 0))
+                    except (TypeError, ValueError):
+                        failures = 0
+                    delay = next_poll_delay(
+                        interval,
+                        failures=failures,
+                        jitter=self._config.proactive.poll_jitter,
+                    )
                     last_raw = await self._store.get_sync(
                         provider.key, app.key, f"poll:{poll.key}:last"
                     )
                     last = _parse_time(last_raw)
-                    if last is not None and now < last + timedelta(minutes=interval):
+                    if last is not None and now < last + timedelta(minutes=delay):
                         continue
                     ctx = ProviderContext(self, provider, app, connection)
                     try:
                         payload = await poll.handler(ctx)
                     except ProviderError as exc:
                         log.warning("provider poll failed for %s: %s", app.key, exc)
-                        await self._store.set_sync(
-                            provider.key, app.key, f"poll:{poll.key}:last", now.isoformat()
+                        await self._set_poll_state(
+                            provider.key, app.key, poll.key, now, failures + 1
                         )
                         continue
-                    await self._store.set_sync(
-                        provider.key, app.key, f"poll:{poll.key}:last", now.isoformat()
-                    )
+                    await self._set_poll_state(provider.key, app.key, poll.key, now, 0)
                     if payload:
                         results.append(
                             PollResult(app=app.key, tool=f"{app.key}__{poll.key}", payload=payload)
                         )
         return results
+
+    async def _set_poll_state(
+        self, provider: str, app: str, key: str, now: datetime, failures: int
+    ) -> None:
+        """One poll's two facts — when it last ran and how many times it has
+        failed in a row. Both are sealed values in the sync store."""
+        assert self._store is not None
+        await self._store.set_sync(provider, app, f"poll:{key}:last", now.isoformat())
+        await self._store.set_sync(provider, app, f"poll:{key}:failures", str(max(0, failures)))
 
     def _poll_interval(self, app: AppDefinition) -> float:
         if app.key == "gmail":

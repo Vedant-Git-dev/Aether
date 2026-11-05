@@ -138,7 +138,11 @@ editing, frame extraction, and Groq transcription.
 
 `src/aether/proactive/` detects opportunities, claims them, budgets tokens and sandbox
 time, runs skills, stores results, and records verdicts. `src/aether/skills/` holds the
-three shipped skills: follow-ups, research, and media.
+three shipped skills: follow-ups, research, and media. The same package carries the
+proactive path: `path.py` evaluates the user's watches on every ingest, sends one
+deduplicated, rate-limited alert per match (with a default urgent-mail policy), and
+fires commitment reminders on their urgency-scaled leads. Only the user's own words can
+arm a watch; an email can never create one.
 
 `src/aether/workbench/` routes sandbox jobs across Modal, Vercel, and a GitHub Actions
 batch queue. Routing is code; the model is not consulted.
@@ -188,6 +192,7 @@ records each version in `schema_migrations`.
 | Table group | Tables |
 | --- | --- |
 | Memory | `events`, `identities`, `identity_handles`, `entity_notes`, `memory_chunks`, `chat_messages` |
+| Structured memory | `commitments`, `watches`, `commitment_reminders`, `facts`, `summaries`, `focus`, `conclusions`, `deliveries` |
 | Trust | `audit_log`, `pending_approvals`, `decision_traces` |
 | Automation | `scheduled_actions`, `routines`, `proactive_tasks`, `daily_counters` |
 | Configuration | `config_overrides`, `app_secrets` |

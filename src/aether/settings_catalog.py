@@ -226,12 +226,36 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
     GroupSpec(
         key="proactive",
         title="Background work",
-        note="Off by default. Every cap here is a hard stop for the day.",
+        note="The worker is off by default and every cap is a hard stop. Watches "
+        "and reminders are on — they only ever act on something you asked about.",
         fields=(
             FieldSpec(
                 path="proactive.enabled",
                 label="Background worker",
                 hint="Whether Aether looks for useful things to do on its own, within these caps.",
+            ),
+            FieldSpec(
+                path="proactive.watches_enabled",
+                label="Watches and urgent mail",
+                hint="Whether Aether tells you when something you asked to watch "
+                "arrives, and when urgent mail lands.",
+            ),
+            FieldSpec(
+                path="proactive.urgent_mail_alerts",
+                label="Urgent mail alerts",
+                hint="Send one card when mail arrives that reads as urgent, even "
+                "if no watch is set.",
+            ),
+            FieldSpec(
+                path="proactive.max_alerts_per_hour",
+                label="Hourly alert cap",
+                hint="The most alerts one hour may carry, so a busy inbox cannot "
+                "become a stream of interruptions.",
+            ),
+            FieldSpec(
+                path="proactive.reminders_enabled",
+                label="Commitment reminders",
+                hint="Remind you before something you owe falls due, and once after it is overdue.",
             ),
             FieldSpec(
                 path="proactive.interval_minutes",

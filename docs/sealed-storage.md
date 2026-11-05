@@ -134,8 +134,14 @@ content.
 ## Structured stores
 
 - `commitments` — what the user owes and is owed. Kind, status, counterparty
-  and source event are plaintext vocabulary and ids; the text, due time and
-  original phrase are sealed.
+  and source event are plaintext vocabulary and ids; the text, due time,
+  original phrase and urgency are sealed.
+- `watches` — the standing instructions the user asked for. The scope is a
+  keyed blind token, the channel and status are plaintext vocabulary, and the
+  id watermark and timestamps are bookkeeping; the label and every criterion
+  are sealed and bound to the row.
+- `commitment_reminders` — which reminder lead already fired for which
+  commitment. Ids, integer minutes and a timestamp only.
 - `focus` — one working set per chat, keyed by a blind token. The recent
   entities, last offer, open task and last attachment are sealed.
 - `conclusions` — live-state answers keyed by a blind token, with `as_of`,

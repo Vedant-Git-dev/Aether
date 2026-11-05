@@ -155,6 +155,16 @@ proactive:
     - research
     - media
 
+  # The proactive path. Watches ("keep checking mail and tell me if it's
+  # urgent") and commitment reminders run on their own; the worker switch
+  # above does not gate them.
+  watches_enabled: true            # watches and the urgent-mail card
+  urgent_mail_alerts: true         # card for mail whose own words say urgent
+  urgent_urgency_min: 2            # 0 to 3
+  max_alerts_per_hour: 6
+  reminders_enabled: true          # due reminders, then one overdue
+  poll_jitter: 0.15                # spread poll intervals by this share
+
 # ---------------------------------------------------------------------------
 # Cloud workbench
 # ---------------------------------------------------------------------------

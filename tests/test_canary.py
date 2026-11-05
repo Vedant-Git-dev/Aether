@@ -27,6 +27,7 @@ from aether.memory.deliveries import Deliveries
 from aether.memory.entities import Entities, Sender
 from aether.memory.events import EventStore
 from aether.memory.focus import Focus
+from aether.memory.watches import WatchSpec, WatchStore
 from aether.proactive.store import ProactiveStore
 from aether.providers.crypto import TokenKeyring
 from aether.providers.store import ProviderStore
@@ -128,6 +129,17 @@ async def test_no_canary_leaks_into_any_column(db, caplog) -> None:
             kind="promise",
             text=f"send the deck with {canary}",
             due_phrase=f"by {canary}",
+            urgency=2,
+        )
+        watches = WatchStore(db, cipher, audit)
+        await watches.create(
+            spec=WatchSpec(
+                label=f"label {canary}",
+                scope="mail",
+                sender=f"{canary}@example.com",
+                contains=canary,
+            ),
+            origin="owner",
         )
         await Entities(db, cipher, audit, FakePersonJudge([])).note(
             1, {"kind": "general", "note": f"note {canary}", "address": f"{canary}@x.com"}

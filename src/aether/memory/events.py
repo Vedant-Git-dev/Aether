@@ -160,6 +160,9 @@ class EventStore:
         self._commitments = commitments
         self._enricher = enricher
         self._enrichment = enrichment
+        # the proactive path (watches + reminders) joins here after the
+        # agent exists, because an alert is delivered through the loop
+        self._proactive: Any = None
         # background enrichment in flight — tracked so shutdown and tests
         # never assert on work still mid-air
         self._enriching: set[asyncio.Task[None]] = set()
@@ -170,9 +173,20 @@ class EventStore:
         self._meta_lock = asyncio.Lock()
 
     async def wait_idle(self) -> None:
-        """Every enrichment currently in flight."""
+        """Every enrichment currently in flight.
+        A watcher evaluation rides the same task, so waiting here also
+        waits out the alert an event owes."""
         while self._enriching:
             await asyncio.gather(*self._enriching, return_exceptions=True)
+
+    def attach_proactive(self, proactive: Any) -> None:
+        """Join the proactive path (watches, urgent alerts) to the store.
+
+        The store is the one place every channel funnels an event through,
+        so the evaluator lives on the same task that already links
+        addresses and classifies: an alert never delays ingest, and
+        ``wait_idle`` covers it."""
+        self._proactive = proactive
 
     def attach_enrichment(
         self,
@@ -318,7 +332,11 @@ class EventStore:
                 log.warning(
                     "indexing failed for event %s — backfill will retry", event_id, exc_info=True
                 )
-        if self._entities is not None or (self._enricher is not None and self._enrichment):
+        if (
+            self._entities is not None
+            or (self._enricher is not None and self._enrichment)
+            or self._proactive is not None
+        ):
             self._spawn_enrichment(event_id, kind, stored_payload, when)
         return IngestResult(stored=True, reason="new", event_id=event_id)
 
@@ -369,6 +387,7 @@ class EventStore:
                         ],
                         source_event_id=event_id,
                         counterparty_identity_id=_first(extra.get("entities")),
+                        urgency=result.urgency,
                     )
                 if result.noise and self._indexer is not None:
                     # a noise event keeps its one-line summary instead of a
@@ -381,6 +400,15 @@ class EventStore:
                         log.warning("could not collapse noise event %s", event_id, exc_info=True)
         if extra:
             await self.merge_meta(event_id, extra)
+        if self._proactive is not None:
+            # the alert rides this same tracked task, so it never sits in
+            # front of a reply and `wait_idle` can wait it out
+            try:
+                event = await self.get(event_id)
+                if event is not None:
+                    await self._proactive.evaluate_event(event)
+            except Exception:
+                log.warning("proactive evaluation failed for event %s", event_id, exc_info=True)
 
     async def _link_addresses(
         self, event_id: int, kind: str, payload: dict[str, Any]
