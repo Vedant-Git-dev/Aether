@@ -2,46 +2,74 @@
 
 Aether splits configuration in two on purpose:
 
-- Secrets go in `.env` (or the encrypted store, if pasted through the panel or chat).
-- Structure and policy go in `config.yaml`.
+- **Secrets** go in `.env` (or the encrypted store, if pasted through the panel or chat).
+- **Structure and policy** go in `config.yaml`.
 
-Both are read at boot. Settings changed from the Settings panel or `/config` are
-stored in Postgres and override the YAML. `config.yaml`, or the built-in defaults when
-no file exists, remains the baseline you can reset to.
+Both are read at boot. Settings changed from the Settings panel or `/config` are stored
+in Postgres and override the YAML. `config.yaml`, or the built-in defaults when no file
+exists, remains the baseline you can reset to.
+
+**On this page**
+
+- [Precedence](#precedence)
+- [Environment variables](#environment-variables)
+- [`config.yaml`](#configyaml)
+- [Setting values from chat](#setting-values-from-chat)
+- [Validation](#validation)
+
+---
 
 ## Precedence
 
-For a secret name, Aether resolves in this order:
+For a **secret**, Aether resolves in this order:
 
 1. A value pasted through the panel or the `/apps` walk, stored encrypted.
 2. The process environment.
 3. `.env`, re-read on demand.
 
-For a setting, the order is:
+For a **setting**, the order is:
 
 1. A stored override from chat or the panel.
 2. `config.yaml`.
 3. The built-in default in `src/aether/config.py`.
 
-`/config reset <path>` removes an override and returns that path to the YAML or
-default value.
+`/config reset <path>` removes an override and returns that path to the YAML or default
+value.
+
+---
 
 ## Environment variables
 
 ### Required
 
+These three are the minimum to boot.
+
 | Name | Purpose |
 | --- | --- |
 | `DATABASE_URL` | Postgres connection string. Aether runs its migrations on boot. |
 | `AETHER_ENCRYPTION_KEY` | Base64 of 32 random bytes. Encrypts content at rest. Losing it loses the data. |
-| `AETHER_ENCRYPTION_KEY_ID` | Short label for the active key, such as `2026-10`. Written into every new sealed value. Defaults to `k1`. |
-| `AETHER_ENCRYPTION_KEY_PREVIOUS` | Previous content key, only during rotation. Values written under it stay readable. |
-| `AETHER_ENCRYPTION_KEY_PREVIOUS_ID` | Label for the previous content key. Required when the previous key is set. |
+| `AETHER_TOKEN` | Shared token for the API, web chat, and companion uploads. |
 
-Content keys carry a version label. A rotation sets the new key as active and the old one as previous: old rows stay readable, new writes use the new version. Keyed blind indexes (address lookups, dedup tokens) are derived from the active key, so a rotation also needs the re-tokenize pass before those lookups see old rows again: `python -m aether.memory.seal_migrate --retokenize`.
+### Content key rotation
+
+| Name | Default | Purpose |
+| --- | --- | --- |
+| `AETHER_ENCRYPTION_KEY_ID` | `k1` | Short label for the active key, such as `2026-10`. Written into every new sealed value. |
+| `AETHER_ENCRYPTION_KEY_PREVIOUS` | unset | Previous content key, only during rotation. Values written under it stay readable. |
+| `AETHER_ENCRYPTION_KEY_PREVIOUS_ID` | unset | Label for the previous content key. Required when the previous key is set. |
+
+Content keys carry a version label. A rotation sets the new key as active and the old
+one as previous: old rows stay readable, and new writes use the new version.
+
+> [!IMPORTANT]
+> Keyed blind indexes (address lookups, dedup tokens) are derived from the active key.
+> After a rotation, run the re-tokenize pass before those lookups see old rows again:
+>
+> ```bash
+> python -m aether.memory.seal_migrate --retokenize
+> ```
 
 See [sealed-storage.md](sealed-storage.md) for the plaintext allowlist and the sealer.
-| `AETHER_TOKEN` | Shared token for the API, web chat, and companion uploads. |
 
 ### Core options
 
@@ -50,7 +78,7 @@ See [sealed-storage.md](sealed-storage.md) for the plaintext allowlist and the s
 | `PORT` | `8000` | HTTP port. `aether` binds `0.0.0.0`. |
 | `LOG_LEVEL` | `INFO` | Python logging level. |
 | `AETHER_PUBLIC_URL` | empty | This deployment's public address. Required for the GitHub Actions batch queue. |
-| `AETHER_DEV_EPHEMERAL_KEY` | unset | Set to `1` for a throwaway instance with a key that changes every boot. Never for real data. |
+| `AETHER_DEV_EPHEMERAL_KEY` | unset | Set to `1` for a throwaway instance with a key that changes every boot. **Never for real data.** |
 | `AETHER_CONFIG` | `config.yaml` | Path to a different config file. |
 
 ### Provider tokens
@@ -62,18 +90,19 @@ See [sealed-storage.md](sealed-storage.md) for the plaintext allowlist and the s
 | `AETHER_TOKEN_ENCRYPTION_KEY_PREVIOUS` | Previous token key, for rotation. |
 | `AETHER_TOKEN_ENCRYPTION_KEY_PREVIOUS_ID` | Label for the previous token key. |
 
-Rotate token keys with:
+Check token-key rotation with:
 
 ```bash
 python -m aether.providers.rotate_tokens --check
 ```
 
-Without `AETHER_TOKEN_ENCRYPTION_KEY`, direct provider connections stay disabled. The
-rest of Aether still boots.
+> [!NOTE]
+> Without `AETHER_TOKEN_ENCRYPTION_KEY`, direct provider connections stay disabled. The
+> rest of Aether still boots.
 
 ### LLM providers
 
-Set the key for the provider you use. Several can be set at once because each model
+Set the key for the provider you use. Several can be set at once, because each model
 slot may route to a different provider.
 
 | Name | Purpose |
@@ -97,8 +126,8 @@ without the token, logs why it was skipped and boots without it.
 
 ### OAuth apps
 
-Only needed for direct provider connections. The `/apps` walk can also collect these
-one at a time.
+Only needed for direct provider connections. The `/apps` walk can also collect these one
+at a time.
 
 | Name | Purpose |
 | --- | --- |
@@ -117,13 +146,45 @@ one at a time.
 | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Vercel sandbox, the fallback. |
 | `GITHUB_ACTIONS_TOKEN` | GitHub Actions batch queue. Also needs `workbench.actions_repo` and the public URL. |
 
-Most of these can be pasted in the panel under **Settings > Credentials**, where they
-are stored encrypted and never shown back.
+> [!TIP]
+> Most of these can be pasted in the panel under **Settings > Credentials**, where they
+> are stored encrypted and never shown back.
+
+---
 
 ## `config.yaml`
 
 Every section is optional. A missing file means all defaults, and Aether boots with the
 web panel and no external connectors.
+
+**Sections:** [`llm`](#llm) · [`agent`](#agent) · [`memory`](#memory) ·
+[`salience`](#salience) · [`mcp_servers`](#mcp_servers) · [`messaging`](#messaging) ·
+[`contacts`](#contacts) · [`authz`](#authz) · [`workspace`](#workspace) ·
+[`proactive`](#proactive) · [`workbench`](#workbench) · [`media`](#media) ·
+[`providers`](#providers)
+
+### Example
+
+A small config that picks a model, sets quiet hours, turns on the background worker, and
+requires approval for outbound mail:
+
+```yaml
+llm:
+  provider: anthropic
+  model: claude-opus-5
+
+agent:
+  quiet_hours: "23:00-08:00"
+
+proactive:
+  enabled: true
+
+authz:
+  rules:
+    - tool_pattern: "gmail__send_email"
+      decision: approve
+      note: "Sends leave Aether"
+```
 
 ### `llm`
 
@@ -132,8 +193,8 @@ web panel and no external connectors.
 | `provider` | `anthropic` | `anthropic`, `openai`, `gemini`, `ollama`, or `nvidia` |
 | `model` | `claude-opus-5` | A bare id, or `provider/model` to override the provider |
 | `image_model` | empty | Empty = off, `default` = main model, or a named model |
-| `audio_model` | empty | Same |
-| `video_model` | empty | Same |
+| `audio_model` | empty | Same as `image_model` |
+| `video_model` | empty | Same as `image_model` |
 | `salience_model` | empty | `off` disables the first pass, `default` uses the main model |
 | `embedding_model` | `gemini-embedding-001` | Gemini only; `none` disables semantic recall |
 | `max_tokens` | `16000` | Reply ceiling. Do not lower it to save time. |
@@ -192,7 +253,8 @@ A list. Each entry has:
 | `poll_tools` | `[]` | `{tool, args, every_minutes}` |
 | `enabled` | `true` | |
 
-The legacy MCP entry named `composio` is ignored at boot.
+> [!NOTE]
+> The legacy MCP entry named `composio` is ignored at boot.
 
 ### `messaging`
 
@@ -225,8 +287,7 @@ senders.
 | `approval_ttl_hours` | `24` | How long a parked call stays decidable |
 
 `tool_pattern` and `param_pattern` are Python regular expressions, matched with
-`search`. `decision` is `allow`, `approve`, or `deny`. See the
-[policy guide](policy.md).
+`search`. `decision` is `allow`, `approve`, or `deny`. See the [policy guide](policy.md).
 
 ### `workspace`
 
@@ -236,12 +297,14 @@ senders.
 | `path` | `aether-workspace` | One-time import source; the files then live in Postgres |
 | `encrypted` | `true` | Retained for older config files; the database store always seals |
 
-Files: `IDENTITY.md`, `SOUL.md`, `AGENTS.md`, `USER.md`, `MEMORY.md`, and
-`memory/YYYY-MM-DD.md`. Each is one sealed row in `workspace_files`, bound to
-its row id, with a keyed blind token for the name. On the first boot after
-upgrading, a file-backed workspace at `path` is imported and its files are
-removed; nothing readable stays on disk. Edit them in Settings, Workspace
-files, or through the workspace tools. Export and import use a passphrase.
+**Files:** `IDENTITY.md`, `SOUL.md`, `AGENTS.md`, `USER.md`, `MEMORY.md`, and
+`memory/YYYY-MM-DD.md`.
+
+Each file is one sealed row in `workspace_files`, bound to its row id, with a keyed
+blind token for the name. On the first boot after upgrading, a file-backed workspace at
+`path` is imported and its files are removed, so nothing readable stays on disk. Edit
+them in **Settings > Workspace files**, or through the workspace tools. Export and
+import use a passphrase.
 
 ### `proactive`
 
@@ -289,6 +352,8 @@ files, or through the workspace tools. Export and import use a passphrase.
 | `enabled` | `true` | Direct app connections |
 | `gmail.poll_minutes` | `5` | Gmail polling interval |
 
+---
+
 ## Setting values from chat
 
 ```text
@@ -301,11 +366,14 @@ files, or through the workspace tools. Export and import use a passphrase.
 /config reset agent.tick_seconds
 ```
 
-One-line writes are deterministic; no model is called. Personal tuning under `agent.*`,
-`salience.*`, `llm.*`, `proactive.*`, `workbench.*`, and `providers.*` applies
-immediately. `llm.*` changes restart the process to load the new provider. Security
-sections (`contacts`, `authz`, `messaging`, `mcp_servers`) park for a one-tap approval.
-Bare `/config` starts a guided walk.
+One-line writes are deterministic; no model is called. Bare `/config` starts a guided
+walk.
+
+| Section | What happens |
+| --- | --- |
+| `agent.*`, `salience.*`, `proactive.*`, `workbench.*`, `providers.*` | Applies immediately |
+| `llm.*` | Restarts the process to load the new provider |
+| `contacts`, `authz`, `messaging`, `mcp_servers` | Parks for a one-tap approval |
 
 ## Validation
 
