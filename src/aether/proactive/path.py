@@ -24,6 +24,7 @@ import asyncio
 import logging
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -55,6 +56,9 @@ _RATE_WINDOW = timedelta(hours=1)
 # a small bounded memory of the events already announced, so a second call
 # for the same event in one boot never double-sends
 _ANNOUNCED_CAP = 5_000
+# alerts the hourly cap could not deliver wait here, oldest first, and ship
+# when the window clears — dropped only if this overflows
+_DEFERRED_CAP = 50
 
 
 def leads_for(urgency: int) -> tuple[int, ...]:
@@ -166,6 +170,7 @@ class ProactivePath:
         reminders: CommitmentReminders | None = None,
         notify: Notify | None = None,
         owners: Owners | None = None,
+        channels: Callable[[], set[str]] | None = None,
         timezone: str = "Asia/Kolkata",
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -175,6 +180,9 @@ class ProactivePath:
         self._reminders = reminders
         self._notify = notify
         self._owners = owners
+        # the surfaces a watch may name right now — read live, because a
+        # connector can be switched on or off without a restart
+        self._channels = channels
         self._timezone = timezone
         self._clock = clock or (lambda: datetime.now(UTC))
         self._active: list[Watch] = []
@@ -182,6 +190,7 @@ class ProactivePath:
         self._load_lock = asyncio.Lock()
         self._recent: deque[datetime] = deque()
         self._held: list[tuple[str, str, str, float]] = []
+        self._deferred: list[tuple[str, str, int, str]] = []
         self._announced: set[int] = set()
         self._announced_order: deque[int] = deque()
         self._reminded: dict[int, set[int]] = {}
@@ -206,9 +215,16 @@ class ProactivePath:
     # -- watches -------------------------------------------------------------
 
     async def create_watch(self, spec: WatchSpec, *, origin: str) -> Watch | None:
-        """Arm a watch through the owner gate and make it live immediately."""
+        """Arm a watch through the owner gate and make it live immediately.
+
+        A channel the user named but that is not connected right now is
+        dropped to "every surface" rather than stored: a watch pinned to a
+        dead surface would silently never alert. The confirmation reads the
+        normalized spec back, so the user sees where it will actually go.
+        """
         if self._watches is None:
             return None
+        spec = replace(spec, channel=self._normalized_channel(spec.channel))
         watch = await self._watches.create(spec=spec, origin=origin)
         if watch is not None:
             await self.refresh()
@@ -260,12 +276,11 @@ class ProactivePath:
         if not matched and not default:
             await self._advance(event.id)
             return None
-        if not self._rate_room(now):
-            log.info("alert rate cap reached — event %s was not announced", event.id)
-            await self._advance(event.id)
-            return None
         watch = matched[0] if matched else None
         owners = await self._owner_set()
+        channel = watch.channel if watch is not None else ""
+        urgency = int(getattr(event, "urgency", 0))
+        quiet_hours = watch.spec.quiet_hours if watch is not None else ""
         text = render_alert(
             event,
             watch=watch,
@@ -273,11 +288,18 @@ class ProactivePath:
             timezone=self._timezone,
             now=now,
         )
+        if not self._rate_room(now):
+            # the cap is spent: hold the card and ship it when the hour
+            # clears, rather than dropping an alert the user asked for
+            self._defer(text, channel, urgency, quiet_hours)
+            log.info("alert rate cap reached — event %s was deferred", event.id)
+            await self._advance(event.id)
+            return None
         sent = await self._send(
             text,
-            channel=watch.channel if watch is not None else "",
-            urgency=int(getattr(event, "urgency", 0)),
-            quiet_hours=watch.spec.quiet_hours if watch is not None else "",
+            channel=channel,
+            urgency=urgency,
+            quiet_hours=quiet_hours,
             now=now,
         )
         if sent:
@@ -314,6 +336,7 @@ class ProactivePath:
         now = now or self._clock()
         await self._ensure_loaded()
         await self._flush_held(now)
+        await self._flush_deferred(now)
         if not self._config.proactive.reminders_enabled or self._commitments is None:
             return 0
         fired = 0
@@ -357,7 +380,10 @@ class ProactivePath:
     ) -> bool:
         """Send one alert, or hold it for the watch's own quiet window.
         A level-3 alert is urgent enough to break that window; everything
-        lower waits for the window to end and then ships whole."""
+        lower waits for the window to end and then ships whole. A channel
+        that is no longer connected falls back to every surface instead of
+        landing nowhere."""
+        channel = self._normalized_channel(channel)
         if (
             quiet_hours
             and urgency < 3
@@ -374,6 +400,53 @@ class ProactivePath:
             return False
         return True
 
+    def _defer(self, text: str, channel: str, urgency: int, quiet_hours: str) -> None:
+        self._deferred.append((text, channel, urgency, quiet_hours))
+        while len(self._deferred) > _DEFERRED_CAP:
+            self._deferred.pop(0)
+
+    async def _flush_deferred(self, now: datetime) -> None:
+        """Ship alerts the rate cap held back, oldest first, while there is
+        room. A delivery that fails stays queued for the next tick."""
+        if not self._deferred:
+            return
+        waiting: list[tuple[str, str, int, str]] = []
+        for text, channel, urgency, quiet_hours in self._deferred:
+            if not self._rate_room(now):
+                waiting.append((text, channel, urgency, quiet_hours))
+                continue
+            delivered = await self._send(
+                text, channel=channel, urgency=urgency, quiet_hours=quiet_hours, now=now
+            )
+            if delivered:
+                self._recent.append(now)
+            else:
+                waiting.append((text, channel, urgency, quiet_hours))
+        self._deferred = waiting
+
+    def _available_channels(self) -> set[str] | None:
+        """The surfaces a watch may name right now, or None when the caller
+        wired no channel source (tests) — then nothing can be validated."""
+        if self._channels is None:
+            return None
+        try:
+            return set(self._channels())
+        except Exception:
+            log.warning("could not read the connected surfaces", exc_info=True)
+            return None
+
+    def _normalized_channel(self, channel: str) -> str:
+        """A named surface that is not connected becomes "every surface":
+        a watch pinned to a dead channel would otherwise never alert."""
+        clean = (channel or "").strip()
+        if not clean:
+            return ""
+        available = self._available_channels()
+        if available is None or clean in available:
+            return clean
+        log.info("watch channel %r is not connected — alerting all surfaces", clean)
+        return ""
+
     async def _flush_held(self, now: datetime | None = None) -> None:
         if not self._held:
             return
@@ -387,7 +460,7 @@ class ProactivePath:
             if self._notify is None:
                 continue
             try:
-                await self._notify(text, urgent=salience, channel=channel)
+                await self._notify(text, urgent=salience, channel=self._normalized_channel(channel))
             except Exception:
                 log.warning("could not deliver a held alert", exc_info=True)
         self._held = waiting

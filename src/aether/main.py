@@ -132,6 +132,16 @@ def _build_cipher(settings: Settings) -> Cipher:
     )
 
 
+def _watch_channels(fanout: SurfaceFanout) -> set[str]:
+    """The surfaces a watch may name right now. Read live by the proactive
+    path, because /config can switch a connector on or off without a
+    restart; a channel that is not here never gets stored on a watch."""
+    names = {connector.name for connector in fanout.connectors}
+    if fanout.hub is not None:
+        names.add("web")
+    return names
+
+
 def create_app(
     settings: Settings | None = None,
     config_path: str | None = None,
@@ -652,6 +662,7 @@ def create_app(
             reminders=commitment_reminders,
             notify=agent.note_to_user,
             owners=entities.owner_addresses,
+            channels=lambda: _watch_channels(surfaces),
             timezone=config.memory.default_timezone,
         )
         agent.attach_proactive_path(proactive_path)

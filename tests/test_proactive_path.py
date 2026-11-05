@@ -148,12 +148,14 @@ async def _path(
     notify: Recorder | None = None,
     config: AppConfig | None = None,
     clock=None,
+    channels=None,
 ) -> ProactivePath:
     path = ProactivePath(
         config=config or _config(),
         watches=watches,
         commitments=commitments,
         notify=notify,
+        channels=channels,
         timezone="UTC",
         clock=clock or (lambda: NOW),
     )
@@ -227,14 +229,49 @@ async def test_a_noise_event_never_alerts_even_with_a_watch() -> None:
     assert recorder.sent == []
 
 
-async def test_the_rate_cap_drops_further_alerts() -> None:
+async def test_the_rate_cap_defers_further_alerts_until_there_is_room() -> None:
     recorder = Recorder()
-    path = await _path(notify=recorder, config=_config(max_alerts_per_hour=1))
+    clock = [NOW]
+    path = await _path(
+        notify=recorder, config=_config(max_alerts_per_hour=1), clock=lambda: clock[0]
+    )
 
     await path.evaluate_event(_mail(1))
     await path.evaluate_event(_mail(2))
 
+    assert len(recorder.sent) == 1  # the second is held, not lost
+
+    clock[0] = NOW + timedelta(hours=2)
+    await path.tick()
+
+    assert len(recorder.sent) == 2
+
+
+async def test_a_channel_that_is_not_connected_falls_back_to_all_surfaces() -> None:
+    watches = FakeWatches()
+    await watches.create(
+        spec=WatchSpec(label="mail", scope="mail", channel="telegram"), origin="owner"
+    )
+    recorder = Recorder()
+    path = await _path(watches=watches, notify=recorder, channels=lambda: {"web"})
+
+    await path.evaluate_event(_mail(urgency=3))
+
     assert len(recorder.sent) == 1
+    assert recorder.sent[0]["channel"] == ""
+
+
+async def test_a_connected_channel_is_kept() -> None:
+    watches = FakeWatches()
+    await watches.create(
+        spec=WatchSpec(label="mail", scope="mail", channel="telegram"), origin="owner"
+    )
+    recorder = Recorder()
+    path = await _path(watches=watches, notify=recorder, channels=lambda: {"web", "telegram"})
+
+    await path.evaluate_event(_mail(urgency=3))
+
+    assert recorder.sent[0]["channel"] == "telegram"
 
 
 async def test_a_watch_quiet_window_holds_then_flushes() -> None:
