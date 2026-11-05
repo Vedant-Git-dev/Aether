@@ -8,7 +8,6 @@ import { useData } from "./store.jsx";
 import { useHashRoute } from "./hooks/useHashRoute.js";
 import { hasToken } from "./lib/api.js";
 import SettingsPage from "./pages/Settings.jsx";
-import AttentionPage from "./pages/Attention.jsx";
 import ActivityPage from "./pages/Activity.jsx";
 import TracesPage from "./pages/Traces.jsx";
 import AuditPage from "./pages/Audit.jsx";
@@ -22,7 +21,6 @@ const COLLAPSE_KEY = "aether_sidebar_collapsed";
 
 const PAGES = {
   activity: { title: "Live Activity", el: ActivityPage },
-  attention: { title: "Attention Required", el: AttentionPage },
   tasks: { title: "Tasks", el: TasksPage },
   memory: { title: "Memory & Context", el: MemoryPage },
   audit: { title: "Audit Log", el: AuditPage },
@@ -37,12 +35,12 @@ export default function App() {
   const { approvals } = useData();
   const route = useHashRoute(Object.keys(PAGES));
   const [collapsed, setCollapsed] = useState(() => {
-    // the rail starts quiet; the bottom control opens it when needed
+    // the full rail is the first impression; collapsing it is a choice
     try {
       const saved = localStorage.getItem(COLLAPSE_KEY);
-      return saved === null ? true : saved === "1";
+      return saved === "1";
     } catch {
-      return true;
+      return false;
     }
   });
   const [navOpen, setNavOpen] = useState(false);
@@ -77,7 +75,7 @@ export default function App() {
     return next;
   });
 
-  const attentionCount = approvals.length;
+  const pendingCount = approvals.length;
 
   return (
     <div className="flex min-h-screen">
@@ -92,16 +90,16 @@ export default function App() {
         page={route}
         collapsed={collapsed}
         navOpen={navOpen}
-        attentionCount={attentionCount}
+        pendingCount={pendingCount}
         onCollapse={toggleCollapse}
         onNavigate={() => setNavOpen(false)}
       />
       <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar title={title} attentionCount={attentionCount} onMenu={() => setNavOpen(true)} />
+        <Topbar title={title} pendingCount={pendingCount} onMenu={() => setNavOpen(true)} />
         <main
           data-testid="page"
-          className={`mx-auto w-full flex-1 px-4 pb-12 pt-6 min-[901px]:px-6 ${
-            route === "settings" ? "max-w-none" : "max-w-[1680px]"
+          className={`mx-auto w-full flex-1 px-4 pb-14 pt-6 min-[901px]:px-7 ${
+            route === "settings" ? "max-w-none" : "max-w-[1440px]"
           }`}
         >
           <Page />

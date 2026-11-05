@@ -183,7 +183,7 @@ export default function ModelPicker({
               )}
               {providers.map((g) => (
                 <div key={g.provider} className="mt-1">
-                  <div className="px-2 py-1 text-xs font-medium tracking-wide text-ink-3 uppercase">
+                  <div className="px-2 py-1 text-[11px] font-medium text-ink-3 uppercase">
                     {g.provider}
                   </div>
                   {g.models

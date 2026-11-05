@@ -119,13 +119,13 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken,
   };
 
   return (
-    <Card className="flex flex-col gap-3 p-4" data-testid={`provider-${app.key}`}>
+    <Card className="flex flex-col gap-3 p-5" data-testid={`provider-${app.key}`}>
       <div className="flex items-center gap-3">
         {face.imgSrc
-          ? <img src={face.imgSrc} alt="" className="h-9 w-9 shrink-0 rounded-[7px] object-contain" />
+          ? <img src={face.imgSrc} alt="" className="h-9 w-9 shrink-0 rounded-lg object-contain" />
           : <BrandLogo icon={face.icon} />}
         <div className="min-w-0">
-          <div role="heading" className="text-sm font-semibold text-ink">{app.name}</div>
+          <div role="heading" className="text-[13.5px] font-medium text-ink">{app.name}</div>
           <p className="text-xs text-ink-3">
             {app.auth_mode === "token" ? "Token connection" : "Browser sign-in"}
           </p>
@@ -251,9 +251,9 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken,
 
 function AvailableCard({ iconFace, name, blurb, testid }) {
   return (
-    <Card data-testid={testid} className="flex items-center gap-3 p-3.5">
+    <Card data-testid={testid} className="flex items-center gap-3 p-4">
       {iconFace.imgSrc
-        ? <img src={iconFace.imgSrc} alt="" className="h-9 w-9 shrink-0 rounded-[7px] object-contain" />
+        ? <img src={iconFace.imgSrc} alt="" className="h-9 w-9 shrink-0 rounded-lg object-contain" />
         : <BrandLogo icon={iconFace.icon} />}
       <div className="min-w-0">
         <div className="text-[13px] font-medium text-ink">{name}</div>

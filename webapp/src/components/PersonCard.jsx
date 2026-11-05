@@ -9,7 +9,7 @@ export default function PersonCard({ person }) {
   return (
     <Card className="p-5">
       <div className="flex items-baseline justify-between gap-3">
-        <span className="text-[13px] font-semibold text-ink">{person.display_name}</span>
+        <span className="text-[13px] font-medium text-ink">{person.display_name}</span>
         <span className="shrink-0 text-[11px] tabular-nums text-ink-3">
           {Math.round(person.confidence * 100)}% match
         </span>
@@ -19,7 +19,7 @@ export default function PersonCard({ person }) {
       </div>
       {person.latest_note && (
         <div className="mt-3 border-t border-[var(--aether-hairline)] pt-3">
-          <div className="mb-1 text-[10px] font-medium tracking-wide text-ink-3 uppercase">
+          <div className="mb-1 text-[11.5px] text-ink-3">
             Latest note · {fmtTime(person.latest_note.at)}
           </div>
           <div className="text-xs whitespace-pre-wrap text-ink-2">

@@ -30,7 +30,7 @@ function systemTheme() {
 function paint(theme) {
   document.documentElement.dataset.theme = theme;
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.content = theme === "dark" ? "#111318" : "#f4f5f8";
+  if (meta) meta.content = theme === "dark" ? "#121316" : "#f6f6f8";
 }
 
 // Applies a preference, stores it, and tells every other useTheme instance

@@ -79,29 +79,43 @@ export default function ActivityPage() {
             ) : filtered.length === 0 ? (
               <EmptyState title="No events match these filters." sub="Try clearing a filter above." />
             ) : (
-              filtered.map((e) => {
-                const { title, detail } = describeEvent(e);
-                const mediaId = (e.payload || {}).media_id;
-                return (
-                  <div
-                    key={e.id}
-                    data-testid="event-row"
-                    className="aether-row flex gap-3 px-4 py-3"
-                  >
-                    <span className="w-[86px] shrink-0 whitespace-nowrap font-mono text-[10.5px] leading-5 text-ink-3">
-                      {fmtTime(e.at)}
-                    </span>
-                    <div className="min-w-0">
-                      <div className={`text-sm leading-5 text-ink ${e.memorable ? "font-medium" : ""}`}>
-                        <span className="text-ink-3">{appLabel(e.source)} · </span>
-                        {title}
+              <div className="relative px-4 py-1">
+                {/* the trace: one hairline spine down the log, a dot on every
+                    event, and the newest one filled — the live head */}
+                <span
+                  aria-hidden="true"
+                  className="absolute bottom-3 left-[19px] top-5 w-px bg-[var(--aether-hairline)]"
+                />
+                {filtered.map((e, i) => {
+                  const { title, detail } = describeEvent(e);
+                  const mediaId = (e.payload || {}).media_id;
+                  return (
+                    <div
+                      key={e.id}
+                      data-testid="event-row"
+                      className="aether-row relative flex gap-3 py-3"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={`relative z-[1] mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full ${
+                          i === 0 ? "bg-ink" : "border border-[var(--color-line-strong)] bg-card"
+                        }`}
+                      />
+                      <span className="w-[104px] shrink-0 whitespace-nowrap font-mono text-[10.5px] leading-5 tabular-nums text-ink-3">
+                        {fmtTime(e.at)}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className={`text-[13.5px] leading-5 text-ink ${e.memorable ? "font-medium" : ""}`}>
+                          <span className="text-ink-3">{appLabel(e.source)} · </span>
+                          {title}
+                        </div>
+                        {detail ? <div className="mt-0.5 text-xs leading-relaxed text-ink-3">{detail}</div> : null}
+                        {mediaId ? <MediaBlock mediaId={mediaId} /> : null}
                       </div>
-                      {detail ? <div className="mt-0.5 text-xs leading-relaxed text-ink-3">{detail}</div> : null}
-                      {mediaId ? <MediaBlock mediaId={mediaId} /> : null}
                     </div>
-                  </div>
-                );
-              })
+                  );
+                })}
+              </div>
             )}
           </Card>
         </>

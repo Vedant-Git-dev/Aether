@@ -4,10 +4,10 @@
 // field says so, and an internal reference points at the decision
 // record's exact copy instead of printing its token. What you read here
 // is exactly what a decision applies to — nothing above or around it
-// repeats the fields or explains the gate. No badge — the page title
-// already says these are awaiting your approval.
+// repeats the fields or explains the gate. The brass edge is the one lit
+// thing on the page: these are the items waiting on a verdict. No badge —
+// the section title already says so.
 import { useState } from "react";
-import Icon from "./Icon.jsx";
 import { Button } from "./ui.jsx";
 import { fmtTime } from "../lib/format.js";
 import {
@@ -117,7 +117,7 @@ function TextValue({ text }) {
     return (
       <code
         data-testid="approval-path"
-        className="inline-block break-all rounded-[5px] bg-subtle px-1.5 py-0.5 font-mono text-[13px] text-ink-2"
+        className="inline-block break-all rounded-md bg-subtle px-1.5 py-0.5 font-mono text-[13px] text-ink-2"
       >
         {text}
       </code>
@@ -200,59 +200,64 @@ export default function ApprovalCard({ a, ui, onDecide }) {
   const entries = Object.entries(a.params || {}).filter(([k]) => !k.startsWith("_"));
 
   return (
-    <div data-testid="approval-card" className="border-b border-[var(--aether-hairline)] p-4 last:border-b-0 sm:p-5">
-      <div className="flex items-start justify-between gap-3">
-        <span data-testid="approval-tool" className="text-sm font-medium text-ink">
+    <div data-testid="approval-card" className="border-b border-l-2 border-b-[var(--aether-hairline)] border-l-accent/70 p-4 last:border-b-0 sm:p-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <span data-testid="approval-tool" className="text-[14px] font-medium text-ink">
           {describeTool(a.tool_name)}
         </span>
-        <Icon name="attention" className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+        <span className="text-[11.5px] text-ink-3">Expires {fmtTime(a.expires_at)}</span>
       </div>
-      <div className="mt-2 text-xs text-ink-3">Expires {fmtTime(a.expires_at)}</div>
       {/* the ask itself — its own fields in their own order, a long value
           previewing with its size said and the full read one tap away; the
-          height cap keeps the decision buttons on screen even unfolded */}
-      <div data-testid="approval-details" className="mt-3 max-h-96 overflow-y-auto">
-        {entries.length ? (
-          <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-2 text-sm">
-            {entries.map(([k, v]) => (
-              <div key={k} className="contents">
-                <dt className="whitespace-nowrap text-ink-3">{fieldLabel(k)}</dt>
-                <dd className="min-w-0">
-                  {isIdKey(k) && hasContent(v) ? (
-                    <span data-testid="approval-reference" className="text-ink-3">
-                      {ID_REFERRAL}
-                    </span>
-                  ) : (
-                    <Value value={v} />
-                  )}
-                </dd>
-              </div>
-            ))}
-          </dl>
-        ) : (
-          <span className="text-sm text-ink-3">(empty)</span>
-        )}
-      </div>
-      <div className="mt-3.5 flex gap-2">
-        <Button kind="approve" data-testid="approve" disabled={ui.pending} onClick={() => onDecide(a.id, "approve")}>
-          Approve
-        </Button>
-        <Button kind="deny" data-testid="deny" disabled={ui.pending} onClick={() => onDecide(a.id, "deny")}>
-          Deny
-        </Button>
-      </div>
-      {ui.pending && (
-        <div className="mt-3 text-sm text-ink-3">Sending decision…</div>
-      )}
-      {ui.result && (
-        <div
-          data-testid="decision-result"
-          data-ok={ui.result.ok ? "1" : "0"}
-          className={`mt-3 text-sm ${ui.result.ok ? "text-success" : "text-danger"}`}
-        >
-          {ui.result.msg}
+          height cap keeps the decision buttons on screen even unfolded.
+          On a wide card the verdict gets its own rail, so the question reads
+          across the page and the answer sits under the clock. */}
+      <div className="mt-3 grid gap-5 min-[900px]:grid-cols-[minmax(0,1fr)_196px] min-[900px]:items-start">
+        <div data-testid="approval-details" className="max-h-96 overflow-y-auto">
+          {entries.length ? (
+            <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-2 text-sm">
+              {entries.map(([k, v]) => (
+                <div key={k} className="contents">
+                  <dt className="whitespace-nowrap text-ink-3">{fieldLabel(k)}</dt>
+                  <dd className="min-w-0">
+                    {isIdKey(k) && hasContent(v) ? (
+                      <span data-testid="approval-reference" className="text-ink-3">
+                        {ID_REFERRAL}
+                      </span>
+                    ) : (
+                      <Value value={v} />
+                    )}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          ) : (
+            <span className="text-sm text-ink-3">(empty)</span>
+          )}
         </div>
-      )}
+        <div className="min-[900px]:border-l min-[900px]:border-[var(--aether-hairline)] min-[900px]:pl-5">
+          <div className="flex gap-2">
+            <Button kind="approve" data-testid="approve" disabled={ui.pending} onClick={() => onDecide(a.id, "approve")}>
+              Approve
+            </Button>
+            <Button kind="deny" data-testid="deny" disabled={ui.pending} onClick={() => onDecide(a.id, "deny")}>
+              Deny
+            </Button>
+          </div>
+          {ui.pending && (
+            <div className="mt-3 text-[13px] text-ink-3">Sending decision…</div>
+          )}
+          {ui.result && (
+            <div
+              data-testid="decision-result"
+              data-ok={ui.result.ok ? "1" : "0"}
+              className={`mt-3 text-[13px] ${ui.result.ok ? "text-success" : "text-danger"}`}
+            >
+              {ui.result.msg}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

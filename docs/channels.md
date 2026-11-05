@@ -12,8 +12,7 @@ on `/`. It includes:
 | Page | What it shows |
 | --- | --- |
 | Live Activity | Recent events Aether has seen across connected apps |
-| Attention Required | Approvals waiting for you, plus recently decided items |
-| Tasks | Scheduled actions and background task results |
+| Tasks | Approvals waiting for you, scheduled actions, and background task results |
 | Memory & Context | Resolved people and their relationship notes |
 | Audit Log | Every authorization decision and the chain badge |
 | Decision Traces | What triggered an action, each tool call, and each ruling |

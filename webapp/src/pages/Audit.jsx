@@ -42,7 +42,7 @@ export default function AuditPage() {
           {chain && (
             <Card className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 p-4">
               <span className="flex items-center gap-2.5">
-                <span className="aether-inset grid h-8 w-8 shrink-0 place-items-center rounded-[8px]">
+                <span className="aether-inset grid h-8 w-8 shrink-0 place-items-center rounded-lg">
                   <Icon
                     name="shield"
                     className={`h-4 w-4 ${chain.ok ? "text-success" : "text-danger"}`}

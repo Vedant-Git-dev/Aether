@@ -9,9 +9,9 @@ import { statusColor } from "../lib/status.js";
 export const CONFIG_TOAST = "Change this from chat — /apps connects an app, /config changes settings.";
 
 export function BrandLogo({ icon, imgSrc }) {
-  if (imgSrc) return <img src={imgSrc} alt="" className="h-9 w-9 rounded-[7px] object-contain" />;
+  if (imgSrc) return <img src={imgSrc} alt="" className="h-9 w-9 rounded-lg object-contain" />;
   return (
-    <span className="grid h-9 w-9 place-items-center rounded-[7px] border border-[var(--aether-hairline)] bg-card text-ink-2 shadow-[var(--aether-raise)]">
+    <span className="grid h-9 w-9 place-items-center rounded-lg border border-[var(--aether-hairline)] bg-card text-ink-2 shadow-[var(--aether-raise)]">
       <Icon name={icon || "apps"} className="h-5 w-5" />
     </span>
   );
@@ -34,11 +34,11 @@ export default function IntegrationCard({ logo, name, subtitle, enabled, permiss
   const toast = useToast();
 
   return (
-    <Card className="flex flex-col gap-3 p-4" {...rest}>
+    <Card className="flex flex-col gap-3 p-5" {...rest}>
       <div className="flex items-center gap-3">
         {logo}
         <div className="min-w-0">
-          <div role="heading" className="text-[13px] font-semibold text-ink">{name}</div>
+          <div role="heading" className="text-[13px] font-medium text-ink">{name}</div>
           <p className="text-[11.5px] text-ink-3">{subtitle}</p>
         </div>
         <div className="ml-auto">
