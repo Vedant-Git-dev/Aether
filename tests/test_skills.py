@@ -96,7 +96,7 @@ class FakeProfile:
     def __init__(self, texts: list[str] | None = None) -> None:
         self.entries = [SimpleNamespace(text=t) for t in (texts or [])]
 
-    def profile(self) -> list[Any]:
+    async def profile(self) -> list[Any]:
         return self.entries
 
 

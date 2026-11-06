@@ -52,7 +52,7 @@ class ResearchSkill:
         if profile is None:
             return []
         found: list[Opportunity] = []
-        for entry in profile.profile():
+        for entry in await profile.profile():
             topic = str(getattr(entry, "text", "")).strip()
             if not topic:
                 continue
@@ -119,4 +119,4 @@ class ResearchSkill:
         if profile is None:
             return False
         topic = str(opportunity.detail.get("topic", ""))
-        return any(str(getattr(e, "text", "")) == topic for e in profile.profile())
+        return any(str(getattr(e, "text", "")) == topic for e in await profile.profile())
