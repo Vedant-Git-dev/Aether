@@ -133,9 +133,25 @@ content.
 
 ## Structured stores
 
+- `facts` — durable claims the user stated or an event carried. The subject is
+  a plaintext identity id (or null), the (subject, key) lookup is a keyed blind
+  token, and the status word (`active`, `superseded`, `disputed`, `forgotten`)
+  is plaintext vocabulary. The key, value, valid window, provenance event ids,
+  confidence and trust flag are sealed. A superseded claim keeps its words and
+  gains an end of validity; a forgotten one keeps its history but never reads
+  back; an untrusted claim on identity, contacts, policy or watches is held
+  disputed and asked about once.
+- `forgotten_events` — the tombstone that makes forgetting stick. One row per
+  forgotten event, holding the same keyed `dedup_mac` and `source_token` the
+  event carried and nothing else: no content, no plaintext. `ingest` refuses a
+  message whose mac is here, so the next poll cannot store it again.
+- `summaries` — one sealed row per (kind, period): a thread, a day, or a week.
+  The kind and the keyed period token are plaintext; the text and its source
+  event ids are sealed.
 - `commitments` — what the user owes and is owed. Kind, status, counterparty
   and source event are plaintext vocabulary and ids; the text, due time,
-  original phrase and urgency are sealed.
+  original phrase, urgency and the artifact links (thread, document name,
+  media id) are sealed.
 - `watches` — the standing instructions the user asked for. The scope is a
   keyed blind token, the channel and status are plaintext vocabulary, and the
   id watermark and timestamps are bookkeeping; the label and every criterion

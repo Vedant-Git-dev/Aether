@@ -214,8 +214,11 @@ authz:
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `query_pipeline` | `false` | Enables the routed retrieval pipeline; off keeps the vector-only recall |
-| `enrichment` | `false` | Opt-in model classification at write time; the deterministic floor always runs |
+| `query_pipeline` | `true` | The routed retrieval pipeline (route, lexical + structured + optional vector, fuse, gate, cite); `false` keeps the vector-only recall |
+| `enrichment` | `true` | Model classification at write time (urgency, deadlines, commitments, summary); the deterministic floor always runs. It also extracts candidate facts |
+| `summaries` | `false` | Opt-in model-written thread, daily and weekly summaries |
+| `summary_thread_messages` | `10` | New messages before a thread summary refreshes |
+| `core_facts_chars` | `1500` | Character budget for the always-on facts block |
 | `hot_events` | `2000` | Resident event index size; lower it on a small host |
 | `hot_chunks` | `8000` | Resident BM25 chunk budget: about 190 MB at 8,000 chunks (measured), scaling linearly; lower it on a small host |
 | `cold_batch` | `500` | Rows per bounded cold scan |
@@ -229,6 +232,18 @@ authz:
 | `max_search_rounds` | `3` | How many times the model may call `memory_search` in one turn |
 | `default_timezone` | `Asia/Kolkata` | Deadline rendering and time normalization |
 | `quiet_urgent_salience` | `8.0` | Only observations at or above this break quiet hours |
+| `embedding_min_paraphrase_gain` | `0.10` | Paraphrase recall@5 the embedding path must add over lexical search to keep its place (the ablation gate) |
+| `retrieve_latency_p95_ms` | `300` | Offline retrieval budget the ablation gate enforces |
+| `eval_repeats` | `10` | Repetitions per golden case for the p50/p95 numbers |
+| `enrichment_min_answer_gain` | `0.15` | Answer-rate improvement over the floor that justified turning enrichment on by default |
+
+Memory is inspected and controlled from the panel's **Memory & Context** page:
+the counts, the remembered items (searchable), and the stored claims and
+promises, each with its own Forget control. Forgetting is also a chat tool —
+"forget that email" — but only the user's own words can trigger it, never an
+email or a polled feed, and it is always audited. A forgotten item's content
+is gone from Aether's own store; provider history, backups and Postgres WAL
+may still hold old copies until they expire.
 
 ### `salience`
 

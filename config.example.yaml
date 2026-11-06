@@ -126,14 +126,42 @@ authz:
 
 # Write-time enrichment turns each event into an urgency, a deadline, entity
 # links, commitments and a one-line summary, so "anything urgent?" and "what's
-# due?" are lookups rather than searches. Off by default until evaluation
-# proves the model cost is worth it; entity linking and the delivery rules do
-# not ride this flag (they need no model call).
+# due?" are lookups rather than searches. On by default after the evaluation;
+# set it false to keep only the deterministic urgent-word floor. Entity linking
+# and the delivery rules do not ride this flag (they need no model call).
 memory:
-  enrichment: false
+  enrichment: true
+  # the routed query pipeline: route the question, search lexically and
+  # structurally, fuse and cite, with an explicit "no relevant memory"
+  # abstain. On by default after the evaluation; false keeps the older
+  # vector-only recall.
+  query_pipeline: true
+  # model-written thread/daily/weekly summaries; a per-window model cost,
+  # off until it earns it
+  summaries: false
+  # a thread summary refreshes after this many new messages
+  summary_thread_messages: 10
+  # the always-on facts block: standing rules and query-relevant claims
+  core_facts_chars: 1500
   # how long an answer about live state ("nothing urgent", "inbox clear")
   # stays usable — an older answer is re-queried rather than reused
   conclusion_ttl_seconds: 120
+  # --- the evaluation's own knobs (tests/eval_ablation.py) ---
+  # the paraphrase recall@5 the optional embedding path must add over lexical
+  # search to keep its place; docs/evaluation.md records the measured margin
+  embedding_min_paraphrase_gain: 0.10
+  # the offline retrieval budget a query may not exceed (p95, milliseconds)
+  retrieve_latency_p95_ms: 300
+  # how many times each golden case runs for the p50/p95 numbers
+  eval_repeats: 10
+  # the combined attention/deadline/commitment answer rate write-time
+  # enrichment must add before its default may flip to true
+  enrichment_min_answer_gain: 0.15
+  #
+  # Forgetting: the owner can remove one remembered item for good from the
+  # Memory page or by asking in chat ("forget that email"). It is audited,
+  # and a tombstone keeps the next poll from storing the same message again.
+  # Provider history, backups and WAL may still hold old copies.
 
 # ---------------------------------------------------------------------------
 # Workspace

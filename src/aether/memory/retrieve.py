@@ -39,6 +39,7 @@ from .indexes import IndexedEvent, MemoryIndex
 from .lexical import LexicalHit, LexicalIndex
 from .mail import parse_addresses
 from .query import Routing
+from .summaries import DAILY, WEEKLY
 from .views import AttentionItem, Commitment, Views
 
 log = logging.getLogger("aether.memory.retrieve")
@@ -128,6 +129,7 @@ class Retriever:
         views: Views | None,
         vectors: Any = None,
         *,
+        summaries: Any = None,
         cfg: RetrievalConfig | None = None,
         timezone: str = "Asia/Kolkata",
         reranker: Any = None,
@@ -136,6 +138,7 @@ class Retriever:
         self._index = index
         self._views = views
         self._vectors = vectors
+        self._summaries = summaries
         self._cfg = cfg or RetrievalConfig()
         self._timezone = timezone
         # optional listwise rerank: (question, candidate texts) -> ordering
@@ -485,15 +488,17 @@ class Retriever:
         event_ids: list[int] = []
         chunks_by_event: dict[int, list[str]] = {}
         used = 0
+        structured = 0
 
-        def add(line: str, entry: dict[str, Any] | None = None) -> None:
+        def add(line: str, entry: dict[str, Any] | None = None) -> bool:
             nonlocal used
             if used + len(line) > budget_chars:
-                return
+                return False
             lines.append(line)
             used += len(line) + 1
             if entry is not None:
                 trace.append(entry)
+            return True
 
         if owner_addresses:
             add(
@@ -505,7 +510,50 @@ class Retriever:
         for note in dict.fromkeys(notes):
             add(f"- retrieval note: {note}")
 
-        structured = 0
+        # the always-on facts block: standing rules and the claims this
+        # question is about, inside its own character budget. A fact's
+        # provenance is registered as the text's source, so a quote from the
+        # brief is as checkable as a quote from a chunk.
+        if self._views is not None and hasattr(self._views, "core_fact_items"):
+            try:
+                fact_items = await self._views.core_fact_items(
+                    routing.text,
+                    entity_ids=routing.filters.entity_ids,
+                    now=now,
+                )
+            except Exception:
+                fact_items = []
+            if fact_items:
+                add("- what you know about the user and their world:")
+                for fact in fact_items:
+                    line = _fact_brief_line(fact)
+                    if not add(f"  {line}"):
+                        continue
+                    for event_id in fact.provenance:
+                        chunks_by_event.setdefault(event_id, []).append(line)
+                        if event_id not in event_ids:
+                            event_ids.append(event_id)
+                structured += 1
+
+        # broad or time-windowed questions get the matching summary before
+        # the raw chunks; its source ids ride along so a quote is checkable
+        for line, source_ids in await self._summary_lines(routing, now):
+            add(
+                line,
+                {
+                    "id": source_ids[0] if source_ids else 0,
+                    "source": "summary",
+                    "kind": "summary",
+                    "line": f"[related memory — {_summary_where(line)}] {_summary_body(line)}",
+                },
+            )
+            for event_id in source_ids:
+                chunks_by_event.setdefault(event_id, []).append(line)
+            for event_id in source_ids:
+                if event_id not in event_ids:
+                    event_ids.append(event_id)
+            structured += 1
+
         live = "attention" in routing.routes or "live_now" in routing.routes
         if live and self._views is not None:
             stamp = now.astimezone(zone).strftime("%H:%M")
@@ -519,7 +567,7 @@ class Retriever:
                 add("  nothing urgent or due right now")
             for item in items:
                 rendered = _attention_line(item, now, zone)
-                add(
+                added = add(
                     f"  {rendered}",
                     {
                         "id": item.event_id,
@@ -528,6 +576,13 @@ class Retriever:
                         "line": f"[related memory — urgent item] {item.summary or 'an urgent event'}",
                     },
                 )
+                if added:
+                    # the item's own line is citable and quotable like a
+                    # chunk: without this a reply that says "the outage is
+                    # urgent [E1]" would read as an invented id
+                    chunks_by_event.setdefault(item.event_id, []).append(rendered)
+                    if item.event_id not in event_ids:
+                        event_ids.append(item.event_id)
                 structured += 1
 
         if "commitment" in routing.routes and self._views is not None:
@@ -539,7 +594,13 @@ class Retriever:
                 structured += 1
             for commitment in open_items:
                 rendered = _commitment_line(commitment, now, zone)
-                add(f"- {rendered}")
+                added = add(f"- {rendered}")
+                # a promise's line is citable by the event it came from, so
+                # "I promised X [E12]" is checked instead of flagged
+                if added and commitment.source_event_id is not None:
+                    chunks_by_event.setdefault(commitment.source_event_id, []).append(rendered)
+                    if commitment.source_event_id not in event_ids:
+                        event_ids.append(commitment.source_event_id)
                 structured += 1
 
         for candidate in selected:
@@ -591,6 +652,33 @@ class Retriever:
             notes=list(dict.fromkeys(notes)),
         )
 
+    async def _summary_lines(self, routing: Routing, now: datetime) -> list[tuple[str, list[int]]]:
+        """The saved summaries a broad or time-windowed question should see.
+
+        A summary is a synthesis of several events, not one of them, so its
+        first source id is the citation the model can point at and every
+        source id is registered as the text's provenance for the verifier.
+        """
+        if self._summaries is None or not _wants_summary(routing):
+            return []
+        kind = WEEKLY if _week_words(routing.text) else DAILY
+        try:
+            found = await self._summaries.recent(kind, limit=2)
+        except Exception:
+            log.warning("could not read summaries for the pack", exc_info=True)
+            return []
+        out: list[tuple[str, list[int]]] = []
+        for summary in found:
+            if not summary.text or not summary.source_event_ids:
+                continue
+            ids = ", ".join(f"E{event_id}" for event_id in summary.source_event_ids[:8])
+            line = (
+                f"[E{summary.source_event_ids[0]} | {summary.kind} summary | "
+                f"{summary.period} | from {ids}] {_clip(summary.text, 600)}"
+            )
+            out.append((line, list(summary.source_event_ids)))
+        return out
+
     def _citation(self, candidate: Candidate, zone: ZoneInfo) -> str:
         """`[E123 | mail | from Name <addr> | 2026-11-03 11:46 IST]` — every
         packed chunk says what it is, who wrote it and when, so a claim can
@@ -637,7 +725,7 @@ def _commitment_line(commitment: Commitment, now: datetime, zone: ZoneInfo) -> s
     when = ""
     if commitment.due_at is not None:
         due = commitment.due_at.astimezone(zone).strftime("%Y-%m-%d %H:%M")
-        when = f" — overdue since {due}" if due < now else f" — due {due}"
+        when = f" — overdue since {due}" if commitment.due_at < now else f" — due {due}"
     return f"commitment {commitment.id}: {commitment.kind}: {commitment.text}{when}"
 
 
@@ -719,3 +807,42 @@ def _jaccard(left: str, right: str) -> float:
 def _clip(text: str, limit: int) -> str:
     clean = _CITATION_TIME_SECONDS.sub(" ", text or "").strip()
     return clean if len(clean) <= limit else clean[:limit].rstrip() + "…"
+
+
+_SUMMARY_TEXT_RE = re.compile(
+    r"\b(what happened|summary|summarise|summarize|recap|brief|overnight|"
+    r"yesterday|this week|last week|past week)\b",
+    re.IGNORECASE,
+)
+
+
+def _wants_summary(routing: Routing) -> bool:
+    """A broad or explicitly time-windowed question is the summary's job."""
+    if routing.filters.time_from is not None or routing.filters.time_until is not None:
+        return True
+    return bool(_SUMMARY_TEXT_RE.search(routing.text or ""))
+
+
+def _week_words(text: str) -> bool:
+    return bool(re.search(r"\b(week|weekly)\b", text or "", re.IGNORECASE))
+
+
+def _summary_where(line: str) -> str:
+    return "a saved summary"
+
+
+def _summary_body(line: str) -> str:
+    _, _, body = (line or "").partition("] ")
+    return body
+
+
+def _fact_brief_line(fact: Any) -> str:
+    """One core fact in the same plain shape the brief renders."""
+    who = (fact.subject or "").strip()
+    if not who and fact.subject_identity_id is not None:
+        who = "the user"
+    if fact.type == "rule":
+        return f"rule: {fact.value}"
+    if who:
+        return f"{who} — {fact.key}: {fact.value}"
+    return f"{fact.key}: {fact.value}"

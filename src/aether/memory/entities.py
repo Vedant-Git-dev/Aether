@@ -667,6 +667,12 @@ class Entities:
             return False
         return normalized in await self.owner_addresses()
 
+    async def owner_entity(self) -> Entity | None:
+        """One of the owner's own identities, when one is known — the
+        subject a fact about "the user" belongs to."""
+        owners = await self._owner_entities()
+        return owners[0] if owners else None
+
     # -- the ask-once alias question ----------------------------------------
 
     async def ask_alias_once(

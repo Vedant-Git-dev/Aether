@@ -149,6 +149,22 @@ class ExtractedCommitment:
     due_at: datetime | None = None
 
 
+@dataclass(frozen=True)
+class ExtractedFact:
+    """One durable claim the event carries, before it is consolidated.
+
+    The subject is the name or handle the claim is about as the model read
+    it; the caller resolves it to an identity where one exists. The value is
+    copied, never paraphrased — it is what a later question has to be able to
+    match and what the core-facts block quotes.
+    """
+
+    subject: str
+    key: str
+    value: str
+    type: str = "fact"
+
+
 @dataclass
 class Enrichment:
     """What one event means. Every field has a safe default, so a partial
@@ -161,6 +177,7 @@ class Enrichment:
     noise: bool = False
     deadlines: list[Deadline] = field(default_factory=list)
     commitments: list[ExtractedCommitment] = field(default_factory=list)
+    facts: list[ExtractedFact] = field(default_factory=list)
     classified: bool = False
 
     @property
@@ -445,6 +462,10 @@ class LLMClassifier:
         '  "deadlines": list of deadline phrases copied verbatim from the text\n'
         '  "commitments": list of {"kind": "task"|"request"|"promise"|'
         '"awaiting_reply", "text": <short description>, "due": <phrase or "">}\n'
+        '  "facts": list of {"subject": <who it is about, or "user">, "key": '
+        '<short label such as "timezone" or "preferred_meeting_time">, '
+        '"value": <the claim copied verbatim>, "type": "fact"|"preference"|'
+        '"rule"}\n'
         '  "summary": one line, at most 140 characters\n'
         '  "noise": true for newsletters, receipts, alerts and automated mail\n'
         "Copy deadline phrases exactly as written — do not convert them to "
@@ -504,6 +525,7 @@ class Enricher:
         result.summary = str(data.get("summary") or "").strip()[: self._summary_chars]
         result.deadlines = self._deadlines(data.get("deadlines"), occurred_at)
         result.commitments = self._commitments(data.get("commitments"), occurred_at)
+        result.facts = self._facts(data.get("facts"))
         return result
 
     def _deadlines(self, raw: Any, occurred_at: datetime) -> list[Deadline]:
@@ -547,8 +569,42 @@ class Enricher:
             )
         return out
 
+    def _facts(self, raw: Any) -> list[ExtractedFact]:
+        """Candidate claims the event carries, coerced and bounded.
+
+        A claim with no subject, key or value is dropped rather than stored
+        as an unnamed belief; the type falls back to "fact" when the model
+        named something unknown.
+        """
+        if not isinstance(raw, list):
+            return []
+        out: list[ExtractedFact] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            subject = str(item.get("subject") or "").strip()[:_FACT_SUBJECT_CAP]
+            key = str(item.get("key") or "").strip()[:_FACT_KEY_CAP]
+            value = str(item.get("value") or "").strip()[:_FACT_VALUE_CAP]
+            if not subject or not key or not value:
+                continue
+            fact_type = str(item.get("type") or "fact").strip().lower()
+            out.append(
+                ExtractedFact(
+                    subject=subject,
+                    key=key,
+                    value=value,
+                    type=fact_type if fact_type in _FACT_TYPES else "fact",
+                )
+            )
+        return out
+
 
 _COMMITMENT_KINDS = frozenset({"task", "request", "promise", "awaiting_reply"})
+
+_FACT_TYPES = frozenset({"fact", "preference", "rule", "identity", "contact", "policy"})
+_FACT_SUBJECT_CAP = 80
+_FACT_KEY_CAP = 80
+_FACT_VALUE_CAP = 400
 
 
 def _clamp_urgency(value: Any) -> int:

@@ -22,11 +22,16 @@ from aether.config import ContactsConfig, MediaConfig
 from aether.media.store import MediaStore
 from aether.memory.commitments import Commitments
 from aether.memory.conclusions import Conclusions
+from aether.memory.control import MemoryControl
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.deliveries import Deliveries
 from aether.memory.entities import Entities, Sender
 from aether.memory.events import EventStore
+from aether.memory.facts import Facts
 from aether.memory.focus import Focus
+from aether.memory.indexes import MemoryIndex
+from aether.memory.lexical import LexicalIndex
+from aether.memory.summaries import Summaries
 from aether.memory.watches import WatchSpec, WatchStore
 from aether.proactive.store import ProactiveStore
 from aether.providers.crypto import TokenKeyring
@@ -131,6 +136,16 @@ async def test_no_canary_leaks_into_any_column(db, caplog) -> None:
             due_phrase=f"by {canary}",
             urgency=2,
         )
+        facts = Facts(db, cipher, audit)
+        await facts.consolidate(
+            subject_identity_id=None,
+            subject=f"subject {canary}",
+            key=f"key {canary}",
+            value=f"value {canary}",
+            provenance=[event.event_id],
+        )
+        summaries = Summaries(db, cipher)
+        await summaries.upsert("daily", f"period {canary}", f"summary {canary}", [event.event_id])
         watches = WatchStore(db, cipher, audit)
         await watches.create(
             spec=WatchSpec(
@@ -168,6 +183,29 @@ async def test_no_canary_leaks_into_any_column(db, caplog) -> None:
         workspace = Workspace(db, cipher=cipher)
         await workspace.ensure_scaffold()
         await workspace.remember(f"a note with {canary} in it", "fact")
+
+        # forgetting leaves no readable copy either: the row and its chunks
+        # are gone, and the tombstone is a keyed token, not the words
+        doomed = await events.ingest(
+            source="gmail",
+            kind="message",
+            payload={"text": f"forget me {canary}"},
+            sender=Sender("gmail", f"gone-{canary}@example.com"),
+        )
+        assert doomed.event_id is not None
+        control = MemoryControl(
+            pool=db,
+            cipher=cipher,
+            audit=audit,
+            events=events,
+            index=MemoryIndex(),
+            lexical=LexicalIndex(),
+            facts=facts,
+            commitments=commitments,
+            summaries=summaries,
+        )
+        assert (await control.forget_event(doomed.event_id)).found
+        assert await db.fetchval("SELECT count(*) FROM forgotten_events") == 1
 
     leaked = await _sweep(db, canary)
     assert leaked == [], f"canary in a column: {leaked}"

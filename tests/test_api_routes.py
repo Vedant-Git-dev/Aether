@@ -69,6 +69,61 @@ class FakeAgent:
         self.submitted.append(message)
 
 
+class FakeMemoryControl:
+    """The inspection/forget surface, in memory — the routes' own contract."""
+
+    def __init__(self) -> None:
+        self.forgotten: list[tuple[str, int]] = []
+        self.items_rows = [
+            {
+                "id": 7,
+                "kind": "mail",
+                "source": "gmail",
+                "at": "2026-11-03T06:16:00+00:00",
+                "plain": "an email from Rahul about the invoice",
+            }
+        ]
+
+    async def overview(self) -> dict:
+        return {
+            "resident_events": len(self.items_rows),
+            "indexed_chunks": 3,
+            "active_facts": 1,
+            "open_commitments": 0,
+            "active_watches": 2,
+            "semantic_search": {"on": True, "model": "fake-embedding", "note": ""},
+            "flags": {"enrichment": False, "query_pipeline": True, "summaries": False},
+        }
+
+    async def items(self, *, query: str = "", limit: int = 30) -> list[dict]:
+        if query and query not in self.items_rows[0]["plain"]:
+            return []
+        return self.items_rows[:limit]
+
+    async def claims(self, *, limit: int = 50) -> list[dict]:
+        return [{"id": 3, "kind": "fact", "plain": "you — timezone: IST"}][:limit]
+
+    async def _report(self, kind: str, item_id: int):
+        from aether.memory.control import ForgetReport
+
+        if item_id != 7:
+            return ForgetReport(found=False)
+        self.forgotten.append((kind, item_id))
+        return ForgetReport(found=True, kind=kind, label=f"Forgot the {kind}.")
+
+    async def forget_event(self, event_id: int):
+        return await self._report("event", event_id)
+
+    async def forget_fact(self, fact_id: int):
+        return await self._report("fact", fact_id)
+
+    async def forget_commitment(self, commitment_id: int):
+        return await self._report("commitment", commitment_id)
+
+    async def forget_summary(self, summary_id: int):
+        return await self._report("summary", summary_id)
+
+
 def _approval(approval_id: int = 1, status: str = "approved") -> Approval:
     now = datetime.now(UTC)
     return Approval(
@@ -117,6 +172,7 @@ def _app(
     proactive_store=None,
     proactive_worker=None,
     media_store=None,
+    memory_control=None,
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(router)
@@ -156,6 +212,8 @@ def _app(
         app.state.proactive_worker = proactive_worker
     if media_store is not None:
         app.state.media_store = media_store
+    if memory_control is not None:
+        app.state.memory_control = memory_control
     return app
 
 
@@ -1030,6 +1088,70 @@ async def test_memory_feed_reports_people_handles_and_latest_note() -> None:
             },
         }
     ]
+
+
+async def test_memory_inspection_is_token_guarded() -> None:
+    control = FakeMemoryControl()
+    async with _client(_app(None, memory_control=control)) as client:
+        assert (await client.get("/api/memory/overview")).status_code == 401
+        assert (await client.get("/api/memory/items")).status_code == 401
+        assert (await client.get("/api/memory/claims")).status_code == 401
+        assert (
+            await client.post("/api/memory/forget", json={"kind": "event", "id": 7})
+        ).status_code == 401
+
+
+async def test_memory_inspection_is_503_without_a_store() -> None:
+    async with _client(_app(None)) as client:
+        response = await client.get("/api/memory/overview", params={"token": "secret"})
+    assert response.status_code == 503
+
+
+async def test_memory_overview_items_and_claims_read_plainly() -> None:
+    control = FakeMemoryControl()
+    async with _client(_app(None, memory_control=control)) as client:
+        overview = (await client.get("/api/memory/overview", params={"token": "secret"})).json()
+        items = (await client.get("/api/memory/items", params={"token": "secret"})).json()
+        found = (
+            await client.get("/api/memory/items", params={"token": "secret", "q": "invoice"})
+        ).json()
+        missed = (
+            await client.get("/api/memory/items", params={"token": "secret", "q": "quantum"})
+        ).json()
+        claims = (await client.get("/api/memory/claims", params={"token": "secret"})).json()
+
+    assert overview["resident_events"] == 1
+    assert overview["flags"]["query_pipeline"] is True
+    assert overview["semantic_search"]["on"] is True
+    assert items["items"][0]["plain"] == "an email from Rahul about the invoice"
+    assert [row["id"] for row in found["items"]] == [7]
+    assert missed["items"] == []
+    assert claims["claims"][0]["kind"] == "fact"
+
+
+async def test_forgetting_from_the_panel_is_audited_by_the_store_and_404s_when_gone() -> None:
+    control = FakeMemoryControl()
+    async with _client(_app(None, memory_control=control)) as client:
+        response = await client.post(
+            "/api/memory/forget", params={"token": "secret"}, json={"kind": "event", "id": 7}
+        )
+        missing = await client.post(
+            "/api/memory/forget", params={"token": "secret"}, json={"kind": "event", "id": 8}
+        )
+        bad = await client.post(
+            "/api/memory/forget", params={"token": "secret"}, json={"kind": "everything", "id": 7}
+        )
+        zero = await client.post(
+            "/api/memory/forget", params={"token": "secret"}, json={"kind": "fact", "id": 0}
+        )
+
+    assert response.status_code == 200
+    assert response.json()["forgot"] is True
+    assert response.json()["note"] == "Forgot the event."
+    assert control.forgotten == [("event", 7)]
+    assert missing.status_code == 404
+    assert bad.status_code == 400
+    assert zero.status_code == 400
 
 
 async def test_memory_feed_reports_null_note_for_a_person_with_none() -> None:

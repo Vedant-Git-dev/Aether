@@ -114,6 +114,15 @@ _WATCH_INTENT = re.compile(
     re.IGNORECASE,
 )
 
+# Only a message matching one of these makes `forget_origin()` return "owner".
+# The same boundary as a watch: memory is deleted on the user's own words,
+# never on an instruction read out of an email or a polled feed.
+_FORGET_INTENT = re.compile(
+    r"\b(forget|delete\s+(that|this|it)|remove\s+(that|this|it)\s+from\s+"
+    r"(your\s+)?memory|wipe\s+(that|this|it)|stop\s+remembering)\b",
+    re.IGNORECASE,
+)
+
 # A solicited turn waits this long for write-time enrichment still in
 # flight before it answers from the deterministic floor. The classifier is
 # one cheap model turn per event, so a burst can outrun the question that
@@ -590,6 +599,7 @@ class AgentLoop:
         deliveries: Deliveries | None = None,
         query_pipeline: QueryPipeline | None = None,
         proactive_path: Any = None,
+        summary_job: Any = None,
     ) -> None:
         self._providers = providers
         # the in-flight reply to a decision, if the model is writing one —
@@ -649,6 +659,9 @@ class AgentLoop:
         # Late-wired like the enrichment pieces, because the path delivers
         # through this loop's own interruption budget.
         self._proactive_path = proactive_path
+        # the summary generator: one due thread/daily/weekly summary per tick,
+        # a model call behind memory.summaries
+        self._summary_job = summary_job
         # the messages the current turn answers — empty for an unprompted
         # tick, which is what keeps mail content from arming a watch
         self._turn_messages: list[InboundMessage] = []
@@ -676,6 +689,8 @@ class AgentLoop:
         # completed task is never garbage-collected mid-flight), and this
         # set is what stop() waits out
         self._scoring_tasks: set[asyncio.Task[None]] = set()
+        # the summary generator's in-flight pass — at most one at a time
+        self._summary_task: asyncio.Task[None] | None = None
 
         self._queue: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._woken = asyncio.Event()
@@ -726,6 +741,11 @@ class AgentLoop:
         if self._scoring_tasks:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait(set(self._scoring_tasks), timeout=10)
+        # a summary pass in flight gets the same bounded grace
+        summary, self._summary_task = self._summary_task, None
+        if summary is not None:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait({summary}, timeout=10)
 
     async def _backfill_loop(self) -> None:
         """Index the events that predate vector memory (or lost a race with
@@ -818,6 +838,17 @@ class AgentLoop:
         an instruction inside an email can never arm or change one."""
         for message in self._turn_messages:
             if _WATCH_INTENT.search(message.text or ""):
+                return "owner"
+        return "context"
+
+    def forget_origin(self) -> str:
+        """`owner` only when the user's own message asked to forget something.
+
+        The same boundary the watch tools ride: an email or a polled feed can
+        describe the world, but only the person can delete what Aether keeps.
+        """
+        for message in self._turn_messages:
+            if _FORGET_INTENT.search(message.text or ""):
                 return "owner"
         return "context"
 
@@ -1011,6 +1042,23 @@ class AgentLoop:
         self._scoring_tasks.add(task)
         task.add_done_callback(self._scoring_tasks.discard)
 
+    def _spawn_summary_tick(self) -> None:
+        """Write one due summary on a background task — the summarizer is a
+        whole LLM turn, and it must never sit in front of a reply. At most
+        one pass is in flight, and a failure is a log line, not a dead tick."""
+        if self._summary_job is None:
+            return
+        if self._summary_task is not None and not self._summary_task.done():
+            return
+
+        async def _summarize() -> None:
+            try:
+                await self._summary_job.tick()
+            except Exception:
+                log.warning("summary generation failed — continuing", exc_info=True)
+
+        self._summary_task = asyncio.create_task(_summarize(), name="memory-summary")
+
     async def _tick(self) -> None:
         anchor = self._last_event_id
 
@@ -1156,6 +1204,7 @@ class AgentLoop:
             # a retry that came due while the queue was busy still runs
             await self._run_due_resumes()
             await self._run_proactive_tick()
+            self._spawn_summary_tick()
             return
 
         await self._turn(messages, observations)
@@ -1172,6 +1221,7 @@ class AgentLoop:
         # reminders and alerts held by a quiet window — never in front of
         # the words someone is waiting on
         await self._run_proactive_tick()
+        self._spawn_summary_tick()
 
         # a tick that never suspended (a provider-less turn, say) still
         # lets the scorers it spawned take their first step here, so none

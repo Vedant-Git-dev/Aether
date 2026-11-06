@@ -91,6 +91,11 @@ class CredentialBody(BaseModel):
     value: str = ""  # the pasted secret — consumed here, never echoed
 
 
+class MemoryForgetBody(BaseModel):
+    kind: str  # "event" | "fact" | "commitment" | "summary"
+    id: int
+
+
 @router.post("/api/screen-capture", status_code=202)
 async def screen_capture(
     request: Request,
@@ -928,6 +933,73 @@ async def memory_feed(request: Request, limit: int = 50, token: str | None = Non
             }
         )
     return {"people": out}
+
+
+def _memory_control(request: Request):
+    control = getattr(request.app.state, "memory_control", None)
+    if control is None:
+        raise HTTPException(status_code=503, detail="memory control is not wired")
+    return control
+
+
+@router.get("/api/memory/overview")
+async def memory_overview(request: Request, token: str | None = None) -> dict:
+    """What memory holds right now, and which parts are on — one status read."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    return await _memory_control(request).overview()
+
+
+@router.get("/api/memory/items")
+async def memory_items(
+    request: Request, q: str = "", limit: int = 30, token: str | None = None
+) -> dict:
+    """The remembered items, newest first — or what a search finds.
+
+    Each row is one plain sentence the backend authored; `kind` and `source`
+    are for the panel's own vocabulary, never shown raw.
+    """
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    items = await _memory_control(request).items(query=q, limit=min(limit, 100))
+    return {"items": items}
+
+
+@router.get("/api/memory/claims")
+async def memory_claims(request: Request, limit: int = 50, token: str | None = None) -> dict:
+    """The active claims, open promises and saved summaries, each forgettable."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    claims = await _memory_control(request).claims(limit=min(limit, 100))
+    return {"claims": claims}
+
+
+@router.post("/api/memory/forget")
+async def memory_forget(body: MemoryForgetBody, request: Request, token: str | None = None) -> dict:
+    """Forget one item for good. Audited; the tombstone keeps it gone."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    control = _memory_control(request)
+    forget = {
+        "event": control.forget_event,
+        "fact": control.forget_fact,
+        "commitment": control.forget_commitment,
+        "summary": control.forget_summary,
+    }.get((body.kind or "").strip().lower())
+    if forget is None:
+        raise HTTPException(
+            status_code=400, detail="kind must be event, fact, commitment or summary"
+        )
+    if body.id < 1:
+        raise HTTPException(status_code=400, detail="id must be a stored item's id")
+    report = await forget(body.id)
+    if not report.found:
+        raise HTTPException(status_code=404, detail="nothing stored under that id")
+    return {
+        "forgot": True,
+        "note": report.note,
+        "overview": await control.overview(),
+    }
 
 
 @router.get("/api/tasks")

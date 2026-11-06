@@ -65,6 +65,10 @@ _APPLY_NOTES = {
     "agent.max_searches_per_day": " — applies to the next search",
     "salience.threshold": " — applies to the next scored event",
     "salience.rate_cap_per_hour": " — applies to the next scored event",
+    "memory.enrichment": " — applies to items that arrive after a restart",
+    "memory.query_pipeline": " — applies to the next question",
+    "memory.summaries": " — applies from the next pass",
+    "memory.conclusion_ttl_seconds": " — applies to the next live answer",
     "contacts.mode": " — applies to the next message I see",
     "contacts.allowlist": " — applies to the next message I see",
 }
@@ -93,6 +97,7 @@ _SECTION_NAMES = (
     "llm",
     "agent",
     "salience",
+    "memory",
     "messaging",
     "contacts",
     "authz",

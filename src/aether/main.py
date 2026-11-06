@@ -54,12 +54,14 @@ from .media.voice import GroqTranscriber
 from .memory.commitments import Commitments
 from .memory.conclusions import Conclusions
 from .memory.context import ContextBuilder
+from .memory.control import MemoryControl
 from .memory.crypto import Cipher, CryptoError, generate_key_b64
 from .memory.db import create_pool, run_migrations
 from .memory.deliveries import Deliveries
 from .memory.enrich import Enricher, LLMClassifier
 from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
+from .memory.facts import Facts
 from .memory.focus import Focus
 from .memory.indexes import MemoryIndex
 from .memory.lexical import LexicalIndex
@@ -67,6 +69,7 @@ from .memory.pipeline import QueryPipeline, retrieval_config_from
 from .memory.salience import LLMJudge, Salience
 from .memory.seal_migrate import seal_for_cutover
 from .memory.storage import StorageGuardError, enforce_schema
+from .memory.summaries import LLMSummarizer, Summaries, SummaryJob
 from .memory.vectors import VectorMemory
 from .memory.views import Views
 from .memory.watches import WatchStore
@@ -509,12 +512,16 @@ def create_app(
         # point — it needs nothing from the model — so the two are joined
         # here: addresses are linked to identities unconditionally (the
         # rendering rules depend on it and it costs no model call), and the
-        # classifier rides memory.enrichment, which is off by default.
+        # classifier rides memory.enrichment, on by default after the
+        # evaluation. Without a judge provider the enricher is None and the
+        # deterministic floor is all there is.
         commitments = Commitments(pool, cipher, audit)
+        facts = Facts(pool, cipher, audit)
         watches = WatchStore(pool, cipher, audit)
         commitment_reminders = CommitmentReminders(pool)
         app.state.watches = watches
         app.state.commitment_reminders = commitment_reminders
+        app.state.facts = facts
         enricher = (
             Enricher(
                 LLMClassifier(judge_provider),
@@ -527,19 +534,32 @@ def create_app(
             entities=entities,
             commitments=commitments,
             enricher=enricher,
+            facts=facts,
             enrichment=config.memory.enrichment,
         )
         app.state.commitments = commitments
+        # the summaries store and its generator. Generation is a model call,
+        # so it rides memory.summaries and is off by default; the store
+        # itself is always present so an existing summary is readable.
+        summaries = Summaries(pool, cipher)
+        summarizer = (
+            LLMSummarizer(judge_provider)
+            if judge_provider is not None and config.memory.summaries
+            else None
+        )
+        app.state.summaries = summaries
         # the structured views (attention, commitments, entity timeline), the
         # per-chat focus object, the live-state conclusions cache and the
         # outbound delivery record
         views = Views(
             memory_index,
             commitments,
+            facts=facts,
             pool=pool,
             cipher=cipher,
             timezone=config.memory.default_timezone,
             cold_batch=config.memory.cold_batch,
+            core_facts_chars=config.memory.core_facts_chars,
         )
         focus = Focus(pool, cipher)
         conclusions = Conclusions(pool, cipher, ttl_seconds=config.memory.conclusion_ttl_seconds)
@@ -548,7 +568,7 @@ def create_app(
         app.state.focus = focus
         app.state.conclusions = conclusions
         app.state.deliveries = deliveries
-        context = ContextBuilder(events, entities, approvals, config.agent)
+        context = ContextBuilder(events, entities, approvals, config.agent, facts=facts)
         scheduler = Scheduler(pool, cipher, audit)
         app.state.entities = entities
         app.state.scheduler = scheduler
@@ -560,10 +580,41 @@ def create_app(
             index=memory_index,
             views=views,
             vectors=vectors,
+            summaries=summaries,
             cfg=retrieval_config_from(config.memory),
             timezone=config.memory.default_timezone,
         )
         app.state.query_pipeline = query_pipeline
+        # the summary generator runs off the loop's tick, one due summary per
+        # pass, never in front of a reply
+        summary_job = SummaryJob(
+            events=events,
+            summaries=summaries,
+            summarizer=summarizer,
+            memory=config.memory,
+            timezone=config.memory.default_timezone,
+        )
+        app.state.summary_job = summary_job
+        # memory inspection and the one way anything is forgotten. Built here
+        # because it needs the stores above and the live config object (the
+        # panel's flag reads go through it), and held on app.state so the
+        # routes and the chat tool share one owner.
+        memory_control = MemoryControl(
+            pool=pool,
+            cipher=cipher,
+            audit=audit,
+            events=events,
+            index=memory_index,
+            lexical=lexical,
+            vectors=vectors,
+            facts=facts,
+            commitments=commitments,
+            summaries=summaries,
+            watches=watches,
+            memory=config.memory,
+            embedding_model=config.llm.embedding_model or "",
+        )
+        app.state.memory_control = memory_control
         # the proactive worker's task rows — the same audit chain as
         # everything else; the worker and its skills land later in boot
         proactive_store = ProactiveStore(pool, cipher, audit)
@@ -646,6 +697,7 @@ def create_app(
             conclusions=conclusions,
             deliveries=deliveries,
             query_pipeline=query_pipeline,
+            summary_job=summary_job,
         )
         app.state.agent = agent
 
@@ -698,6 +750,8 @@ def create_app(
             generator=image_generator,
             proactive_path=proactive_path,
             watch_origin=agent.watch_origin,
+            forget_origin=agent.forget_origin,
+            memory_control=memory_control,
         )
         log.info("native tools registered: %d", native)
 

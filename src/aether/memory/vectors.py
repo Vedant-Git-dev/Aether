@@ -248,6 +248,21 @@ class VectorMemory:
         await self._index_chunks(event_id, source, kind, "", [("", summary.strip())], when)
         await self._mark_indexed(event_id)
 
+    async def remove_event(self, event_id: int) -> int:
+        """Forget one event's chunks: delete the sealed rows and tell every
+        in-memory index half, so search loses them in the same breath.
+
+        No embedding call and no dependency on `enabled` — the notify is what
+        keeps a listener correct when the vector layer itself is off. Returns
+        how many chunk rows were removed.
+        """
+        result = await self._pool.execute("DELETE FROM memory_chunks WHERE event_id = $1", event_id)
+        self._notify({"action": "remove", "event_id": event_id})
+        try:
+            return int(result.rsplit(" ", 1)[-1])
+        except (ValueError, IndexError):
+            return 0
+
     async def _index_chunks(
         self,
         event_id: int,

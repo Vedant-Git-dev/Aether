@@ -254,6 +254,23 @@ class MemoryIndex:
         self._events[event_id] = updated
         self._index_entities(updated)
 
+    def remove(self, event_id: int) -> bool:
+        """Drop one event from the resident table — the forget path.
+
+        The row is deleted from Postgres in the same breath, so no cold scan
+        can bring it back; `_max_id` stays monotonic so a reused id can never
+        fool the backfill watermark. Returns whether it was resident.
+        """
+        event = self._events.pop(event_id, None)
+        if event is None:
+            return False
+        self._unindex_entities(event)
+        entry = (event.occurred_at, event.id)
+        at = bisect.bisect_left(self._order, entry)
+        if at < len(self._order) and self._order[at] == entry:
+            self._order.pop(at)
+        return True
+
     # -- entity lookups ------------------------------------------------------
 
     def events_for_entity(self, entity_id: int) -> list[IndexedEvent]:

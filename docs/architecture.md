@@ -135,9 +135,9 @@ state-of-now answers, and a conclusion past its TTL is never served.
 
 #### Query-time retrieval
 
-Retrieval is one pipeline, controlled by `memory.query_pipeline`. It is **off by
-default** until the golden-set evaluation blesses it. With it off, the previous
-vector-only recall still runs.
+Retrieval is one pipeline, controlled by `memory.query_pipeline`. It is **on by
+default** since the golden-set evaluation cleared it (see `docs/evaluation.md`);
+setting it `false` falls back to the previous vector-only recall.
 
 1. **Route** (`query.py`). Rules route the question first.
    - A resolved reference ("send it", "send then", "the sender", "the assignment") reads
@@ -170,7 +170,40 @@ semantic search is unavailable instead of silently narrowing.
 
 `memory_search` is the same pipeline as a model tool, capped at `memory.max_search_rounds`
 calls per turn. The golden set in `tests/eval_golden.py` runs offline in CI and gates on
-recall@5, MRR, route accuracy, and abstain precision and recall.
+recall@5, MRR, route accuracy, abstain precision and recall, and claim support.
+
+#### Inspection and forgetting
+
+`control.py` owns the owner's read of memory and the only way anything leaves it.
+
+- `MemoryControl.overview/items/claims` feed the panel's **Memory & Context** page:
+  resident counts, the newest remembered items (searchable through the same lexical
+  index retrieval uses), and the active claims, open promises and newest summaries.
+  Every sentence is authored by the backend; no id, event kind or raw timestamp is
+  rendered.
+- `MemoryControl.forget_event` deletes one event's sealed row and its chunks, drops it
+  from the resident and lexical indexes in the same breath, cancels the commitments it
+  produced, supersedes the claims it supported, and writes a tombstone in
+  `forgotten_events` (keyed blind tokens) so the next poll cannot store the same
+  message again. `forget_fact`, `forget_commitment` and `forget_summary` end one claim,
+  promise or summary. Every action is audited as `memory.forget`.
+- The chat tool `memory_forget` rides the same control. Its provenance gate is the
+  watch boundary exactly: only the user's own words (`forget_origin` in the loop) may
+  ask for it, so an instruction inside an email can never delete memory.
+- A forgotten item is gone from Aether's own store. Provider history, backups and WAL
+  may still hold old copies until they expire, and the tombstone is permanent — there
+  is no un-forget.
+
+#### The evaluation
+
+`tests/eval_ablation.py` runs the golden set as two arms: lexical plus structured, then
+lexical plus structured plus the optional vector signal, split by question shape, with
+p50/p95 latency, peak index memory and an unsupported-claim rate. The embedding
+decision rule lives in `memory.embedding_min_paraphrase_gain` and is enforced by
+`tests/test_eval_ablation.py`: the vector arm must raise paraphrase recall@5 by the
+configured margin without breaking `memory.retrieve_latency_p95_ms`. The measured
+numbers and the decisions they justify live in `docs/evaluation.md`. The vector path
+stays behind `llm.embedding_model`; it is removed only on a clear negative.
 
 #### Deliveries
 

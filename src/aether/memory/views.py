@@ -20,6 +20,7 @@ it has.
 from __future__ import annotations
 
 import contextlib
+import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -31,6 +32,22 @@ import asyncpg
 from .commitments import Commitment, Commitments
 from .crypto import Cipher
 from .indexes import IndexedEvent, MemoryIndex
+
+log = logging.getLogger("aether.memory.views")
+
+# facts always in the brief, in this order, before the ranked rest: a
+# standing rule shapes every answer, and an identity fact is who the user is
+_ALWAYS_FACT_TYPES = frozenset({"rule"})
+
+
+def _word_set(text: str) -> set[str]:
+    from .lexical import tokenize
+
+    try:
+        return set(tokenize(text or ""))
+    except Exception:
+        return set((text or "").lower().split())
+
 
 # The words the attention route uses as its trigger ("kuch urgent hai?",
 # "what's pending", "due today"). Cheap and deterministic: the route is a
@@ -90,17 +107,21 @@ class Views:
         index: MemoryIndex,
         commitments: Commitments | None = None,
         *,
+        facts: Any = None,
         pool: asyncpg.Pool | None = None,
         cipher: Cipher | None = None,
         timezone: str = "Asia/Kolkata",
         cold_batch: int = 500,
+        core_facts_chars: int = 1_500,
     ) -> None:
         self._index = index
         self._commitments = commitments
+        self._facts = facts
         self._pool = pool
         self._cipher = cipher
         self._timezone = timezone
         self._cold_batch = cold_batch
+        self._core_facts_chars = max(200, int(core_facts_chars))
 
     # -- attention ----------------------------------------------------------
 
@@ -189,6 +210,67 @@ class Views:
             lines.append(f"- {commitment.kind}: {commitment.text}{when}")
         return "\n".join(lines)
 
+    # -- core facts ---------------------------------------------------------
+
+    async def core_facts(
+        self,
+        text: str,
+        *,
+        entity_ids: tuple[int, ...] = (),
+        now: datetime | None = None,
+        limit_chars: int | None = None,
+    ) -> str:
+        """The always-on facts block as one rendered string."""
+        items = await self.core_fact_items(
+            text, entity_ids=entity_ids, now=now, limit_chars=limit_chars
+        )
+        return "\n".join(_fact_line(fact) for fact in items)
+
+    async def core_fact_items(
+        self,
+        text: str,
+        *,
+        entity_ids: tuple[int, ...] = (),
+        now: datetime | None = None,
+        limit_chars: int | None = None,
+    ) -> list[Any]:
+        """The facts the brief keeps: standing rules first, then the claims
+        most relevant to this question, inside a character budget.
+        """
+        if self._facts is None:
+            return []
+        now = now or datetime.now(UTC)
+        try:
+            facts = await self._facts.active(now=now)
+        except Exception:
+            log.warning("could not read active facts for the brief", exc_info=True)
+            return []
+        if not facts:
+            return []
+        wanted = set(entity_ids)
+        query_words = _word_set(text)
+
+        def rank(fact: Any) -> tuple[int, float]:
+            always = 1 if fact.type in _ALWAYS_FACT_TYPES else 0
+            words = _word_set(f"{fact.key} {fact.value} {fact.subject}")
+            overlap = len(words & query_words) / max(1, len(words))
+            entity = 1.0 if fact.subject_identity_id in wanted else 0.0
+            age_days = max(0.0, (now - fact.created_at).total_seconds() / 86_400)
+            recency = 1.0 / (1.0 + age_days / 30.0)
+            return (always, overlap + 0.5 * entity + 0.1 * recency + 0.1 * fact.confidence)
+
+        ordered = sorted(facts, key=rank, reverse=True)
+        budget = self._core_facts_chars if limit_chars is None else max(200, int(limit_chars))
+        kept: list[Any] = []
+        used = 0
+        for fact in ordered:
+            line = _fact_line(fact)
+            if used + len(line) > budget:
+                continue
+            kept.append(fact)
+            used += len(line) + 1
+        return kept
+
     # -- entity timeline ----------------------------------------------------
 
     async def entity_timeline(
@@ -230,3 +312,15 @@ class Views:
             }
             for item in items
         ]
+
+
+def _fact_line(fact: Any) -> str:
+    """One claim as the model reads it: whose it is, its key, its value."""
+    who = (fact.subject or "").strip()
+    if not who and fact.subject_identity_id is not None:
+        who = "the user"
+    if fact.type == "rule":
+        return f"- rule: {fact.value}"
+    if who:
+        return f"- {who} — {fact.key}: {fact.value}"
+    return f"- {fact.key}: {fact.value}"

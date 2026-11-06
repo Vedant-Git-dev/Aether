@@ -585,6 +585,76 @@ class FakeEntities:
         return self.notes.get(identity_id, [])[:limit]
 
 
+class FakeMemoryControl:
+    """The inspection/forget surface for the Memory page — the real route's
+    response shapes, with plain sentences the panel can render."""
+
+    def __init__(self, now: datetime) -> None:
+        self.rows = [
+            {
+                "id": 3,
+                "kind": "mail",
+                "source": "gmail",
+                "at": (now - timedelta(minutes=20)).isoformat(),
+                "plain": "an email from Sam about the Thursday confirmation",
+            },
+            {
+                "id": 4,
+                "kind": "chat_message",
+                "source": "telegram",
+                "at": (now - timedelta(hours=3)).isoformat(),
+                "plain": "a message saying “call the plumber before friday”",
+            },
+        ]
+        self.claim_rows = [
+            {"id": 1, "kind": "fact", "plain": "you — favourite tea: masala chai"},
+            {"id": 2, "kind": "commitment", "plain": "promise: send Sam the deck"},
+        ]
+        self.forgotten: list[tuple[str, int]] = []
+
+    async def overview(self) -> dict:
+        return {
+            "resident_events": len(self.rows),
+            "indexed_chunks": 7,
+            "active_facts": 1,
+            "open_commitments": 1,
+            "active_watches": 0,
+            "semantic_search": {"on": True, "model": "gemini-embedding-001", "note": ""},
+            "flags": {"enrichment": False, "query_pipeline": True, "summaries": False},
+        }
+
+    async def items(self, *, query: str = "", limit: int = 30) -> list[dict]:
+        if query:
+            needle = query.lower()
+            return [row for row in self.rows if needle in row["plain"].lower()][:limit]
+        return self.rows[:limit]
+
+    async def claims(self, *, limit: int = 50) -> list[dict]:
+        return self.claim_rows[:limit]
+
+    async def _drop(self, kind: str, item_id: int):
+        from aether.memory.control import ForgetReport
+
+        if item_id not in {row["id"] for row in self.rows} | {row["id"] for row in self.claim_rows}:
+            return ForgetReport(found=False)
+        if (kind, item_id) in self.forgotten:
+            return ForgetReport(found=False)
+        self.forgotten.append((kind, item_id))
+        return ForgetReport(found=True, kind=kind, label=f"Forgot the {kind}.")
+
+    async def forget_event(self, event_id: int):
+        return await self._drop("event", event_id)
+
+    async def forget_fact(self, fact_id: int):
+        return await self._drop("fact", fact_id)
+
+    async def forget_commitment(self, commitment_id: int):
+        return await self._drop("commitment", commitment_id)
+
+    async def forget_summary(self, summary_id: int):
+        return await self._drop("summary", summary_id)
+
+
 class FakeScheduler:
     def __init__(self, now: datetime) -> None:
         self.actions = [
@@ -1646,6 +1716,7 @@ def build_app() -> FastAPI:
     app.state.chat_hub = FakeChatHub(chat_history)
     app.state.agent_settings = FakeAgentSettings()
     app.state.entities = FakeEntities(now)
+    app.state.memory_control = FakeMemoryControl(now)
     app.state.scheduler = FakeScheduler(now)
     app.state.traces = FakeTraces(now)
     proactive_store = FakeProactiveStore(now)

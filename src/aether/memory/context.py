@@ -91,11 +91,13 @@ class ContextBuilder:
         entities: Entities,
         approvals: Approvals,
         config: AgentConfig,
+        facts: Any = None,
     ) -> None:
         self._store = store
         self._entities = entities
         self._approvals = approvals
         self._config = config
+        self._facts = facts
 
     async def build(self, *, with_questions: bool = False) -> AgentContext:
         """Assemble the turn's working context.
@@ -132,17 +134,40 @@ class ContextBuilder:
         )
 
     async def _questions(self) -> list[str]:
-        """The alias confirmations still waiting on an answer.
+        """The one-off questions still waiting on an answer.
 
-        Reading them is failure-tolerant: a question that cannot be loaded
-        costs the turn its question, never the turn.
+        Currently the owner-alias confirmation and a disputed fact's one
+        check. Reading them is failure-tolerant: a question that cannot be
+        loaded costs the turn its question, never the turn.
         """
+        questions: list[str] = []
         try:
             pending = await self._entities.pending_alias_questions()
         except Exception:
             log.warning("could not read the pending alias questions", exc_info=True)
+            pending = []
+        questions.extend(alias_question_text(note.payload) for note in pending)
+        questions.extend(await self._fact_questions())
+        return questions
+
+    async def _fact_questions(self) -> list[str]:
+        """Ask once about each disputed fact. The asked marker is written
+        only once the question is actually going into the turn."""
+        if self._facts is None:
             return []
-        return [alias_question_text(note.payload) for note in pending]
+        try:
+            disputed = await self._facts.pending_questions(limit=2)
+        except Exception:
+            log.warning("could not read the disputed facts", exc_info=True)
+            return []
+        if not disputed:
+            return []
+        questions = [self._facts.question_text(fact) for fact in disputed]
+        try:
+            await self._facts.mark_asked([fact.id for fact in disputed])
+        except Exception:
+            log.warning("could not record a disputed fact question as asked", exc_info=True)
+        return questions
 
 
 def alias_question_text(payload: dict[str, Any]) -> str:

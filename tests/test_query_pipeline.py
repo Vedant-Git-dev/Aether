@@ -291,6 +291,42 @@ def test_a_resolved_reference_skips_search() -> None:
     assert routing.needs_search is False
 
 
+def test_several_attachments_ask_one_question_naming_them() -> None:
+    focus = _focus(
+        recent_attachments=[
+            {"filename": "photo-one.jpg", "event_id": 8, "media_id": 21},
+            {"filename": "photo-two.jpg", "event_id": 8, "media_id": 22},
+        ],
+        last_attachment={"filename": "photo-one.jpg", "event_id": 8, "media_id": 21},
+    )
+
+    resolved, ask, _ = resolve_reference("send it", focus)
+
+    assert resolved is None
+    assert ask is not None
+    assert "photo-one.jpg" in ask and "photo-two.jpg" in ask
+    # and the classification carries the ask, so the turn asks instead of
+    # guessing the newest photo
+    routing = classify("send it", focus=focus, now=NOW)
+    assert routing.ask == ask
+    assert "reference" in routing.routes
+
+
+def test_a_named_attachment_still_resolves_when_several_are_held() -> None:
+    focus = _focus(
+        recent_attachments=[
+            {"filename": "document-one.pdf", "event_id": 8, "media_id": 21},
+            {"filename": "report-two.pdf", "event_id": 8, "media_id": 22},
+        ]
+    )
+
+    resolved, ask, _ = resolve_reference("send the document then", focus)
+
+    assert ask is None
+    assert resolved is not None
+    assert resolved.media_id == 21
+
+
 def test_rewrite_expands_a_short_anaphoric_question_and_caches_it() -> None:
     focus = _focus(recent_entities=[3], open_task={"summary": "send the assignment"})
     cache = RewriteCache()

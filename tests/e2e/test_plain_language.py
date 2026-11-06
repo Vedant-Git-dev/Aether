@@ -140,6 +140,31 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     page.wait_for_timeout(800)
     assert "Relationship — coworker on the infra team" in page.locator("body").inner_text()
 
+    # the memory inspector: status, the remembered items as plain sentences,
+    # the claims with their own Forget, and nothing internal shown
+    text = page.locator("body").inner_text()
+    assert "Remembered items" in text
+    assert "an email from Sam about the Thursday confirmation" in text
+    assert "Claims and promises" in text
+    assert "you — favourite tea: masala chai" in text
+    assert "search by meaning is on" in text
+
+    # search narrows the list directly below it
+    page.fill('[data-testid="memory-search"]', "plumber")
+    page.wait_for_timeout(500)
+    assert page.locator('[data-testid="memory-item-4"]').count() == 1
+    assert page.locator('[data-testid="memory-item-3"]').count() == 0
+    page.fill('[data-testid="memory-search"]', "")
+    page.wait_for_timeout(500)
+
+    # the two-step forget: the row is there, the confirm removes it
+    assert page.locator('[data-testid="memory-item-3"]').count() == 1
+    row = page.locator('[data-testid="memory-item-3"]')
+    row.get_by_role("button", name="Forget").click()
+    row.get_by_role("button", name="Forget it").click()
+    page.wait_for_timeout(500)
+    assert page.locator('[data-testid="memory-item-3"]').count() == 0
+
     page.goto(f"{live_server}/#/audit")
     page.wait_for_selector("table")
     page.wait_for_timeout(500)

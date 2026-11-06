@@ -207,6 +207,8 @@ PLAINTEXT_ALLOWLIST: dict[str, frozenset[str]] = {
     "conclusions": frozenset({"key_token", "created_at", "key_version"}),
     "deliveries": frozenset({"id", "surface_token", "status", "created_at", "key_version"}),
     "workspace_files": frozenset({"id", "name_token", "updated_at", "key_version"}),
+    # a forgotten event's tombstone: two keyed blind tokens and a stamp
+    "forgotten_events": frozenset({"dedup_mac", "source_token", "forgotten_at"}),
 }
 
 # Columns that must be ciphertext. The boot audit also checks their SQL

@@ -163,16 +163,19 @@ class MemoryConfig(BaseModel):
     hot_chunks: int = 8_000
     cold_batch: int = 500
     # write-time enrichment: one cheap model turn per event reading out
-    # urgency, deadlines, commitments and a one-line summary. Off by
-    # default until the eval says it earns its cost; entity linking and
-    # the delivery rules do not ride this flag, because they need no model
-    # call and the rendering rules depend on them.
-    enrichment: bool = False
+    # urgency, deadlines, commitments and a one-line summary, so "anything
+    # urgent?" and "what's due?" are lookups. On by default after the
+    # section 11 evaluation; off leaves the deterministic floor as the only
+    # urgency signal. Entity linking and the delivery rules do not ride this
+    # flag, because they need no model call and the rendering rules depend
+    # on them.
+    enrichment: bool = True
     # how long a conclusion about live state stays usable — a mailbox
     # answer older than this is re-asked rather than reused
     conclusion_ttl_seconds: int = 120
-    # the new routing/retrieval pipeline; off keeps the old vector recall
-    query_pipeline: bool = False
+    # the routed query pipeline; on by default after the section 11
+    # evaluation, off keeps the old vector-only recall
+    query_pipeline: bool = True
     # -- retrieval ranking (plan.md section 5) -- the eval tunes these --
     # an optional listwise rerank: one small-model call only when the
     # candidate pool is broad and the score margin is low. Off until the
@@ -198,9 +201,30 @@ class MemoryConfig(BaseModel):
     pack_token_budget: int = 2_500
     max_chunks_per_event: int = 3
     max_packed_lines: int = 8
+    # the always-on facts block: standing rules and query-relevant claims,
+    # capped in characters because facts are curated and few
+    core_facts_chars: int = 1_500
+    # model-written thread/daily/weekly summaries. Off by default: it is a
+    # new per-window model cost, like enrichment.
+    summaries: bool = False
+    # a thread summary refreshes once this many new messages have landed
+    summary_thread_messages: int = 10
     # memory_search stays a model tool; each turn may call it this many times
     max_search_rounds: int = 3
     default_timezone: str = "Asia/Kolkata"
+    # -- the evaluation's own knobs (plan.md section 11) --
+    # the paraphrase recall@5 the optional vector arm must add over the
+    # lexical arm to keep its place; a change that drops below this fails
+    # the ablation test, so the decision stays honest
+    embedding_min_paraphrase_gain: float = 0.10
+    # the offline retrieval budget the ablation arm may not exceed
+    retrieve_latency_p95_ms: int = 300
+    # how many times each case runs for the p50/p95 numbers
+    eval_repeats: int = 10
+    # the combined attention/deadline/commitment answer rate write-time
+    # enrichment must add over the floor; the evaluation cleared it, which
+    # is why enrichment is on by default
+    enrichment_min_answer_gain: float = 0.15
 
 
 class TransportConfig(BaseModel):
