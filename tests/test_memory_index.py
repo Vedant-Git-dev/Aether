@@ -3,6 +3,7 @@ and the sealed write path that keeps it current."""
 
 from __future__ import annotations
 
+import tracemalloc
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -12,6 +13,7 @@ from aether.config import ContactsConfig
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.events import EventStore
 from aether.memory.indexes import MemoryIndex
+from aether.memory.views import Views
 
 
 def _cipher() -> Cipher:
@@ -170,3 +172,65 @@ async def test_recent_hours_cold_scans_before_filtering(db) -> None:
     wired = EventStore(db, cipher, AuditLog(db), ContactsConfig(), index=index)
     assert [event.id for event in await wired.recent_memorable(10, hours=48)] == [old.event_id]
     assert await wired.recent_memorable(10, hours=1) == []
+
+
+@pytest.mark.integration
+async def test_attention_view_rebuilds_identically_after_a_restart(db) -> None:
+    """Plan.md section 12.21: the hot index and the attention view a restart
+    rebuilds must match what was resident before it."""
+    cipher = _cipher()
+    index = MemoryIndex()
+    store = EventStore(db, cipher, AuditLog(db), ContactsConfig(), index=index)
+    for hour, urgency in ((8, 0), (9, 3), (10, 2), (11, 2)):
+        result = await store.ingest(
+            source="gmail",
+            kind="message",
+            payload={"text": f"event at {hour}"},
+            occurred_at=_at(hour),
+        )
+        assert result.event_id is not None
+        if urgency:
+            await store.merge_meta(
+                result.event_id,
+                {"urgency": urgency, "urgency_floor": True},
+                salience=float(urgency),
+                memorable=True,
+            )
+
+    before = Views(index, timezone="Asia/Kolkata").pending_attention(now=_at(12))
+    rebuilt = MemoryIndex()
+    assert await rebuilt.rebuild(db, cipher, hot_limit=50) == 4
+    after = Views(rebuilt, timezone="Asia/Kolkata").pending_attention(now=_at(12))
+
+    assert [(item.event_id, item.urgency) for item in after] == [
+        (item.event_id, item.urgency) for item in before
+    ]
+    assert len(after) == 3  # the non-urgent event stays out
+
+
+@pytest.mark.integration
+async def test_the_hot_index_stays_within_its_memory_budget(db) -> None:
+    """A resident set of `hot_events` bounded events must not blow the host's
+    RAM: the traced footprint stays far under a small budget (plan.md
+    section 12.21)."""
+    cipher = _cipher()
+    store = EventStore(db, cipher, AuditLog(db), ContactsConfig())
+    for i in range(200):
+        await store.ingest(
+            source="gmail",
+            kind="message",
+            payload={"text": f"remembered item number {i}", "subject": f"note {i}"},
+            occurred_at=_at(0) + timedelta(minutes=i),
+        )
+
+    index = MemoryIndex()
+    tracemalloc.start()
+    try:
+        await index.rebuild(db, cipher, hot_limit=200)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert len(index) == 200
+    # 200 small events decrypt to well under a megabyte of resident objects
+    assert peak < 4 * 1024 * 1024, f"hot index peaked at {peak} bytes"

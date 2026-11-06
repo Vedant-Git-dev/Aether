@@ -26,7 +26,7 @@ _TABLES = (
     "workbench_transfers, workbench_minutes, proactive_tasks, media_blobs, "
     "processed_updates, provider_connections, provider_oauth_states, "
     "provider_sync_state, facts, commitments, commitment_reminders, watches, summaries, "
-    "focus, "
+    "focus, forgotten_events, "
     "conclusions, deliveries, workspace_files"
 )
 

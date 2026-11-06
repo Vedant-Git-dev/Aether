@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 import pytest
 
 from aether.memory.crypto import Cipher, generate_key_b64
-from aether.memory.focus import MAX_RECENT_ENTITIES, Focus
+from aether.memory.focus import MAX_RECENT_ENTITIES, Focus, FocusState
 
 NOW = datetime(2026, 11, 3, 6, 16, tzinfo=UTC)
 CHAT = "web:user-1"
@@ -53,6 +53,51 @@ async def test_a_turn_without_an_attachment_does_not_erase_it(db) -> None:
     state = await focus.get(CHAT)
     assert state is not None
     assert state.last_attachment is not None and state.last_attachment["media_id"] == 1
+    assert [item["filename"] for item in state.recent_attachments] == ["a.png"]
+
+
+@pytest.mark.integration
+async def test_several_attachments_arrive_as_one_turns_set(db) -> None:
+    focus = Focus(db, _cipher())
+
+    await focus.record_turn(
+        CHAT,
+        attachments=[
+            {"media_id": 21, "filename": "photo-one.jpg", "event_id": 8},
+            {"media_id": 22, "filename": "photo-two.jpg", "event_id": 8},
+        ],
+    )
+
+    state = await focus.get(CHAT)
+    assert state is not None
+    assert [item["filename"] for item in state.recent_attachments] == [
+        "photo-one.jpg",
+        "photo-two.jpg",
+    ]
+    # the newest is the single slot's value, as before
+    assert state.last_attachment is not None and state.last_attachment["media_id"] == 21
+
+
+@pytest.mark.integration
+async def test_an_older_row_with_one_attachment_reads_as_a_set_of_one(db) -> None:
+    cipher = _cipher()
+    focus = Focus(db, cipher)
+    # a row written before recent_attachments existed
+    payload = FocusState(
+        last_attachment={"media_id": 9, "filename": "deck.pdf", "event_id": 42}
+    ).to_payload()
+    payload.pop("recent_attachments")
+    token = cipher.blind_token("focus", CHAT)
+    await db.execute(
+        "INSERT INTO focus (chat_ref_token, state_enc, key_version) VALUES ($1, $2, $3)",
+        token,
+        cipher.encrypt_json(payload, aad=f"focus:state_enc:{token.hex()}"),
+        cipher.key_id,
+    )
+
+    state = await focus.get(CHAT)
+    assert state is not None
+    assert [item["filename"] for item in state.recent_attachments] == ["deck.pdf"]
 
 
 @pytest.mark.integration

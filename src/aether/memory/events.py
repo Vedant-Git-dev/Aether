@@ -276,6 +276,12 @@ class EventStore:
             dedup_tag = self._cipher.dedup_mac(canonical_payload(kind, stored_payload))
 
         async with self._pool.acquire() as conn, conn.transaction():
+            # a forgotten item stays forgotten: the poller re-fetches the same
+            # message, and the tombstone is the only thing that can refuse it
+            if await conn.fetchval(
+                "SELECT 1 FROM forgotten_events WHERE dedup_mac = $1", dedup_tag
+            ):
+                return IngestResult(stored=False, reason="forgotten")
             row = await conn.fetchrow(
                 "INSERT INTO events (payload_enc, meta_enc, key_version,"
                 " source_token, dedup_mac)"

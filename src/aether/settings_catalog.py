@@ -199,6 +199,42 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
         ),
     ),
     GroupSpec(
+        key="memory",
+        title="Memory",
+        note="What Aether keeps, and which parts of it think.",
+        fields=(
+            FieldSpec(
+                path="memory.enrichment",
+                label="Read items closely",
+                hint="One cheap model turn per item reads out urgency, deadlines, "
+                "promises and a one-line summary, so 'anything urgent?' is a "
+                "lookup. The urgent-word floor always runs either way.",
+                note="applies to items that arrive after a restart",
+            ),
+            FieldSpec(
+                path="memory.query_pipeline",
+                label="Search by route and keyword",
+                hint="Route each question, search lexically and structurally, "
+                "fuse and cite — the fallback is keyword recall only.",
+                note="applies to the next question",
+            ),
+            FieldSpec(
+                path="memory.summaries",
+                label="Write summaries",
+                hint="A model writes a daily and weekly recap of what happened, "
+                "for broad questions like 'what did I miss?'.",
+                note="applies from the next pass",
+            ),
+            FieldSpec(
+                path="memory.conclusion_ttl_seconds",
+                label="Freshness window",
+                hint="How long an answer about live state stays usable; an older "
+                "answer is asked again rather than reused.",
+                note="applies to the next live answer",
+            ),
+        ),
+    ),
+    GroupSpec(
         key="messaging",
         title="Chat surfaces",
         note="A surface needs its token pasted below before it can come on.",

@@ -152,6 +152,19 @@ class Summaries:
         )
         return self._to_summary(row) if row else None
 
+    async def by_id(self, summary_id: int) -> Summary | None:
+        row = await self._pool.fetchrow(
+            "SELECT id, kind, period_token, body_enc, created_at FROM summaries WHERE id = $1",
+            summary_id,
+        )
+        return self._to_summary(row) if row else None
+
+    async def delete(self, summary_id: int) -> bool:
+        """Remove one saved synthesis. The raw events it described stay; only
+        the derived summary goes."""
+        result = await self._pool.execute("DELETE FROM summaries WHERE id = $1", summary_id)
+        return result.endswith(" 1")
+
     async def recent(self, kind: str, limit: int = 5) -> list[Summary]:
         """The newest summaries of one kind — the read the brief and broad
         retrieval use. Ordering happens in memory: `created_at` is

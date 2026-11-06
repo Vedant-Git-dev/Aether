@@ -213,6 +213,12 @@ def resolve_reference(
         target = _select_target(focus, task_noun.group(0) if task_noun else "")
         if target is not None:
             return target, None, None
+        if _SEND_TARGET_RE.search(text):
+            # several attachments and no way to pick: ask with their names
+            filenames = _attachment_names(focus)
+            if len(filenames) > 1:
+                options = " or ".join(filenames[:3])
+                return None, f"Which one — {options}?", None
         if not _SEND_TARGET_RE.search(text):
             # an information question about the noun: search it, don't ask
             return None, None, None
@@ -226,8 +232,13 @@ def resolve_reference(
 
 
 def _select_target(focus: FocusState, noun: str) -> Resolved | None:
-    """The one plausible target, or None when nothing fits."""
-    attachment = focus.last_attachment or {}
+    """The one plausible target, or None when nothing fits.
+
+    A bare "send it" with several attachments has no single target — the
+    caller asks which one by name rather than guessing the newest.
+    """
+    attachments = _attachments(focus)
+    attachment = attachments[0] if attachments else {}
     task = focus.open_task or {}
     offer = focus.last_offer or {}
 
@@ -239,10 +250,13 @@ def _select_target(focus: FocusState, noun: str) -> Resolved | None:
             return Resolved(
                 kind="task", label=summary[:200], event_id=_as_int(task.get("event_id"))
             )
-        if attachment and topic in str(attachment.get("filename") or "").lower():
-            return _attachment_resolution(attachment)
+        for candidate in attachments:
+            if topic in str(candidate.get("filename") or "").lower():
+                return _attachment_resolution(candidate)
         if offer and topic in str(offer.get("text") or "").lower():
             return None  # the offer mentions it; the search will find it
+    if len(attachments) > 1:
+        return None  # ambiguous: the caller asks which one
     if attachment:
         return _attachment_resolution(attachment)
     if task:
@@ -252,6 +266,24 @@ def _select_target(focus: FocusState, noun: str) -> Resolved | None:
             event_id=_as_int(task.get("event_id")),
         )
     return None
+
+
+def _attachments(focus: FocusState) -> list[dict]:
+    """The turn's attachments, newest first, tolerating an older row that
+    only carries the single `last_attachment`."""
+    found = [item for item in focus.recent_attachments if isinstance(item, dict)]
+    if not found and focus.last_attachment:
+        found = [focus.last_attachment]
+    return found
+
+
+def _attachment_names(focus: FocusState) -> list[str]:
+    names: list[str] = []
+    for item in _attachments(focus):
+        name = str(item.get("filename") or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
 
 
 def _attachment_resolution(attachment: dict) -> Resolved:

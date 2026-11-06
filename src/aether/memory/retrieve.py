@@ -567,7 +567,7 @@ class Retriever:
                 add("  nothing urgent or due right now")
             for item in items:
                 rendered = _attention_line(item, now, zone)
-                add(
+                added = add(
                     f"  {rendered}",
                     {
                         "id": item.event_id,
@@ -576,6 +576,13 @@ class Retriever:
                         "line": f"[related memory — urgent item] {item.summary or 'an urgent event'}",
                     },
                 )
+                if added:
+                    # the item's own line is citable and quotable like a
+                    # chunk: without this a reply that says "the outage is
+                    # urgent [E1]" would read as an invented id
+                    chunks_by_event.setdefault(item.event_id, []).append(rendered)
+                    if item.event_id not in event_ids:
+                        event_ids.append(item.event_id)
                 structured += 1
 
         if "commitment" in routing.routes and self._views is not None:
@@ -587,7 +594,13 @@ class Retriever:
                 structured += 1
             for commitment in open_items:
                 rendered = _commitment_line(commitment, now, zone)
-                add(f"- {rendered}")
+                added = add(f"- {rendered}")
+                # a promise's line is citable by the event it came from, so
+                # "I promised X [E12]" is checked instead of flagged
+                if added and commitment.source_event_id is not None:
+                    chunks_by_event.setdefault(commitment.source_event_id, []).append(rendered)
+                    if commitment.source_event_id not in event_ids:
+                        event_ids.append(commitment.source_event_id)
                 structured += 1
 
         for candidate in selected:
@@ -712,7 +725,7 @@ def _commitment_line(commitment: Commitment, now: datetime, zone: ZoneInfo) -> s
     when = ""
     if commitment.due_at is not None:
         due = commitment.due_at.astimezone(zone).strftime("%Y-%m-%d %H:%M")
-        when = f" — overdue since {due}" if due < now else f" — due {due}"
+        when = f" — overdue since {due}" if commitment.due_at < now else f" — due {due}"
     return f"commitment {commitment.id}: {commitment.kind}: {commitment.text}{when}"
 
 

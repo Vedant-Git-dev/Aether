@@ -149,6 +149,7 @@ const DEFAULT_NOUN = { Email: "email", Calendar: "events", Slack: "messages", Te
 
 const NATIVE_TOOLS = {
   memory_search: "Searching memory",
+  memory_forget: "Forgetting that memory",
   note_entity: "Saving a note about someone",
   entity_merge: "Recognising two accounts as the same person",
   entity_resolve: "Linking an account to a person",
@@ -427,6 +428,27 @@ export function describeRecall(r) {
   const where = m ? m[1] : "";
   const text = m ? m[2] : r.line || "";
   return where ? `${where}: ${quote(text, 220)}` : quote(text, 220);
+}
+
+// The remembered-items list: the backend authors one plain sentence per item
+// (`plain`), so the panel only ever shows that — this is the fallback for a
+// row without one, keyed off the item's own shape, never the raw kind token.
+export function describeMemoryItem(item) {
+  if (!item) return "";
+  if (item.plain) return plainText(item.plain);
+  const { title } = describeEvent({ source: item.source, kind: item.kind, payload: {} });
+  return title;
+}
+
+// the three kinds of stored claim, as the memory page names them
+export const CLAIM_KIND_LABELS = {
+  fact: "Knows",
+  commitment: "Promise",
+  summary: "Summary",
+};
+
+export function describeClaimKind(kind) {
+  return CLAIM_KIND_LABELS[kind] || humanize(kind);
 }
 
 // A routine's trigger is a condition dict ({source, kind, from, contains}) —

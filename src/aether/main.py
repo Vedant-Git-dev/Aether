@@ -54,6 +54,7 @@ from .media.voice import GroqTranscriber
 from .memory.commitments import Commitments
 from .memory.conclusions import Conclusions
 from .memory.context import ContextBuilder
+from .memory.control import MemoryControl
 from .memory.crypto import Cipher, CryptoError, generate_key_b64
 from .memory.db import create_pool, run_migrations
 from .memory.deliveries import Deliveries
@@ -592,6 +593,26 @@ def create_app(
             timezone=config.memory.default_timezone,
         )
         app.state.summary_job = summary_job
+        # memory inspection and the one way anything is forgotten. Built here
+        # because it needs the stores above and the live config object (the
+        # panel's flag reads go through it), and held on app.state so the
+        # routes and the chat tool share one owner.
+        memory_control = MemoryControl(
+            pool=pool,
+            cipher=cipher,
+            audit=audit,
+            events=events,
+            index=memory_index,
+            lexical=lexical,
+            vectors=vectors,
+            facts=facts,
+            commitments=commitments,
+            summaries=summaries,
+            watches=watches,
+            memory=config.memory,
+            embedding_model=config.llm.embedding_model or "",
+        )
+        app.state.memory_control = memory_control
         # the proactive worker's task rows — the same audit chain as
         # everything else; the worker and its skills land later in boot
         proactive_store = ProactiveStore(pool, cipher, audit)
@@ -727,6 +748,8 @@ def create_app(
             generator=image_generator,
             proactive_path=proactive_path,
             watch_origin=agent.watch_origin,
+            forget_origin=agent.forget_origin,
+            memory_control=memory_control,
         )
         log.info("native tools registered: %d", native)
 

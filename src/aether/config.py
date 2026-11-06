@@ -209,6 +209,18 @@ class MemoryConfig(BaseModel):
     # memory_search stays a model tool; each turn may call it this many times
     max_search_rounds: int = 3
     default_timezone: str = "Asia/Kolkata"
+    # -- the evaluation's own knobs (plan.md section 11) --
+    # the paraphrase recall@5 the optional vector arm must add over the
+    # lexical arm to keep its place; a change that drops below this fails
+    # the ablation test, so the decision stays honest
+    embedding_min_paraphrase_gain: float = 0.10
+    # the offline retrieval budget the ablation arm may not exceed
+    retrieve_latency_p95_ms: int = 300
+    # how many times each case runs for the p50/p95 numbers
+    eval_repeats: int = 10
+    # the combined attention/deadline/commitment answer rate write-time
+    # enrichment must add before its default may flip to true
+    enrichment_min_answer_gain: float = 0.15
 
 
 class TransportConfig(BaseModel):

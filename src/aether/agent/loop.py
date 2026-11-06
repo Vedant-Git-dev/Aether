@@ -114,6 +114,15 @@ _WATCH_INTENT = re.compile(
     re.IGNORECASE,
 )
 
+# Only a message matching one of these makes `forget_origin()` return "owner".
+# The same boundary as a watch: memory is deleted on the user's own words,
+# never on an instruction read out of an email or a polled feed.
+_FORGET_INTENT = re.compile(
+    r"\b(forget|delete\s+(that|this|it)|remove\s+(that|this|it)\s+from\s+"
+    r"(your\s+)?memory|wipe\s+(that|this|it)|stop\s+remembering)\b",
+    re.IGNORECASE,
+)
+
 # A solicited turn waits this long for write-time enrichment still in
 # flight before it answers from the deterministic floor. The classifier is
 # one cheap model turn per event, so a burst can outrun the question that
@@ -829,6 +838,17 @@ class AgentLoop:
         an instruction inside an email can never arm or change one."""
         for message in self._turn_messages:
             if _WATCH_INTENT.search(message.text or ""):
+                return "owner"
+        return "context"
+
+    def forget_origin(self) -> str:
+        """`owner` only when the user's own message asked to forget something.
+
+        The same boundary the watch tools ride: an email or a polled feed can
+        describe the world, but only the person can delete what Aether keeps.
+        """
+        for message in self._turn_messages:
+            if _FORGET_INTENT.search(message.text or ""):
                 return "owner"
         return "context"
 

@@ -44,6 +44,9 @@ log = logging.getLogger("aether.memory.facts")
 ACTIVE = "active"
 SUPERSEDED = "superseded"
 DISPUTED = "disputed"
+# the owner ended the claim: the row stays for its history, the claim never
+# reads back (forget, plan.md section 12.12)
+FORGOTTEN = "forgotten"
 
 # consolidation outcomes
 ADDED = "added"
@@ -385,23 +388,52 @@ class Facts:
                 "UPDATE facts SET status = $1, body_enc = $2 WHERE id = $3 AND status = $4",
                 SUPERSEDED,
                 self._cipher.encrypt_json(
-                    {
-                        "subject": fact.subject,
-                        "key": fact.key,
-                        "value": fact.value,
-                        "type": fact.type,
-                        "valid_from": fact.valid_from.isoformat(),
-                        "valid_until": now.isoformat(),
-                        "provenance": list(fact.provenance),
-                        "confidence": fact.confidence,
-                        "trusted": fact.trusted,
-                        "asked": fact.asked,
-                    },
+                    _fact_body(fact, valid_until=now),
                     aad=_aad(fact.id),
                 ),
                 fact.id,
                 ACTIVE,
             )
+
+    async def forget(self, fact_id: int) -> bool:
+        """End one claim for good: it leaves every read, and the row keeps
+        only its provenance history. Nothing user-written is rewritten."""
+        fact = await self.get(fact_id)
+        if fact is None:
+            return False
+        result = await self._pool.execute(
+            "UPDATE facts SET status = $1, body_enc = $2 WHERE id = $3",
+            FORGOTTEN,
+            self._cipher.encrypt_json(
+                _fact_body(fact, valid_until=datetime.now(UTC)),
+                aad=_aad(fact.id),
+            ),
+            fact.id,
+        )
+        return result.endswith(" 1")
+
+    async def supersede_for_event(self, event_id: int, *, now: datetime | None = None) -> int:
+        """End every active claim whose provenance names one forgotten event.
+
+        The source is gone, so the belief is no longer supported. Superseded,
+        never deleted — the claim's own history still explains itself.
+        Returns how many claims ended.
+        """
+        now = now or datetime.now(UTC)
+        rows = await self._pool.fetch(
+            "SELECT id, subject_identity_id, status, body_enc, created_at FROM facts"
+            " WHERE status = $1 ORDER BY id DESC LIMIT $2",
+            ACTIVE,
+            self._max_active,
+        )
+        targeted = [
+            fact
+            for row in rows
+            if (fact := self._to_fact(row)) is not None and event_id in fact.provenance
+        ]
+        if targeted:
+            await self._supersede(targeted, now)
+        return len(targeted)
 
     async def _audit_outcome(self, actor: str, outcome: str, fact: Fact | None, note: str) -> None:
         if self._audit is None:
@@ -527,6 +559,23 @@ class Facts:
             created_at=row["created_at"],
             asked=bool(body.get("asked", False)),
         )
+
+
+def _fact_body(fact: Fact, *, valid_until: datetime | None) -> dict[str, Any]:
+    """The sealed body every end-of-life write persists — the same fields the
+    insert wrote, with the window closed and nothing reworded."""
+    return {
+        "subject": fact.subject,
+        "key": fact.key,
+        "value": fact.value,
+        "type": fact.type,
+        "valid_from": fact.valid_from.isoformat(),
+        "valid_until": valid_until.isoformat() if valid_until else None,
+        "provenance": list(fact.provenance),
+        "confidence": fact.confidence,
+        "trusted": fact.trusted,
+        "asked": fact.asked,
+    }
 
 
 def _optional_time(value: Any) -> datetime | None:
