@@ -63,6 +63,7 @@ from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
 from .memory.facts import Facts
 from .memory.focus import Focus
+from .memory.inbound import DbInboundStates
 from .memory.indexes import MemoryIndex
 from .memory.lexical import LexicalIndex
 from .memory.pipeline import QueryPipeline, retrieval_config_from
@@ -564,10 +565,12 @@ def create_app(
         focus = Focus(pool, cipher)
         conclusions = Conclusions(pool, cipher, ttl_seconds=config.memory.conclusion_ttl_seconds)
         deliveries = Deliveries(pool, cipher, audit)
+        inbound_states = DbInboundStates(pool, cipher)
         app.state.views = views
         app.state.focus = focus
         app.state.conclusions = conclusions
         app.state.deliveries = deliveries
+        app.state.inbound_states = inbound_states
         context = ContextBuilder(events, entities, approvals, config.agent, facts=facts)
         scheduler = Scheduler(pool, cipher, audit)
         app.state.entities = entities
@@ -696,6 +699,7 @@ def create_app(
             focus=focus,
             conclusions=conclusions,
             deliveries=deliveries,
+            inbound_states=inbound_states,
             query_pipeline=query_pipeline,
             summary_job=summary_job,
         )

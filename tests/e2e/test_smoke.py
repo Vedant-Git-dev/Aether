@@ -85,15 +85,15 @@ def test_activity_source_filter_actually_filters(page, live_server, token) -> No
     _set_token(page, token)
     page.goto(f"{live_server}/#/activity")
     page.wait_for_selector('[data-testid="event-row"]')
-    assert page.locator('[data-testid="event-row"]').count() == 7
+    assert page.locator('[data-testid="event-row"]').count() == 8
 
     page.select_option('[data-testid="filter-source"]', "mail")
     rows = page.locator('[data-testid="event-row"]')
-    assert rows.count() == 1
+    assert rows.count() == 2
     assert "EMAIL" in rows.first.inner_text().upper()  # the mail source is labelled "Email"
 
     page.select_option('[data-testid="filter-source"]', "")
-    assert page.locator('[data-testid="event-row"]').count() == 7
+    assert page.locator('[data-testid="event-row"]').count() == 8
 
 
 def test_personality_text_survives_a_full_reload(page, live_server, token) -> None:

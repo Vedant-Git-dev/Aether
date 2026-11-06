@@ -506,6 +506,7 @@ class FakeSurfaceConnector:
     def __init__(self, name: str = "fake") -> None:
         self.name = name
         self.sent: list[str] = []
+        self.reply_tos: list[str | None] = []
         self.approvals_presented: list[tuple[int, str]] = []
         self.results_presented: list[tuple[int, str, tuple[str, ...]]] = []
         self.starts = 0
@@ -518,8 +519,14 @@ class FakeSurfaceConnector:
     async def stop(self) -> None:
         self.stops += 1
 
-    async def send_to_user(self, text: str) -> str:
+    async def send_to_user(
+        self,
+        text: str,
+        *,
+        reply_to: str | None = None,
+    ) -> str:
         self.sent.append(text)
+        self.reply_tos.append(reply_to)
         self._ids += 1
         return f"m{self._ids}"
 

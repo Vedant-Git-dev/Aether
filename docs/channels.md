@@ -62,6 +62,12 @@ Telegram supports:
 - file, photo, video, and voice-note attachments,
 - reply-to context, so "send it back" resolves to the file you replied to.
 
+A prompt answer to the latest message is sent as a plain message, never a quoted reply.
+A quote is used only when it helps: you replied to a specific message, the answer is
+about an earlier message or a newer one arrived while it was being prepared, the answer
+took longer than about ninety seconds, several pending questions were answered together,
+or an approval outcome answers the card you tapped. Proactive alerts never quote you.
+
 Only one process may call `getUpdates` for a bot token at a time. A second instance
 logs the conflict and does not take the surface down; the first one keeps it.
 

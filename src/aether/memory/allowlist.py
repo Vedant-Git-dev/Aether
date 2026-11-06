@@ -209,6 +209,22 @@ PLAINTEXT_ALLOWLIST: dict[str, frozenset[str]] = {
     "workspace_files": frozenset({"id", "name_token", "updated_at", "key_version"}),
     # a forgotten event's tombstone: two keyed blind tokens and a stamp
     "forgotten_events": frozenset({"dedup_mac", "source_token", "forgotten_at"}),
+    # the inbound ledger: the surface name and the status word are config
+    # vocabulary, everything user-derived is a keyed token or sealed
+    "inbound_messages": frozenset(
+        {
+            "id",
+            "surface",
+            "chat_token",
+            "message_token",
+            "key_token",
+            "status",
+            "checked",
+            "created_at",
+            "updated_at",
+            "key_version",
+        }
+    ),
 }
 
 # Columns that must be ciphertext. The boot audit also checks their SQL
@@ -254,6 +270,7 @@ SEALED_COLUMNS: dict[str, frozenset[str]] = {
     "conclusions": frozenset({"value_enc"}),
     "deliveries": frozenset({"body_enc", "message_id_enc", "error_enc"}),
     "workspace_files": frozenset({"name_enc", "content_enc"}),
+    "inbound_messages": frozenset({"reason_enc", "outcome_enc"}),
 }
 
 # The migration ledger is now empty: `018_sealed_cutover.sql` dropped every

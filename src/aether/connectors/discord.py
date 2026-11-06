@@ -14,6 +14,7 @@ from typing import Any
 import discord
 
 from ..authz.approvals import APPROVED, DENIED
+from ..outbound import is_deliverable
 from .attachments import MAX_ATTACHMENT_BYTES, actual_size_exceeds_cap, reported_size_exceeds_cap
 from .base import (
     TASK_VERDICT_LABELS,
@@ -287,9 +288,18 @@ class DiscordConnector(MessagingConnector):
 
     # -- outbound ------------------------------------------------------------------
 
-    async def send_to_user(self, text: str, *, attachment: Attachment | None = None) -> str | None:
+    async def send_to_user(
+        self,
+        text: str,
+        *,
+        attachment: Attachment | None = None,
+        reply_to: str | None = None,
+    ) -> str | None:
         """Send, and answer with the platform message id — what links a
-        later "why?" reply back to the trace of this send."""
+        later "why?" reply back to the trace of this send. Discord carries
+        no quote here, so `reply_to` is accepted and ignored."""
+        if not is_deliverable(text):
+            return None
         if self._channel is None:
             log.info("discord: no DM channel yet")
             return None
@@ -302,6 +312,8 @@ class DiscordConnector(MessagingConnector):
     ) -> None:
         """One plain-language question plus one-tap Approve/Deny. The raw
         tool name never reaches the user — the decision record keeps it."""
+        if not is_deliverable(text):
+            return
         if self._channel is None:
             log.info("discord: no DM channel yet — approval visible in the web panel")
             return
@@ -325,6 +337,8 @@ class DiscordConnector(MessagingConnector):
     ) -> None:
         """A finished background task's result plus the one-tap verdicts
         that apply to it."""
+        if not is_deliverable(text):
+            return
         if self._channel is None:
             log.info("discord: no DM channel yet — result visible in the web panel")
             return

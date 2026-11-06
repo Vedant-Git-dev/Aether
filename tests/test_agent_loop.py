@@ -1243,7 +1243,7 @@ async def test_a_failed_reply_is_redelivered_and_marked_sent() -> None:
 
 async def test_a_failed_redelivery_is_abandoned_not_retried_forever() -> None:
     class FailingConnector(FakeSurfaceConnector):
-        async def send_to_user(self, text: str) -> str:
+        async def send_to_user(self, text: str, *, reply_to: str | None = None) -> str:
             raise RuntimeError("still down")
 
     kit = LoopKit(None)

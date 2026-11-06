@@ -15,6 +15,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 
+from ..outbound import is_deliverable
 from .base import Provider
 from .types import Message, ToolCall, ToolResult, ToolSpec, Turn
 
@@ -67,7 +68,10 @@ async def run_tool_loop(
         offered = tools(active, history) if callable(tools) else list(tools)
         turn = await provider.complete(system, history, offered)
         if not turn.tool_calls:
-            if turn.text:
+            # a blank or a bare placeholder never joins the history: it is
+            # not words the model said, and putting it back in would feed
+            # the stand-in to the very next call
+            if is_deliverable(turn.text):
                 history.append(Message.assistant(turn.text))
             return turn, history
 
@@ -129,6 +133,6 @@ async def run_tool_loop(
         max_iterations,
     )
     turn = await provider.complete(system, history, tools=[])
-    if turn.text:
+    if is_deliverable(turn.text):
         history.append(Message.assistant(turn.text))
     return turn, history

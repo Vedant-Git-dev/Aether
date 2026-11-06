@@ -1298,20 +1298,25 @@ async def test_telegram_an_audio_file_flows_as_audio() -> None:
     assert received[0].attachments == (Attachment("audio", "song.mp3", "audio/mpeg", b"mp3-bytes"),)
 
 
-async def test_telegram_a_send_quotes_the_message_it_answers() -> None:
-    # every reply visually binds to the inbound it answers, so a busy chat
-    # reads in order — and a send before any inbound arrived goes out
-    # without the quote rather than failing
+async def test_telegram_a_send_quotes_only_when_a_target_is_asked_for() -> None:
+    # a prompt answer to the latest message is never a reply; a quote is
+    # used only when the loop passes an explicit target, or for the one
+    # outcome that answers a tapped card
     connector, _ = await _started_telegram()
     connector._chat_ref = "42"
-    await connector.send_to_user("before any inbound")  # no id yet — plain send
-    connector._reply_message_id = 777
-    await connector.send_to_user("answering you")
+    await connector.send_to_user("a plain answer")  # no target — plain send
+    await connector.send_to_user("about your earlier question", reply_to="777")
+    connector._reply_message_id = 888
+    connector._quote_next = True  # as a button tap arms it
+    await connector.send_to_user("the tapped card's outcome")
+    await connector.send_to_user("back to plain")
     bot = connector._app.bot
     assert "reply_parameters" not in bot.sent[0]
     quoted = bot.sent[1]["reply_parameters"]
     assert quoted.message_id == 777
     assert quoted.allow_sending_without_reply is True
+    assert bot.sent[2]["reply_parameters"].message_id == 888
+    assert "reply_parameters" not in bot.sent[3]  # the tap is consumed once
 
 
 async def test_telegram_oversize_and_failed_downloads_skip_not_die() -> None:
@@ -1701,11 +1706,11 @@ async def test_the_fanout_passes_media_only_when_present() -> None:
     recording = RecordingConnector()
     fanout = SurfaceFanout([fake, recording])
 
-    # no media: neither surface sees the kwarg at all — the untouched
-    # FakeSurfaceConnector (no attachment param) proves it
+    # no media: neither surface sees the attachment kwarg at all — the
+    # untouched FakeSurfaceConnector (no attachment param) proves it
     await fanout.send_to_user("a plain note")
     assert fake.sent == ["a plain note"]
-    assert recording.sends == [{"text": "a plain note"}]
+    assert recording.sends == [{"text": "a plain note", "reply_to": None}]
 
     # media present: the media-aware surface gets it. A surface that
     # never learned attachments (only the untouched test double — every
@@ -1714,7 +1719,11 @@ async def test_the_fanout_passes_media_only_when_present() -> None:
     # down with it
     await fanout.send_to_user("with media", attachment=_image_attachment())
     assert fake.sent == ["a plain note"]
-    assert recording.sends[-1] == {"text": "with media", "attachment": _image_attachment()}
+    assert recording.sends[-1] == {
+        "text": "with media",
+        "attachment": _image_attachment(),
+        "reply_to": None,
+    }
 
 
 async def test_the_fanout_carries_media_on_approvals_and_results_too() -> None:

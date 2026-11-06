@@ -65,6 +65,7 @@ from ..memory.deliveries import FAILED, Deliveries
 from ..memory.entities import Entities, Sender
 from ..memory.events import Event, EventStore
 from ..memory.focus import Focus
+from ..memory.inbound import MemoryInboundStates
 from ..memory.mail import MAIL_KIND, MAIL_SOURCE, render_mail_event, split_mail
 from ..memory.pipeline import QueryPipeline
 from ..memory.salience import Salience
@@ -74,6 +75,7 @@ from ..memory.timewindow import parse_quiet_hours as _parse_quiet_hours
 from ..memory.vectors import MemoryHit, VectorMemory
 from ..memory.verify import feedback, repair_reply, verify_reply
 from ..memory.views import Views, wants_attention
+from ..outbound import clean_outbound, is_deliverable
 from ..providers.runtime import ProviderRuntime
 from ..providers.types import ConnectResult, ProviderError, ProviderNotConfigured
 from ..restart import pending as restart_pending
@@ -88,6 +90,7 @@ from .config_wizard import coerce_config_value as _coerce_config_value
 from .prompts import SYSTEM_PROMPT
 from .settings import AgentSettings
 from .tools import (
+    EMPTY_REPLY,
     FAILURE_REPLY,
     TIMEOUT_REPLY,
     describe_ask,
@@ -156,6 +159,16 @@ MAX_TURN_ATTEMPTS = 5
 # queue several questions during an outage, not an unbounded pile.
 MAX_PENDING_RESUMES = 10
 
+# A message still 'received' after this long is never auto-answered: it gets
+# at most one "still want this?" check and is marked expired, so a stale
+# question cannot be answered minutes later as if it were fresh.
+PENDING_MAX_AGE_SECONDS = 600.0
+
+# An answer that took at least this long is quoted to the question that
+# prompted it, so a slow reply is never mistaken for a comment on whatever
+# arrived in between. A prompt answer to the latest message is never quoted.
+REPLY_DELAY_SECONDS = 90.0
+
 
 # the instruction behind the one reply a decision gets: a single exchange
 # with no tools, so the answer can only ever be words — the model cannot
@@ -201,6 +214,81 @@ WHY_REPLY_WORDS = frozenset({"why", "explain"})
 # hears about the state once, and once again when it recovers — never per
 # failure. A server with no configured poll has no heartbeat to watch.
 POLL_FAILURES_BEFORE_DOWN = 2
+
+# A proactive reply that matches one already sent to this chat inside this
+# window, or that mostly echoes a question already closed, is the stale-
+# replay bug — it is blocked and logged rather than delivered.
+_PROACTIVE_DUPLICATE_HOURS = 6.0
+_REPLY_WORDS = re.compile(r"[a-z0-9]+")
+_REPLY_STOPWORDS = frozenset(
+    {
+        "the",
+        "and",
+        "but",
+        "for",
+        "with",
+        "from",
+        "was",
+        "were",
+        "been",
+        "its",
+        "this",
+        "that",
+        "these",
+        "those",
+        "you",
+        "your",
+        "his",
+        "her",
+        "their",
+        "them",
+        "they",
+        "are",
+        "not",
+        "yes",
+        "did",
+        "does",
+        "have",
+        "has",
+        "had",
+        "will",
+        "would",
+        "can",
+        "could",
+        "should",
+        "about",
+        "out",
+        "just",
+        "now",
+        "here",
+        "there",
+        "what",
+        "when",
+        "which",
+        "who",
+        "how",
+        "why",
+        "all",
+        "any",
+        "some",
+        "one",
+        "two",
+        "still",
+        "answer",
+        "answered",
+        "message",
+        "messages",
+        "please",
+    }
+)
+
+
+def _significant_tokens(text: str) -> set[str]:
+    """The content words of a sentence — short words and stopwords dropped,
+    so a replay check compares meaning, not filler."""
+    words = {word for word in _REPLY_WORDS.findall((text or "").lower()) if len(word) >= 3}
+    return words - _REPLY_STOPWORDS
+
 
 # which .env names each messaging surface needs — /apps says "no token in
 # .env yet" until every one of them is there
@@ -298,6 +386,7 @@ class SurfaceFanout:
         record: bool = True,
         outcomes: dict[str, bool] | None = None,
         only: set[str] | None = None,
+        reply_to: str | None = None,
     ) -> dict[str, str]:
         """Fan out to every enabled surface, collecting where the words
         landed: {connector name: platform message id}. Those ids are what
@@ -312,12 +401,13 @@ class SurfaceFanout:
         each surface's true result so a caller can tell "landed on the web
         but nowhere else" from "landed nowhere". `only`, when given, is the
         channel a watch named — the words go to those surfaces and no
-        others. The hub has no id; a dying surface never takes the loop
-        down. Media rides to the chat connectors only — the hub and the
-        transcript stay text-only; the attachment is passed only when one
-        is present, so connectors and test doubles that never send files
-        see no new kwarg."""
-        if not text or not text.strip():
+        others. `reply_to`, when given, is the platform message id a chat
+        surface should quote — None means a plain message. The hub has no
+        id; a dying surface never takes the loop down. Media rides to the
+        chat connectors only — the hub and the transcript stay text-only;
+        the attachment is passed only when one is present, so connectors
+        and test doubles that never send files see no new kwarg."""
+        if not is_deliverable(text):
             return {}
         refs: dict[str, str] = {}
         landed: list[str] = []
@@ -341,7 +431,7 @@ class SurfaceFanout:
                 continue
             record_row = await self._record_delivery(connector.name, text) if record else None
             try:
-                ref = await connector.send_to_user(text, **media)
+                ref = await connector.send_to_user(text, reply_to=reply_to, **media)
             except Exception as exc:
                 log.exception("%s send failed — continuing", connector.name)
                 await self._mark_delivery(record_row, error=str(exc))
@@ -395,7 +485,7 @@ class SurfaceFanout:
         reach the user; the decision record keeps the exact call. A
         media-carrying ask shows the media itself, passed only when
         present."""
-        if not text or not text.strip():
+        if not is_deliverable(text):
             return
         media = {"attachment": attachment} if attachment is not None else {}
         for connector in self.connectors:
@@ -420,7 +510,7 @@ class SurfaceFanout:
         attached. The verdicts themselves are decided in the worker, which
         owns the task row — this fanout only carries them. Media rides to
         the chat connectors only, passed only when present."""
-        if not text or not text.strip():
+        if not is_deliverable(text):
             return
         media = {"attachment": attachment} if attachment is not None else {}
         if self.hub is not None:
@@ -507,6 +597,7 @@ class _Resume:
     failure: ProviderFailure
     attempts: int
     due_at: datetime
+    records: list[Any] | None = None
 
 
 # the value sentinel: "not on the line" — distinct from None, which is an
@@ -597,6 +688,7 @@ class AgentLoop:
         focus: Focus | None = None,
         conclusions: Conclusions | None = None,
         deliveries: Deliveries | None = None,
+        inbound_states: Any = None,
         query_pipeline: QueryPipeline | None = None,
         proactive_path: Any = None,
         summary_job: Any = None,
@@ -668,6 +760,14 @@ class AgentLoop:
         # the outbound-send record: a failed or empty send is a fact, not a
         # log line, and the next turn is told about it
         self._deliveries = deliveries
+        # the inbound ledger: one terminal outcome per message the user
+        # sent, so no later turn re-answers a question that already had its
+        # turn. The in-memory ledger is the default; the boot wires the
+        # sealed database one.
+        self._inbound_states = inbound_states or MemoryInboundStates()
+        # the code-only re-delivery lines for the turn ahead (never a model
+        # observation) — collected by the tick, read by the turn
+        self._delivery_lines: list[str] = []
         # the owner's own addresses, refreshed once per turn so mail renders
         # "(your other address)" without an async lookup per event line
         self._owner_addresses: set[str] = set()
@@ -804,7 +904,7 @@ class AgentLoop:
         named; empty means every surface. Returns where the words landed,
         or None when they are being held (or empty) — held words haven't
         reached a surface, so there is nothing to link yet."""
-        if not text.strip():
+        if not is_deliverable(text):
             return None
         if self._quiet_now() and urgent < self._config.agent.quiet_urgent_salience:
             self._held.append(text)
@@ -868,7 +968,7 @@ class AgentLoop:
         the task stays in the panel for its decision instead. Media
         rides only when the words go out — a held result's file is in
         the store and the panel shows the task."""
-        if not text.strip():
+        if not is_deliverable(text):
             return
         if self._quiet_now():
             self._held.append(text)
@@ -953,10 +1053,12 @@ class AgentLoop:
         attempt: int,
         trace: dict[str, Any],
         previous: ProviderFailure | None,
-    ) -> None:
+        records: list[Any] | None = None,
+    ) -> bool:
         """Say a provider failure in plain words and, when it is the kind
         that clears on its own, hand the turn back to the loop to finish
-        once the service answers again."""
+        once the service answers again. Returns True when a retry was
+        scheduled — the inbound stays open for it — else False."""
         failure = classify_provider_failure(exc)
         # the record keeps plain words, never the SDK's raw error — the
         # panel renders this line, and a person should be able to read it
@@ -972,13 +1074,13 @@ class AgentLoop:
         # an unprompted tick stays quiet: nobody asked, so a background
         # hiccup is a log line, never an interruption
         if not messages:
-            return
+            return False
         if not failure.retryable:
             await self._surfaces.send_to_user(failure.message())
-            return
+            return False
         if attempt >= MAX_TURN_ATTEMPTS:
             await self._surfaces.send_to_user(failure.exhausted)
-            return
+            return False
         # exponential backoff, capped so a long outage keeps checking in
         delay = min(failure.retry_after * (2 ** (attempt - 1)), 120.0)
         if previous is None or previous.kind != failure.kind:
@@ -995,7 +1097,9 @@ class AgentLoop:
             failure=failure,
             attempt=attempt,
             delay=delay,
+            records=records,
         )
+        return True
 
     def _schedule_resume(
         self,
@@ -1008,6 +1112,7 @@ class AgentLoop:
         failure: ProviderFailure,
         attempt: int,
         delay: float,
+        records: list[Any] | None = None,
     ) -> None:
         # a person can queue a few asks during an outage, not an unbounded
         # pile — the oldest is dropped when the cap is reached
@@ -1024,6 +1129,7 @@ class AgentLoop:
                 failure=failure,
                 attempts=attempt,
                 due_at=datetime.now(UTC) + timedelta(seconds=max(0.05, delay)),
+                records=list(records or []),
             )
         )
 
@@ -1097,6 +1203,7 @@ class AgentLoop:
         while not self._queue.empty():
             drained.append(self._queue.get_nowait())
         messages: list[InboundMessage] = []
+        records: list[Any] = []
         for message in drained:
             log.info(
                 "drained inbound: surface=%s chat=%s message=%s text_chars=%d attachments=%d",
@@ -1128,6 +1235,29 @@ class AgentLoop:
             if result.reason == "filtered:contacts":
                 log.info("inbound on %s filtered by the allowlist", message.surface)
                 continue
+            # (b1) the durable inbound ledger: an update re-delivered with
+            # the same platform message id is one row, so it can only ever
+            # produce one model turn. A duplicate stops here.
+            try:
+                record = await self._inbound_states.record(
+                    message.surface, message.chat_ref, message.message_id
+                )
+            except Exception:
+                # a ledger failure is never a reason to lose a real message:
+                # process it, just without a recorded outcome
+                log.warning("inbound ledger failed — processing without it", exc_info=True)
+                record = None
+                duplicate = False
+            else:
+                duplicate = record is None
+            if duplicate:
+                log.info(
+                    "duplicate inbound skipped: surface=%s message=%s",
+                    message.surface,
+                    message.message_id or "?",
+                )
+                continue
+            records.append(record)
             # (b2) files the user shared: described (images) or extracted
             # (documents) into memory here — past the allowlist, before the
             # observation list is built, so they reach this same tick's turn
@@ -1160,16 +1290,23 @@ class AgentLoop:
                     log.exception("transcript write failed for inbound %s", message.surface)
             messages.append(message)
 
-        # (b3) a reply that never reached the user becomes an event, so every
-        # turn type — including an unprompted tick — sees the failure; and
-        # the owner addresses are cached for mail rendering below
+        # (b3) a failed reply is a code concern: the fanout already sealed it
+        # in the delivery record, `_redeliver_failed` retries it here with no
+        # model call, and the record also becomes an event for the panel.
+        # That event is stripped from the model's observations below — a
+        # delivery hiccup must never trigger a turn or read as a new request.
         await self._record_delivery_notices()
+        self._delivery_lines = await self._redeliver_failed()
         await self._refresh_owner_addresses()
+        # a received message older than the limit is never auto-answered
+        await self._expire_stale_inbounds()
 
-        # (c) everything else ingested since last tick becomes observations
+        # (c) everything else ingested since last tick becomes observations —
+        # except delivery/diagnostic events, which the model never sees
         observations = await self._events.list_since(anchor, limit=_MAX_OBSERVATIONS)
         for event in observations:
             self._last_event_id = max(self._last_event_id, event.id)
+        observations = [event for event in observations if event.kind != "delivery_failed"]
         if messages:
             # a reply is waiting — the scoring spawns beside the turn; the
             # verdicts land moments later and the next reader (recall,
@@ -1207,7 +1344,24 @@ class AgentLoop:
             self._spawn_summary_tick()
             return
 
-        await self._turn(messages, observations)
+        # more than one question pending is answered question-by-question, so
+        # each reply can be bound to its own message; a single message is the
+        # ordinary one-turn case
+        pending_now = 0
+        try:
+            pending_now = len(await self._inbound_states.pending(limit=5))
+        except Exception:
+            pending_now = 0
+        if len(messages) > 1:
+            for index, (message, record) in enumerate(zip(messages, records, strict=True)):
+                await self._turn(
+                    [message],
+                    observations if index == 0 else [],
+                    records=[record],
+                    force_quote=pending_now > 1,
+                )
+        else:
+            await self._turn(messages, observations, records=records, force_quote=pending_now > 1)
 
         # the polls the waiting message deferred — after the reply, never
         # before it
@@ -2033,6 +2187,8 @@ class AgentLoop:
         observations: list[Event],
         *,
         resume: _Resume | None = None,
+        records: list[Any] | None = None,
+        force_quote: bool = False,
     ) -> None:
         provider = self._providers.for_role("reasoning") if self._providers else None
         if provider is None:
@@ -2043,6 +2199,12 @@ class AgentLoop:
                 )
             return
 
+        # the inbound rows this turn owes a terminal outcome
+        if resume is not None:
+            records = list(resume.records or [])
+            force_quote = True  # a resumed answer is late by definition
+        records = list(records or [])
+
         recalled: list[dict[str, Any]] = []
         pipeline_result: Any = None
         if resume is None:
@@ -2052,7 +2214,9 @@ class AgentLoop:
             recall_embed: asyncio.Task[list[float] | None] | None = None
             await self._refresh_owner_addresses()
             await self._await_enrichment()
-            delivery_lines = await self._redeliver_failed()
+            # code-only re-delivery, already done by the tick that built this
+            # turn — never a model observation
+            delivery_lines = list(self._delivery_lines)
             if messages and self._vectors is not None and self._vectors.enabled:
                 try:
                     recall_query = " ".join(
@@ -2112,7 +2276,22 @@ class AgentLoop:
             )
             if head:
                 history.append(Message.user(f"[working context]\n{head}"))
-            history.extend(await self._transcript_messages(messages))
+            if messages:
+                history.extend(await self._transcript_messages(messages))
+            else:
+                # a proactive turn reads the past as closed: the earlier
+                # messages already had their turn, and a reply that answers
+                # one of them again is the stale-answer bug
+                closed = await self._transcript_messages([])
+                if closed:
+                    history.append(
+                        Message.user(
+                            "[closed history — earlier messages, each already "
+                            "had its turn. Do not answer, restate or continue "
+                            "any of them.]"
+                        )
+                    )
+                    history.extend(closed)
             for event in reversed(observations):  # oldest first inside the block
                 history.append(Message.user(f"[new event] {self._event_line(event)}"))
             for message in messages:
@@ -2122,6 +2301,15 @@ class AgentLoop:
                     # answered when the platform hands the text over
                     line += f'\n(replying to my earlier message: "{message.reply_to_text[:200]}")'
                 history.append(Message.user(line))
+            if not messages:
+                # the explicit instruction rides last, so the history ends on
+                # a directive — never on an unanswered question
+                history.append(
+                    Message.user(
+                        "Handle only the new event above. Do not answer, "
+                        "restate or follow up on earlier messages."
+                    )
+                )
             history = _window_history(history, keep_head=1 if context_block else 0)
             calls: list[dict[str, Any]] = []  # filled by _execute as the turn runs
         else:
@@ -2252,6 +2440,7 @@ class AgentLoop:
         # what this turn answers, for the watch tools' provenance check —
         # an unprompted tick leaves it empty, so an email cannot arm a watch
         self._turn_messages = list(messages)
+        system = await self._system_prompt()
         try:
             # one turn's hard ceiling: a hung provider or a runaway tool
             # loop ends here (the wait cancels whatever was stuck) instead
@@ -2259,7 +2448,7 @@ class AgentLoop:
             final, full_history = await asyncio.wait_for(
                 run_tool_loop(
                     provider,
-                    await self._system_prompt(),
+                    system,
                     history,
                     _gate,
                     _execute_unlocking,
@@ -2268,9 +2457,23 @@ class AgentLoop:
                 ),
                 timeout=self._config.agent.turn_timeout_seconds,
             )
-            reply = final.text.strip()
+            # a blank or a placeholder stand-in is not an answer — it is
+            # treated exactly like an empty model output below
+            reply = clean_outbound(final.text)
             delivered = _delivered_by_tool(calls)
             parked = _parked_this_turn(calls)
+            reply_was_fallback = False
+            if messages and not reply and not delivered and not parked:
+                # a solicited turn that produced nothing usable is an agent
+                # error: one retry with an explicit instruction, then one
+                # short plain fallback — the person is never left with
+                # silence, and the failure is recorded on the trace
+                reply = await self._retry_empty_reply(provider, system, full_history)
+                if not reply:
+                    reply = EMPTY_REPLY
+                    reply_was_fallback = True
+                    trace["error"] = "empty model reply"
+                    log.warning("turn %s produced no deliverable reply — fallback sent", turn_ref)
             # the verifier checks every memory claim in the reply against the
             # packed chunks: one regeneration with feedback, then a
             # deterministic repair. It only runs for a reply that will
@@ -2280,6 +2483,7 @@ class AgentLoop:
             if (
                 reply
                 and messages
+                and not reply_was_fallback
                 and pipeline_result is not None
                 and pipeline_result.packed.gate in ("ok", "no_relevant_memory")
                 and not delivered
@@ -2295,18 +2499,39 @@ class AgentLoop:
                     # the user spoke first — a reply is solicited, it never
                     # waits; record where it landed so a later "why?" can
                     # find this trace
-                    refs = await self._surfaces.send_to_user(reply)
-                    if refs:
-                        trace["chat_refs"] = refs
-                else:
-                    # unprompted commentary: the interruption budget decides,
-                    # urgent = the loudest thing this turn saw (0-10 salience)
-                    refs = await self._notify(
-                        reply,
-                        urgent=max((e.salience_score for e in observations), default=0.0),
+                    outcomes: dict[str, bool] = {}
+                    reply_to = self._outbound_reply_target(messages, records, force_quote)
+                    refs = await self._surfaces.send_to_user(
+                        reply, outcomes=outcomes, reply_to=reply_to
                     )
                     if refs:
                         trace["chat_refs"] = refs
+                    # a delivered fallback for an empty model reply is still
+                    # a failed inbound: the user got a notice, not an answer,
+                    # and the question must not be re-answered later. A reply
+                    # that reached no surface is the same failure.
+                    landed = bool(refs) or any(outcomes.values())
+                    await self._settle_inbound(
+                        records,
+                        answered=landed and not reply_was_fallback,
+                        reason="empty model reply" if reply_was_fallback else "reply not delivered",
+                        refs=refs,
+                    )
+                else:
+                    # unprompted commentary: the interruption budget decides,
+                    # urgent = the loudest thing this turn saw (0-10 salience).
+                    # A reply that replays a closed question or a message
+                    # already sent is blocked before it interrupts anyone.
+                    if await self._proactive_reply_allowed(reply):
+                        refs = await self._notify(
+                            reply,
+                            urgent=max((e.salience_score for e in observations), default=0.0),
+                        )
+                        if refs:
+                            trace["chat_refs"] = refs
+                    else:
+                        trace["reply_blocked"] = True
+                        log.info("proactive reply blocked as a stale replay (turn %s)", turn_ref)
             elif reply:
                 # the turn already ended in front of the user — a sending
                 # tool delivered, or an approval card is waiting on a tap;
@@ -2321,6 +2546,9 @@ class AgentLoop:
                     delivered,
                     parked,
                 )
+                # both a tool delivery and a parked card are terminal
+                # outcomes for the inbound this turn answered
+                await self._settle_inbound(records, answered=True)
         except TimeoutError:
             # the ceiling bit: a handled outcome, not a crash — the trace
             # keeps the fact, the user gets plain words, and the tick
@@ -2333,13 +2561,14 @@ class AgentLoop:
             )
             if messages:
                 await self._surfaces.send_to_user(TIMEOUT_REPLY)
+            await self._settle_inbound(records, answered=False, reason="turn timed out")
         except LLMProviderError as exc:
             # a dead provider is a handled outcome: the user hears the
             # cause in plain words, and a retryable outage hands the turn
             # back to the loop to pick up when the service answers again
             resume_history = loop_history or history
             full_history = resume_history
-            await self._handle_provider_failure(
+            resumed = await self._handle_provider_failure(
                 exc,
                 messages=messages,
                 observations=observations,
@@ -2349,7 +2578,11 @@ class AgentLoop:
                 attempt=attempt,
                 trace=trace,
                 previous=resume.failure if resume is not None else None,
+                records=records,
             )
+            if not resumed:
+                # no retry is coming — the turn failed for good
+                await self._settle_inbound(records, answered=False, reason="provider failure")
         except Exception as exc:
             trace["error"] = f"{type(exc).__name__}: {exc}"
             if messages:
@@ -2359,6 +2592,7 @@ class AgentLoop:
                 # Unprompted ticks stay quiet: a background hiccup is a log
                 # line, never an interruption.
                 await self._surfaces.send_to_user(FAILURE_REPLY)
+            await self._settle_inbound(records, answered=False, reason="turn failed")
             raise
         finally:
             # the turn is over; a later routine or worker call must read as
@@ -2398,6 +2632,130 @@ class AgentLoop:
                     await self._record_state_conclusion(messages, reply)
             except Exception:
                 log.warning("focus/conclusion update failed — continuing", exc_info=True)
+
+    async def _retry_empty_reply(
+        self, provider: Provider, system: str, history: list[Message]
+    ) -> str:
+        """One more ask when a solicited turn's model output was nothing
+        usable. Tools are withheld, so the retry can only ever be words, not
+        a fresh proposal; a second blank returns "" for the caller's
+        fallback. The provider's own failure is not this method's business —
+        it degrades to "" so the fallback still lands."""
+        nudge = Message.user(
+            "Your previous output was blank or a placeholder. Reply now, in "
+            "one short plain sentence, to the person's last message above."
+        )
+        try:
+            turn = await provider.complete(system, [*history, nudge], [])
+        except Exception:
+            log.warning("empty-reply retry failed", exc_info=True)
+            return ""
+        return clean_outbound(turn.text)
+
+    def _outbound_reply_target(
+        self,
+        messages: list[InboundMessage],
+        records: list[Any],
+        force_quote: bool,
+    ) -> str | None:
+        """The platform message id a solicited reply should quote, or None.
+
+        Default is a plain message. A quote is warranted only when the
+        answer is about an earlier message rather than the latest one: the
+        user replied to a specific message, several questions were pending,
+        newer messages arrived while this was being prepared, or the answer
+        was delayed past REPLY_DELAY_SECONDS. A prompt answer to the latest
+        message is never a reply.
+        """
+        if not messages:
+            return None
+        message = messages[-1]
+        if not message.message_id:
+            return None
+        if message.reply_to_id:
+            return message.message_id
+        if force_quote or not self._queue.empty():
+            return message.message_id
+        created = records[0].created_at if records else None
+        if created is not None and (datetime.now(UTC) - created).total_seconds() >= (
+            REPLY_DELAY_SECONDS
+        ):
+            return message.message_id
+        return None
+
+    async def _proactive_reply_allowed(self, reply: str) -> bool:
+        """False when a proactive reply would replay a closed question or a
+        message already sent to this chat.
+
+        The transcript is the source of truth: an 'out' row that matches the
+        reply is a duplicate sent inside the window; an 'in' row the reply
+        mostly echoes is a closed question restated. With no transcript there
+        is nothing to compare, and the reply is allowed — the interruption
+        budget is the only remaining guard.
+        """
+        if self._transcript is None:
+            return True
+        target = _significant_tokens(reply)
+        if not target:
+            return False
+        try:
+            rows = await self._transcript.recent(limit=_TRANSCRIPT_MESSAGES)
+        except Exception:
+            log.warning("could not read the transcript for the replay guard", exc_info=True)
+            return True
+        cutoff = datetime.now(UTC) - timedelta(hours=_PROACTIVE_DUPLICATE_HOURS)
+        closed: list[str] = []
+        for row in rows:
+            text = str(row.get("text", "")).strip()
+            if not text:
+                continue
+            direction = row.get("direction")
+            if direction == "out":
+                when = row.get("created_at") or row.get("at")
+                if isinstance(when, datetime) and when < cutoff:
+                    continue
+                if _significant_tokens(text) == target:
+                    return False
+            elif direction == "in":
+                closed.append(text)
+        for question in closed:
+            qtokens = _significant_tokens(question)
+            if not qtokens:
+                continue
+            if len(target & qtokens) / len(target) >= 0.6:
+                return False
+        return True
+
+    async def _settle_inbound(
+        self,
+        records: list[Any],
+        *,
+        answered: bool,
+        reason: str = "",
+        refs: dict[str, str] | None = None,
+    ) -> None:
+        """Write the one terminal outcome for each inbound this turn owed.
+
+        A blank or failed reply makes the inbound failed — it is never left
+        'received' for a later tick to answer again. The outbound message id
+        (or the fact that nothing reached a surface) is what "answered"
+        records, so it is a recorded outcome, never 'the reply text was
+        non-empty'.
+        """
+        for record in records:
+            if record is None or getattr(record, "terminal", False):
+                continue
+            try:
+                if answered:
+                    await self._inbound_states.mark_answered(
+                        record.id, (refs or {}).get(record.surface, "")
+                    )
+                else:
+                    await self._inbound_states.mark_failed(record.id, reason)
+            except Exception:
+                log.warning(
+                    "could not settle inbound %s", getattr(record, "id", "?"), exc_info=True
+                )
 
     def _connected_apps(self) -> str:
         """The live MCP server list for the system prompt — the model sees
@@ -2836,6 +3194,40 @@ class AgentLoop:
                     "failed; do not claim it was delivered."
                 )
         return lines
+
+    async def _expire_stale_inbounds(self) -> None:
+        """Never answer a message that has been waiting too long.
+
+        A message still 'received' past PENDING_MAX_AGE_SECONDS is marked
+        expired and gets at most one plain "still want this?" check, so a
+        stale question is never answered minutes later as if it were fresh.
+        The rows are read from the ledger, never inferred from the
+        transcript.
+        """
+        cutoff = datetime.now(UTC) - timedelta(seconds=PENDING_MAX_AGE_SECONDS)
+        try:
+            stale = await self._inbound_states.stale_unchecked(cutoff)
+        except Exception:
+            log.warning("could not read stale inbounds", exc_info=True)
+            return
+        if not stale:
+            return
+        surfaces: set[str] = set()
+        for row in stale:
+            try:
+                await self._inbound_states.mark_checked(row.id)
+                await self._inbound_states.mark_expired(row.id)
+            except Exception:
+                log.warning("could not expire inbound %s", row.id, exc_info=True)
+                continue
+            surfaces.add(row.surface)
+        if surfaces:
+            # one check, not a drip — and enough to say it exists without
+            # guessing which surface it came from
+            await self._notify(
+                "One message you sent earlier is still unanswered — send it "
+                "again if you still want an answer."
+            )
 
     async def _record_delivery_notices(self) -> None:
         """Turn any undelivered reply into an event, once per delivery.
