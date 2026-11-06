@@ -79,22 +79,25 @@ The gain is **0.667** over the floor on this world, at exactly one classifier
 call per event, and the floor arm never loses an item its own words mark
 urgent. The rule is `memory.enrichment_min_answer_gain = 0.15`.
 
-**Decision: the default stays `false` in this commit.** The offline arm uses a
-deterministic stand-in classifier, not the model; it measures that the wiring
-turns text into structured fields and reaches the views, and it counts the
-cost. It cannot measure the real classifier's quality, and plan.md section 4
-makes the default opt-in until the evaluation proves it earns its per-event
-model cost. Flipping it is one line in `MemoryConfig` once a live run clears
-the margin; the rule and the assertion are already in place.
+**Decision: the default is `true`.** The measured gain (0.667) clears the
+configured margin (`memory.enrichment_min_answer_gain = 0.15`) at exactly one
+classifier call per event, and the floor arm never loses an item its own words
+mark urgent, so the owner asked for it to ship on. **Honest caveat:** the
+offline arm uses a deterministic stand-in classifier, not the model, so this
+number measures that the wiring turns text into structured fields and reaches
+the views, and it counts the cost — it is not a measurement of the real
+classifier's quality. A live run against your own mail is what would confirm
+that; the rule and the assertion that guard it are in place, and a regression
+fails the build.
 
 ## The routed query pipeline
 
 Phase 2 shipped the pipeline behind `memory.query_pipeline`, off by default,
 "until the golden-set evaluation blesses it". The seeded arm above is that
 evaluation: recall@5 1.000, MRR 1.000, route accuracy 1.000, abstain
-precision and recall 1.000, claim support 1.000. The default is left as it is
-in this commit — flipping it is a one-line change and a separate decision —
-but the gate it was waiting on now passes.
+precision and recall 1.000, claim support 1.000. **Decision: `true` by
+default** — the routed pipeline is now the retrieval path, and setting the
+flag `false` falls back to the older vector-only recall.
 
 ## What is not guaranteed
 

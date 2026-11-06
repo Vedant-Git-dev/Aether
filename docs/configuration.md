@@ -214,8 +214,8 @@ authz:
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `query_pipeline` | `false` | Enables the routed retrieval pipeline; off keeps the vector-only recall |
-| `enrichment` | `false` | Opt-in model classification at write time; the deterministic floor always runs. It also extracts candidate facts |
+| `query_pipeline` | `true` | The routed retrieval pipeline (route, lexical + structured + optional vector, fuse, gate, cite); `false` keeps the vector-only recall |
+| `enrichment` | `true` | Model classification at write time (urgency, deadlines, commitments, summary); the deterministic floor always runs. It also extracts candidate facts |
 | `summaries` | `false` | Opt-in model-written thread, daily and weekly summaries |
 | `summary_thread_messages` | `10` | New messages before a thread summary refreshes |
 | `core_facts_chars` | `1500` | Character budget for the always-on facts block |
@@ -235,7 +235,7 @@ authz:
 | `embedding_min_paraphrase_gain` | `0.10` | Paraphrase recall@5 the embedding path must add over lexical search to keep its place (the ablation gate) |
 | `retrieve_latency_p95_ms` | `300` | Offline retrieval budget the ablation gate enforces |
 | `eval_repeats` | `10` | Repetitions per golden case for the p50/p95 numbers |
-| `enrichment_min_answer_gain` | `0.15` | Answer-rate improvement write-time enrichment must add before its default may flip to `true` |
+| `enrichment_min_answer_gain` | `0.15` | Answer-rate improvement over the floor that justified turning enrichment on by default |
 
 Memory is inspected and controlled from the panel's **Memory & Context** page:
 the counts, the remembered items (searchable), and the stored claims and

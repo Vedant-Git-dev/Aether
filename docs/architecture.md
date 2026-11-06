@@ -135,9 +135,9 @@ state-of-now answers, and a conclusion past its TTL is never served.
 
 #### Query-time retrieval
 
-Retrieval is one pipeline, controlled by `memory.query_pipeline`. It is **off by
-default** until the golden-set evaluation blesses it. With it off, the previous
-vector-only recall still runs.
+Retrieval is one pipeline, controlled by `memory.query_pipeline`. It is **on by
+default** since the golden-set evaluation cleared it (see `docs/evaluation.md`);
+setting it `false` falls back to the previous vector-only recall.
 
 1. **Route** (`query.py`). Rules route the question first.
    - A resolved reference ("send it", "send then", "the sender", "the assignment") reads

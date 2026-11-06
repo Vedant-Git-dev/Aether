@@ -512,7 +512,9 @@ def create_app(
         # point — it needs nothing from the model — so the two are joined
         # here: addresses are linked to identities unconditionally (the
         # rendering rules depend on it and it costs no model call), and the
-        # classifier rides memory.enrichment, which is off by default.
+        # classifier rides memory.enrichment, on by default after the
+        # evaluation. Without a judge provider the enricher is None and the
+        # deterministic floor is all there is.
         commitments = Commitments(pool, cipher, audit)
         facts = Facts(pool, cipher, audit)
         watches = WatchStore(pool, cipher, audit)

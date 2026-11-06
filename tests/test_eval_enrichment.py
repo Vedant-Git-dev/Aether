@@ -188,8 +188,9 @@ async def test_enrichment_on_reads_deadlines_and_promises_the_floor_cannot(db) -
     assert gain > 0
 
 
-def test_the_default_is_the_decision_not_the_arm() -> None:
-    # the offline arm uses a stand-in classifier, so it can never justify
-    # flipping the default on its own; this pins that the default remains
-    # the deliberate opt-in until a live run clears the configured margin
-    assert MemoryConfig().enrichment is False
+def test_enrichment_is_on_by_default_after_the_evaluation() -> None:
+    # the arm above clears the configured margin at one classifier call per
+    # event, so the default ships on; the honest caveat (a stand-in
+    # classifier, not the model) is in docs/evaluation.md
+    assert MemoryConfig().enrichment is True
+    assert MemoryConfig().enrichment_min_answer_gain == 0.15

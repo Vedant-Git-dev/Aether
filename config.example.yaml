@@ -126,16 +126,16 @@ authz:
 
 # Write-time enrichment turns each event into an urgency, a deadline, entity
 # links, commitments and a one-line summary, so "anything urgent?" and "what's
-# due?" are lookups rather than searches. Off by default until evaluation
-# proves the model cost is worth it; entity linking and the delivery rules do
-# not ride this flag (they need no model call).
+# due?" are lookups rather than searches. On by default after the evaluation;
+# set it false to keep only the deterministic urgent-word floor. Entity linking
+# and the delivery rules do not ride this flag (they need no model call).
 memory:
-  enrichment: false
+  enrichment: true
   # the routed query pipeline: route the question, search lexically and
   # structurally, fuse and cite, with an explicit "no relevant memory"
-  # abstain. Off keeps the older vector-only recall; the offline golden set
-  # in tests/ gates it either way.
-  query_pipeline: false
+  # abstain. On by default after the evaluation; false keeps the older
+  # vector-only recall.
+  query_pipeline: true
   # model-written thread/daily/weekly summaries; a per-window model cost,
   # off until it earns it
   summaries: false

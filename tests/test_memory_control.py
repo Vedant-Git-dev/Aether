@@ -313,7 +313,7 @@ async def test_the_overview_counts_what_is_actually_there(db) -> None:
     assert overview["active_facts"] == 0
     assert overview["open_commitments"] == 0
     assert overview["semantic_search"]["on"] is True
-    assert overview["flags"]["enrichment"] is False
+    assert overview["flags"]["enrichment"] is True
 
 
 async def test_items_read_as_sentences_and_search_finds_them(db) -> None:
