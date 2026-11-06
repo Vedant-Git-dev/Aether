@@ -48,6 +48,12 @@ class Commitment:
     source_event_id: int | None
     created_at: datetime
     urgency: int = 0
+    # the artifacts the commitment is tied to — the thread it lives in, the
+    # document it names, the stored file it points at — so "the assignment"
+    # can resolve to one concrete thing instead of a search
+    thread_id: str = ""
+    document: str = ""
+    media_id: int | None = None
 
 
 def _aad(commitment_id: int) -> str:
@@ -72,6 +78,9 @@ class Commitments:
         counterparty_identity_id: int | None = None,
         source_event_id: int | None = None,
         urgency: int = 0,
+        thread_id: str = "",
+        document: str = "",
+        media_id: int | None = None,
         actor: str = "system",
     ) -> Commitment | None:
         """One commitment, sealed. An empty text is a bug upstream, not a
@@ -102,6 +111,11 @@ class Commitments:
                         "due_at": due_at.astimezone(UTC).isoformat() if due_at else None,
                         "due_phrase": due_phrase,
                         "urgency": urgency,
+                        # links through entity (counterparty), thread and
+                        # document name; every value is sealed here
+                        "thread_id": str(thread_id or "")[:200],
+                        "document": str(document or "")[:300],
+                        "media_id": int(media_id) if media_id else None,
                     },
                     aad=_aad(commitment_id),
                 ),
@@ -124,6 +138,9 @@ class Commitments:
             source_event_id=source_event_id,
             created_at=row["created_at"],
             urgency=urgency,
+            thread_id=str(thread_id or ""),
+            document=str(document or ""),
+            media_id=int(media_id) if media_id else None,
         )
 
     async def add_many(
@@ -133,6 +150,9 @@ class Commitments:
         source_event_id: int | None = None,
         counterparty_identity_id: int | None = None,
         urgency: int = 0,
+        thread_id: str = "",
+        document: str = "",
+        media_id: int | None = None,
         actor: str = "system",
     ) -> list[Commitment]:
         """Every commitment one event yielded. One bad item never costs the
@@ -148,6 +168,9 @@ class Commitments:
                     counterparty_identity_id=counterparty_identity_id,
                     source_event_id=source_event_id,
                     urgency=int(item.get("urgency") or urgency),
+                    thread_id=thread_id,
+                    document=document,
+                    media_id=media_id,
                     actor=actor,
                 )
             except Exception:
@@ -227,6 +250,9 @@ class Commitments:
             source_event_id=row["source_event_id"],
             created_at=row["created_at"],
             urgency=urgency,
+            thread_id=str(body.get("thread_id") or ""),
+            document=str(body.get("document") or ""),
+            media_id=_optional_int(body.get("media_id")),
         )
 
 
@@ -237,3 +263,10 @@ def _optional_time(value: Any) -> datetime | None:
         except ValueError:
             return None
     return None
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None

@@ -611,6 +611,35 @@ async def _retoken_media(conn: asyncpg.Connection, cipher: Cipher, row: asyncpg.
     return True
 
 
+async def _retoken_fact(conn: asyncpg.Connection, cipher: Cipher, row: asyncpg.Record) -> bool:
+    try:
+        body = cipher.decrypt_json(row["body_enc"], aad=f"facts:body_enc:{row['id']}")
+    except CryptoError:
+        return False
+    subject = " ".join(str(body.get("subject") or "").split()).lower()
+    key = str(body.get("key") or "")
+    if not key:
+        return False
+    token = cipher.blind_token(
+        "fact_key", f"{row['subject_identity_id'] or 0}\x1f{subject}\x1f{key}"
+    )
+    await conn.execute("UPDATE facts SET key_token = $1 WHERE id = $2", token, row["id"])
+    return True
+
+
+async def _retoken_summary(conn: asyncpg.Connection, cipher: Cipher, row: asyncpg.Record) -> bool:
+    try:
+        body = cipher.decrypt_json(row["body_enc"], aad=f"summaries:body_enc:{row['id']}")
+    except CryptoError:
+        return False
+    period = str(body.get("period") or "")
+    if not period:
+        return False
+    token = cipher.blind_token("summary_period", f"{row['kind']}\x1f{period}")
+    await conn.execute("UPDATE summaries SET period_token = $1 WHERE id = $2", token, row["id"])
+    return True
+
+
 RETOKENIZE_JOBS: tuple[RetokenizeJob, ...] = (
     RetokenizeJob("workspace_files", "id, name_enc", _retoken_workspace),
     RetokenizeJob("events", "id, payload_enc, meta_enc", _retoken_event),
@@ -619,6 +648,8 @@ RETOKENIZE_JOBS: tuple[RetokenizeJob, ...] = (
     RetokenizeJob("memory_chunks", "id, meta_enc", _retoken_chunk),
     RetokenizeJob("proactive_tasks", "id, meta_enc", _retoken_proactive),
     RetokenizeJob("media_blobs", "id, bytes_enc, meta_enc", _retoken_media),
+    RetokenizeJob("facts", "id, subject_identity_id, body_enc", _retoken_fact),
+    RetokenizeJob("summaries", "id, kind, body_enc", _retoken_summary),
 )
 
 RETOKENIZE_BY_TABLE = {job.table: job for job in RETOKENIZE_JOBS}

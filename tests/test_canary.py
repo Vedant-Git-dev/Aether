@@ -26,7 +26,9 @@ from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.deliveries import Deliveries
 from aether.memory.entities import Entities, Sender
 from aether.memory.events import EventStore
+from aether.memory.facts import Facts
 from aether.memory.focus import Focus
+from aether.memory.summaries import Summaries
 from aether.memory.watches import WatchSpec, WatchStore
 from aether.proactive.store import ProactiveStore
 from aether.providers.crypto import TokenKeyring
@@ -131,6 +133,16 @@ async def test_no_canary_leaks_into_any_column(db, caplog) -> None:
             due_phrase=f"by {canary}",
             urgency=2,
         )
+        facts = Facts(db, cipher, audit)
+        await facts.consolidate(
+            subject_identity_id=None,
+            subject=f"subject {canary}",
+            key=f"key {canary}",
+            value=f"value {canary}",
+            provenance=[event.event_id],
+        )
+        summaries = Summaries(db, cipher)
+        await summaries.upsert("daily", f"period {canary}", f"summary {canary}", [event.event_id])
         watches = WatchStore(db, cipher, audit)
         await watches.create(
             spec=WatchSpec(

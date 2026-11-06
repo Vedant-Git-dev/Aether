@@ -131,6 +131,13 @@ authz:
 # not ride this flag (they need no model call).
 memory:
   enrichment: false
+  # model-written thread/daily/weekly summaries; a per-window model cost,
+  # off until it earns it
+  summaries: false
+  # a thread summary refreshes after this many new messages
+  summary_thread_messages: 10
+  # the always-on facts block: standing rules and query-relevant claims
+  core_facts_chars: 1500
   # how long an answer about live state ("nothing urgent", "inbox clear")
   # stays usable — an older answer is re-queried rather than reused
   conclusion_ttl_seconds: 120

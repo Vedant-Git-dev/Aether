@@ -271,6 +271,33 @@ async def test_a_successful_classification_fills_every_field() -> None:
     ]
 
 
+async def test_the_classifier_reads_candidate_facts() -> None:
+    enricher, _ = _enricher(
+        {
+            "facts": [
+                {
+                    "subject": "user",
+                    "key": "timezone",
+                    "value": "Asia/Kolkata",
+                    "type": "preference",
+                },
+                {"subject": "Rahul", "key": "birthday", "value": "3 November"},
+                {"subject": "", "key": "x", "value": "y"},  # no subject: dropped
+                {"subject": "user", "key": "", "value": "y"},  # no key: dropped
+                {"subject": "user", "key": "x", "value": ""},  # no value: dropped
+                "not a dict",
+            ]
+        }
+    )
+
+    result = await enricher.enrich("anything", occurred_at=EVENT_AT)
+
+    assert [fact.key for fact in result.facts] == ["timezone", "birthday"]
+    assert result.facts[0].type == "preference"
+    # an unknown type falls back to a plain fact rather than being stored
+    assert result.facts[1].type == "fact"
+
+
 async def test_a_failed_classifier_keeps_the_floor() -> None:
     enricher, _ = _enricher(RuntimeError("provider down"))
 

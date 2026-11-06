@@ -215,7 +215,10 @@ authz:
 | Key | Default | Notes |
 | --- | --- | --- |
 | `query_pipeline` | `false` | Enables the routed retrieval pipeline; off keeps the vector-only recall |
-| `enrichment` | `false` | Opt-in model classification at write time; the deterministic floor always runs |
+| `enrichment` | `false` | Opt-in model classification at write time; the deterministic floor always runs. It also extracts candidate facts |
+| `summaries` | `false` | Opt-in model-written thread, daily and weekly summaries |
+| `summary_thread_messages` | `10` | New messages before a thread summary refreshes |
+| `core_facts_chars` | `1500` | Character budget for the always-on facts block |
 | `hot_events` | `2000` | Resident event index size; lower it on a small host |
 | `hot_chunks` | `8000` | Resident BM25 chunk budget: about 190 MB at 8,000 chunks (measured), scaling linearly; lower it on a small host |
 | `cold_batch` | `500` | Rows per bounded cold scan |

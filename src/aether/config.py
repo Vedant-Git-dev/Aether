@@ -198,6 +198,14 @@ class MemoryConfig(BaseModel):
     pack_token_budget: int = 2_500
     max_chunks_per_event: int = 3
     max_packed_lines: int = 8
+    # the always-on facts block: standing rules and query-relevant claims,
+    # capped in characters because facts are curated and few
+    core_facts_chars: int = 1_500
+    # model-written thread/daily/weekly summaries. Off by default: it is a
+    # new per-window model cost, like enrichment.
+    summaries: bool = False
+    # a thread summary refreshes once this many new messages have landed
+    summary_thread_messages: int = 10
     # memory_search stays a model tool; each turn may call it this many times
     max_search_rounds: int = 3
     default_timezone: str = "Asia/Kolkata"

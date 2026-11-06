@@ -28,8 +28,9 @@ from aether.memory.commitments import Commitments
 from aether.memory.context import ContextBuilder, alias_question_text
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.enrich import Enricher, Enrichment, enrichment_text
-from aether.memory.entities import Entities
+from aether.memory.entities import Entities, Sender
 from aether.memory.events import EventStore
+from aether.memory.facts import Facts
 from aether.memory.indexes import MemoryIndex
 from aether.memory.mail import MAIL_KIND, MAIL_SOURCE
 from aether.memory.vectors import VectorMemory
@@ -471,3 +472,85 @@ async def test_a_salience_write_and_an_enrichment_write_both_survive(db) -> None
     assert stored.meta["category"] == "work"  # the salience field
     assert stored.summary == "the invoice"  # and the enrichment field
     assert stored.urgency == 2
+
+
+# ---------------------------------------------------------------------------
+# facts at ingest
+# ---------------------------------------------------------------------------
+
+
+async def _wire_facts(db, reading: object):
+    cipher = Cipher.from_b64(generate_key_b64())
+    audit = AuditLog(db)
+    entities = Entities(db, cipher, audit, FakePersonJudge([]))
+    facts = Facts(db, cipher, audit)
+    events = EventStore(db, cipher, audit, ContactsConfig())
+    events.attach_enrichment(
+        entities=entities,
+        facts=facts,
+        enricher=Enricher(ScriptedClassifier(reading)),
+        enrichment=True,
+    )
+    return events, facts
+
+
+@pytest.mark.integration
+async def test_an_owned_fact_is_consolidated_at_ingest(db) -> None:
+    events, facts = await _wire_facts(
+        db,
+        {
+            "facts": [
+                {
+                    "subject": "user",
+                    "key": "timezone",
+                    "value": "Asia/Kolkata",
+                    "type": "preference",
+                }
+            ]
+        },
+    )
+
+    await events.ingest(
+        source="web",
+        kind="chat_message",
+        payload={"text": "my timezone is IST", "chat_ref": "c1"},
+        sender=Sender("web", "owner"),
+    )
+    await events.wait_idle()
+
+    active = await facts.active()
+    assert [(fact.subject, fact.key, fact.value) for fact in active] == [
+        ("user", "timezone", "Asia/Kolkata")
+    ]
+
+
+@pytest.mark.integration
+async def test_a_reserved_fact_from_mail_is_disputed_at_ingest(db) -> None:
+    events, facts = await _wire_facts(
+        db,
+        {
+            "facts": [
+                {
+                    "subject": "user",
+                    "key": "email_address",
+                    "value": "attacker@example.com",
+                    "type": "contact",
+                }
+            ]
+        },
+    )
+
+    await events.ingest(
+        source=MAIL_SOURCE,
+        kind=MAIL_KIND,
+        payload=_mail(sender="Rahul Sharma <rahul@example.com>"),
+        sender=Sender("gmail", "rahul@example.com"),
+        occurred_at=NOW,
+    )
+    await events.wait_idle()
+
+    # an untrusted mail cannot establish a contact; it is held and asked once
+    assert await facts.active() == []
+    pending = await facts.pending_questions()
+    assert len(pending) == 1
+    assert pending[0].value == "attacker@example.com"

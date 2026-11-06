@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from aether.memory.facts import Fact
 from aether.memory.indexes import IndexedEvent, MemoryIndex
 from aether.memory.views import Views, wants_attention
 
@@ -196,3 +197,70 @@ async def test_entity_timeline_respects_since() -> None:
     found = [event.id for event in await views.entity_timeline(7, since=NOW - timedelta(hours=1))]
 
     assert found == [2]
+
+
+# ---------------------------------------------------------------------------
+# the core facts block
+# ---------------------------------------------------------------------------
+
+
+class FakeFacts:
+    def __init__(self, facts: list[Fact]) -> None:
+        self._facts = facts
+
+    async def active(self, now=None, limit=None) -> list[Fact]:
+        return list(self._facts)
+
+
+def _fact(key: str, value: str, *, type: str = "fact", subject: str = "user") -> Fact:
+    return Fact(
+        id=len(key) + len(value),
+        subject_identity_id=None,
+        subject=subject,
+        key=key,
+        value=value,
+        type=type,
+        status="active",
+        valid_from=NOW - timedelta(days=1),
+        valid_until=None,
+        provenance=(1,),
+        confidence=1.0,
+        trusted=True,
+        created_at=NOW,
+    )
+
+
+async def test_core_facts_keeps_rules_and_query_relevant_claims() -> None:
+    views = Views(
+        MemoryIndex(),
+        facts=FakeFacts(
+            [
+                _fact("timezone", "Asia/Kolkata", type="preference"),
+                _fact("invoice_due", "Friday"),
+                _fact("tone", "plain and concise", type="rule"),
+            ]
+        ),
+    )
+
+    items = await views.core_fact_items("what is my timezone?")
+    keys = [fact.key for fact in items]
+
+    assert keys[0] == "tone"  # a standing rule always leads
+    assert "timezone" in keys
+
+
+async def test_core_facts_respects_the_character_budget() -> None:
+    views = Views(
+        MemoryIndex(),
+        facts=FakeFacts(
+            [
+                _fact("a", "x" * 120),
+                _fact("b", "y" * 120),
+            ]
+        ),
+        core_facts_chars=200,
+    )
+
+    items = await views.core_fact_items("anything", limit_chars=200)
+
+    assert len(items) == 1

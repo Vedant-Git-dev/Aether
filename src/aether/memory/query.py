@@ -345,7 +345,6 @@ def classify(
 
     if _FACT_RE.search(text):
         routes.append("fact")
-        notes.append("facts layer is not built yet — falling back to open recall")
 
     if not routes:
         routes.append("open_recall")

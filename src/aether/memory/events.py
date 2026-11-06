@@ -32,8 +32,9 @@ from ..authz.audit import AuditLog
 from ..config import ContactsConfig
 from .commitments import Commitments
 from .crypto import Cipher
-from .enrich import Enricher, enrichment_text, heuristic_floor
+from .enrich import Enricher, ExtractedFact, enrichment_text, heuristic_floor
 from .entities import Entities, Sender, normalize_handle
+from .facts import Facts
 from .indexes import IndexedEvent, MemoryIndex, decode_event_row, decode_extra
 from .mail import MAIL_KIND, parse_addresses
 
@@ -147,6 +148,7 @@ class EventStore:
         entities: Entities | None = None,
         commitments: Commitments | None = None,
         enricher: Enricher | None = None,
+        facts: Facts | None = None,
         enrichment: bool = False,
     ) -> None:
         self._pool = pool
@@ -159,6 +161,7 @@ class EventStore:
         self._entities = entities
         self._commitments = commitments
         self._enricher = enricher
+        self._facts = facts
         self._enrichment = enrichment
         # the proactive path (watches + reminders) joins here after the
         # agent exists, because an alert is delivered through the loop
@@ -194,6 +197,7 @@ class EventStore:
         entities: Entities | None = None,
         commitments: Commitments | None = None,
         enricher: Enricher | None = None,
+        facts: Facts | None = None,
         enrichment: bool = False,
     ) -> None:
         """Join the write-time enrichment pieces to the store.
@@ -207,6 +211,7 @@ class EventStore:
         self._entities = entities
         self._commitments = commitments
         self._enricher = enricher
+        self._facts = facts
         self._enrichment = enrichment
 
     # -- ingestion ----------------------------------------------------------
@@ -360,11 +365,19 @@ class EventStore:
         self, event_id: int, kind: str, payload: dict[str, Any], occurred_at: datetime
     ) -> None:
         extra: dict[str, Any] = {}
+        trusted = True
         if self._entities is not None:
             try:
                 extra.update(await self._link_addresses(event_id, kind, payload))
             except Exception:
                 log.warning("entity linking failed for event %s", event_id, exc_info=True)
+        if self._entities is not None and kind == MAIL_KIND:
+            # a mail from someone other than the owner is untrusted content:
+            # it can inform recall, but it cannot establish a reserved fact
+            try:
+                trusted = await self._mail_is_trusted(payload)
+            except Exception:
+                trusted = False
         if self._enricher is not None and self._enrichment:
             try:
                 result = await self._enricher.enrich(
@@ -388,7 +401,12 @@ class EventStore:
                         source_event_id=event_id,
                         counterparty_identity_id=_first(extra.get("entities")),
                         urgency=result.urgency,
+                        thread_id=str(payload.get("thread_id") or ""),
+                        document=_document_name(payload),
+                        media_id=_int_or_none(payload.get("media_id")),
                     )
+                if self._facts is not None and result.facts:
+                    await self._consolidate_facts(result.facts, event_id, trusted)
                 if result.noise and self._indexer is not None:
                     # a noise event keeps its one-line summary instead of a
                     # chunk per paragraph, so it stops winning retrieval
@@ -441,6 +459,61 @@ class EventStore:
         if not seen:
             return {}
         return {"entities": seen}
+
+    async def _mail_is_trusted(self, payload: dict[str, Any]) -> bool:
+        """True when the mail came from one of the owner's own addresses.
+
+        A mail from anyone else is untrusted content: it may be recalled,
+        but it cannot establish a reserved fact (identity, contacts,
+        policy, watches) on its own.
+        """
+        assert self._entities is not None
+        addresses = parse_addresses(payload.get("sender"))
+        if not addresses:
+            return True
+        for address in addresses:
+            if await self._entities.is_owner_address("email", address.address):
+                return True
+        return False
+
+    async def _consolidate_facts(
+        self, candidates: list[ExtractedFact], event_id: int, trusted: bool
+    ) -> None:
+        """Fold the classifier's candidate claims into the facts layer.
+
+        One bad candidate never costs the others, and the event id is the
+        mandatory provenance. The subject resolves to the owner's identity
+        when the claim is about the user, and otherwise stays a label in the
+        fact's own sealed body.
+        """
+        assert self._facts is not None
+        for candidate in candidates:
+            try:
+                subject_id = await self._fact_subject_identity(candidate.subject)
+                await self._facts.consolidate(
+                    subject_identity_id=subject_id,
+                    subject=candidate.subject,
+                    key=candidate.key,
+                    value=candidate.value,
+                    type=candidate.type,
+                    provenance=[event_id],
+                    trusted=trusted,
+                )
+            except Exception:
+                log.warning("could not consolidate a fact from event %s", event_id)
+
+    async def _fact_subject_identity(self, subject: str) -> int | None:
+        """The owner's identity when the claim is about the user, else None."""
+        if self._entities is None:
+            return None
+        label = " ".join((subject or "").split()).lower()
+        if label not in {"user", "me", "i", "owner", "myself"}:
+            return None
+        try:
+            owner = await self._entities.owner_entity()
+        except Exception:
+            return None
+        return owner.id if owner is not None else None
 
     async def merge_meta(
         self,
@@ -639,3 +712,19 @@ def _first(values: Any) -> int | None:
         first = values[0]
         return int(first) if isinstance(first, int) else None
     return None
+
+
+def _document_name(payload: dict[str, Any]) -> str:
+    """The document a commitment can be linked to, when the event names one."""
+    for key in ("filename", "document", "doc"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
