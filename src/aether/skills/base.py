@@ -60,7 +60,7 @@ def held_approval(reply: str) -> int | None:
 class ProfileSource(Protocol):
     """The workspace slice the skills read — the confirmed profile."""
 
-    def profile(self) -> list[Any]: ...
+    async def profile(self) -> list[Any]: ...
 
 
 class EventReader(Protocol):
