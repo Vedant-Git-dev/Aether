@@ -386,6 +386,30 @@ class FakeEventStore:
             # stored media, as the real ingest writes it: the sniffed
             # media_id beside the filename, sender under _sender
             Event(
+                id=8,
+                source="mail",
+                kind="mail",
+                occurred_at=now - timedelta(minutes=8),
+                # the real stored mail shape: Gmail's opaque ids, its label
+                # tokens and the unread flag beside a snippet AND the body
+                payload={
+                    "from": "Rahul Sharma <rahul@example.com>",
+                    "subject": "Q3 planning doc",
+                    "message_id": "18c2e6fe0b2f1a34",
+                    "thread_id": "19c2e6fe0b2f1a34",
+                    "label_ids": ["UNREAD", "CATEGORY_UPDATES", "INBOX"],
+                    "unread": True,
+                    "snippet": "The Q3 planning doc is ready for your review",
+                    "text": (
+                        "The Q3 planning doc is ready for your review. "
+                        "Please add comments by Friday."
+                    ),
+                },
+                salience_score=6.0,
+                memorable=True,
+                meta={},
+            ),
+            Event(
                 id=7,
                 source="telegram",
                 kind="shared_image",
@@ -691,7 +715,11 @@ class FakeTraces:
                 payload={
                     "approval_id": 1,
                     "tool": "mail__send_message",
-                    "params": {"to": "sam@example.com", "subject": "Re: Thursday"},
+                    "params": {
+                        "to": "sam@example.com",
+                        "subject": "Re: Thursday",
+                        "thread_id": "19c2e6fe0b2f1a34",
+                    },
                     "decided_by": "user",
                     "result": "sent",
                     "is_error": False,
@@ -815,6 +843,7 @@ class FakeTraces:
                         # models narrate raw tool names and paste raw JSON into
                         # their reasoning — the panel transcribes both
                         'I will run composio__GMAIL_SEND_EMAIL once approved — last check returned {"successful": true, "data": {"id": "msg-9"}}.',
+                        'The whole batch came back as [{"id": "msg-8", "subject": "hi"}].',
                     ],
                     "reply": "I've drafted the reply to Sam — approve it and it goes out.",
                 },

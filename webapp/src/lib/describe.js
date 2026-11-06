@@ -257,9 +257,44 @@ export function friendlyValue(value) {
 
 export function paramRows(params) {
   return Object.entries(params || {})
-    .filter(([k, v]) => !k.startsWith("_") && friendlyValue(v))
-    .map(([k, v]) => [PARAM_LABELS[k.toLowerCase()] || k.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase()), friendlyValue(v)]);
+    .filter(([k, v]) => !k.startsWith("_") && !DROP_KEYS.has(k.toLowerCase()))
+    .map(([k, v]) => {
+      if (isIdKey(k)) return [fieldLabel(k), hasContent(v) ? ID_REFERRAL : ""];
+      if (LABEL_KEYS.has(k.toLowerCase())) return ["Labels", renderLabels(v)];
+      return [PARAM_LABELS[k.toLowerCase()] || fieldLabel(k), friendlyValue(v)];
+    })
+    .filter(([, value]) => value !== "");
 }
+
+// Gmail's own label tokens, read as words. The noise labels are dropped —
+// INBOX says nothing a person wants, and CATEGORY_* collapses to the plain
+// word for the bucket.
+const LABEL_WORDS = {
+  unread: "Unread", important: "Important", starred: "Starred", sent: "Sent",
+  draft: "Draft", trash: "Trash", spam: "Spam", inbox: "",
+  category_personal: "Personal", category_social: "Social",
+  category_promotions: "Promotions", category_updates: "Updates",
+  category_forums: "Forums",
+};
+
+function labelWord(token) {
+  const key = String(token).toLowerCase();
+  if (key in LABEL_WORDS) return LABEL_WORDS[key];
+  if (key.startsWith("category_")) return "Updates";
+  if (key.startsWith("label_")) return humanize(key.slice(6));
+  return humanize(key);
+}
+
+export function renderLabels(value) {
+  const list = Array.isArray(value) ? value : String(value || "").split(/[,\s]+/);
+  const words = list.map(labelWord).filter(Boolean);
+  return [...new Set(words)].join(", ");
+}
+
+// keys that carry nothing a person reads — an "unread" flag is already said
+// through the "Unread" label above it
+const DROP_KEYS = new Set(["unread", "is_unread", "raw", "internal"]);
+const LABEL_KEYS = new Set(["label_ids", "labels", "labelids"]);
 
 export function quote(text, max = 200) {
   const clean = String(text).replace(/\s+/g, " ").trim();
@@ -272,17 +307,25 @@ function collapseJson(text) {
   const s = String(text);
   let out = "";
   let i = 0;
+  const isJsonArray = (at) => {
+    let j = at + 1;
+    while (j < s.length && /\s/.test(s[j])) j++;
+    return s[j] === "{" || s[j] === '"' || s[j] === "[";
+  };
   while (i < s.length) {
-    if (s[i] === "{") {
+    const ch = s[i];
+    if (ch === "{" || (ch === "[" && isJsonArray(i))) {
+      const open = ch;
+      const close = ch === "{" ? "}" : "]";
       let depth = 0;
       let j = i;
       for (; j < s.length; j++) {
-        if (s[j] === "{") depth++;
-        else if (s[j] === "}") { depth--; if (depth === 0) break; }
+        if (s[j] === open) depth++;
+        else if (s[j] === close) { depth--; if (depth === 0) break; }
       }
       if (depth === 0) { out += "…"; i = j + 1; continue; }
     }
-    out += s[i];
+    out += ch;
     i++;
   }
   return out;
@@ -402,9 +445,31 @@ export function describeEvent(e) {
     const title = app === "Email" || app === "Calendar" ? `Checked your ${app.toLowerCase()}` : `Checked ${app} for new ${noun}`;
     return { title, detail };
   }
+  if (e.kind === "mail" || e.kind === "email") return describeMail(e, p);
   const words = e.kind.replace(/[_:]+/g, " ").trim();
-  const fields = paramRows(p).map(([k, v]) => `${k}: ${v}`).join(" · ");
+  const fields = paramRows(p).map(([k, v]) => `${k} ${v}`).join(" · ");
   return { title: `${words[0].toUpperCase()}${words.slice(1)} on ${app}`, detail: fields };
+}
+
+// One mail as a person reads it: sender, subject, the date in their own
+// timezone, and a single clean preview. The Gmail ids, label tokens and the
+// duplicate snippet/message pair never reach the screen.
+function describeMail(e, p) {
+  const rawFrom = p.from || p.from_name || p.sender || p.address || "";
+  const named = /^\s*(.*?)\s*<[^>]+>\s*$/.exec(String(rawFrom));
+  const fromName = named ? named[1] : String(rawFrom);
+  const who = fromName && fromName.includes("@") ? personName(e.source, fromName) : fromName;
+  const subject = p.subject || p.title || "";
+  const rawTime = e.at || e.occurred_at || p.date || p.occurred_at || "";
+  const parsed = rawTime ? new Date(rawTime) : null;
+  const when = parsed && !Number.isNaN(parsed.getTime())
+    ? parsed.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
+    : "";
+  // one preview: the snippet, else the body — never both
+  const preview = p.snippet || p.preview || p.text || p.body || "";
+  const title = `Email · ${subject || "no subject"}${who ? ` from ${who}` : ""}`;
+  const detail = [when, preview ? quote(plainText(preview), 200) : ""].filter(Boolean).join(" — ");
+  return { title, detail };
 }
 
 // A trace observation carries the backend's raw log line —

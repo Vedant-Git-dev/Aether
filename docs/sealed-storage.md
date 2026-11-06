@@ -166,6 +166,11 @@ content.
 - `deliveries` — one row per outbound send attempt. Status is plaintext;
   the body, platform message id and error are sealed. Errors are hashed
   before they reach a log line.
+- `inbound_messages` — one terminal outcome per message the user sent.
+  The surface and status word are plaintext; the chat, message and
+  idempotency keys are blind tokens; the failure reason and the outbound
+  message id are sealed. It is what stops an old question being answered
+  again on a later unprompted tick.
 
 ## Logs and canaries
 

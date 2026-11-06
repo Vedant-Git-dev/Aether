@@ -43,6 +43,7 @@ export default function TraceDetail({ t }) {
     <div>
       {t.kind === "turn" && p.trigger && (
         <>
+          <div className="surface-head">Inputs</div>
           {(p.trigger.messages || []).map((m, i) => (
             <div data-testid="trace-line" key={`m${i}`} className="text-sm text-ink-2">
               <span className="text-ink-3">{appLabel(m.surface) || "chat"} · </span>
@@ -102,11 +103,12 @@ export default function TraceDetail({ t }) {
         </>
       )}
 
+      {(p.calls || []).length > 0 && <div className="surface-head mt-5">Tool calls</div>}
       {(p.calls || []).map((c, i) => <CallRow key={i} c={c} />)}
 
       {Array.isArray(p.reasoning) && p.reasoning.length > 0 && (
         <>
-          <div className="surface-head mt-5">What it thought</div>
+          <div className="surface-head mt-5">Reasoning</div>
           {/* the loop can repeat a line across steps — collapse consecutive dupes */}
           {p.reasoning.filter((r, i) => i === 0 || r !== p.reasoning[i - 1]).map((r, i) => (
             <div key={i} className="mt-1 text-xs text-ink-2">{plainText(r)}</div>
@@ -114,11 +116,11 @@ export default function TraceDetail({ t }) {
         </>
       )}
 
+      {(p.reply || (p.result !== undefined && t.kind !== "turn")) && (
+        <div className="surface-head mt-4">Answer</div>
+      )}
       {p.reply && (
-        <>
-          <div className="surface-head mt-4">What it answered</div>
-          <div className="mt-1 text-sm text-ink-2">{plainText(p.reply)}</div>
-        </>
+        <div className="mt-1 text-sm text-ink-2">{plainText(p.reply)}</div>
       )}
 
       {p.result !== undefined && t.kind !== "turn" && (

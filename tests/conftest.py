@@ -27,7 +27,7 @@ _TABLES = (
     "processed_updates, provider_connections, provider_oauth_states, "
     "provider_sync_state, facts, commitments, commitment_reminders, watches, summaries, "
     "focus, forgotten_events, "
-    "conclusions, deliveries, workspace_files"
+    "conclusions, deliveries, workspace_files, inbound_messages"
 )
 
 

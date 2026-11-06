@@ -33,7 +33,7 @@ class MediaSurface:
         self.name = "media"
         self.sent: list[tuple[str, object | None]] = []
 
-    async def send_to_user(self, text: str, *, attachment=None) -> str:
+    async def send_to_user(self, text: str, *, attachment=None, reply_to: str | None = None) -> str:
         self.sent.append((text, attachment))
         return "m1"
 

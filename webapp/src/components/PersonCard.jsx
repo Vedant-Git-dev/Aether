@@ -31,7 +31,7 @@ export default function PersonCard({ person }) {
                 {note.note}
               </>
             ) : (
-              paramRows(note).map(([k, v]) => `${k}: ${v}`).join(" · ")
+              paramRows(note).map(([k, v]) => `${k} ${v}`).join(" · ")
             )}
           </div>
         </div>

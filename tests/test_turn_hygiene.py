@@ -92,7 +92,7 @@ class TypingSurface:
     async def show_typing(self) -> None:
         self.typing += 1
 
-    async def send_to_user(self, text: str) -> str:
+    async def send_to_user(self, text: str, *, reply_to: str | None = None) -> str:
         self.sent.append(text)
         return "m1"
 

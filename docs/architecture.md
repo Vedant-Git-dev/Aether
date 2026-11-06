@@ -208,9 +208,22 @@ stays behind `llm.embedding_model`; it is removed only on a clear negative.
 #### Deliveries
 
 `deliveries.py` records every outbound send attempt (queued, sent, failed, abandoned).
-The body, message id, and error are sealed. A failed send is recorded as an event so
-every turn type sees it, and the next turn re-delivers the exact words once before the
-row is abandoned.
+The body, message id, and error are sealed. A failed send is a code concern, not a model
+one: the loop re-delivers the exact words once by code, then abandons the row. The
+failure is recorded as an event for the panel, but it is filtered out of the model's
+observations, so a delivery hiccup can never trigger a turn or read as a fresh request.
+
+`inbound.py` carries the one-terminal-outcome ledger: each message the user sends is
+`received`, then `answered` (with the outbound message id), `failed` or `expired`. A
+blank or placeholder model reply makes the inbound `failed` and the user hears one short
+notice — it is never left looking unanswered for a later tick to pick up. A message still
+`received` past ten minutes is never auto-answered; it gets at most one "still want
+this?" check. Only keyed blind tokens and the status word are plaintext; the failure
+reason and the outbound id are sealed.
+
+Any string leaving for a person passes one outbound guard first (`outbound.py`): blank,
+whitespace-only and bare placeholders (`[empty]`, `<empty>`, `None`, ...) are refused at
+the channel layer and never stored, traced or recalled.
 
 #### Workspace
 
@@ -294,7 +307,7 @@ records each version in `schema_migrations`.
 | Configuration | `config_overrides`, `app_secrets` |
 | Providers | `provider_connections`, `oauth_tokens`, `provider_oauth_states`, `provider_sync_state` |
 | Media and workbench | `media_blobs`, `workbench_transfers`, `workbench_minutes` |
-| Delivery | `processed_updates` |
+| Delivery | `processed_updates`, `inbound_messages` |
 
 Content columns are AES-256-GCM ciphertext bound to their row and column with additional
 authenticated data. Plain columns carry routing metadata: ids, statuses, timestamps,

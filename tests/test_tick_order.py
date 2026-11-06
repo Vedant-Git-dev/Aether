@@ -61,9 +61,9 @@ def _counting_send(kit: LoopKit, order: list[str]) -> None:
     """Record every reply into the shared order list the tests read."""
     real_send = kit.connector.send_to_user
 
-    async def counting(text: str) -> str:
+    async def counting(text: str, *, reply_to: str | None = None) -> str:
         order.append("reply")
-        return await real_send(text)
+        return await real_send(text, reply_to=reply_to)
 
     kit.connector.send_to_user = counting
 

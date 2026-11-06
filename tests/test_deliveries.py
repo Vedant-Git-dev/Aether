@@ -129,7 +129,7 @@ class _Connector:
         self.fail = fail
         self.sent: list[str] = []
 
-    async def send_to_user(self, text: str) -> str:
+    async def send_to_user(self, text: str, *, reply_to: str | None = None) -> str:
         if self.fail:
             raise RuntimeError("socket closed")
         self.sent.append(text)

@@ -41,6 +41,14 @@ RAW_PATTERNS = [
     # the renderer must speak plain words, never either
     (re.compile(r"\b(image|video|audio|application)/[a-z0-9.+-]+\b", re.I), "raw MIME type"),
     (re.compile(r"\bmedia[ _-]?id\b", re.I), "raw media id"),
+    # the panel never dumps an internal id as a label: "Message id:",
+    # "Thread id:", "Label ids:", "Unread:" — the Gmail shapes the mail row
+    # used to leak
+    (
+        re.compile(r"\b(message|thread|label|event|trace|task|row)[ _-]?ids?\s*:", re.I),
+        "raw id dump",
+    ),
+    (re.compile(r"\bunread\s*:", re.I), "raw unread flag"),
 ]
 
 
@@ -105,8 +113,14 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     # model-authored text: raw tool tokens transcribe, pasted JSON collapses
     assert "I will run sending email once approved" in text
     assert "msg-9" not in text
+    assert "msg-8" not in text  # a pasted JSON array collapses too
     # decided_by "user" reads as "you"
     assert "decided by you" in text
+    # the trace is sectioned as Inputs / Tool calls / Answer, and the
+    # carry-out's thread id points at the record instead of printing it
+    assert "Inputs" in text and "Tool calls" in text and "Answer" in text
+    assert "Thread id" in text and "(kept in the decision record)" in text
+    assert "19c2e6fe0b2f1a34" not in text
 
     page.goto(f"{live_server}/#/activity")
     page.wait_for_selector('[data-testid="event-row"]')
@@ -114,6 +128,15 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     text = page.locator("body").inner_text()
     # the chat handle rides under _sender — and resolves to a name
     assert "Chat with Sam on Telegram" in text
+    # a stored mail reads as sender, subject, localized time and one clean
+    # preview — its Gmail ids, label tokens and unread flag never show, and
+    # the snippet is not repeated as the body
+    assert "Email · Q3 planning doc from Rahul Sharma" in text
+    assert "The Q3 planning doc is ready for your review" in text
+    assert "Please add comments by Friday" not in text
+    assert "Snippet:" not in text and "Message id:" not in text and "Thread id:" not in text
+    assert "Label ids:" not in text and "Unread:" not in text
+    assert "CATEGORY_UPDATES" not in text and "INBOX" not in text
     # an agent-outcome event transcribes the composio tool and unwraps the
     # envelope — the raw JSON (log_id, successful) never reaches the screen
     assert "Aether · Checking the connected Email account" in text

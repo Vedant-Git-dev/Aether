@@ -17,6 +17,7 @@ from telegram.error import Conflict, NetworkError
 from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filters
 
 from ..authz.approvals import APPROVED, DENIED
+from ..outbound import is_deliverable
 from .attachments import MAX_ATTACHMENT_BYTES, actual_size_exceeds_cap, reported_size_exceeds_cap
 from .base import (
     TASK_VERDICT_LABELS,
@@ -87,6 +88,10 @@ class TelegramConnector(MessagingConnector):
         self._app: Any = None
         self._chat_ref: str | None = None
         self._reply_message_id: int | None = None
+        # a button tap arms exactly one quoted send — the outcome replying to
+        # the card it answers. Prompt replies and proactive alerts never use
+        # it; the loop passes an explicit target when one is warranted.
+        self._quote_next = False
         self._send_backoff = SEND_BACKOFF_SECONDS
 
     @staticmethod
@@ -146,11 +151,9 @@ class TelegramConnector(MessagingConnector):
         handle = f"@{user.username}" if user.username else f"id:{user.id}"
         chat_ref = str(message.chat_id)
         self._chat_ref = chat_ref
-        # the platform's own id for this message — outbound replies quote
-        # it, so an answer is visually bound to what it answers, and the
-        # structured log can correlate the two
+        # this message's own platform id — carried on the InboundMessage so
+        # the loop can quote it only when a quote is warranted
         message_id = getattr(message, "message_id", None)
-        self._reply_message_id = message_id
         log.info(
             "telegram inbound: chat=%s message=%s attachments=%d",
             chat_ref,
@@ -312,7 +315,6 @@ class TelegramConnector(MessagingConnector):
         tapped_chat_id = getattr(tapped_chat, "id", None)
         if tapped_chat_id is not None:
             self._chat_ref = str(tapped_chat_id)
-            self._reply_message_id = getattr(tapped, "message_id", None)
         body = data[len(_CALLBACK_PREFIX) :]
         # a task verdict rides its own namespace — "task:<verb>:<task id>"
         # — so it can never collide with an approval's "<verb>:<approval id>"
@@ -323,6 +325,10 @@ class TelegramConnector(MessagingConnector):
                 with contextlib.suppress(Exception):
                     await query.answer()
                 return
+            if tapped is not None:
+                # the verdict's carry-out answers the card it was tapped on
+                self._reply_message_id = getattr(tapped, "message_id", None)
+                self._quote_next = True
             note = await self._decide_task(int(id_part), verb)
             with contextlib.suppress(Exception):  # answered whatever happened
                 await query.answer(text=note) if note else await query.answer()
@@ -335,6 +341,10 @@ class TelegramConnector(MessagingConnector):
             with contextlib.suppress(Exception):
                 await query.answer()
             return
+        if action in ("approve", "deny") and tapped is not None:
+            # the outcome replies to the card it answers, once
+            self._reply_message_id = getattr(tapped, "message_id", None)
+            self._quote_next = True
         if action == "read":
             # reading never decides — the question and its buttons stay on
             # the message, and the whole ask lands in the chat where the
@@ -388,10 +398,23 @@ class TelegramConnector(MessagingConnector):
         with contextlib.suppress(Exception):
             await app.bot.send_chat_action(chat_id=int(self._chat_ref), action="typing")
 
-    async def send_to_user(self, text: str, *, attachment: Attachment | None = None) -> str | None:
+    async def send_to_user(
+        self,
+        text: str,
+        *,
+        attachment: Attachment | None = None,
+        reply_to: str | None = None,
+    ) -> str | None:
         """Send, and answer with the platform message id — what links a
-        later "why?" reply back to the trace of this send."""
-        return await self._send(text, reply_markup=None, attachment=attachment)
+        later "why?" reply back to the trace of this send. A placeholder or
+        blank is never sent, whatever a caller passed.
+
+        `reply_to` is the platform message id this send quotes, or None for
+        a plain message. The default is no quote: a prompt answer to the
+        latest message must not look like a replay."""
+        if not is_deliverable(text):
+            return None
+        return await self._send(text, reply_markup=None, attachment=attachment, reply_to=reply_to)
 
     async def present_approval(
         self, approval_id: int, text: str, *, attachment: Attachment | None = None
@@ -400,6 +423,8 @@ class TelegramConnector(MessagingConnector):
         the full-text renderer is wired, one more tap that shows everything
         the ask carries without deciding anything. The raw tool name never
         reaches the user — the decision record keeps it."""
+        if not is_deliverable(text):
+            return
         rows = [
             [
                 InlineKeyboardButton(
@@ -430,6 +455,8 @@ class TelegramConnector(MessagingConnector):
         """A finished background task's result plus the one-tap verdicts
         that apply to it. An odd verdict name never reaches the buttons —
         the fixed vocabulary stays fixed."""
+        if not is_deliverable(text):
+            return
         buttons = [
             InlineKeyboardButton(
                 TASK_VERDICT_LABELS[verb], callback_data=f"{_CALLBACK_PREFIX}task:{verb}:{task_id}"
@@ -441,24 +468,34 @@ class TelegramConnector(MessagingConnector):
         await self._send(text, reply_markup=keyboard, attachment=attachment)
 
     async def _send(
-        self, text: str, reply_markup: Any, attachment: Attachment | None = None
+        self,
+        text: str,
+        reply_markup: Any,
+        attachment: Attachment | None = None,
+        reply_to: str | None = None,
     ) -> str | None:
+        if not is_deliverable(text):
+            # the last gate before the wire: a blank or a bare placeholder
+            # never leaves, whatever a caller passed
+            return None
         app = self._app
         if app is None or self._chat_ref is None:
             log.info("telegram: nowhere to send yet (started=%s)", app is not None)
             return None
+        # a quote only when a caller asked for one (an earlier or delayed
+        # question), or for the one outcome that answers a tapped card. The
+        # tapped target is consumed once, so the next prompt reply is plain.
+        use_tap = reply_to is None and self._quote_next and self._reply_message_id is not None
+        target = reply_to if reply_to is not None else (self._reply_message_id if use_tap else None)
         for attempt in range(1, SEND_ATTEMPTS + 1):
             try:
                 kwargs: dict[str, Any] = {}
-                if self._reply_message_id is not None:
-                    # every reply visually quotes the message it answers, so
-                    # a busy chat reads in order instead of guessing which
-                    # question an answer belongs to. The target can be gone
-                    # (deleted, or a proactive send long after the last
-                    # inbound) — then Telegram sends without the quote
-                    # rather than failing the reply
+                if target is not None:
+                    # the target can be gone (deleted, or a send long after
+                    # the last inbound) — then Telegram sends without the
+                    # quote rather than failing the reply
                     kwargs["reply_parameters"] = ReplyParameters(
-                        message_id=self._reply_message_id,
+                        message_id=int(target),
                         allow_sending_without_reply=True,
                     )
                 if attachment is None:
@@ -467,6 +504,9 @@ class TelegramConnector(MessagingConnector):
                     )
                 else:
                     sent = await self._send_file(app, text, reply_markup, attachment, kwargs)
+                if use_tap:
+                    self._quote_next = False
+                    self._reply_message_id = None
                 # getattr so test fakes without a message_id still send fine
                 return str(getattr(sent, "message_id", "") or "") or None
             except NetworkError:

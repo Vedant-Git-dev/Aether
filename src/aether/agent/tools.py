@@ -150,6 +150,11 @@ TIMEOUT_REPLY = (
     "half-finished or half-sent. Ask me again and I'll take a fresh run."
 )
 
+# the one short fallback when a turn owed a reply and the model returned
+# nothing usable (blank, whitespace, or a placeholder) even after one
+# retry. It is a real message to the person, and the record keeps the fact.
+EMPTY_REPLY = "Sorry — I drew a blank on that one. Could you send it again?"
+
 
 # how a tool call is said in plain words at each moment it reaches the
 # user: the question when it's held for approval, the words when it's
