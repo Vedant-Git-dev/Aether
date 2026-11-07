@@ -132,8 +132,10 @@ The multi-select questions start with nothing selected; use Space to add.
    `src/aether/providers/*.py`: gmail, calendar, drive, docs, github, linkedin.
 7. **Chat channels** (multi-select) - from `src/aether/apps_catalog.py`:
    telegram, discord. At least one is required.
-8. **Render details** - only for the Render target: plan, service name, region,
-   deploy source, and uptime monitoring (on asks for an alert email).
+8. **Render details** - only for the Render target: plan, the Render API key,
+   service name, region, deploy source, and uptime monitoring (on asks for an
+   alert email). The API key is checked with a workspace read, and the service
+   name is refused if the workspace already has a service with it.
 9. **Credentials** follow the choices, one masked ask each. A required value is
    re-asked until it is valid; an invalid database, model key, embedding key or
    bot token shows a plain error and the fix.
@@ -315,8 +317,8 @@ the Blueprint.
   call itself starts Render's "First Deploy". If Render appends a suffix to the
   subdomain because the requested name is taken, a second deploy is needed to
   apply the real `AETHER_PUBLIC_URL`; the deploy engine skips that second deploy when
-  no OAuth app or GitHub Actions queue needs the URL. Choosing an unused name
-  avoids the suffix and the extra deploy.
+  no OAuth app or GitHub Actions queue needs the URL. The wizard refuses a service
+  name the workspace already uses, so the exact name is available to the create call.
 - Run `scripts/deploy.sh` directly without a key (or with the public upstream
   repo, which the API cannot attach to a workspace) and it writes a tailored
   `render.yaml`, opens the Blueprint page, and prints the exact values to paste.
@@ -329,8 +331,11 @@ the Blueprint.
 ## Secrets
 
 - The wizard reads secrets masked (`prompt_toolkit`'s password input) and writes
-  them owner-only (`chmod 600` on Linux, `icacls` on Windows); they are never
-  echoed, logged, or committed.
+  them owner-only (`chmod 600` on Linux, `icacls` on Windows). A value is never
+  echoed while it is being typed, logged, or committed.
+- At the end, the wizard prints every collected secret once, in full, so it can
+  be stored somewhere safe; that closing block is the only time the values
+  appear. `AETHER_TOKEN` is the panel access token.
 - `AETHER_ENCRYPTION_KEY` is 32 random bytes, base64. Losing it makes stored
   data unrecoverable. The wizard says this once and keeps a backup copy in
   `~/.aether-setup/secrets.env`.

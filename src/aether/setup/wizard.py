@@ -35,6 +35,8 @@ from .validation import (
     discord_token_error,
     embedding_key_error,
     model_key_error,
+    render_api_key_error,
+    render_service_name_error,
     telegram_token_error,
 )
 
@@ -176,9 +178,12 @@ def required_errors(ctx: SetupContext) -> list[str]:
         check("LINKEDIN_CLIENT_SECRET", ctx.secret("LINKEDIN_CLIENT_SECRET"))
 
     if ctx.plan.setup_target == "render":
-        check("RENDER_API_KEY", ctx.secret("RENDER_API_KEY"))
-        if is_missing(ctx.plan.service_name):
-            problems.append("SERVICE_NAME is required")
+        check("RENDER_API_KEY", ctx.secret("RENDER_API_KEY"), render_api_key_error)
+        check(
+            "SERVICE_NAME",
+            ctx.plan.service_name,
+            lambda value: render_service_name_error(value, ctx.secret("RENDER_API_KEY")),
+        )
         if ctx.plan.deploy_source == "fork":
             url = (ctx.plan.repo_url or "").strip()
             if is_missing(url) or "CHANGE_ME" in url or not url.startswith("https://github.com/"):

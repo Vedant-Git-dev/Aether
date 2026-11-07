@@ -26,7 +26,7 @@ _CREDENTIALS = re.compile(r"(postgres(?:ql)?://)[^@\s]+@")
 _RENDER_API = "https://api.render.com/v1"
 # A Render web service's name becomes its subdomain, so it must be
 # subdomain-safe: lowercase letters, numbers and hyphens.
-_RENDER_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,28}[a-z0-9]$")
+_RENDER_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$")
 
 
 def use_network(enabled: bool) -> None:

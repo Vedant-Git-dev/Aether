@@ -21,6 +21,7 @@ from rich.console import Console
 from aether.setup import artifacts, brand, catalogs
 from aether.setup.capabilities import Glyphs, color_enabled, glyphs, stdout_is_tty
 from aether.setup.cli import main
+from aether.setup.deploy import windows_command
 from aether.setup.panel import build_panel, needs_build
 from aether.setup.plan import SetupPlan, load_answers, write_answers, write_secrets
 from aether.setup.prompts import (
@@ -385,6 +386,59 @@ def test_flow_covers_every_question_in_order() -> None:
         "gemini_key",
     ):
         assert expected in keys
+
+
+def test_render_api_key_is_asked_before_the_service_name() -> None:
+    keys = [stage.key for stage in build_flow(ctx_for())]
+    assert keys.index("render_api_key") < keys.index("service_name")
+
+
+def test_windows_deploy_command_quotes_every_space(monkeypatch) -> None:
+    monkeypatch.setenv("COMSPEC", r"C:\Windows\system32\cmd.exe")
+    line = windows_command(
+        Path(r"D:\My Projects\Aether\scripts\deploy.bat"),
+        [
+            "--answers",
+            r"C:\Users\Vedant Pardeshi\.aether-setup\answers.env",
+            "--non-interactive",
+        ],
+    )
+    # cmd /c must receive one quoted payload, so the script path is wrapped
+    assert '/c ""D:\\My Projects\\Aether\\scripts\\deploy.bat"' in line
+    assert '"C:\\Users\\Vedant Pardeshi\\.aether-setup\\answers.env"' in line
+
+
+def test_a_render_service_name_must_be_subdomain_safe() -> None:
+    from aether.setup.validation import render_service_name_error
+
+    message = render_service_name_error("My Aether", "rnd-key")
+    assert message is not None and "lowercase" in message
+
+
+def test_a_taken_render_service_name_is_refused(monkeypatch) -> None:
+    from aether.setup import validation
+
+    calls: list[str] = []
+
+    class Response:
+        def __init__(self, payload) -> None:
+            self.status_code = 200
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        if url.endswith("/owners"):
+            return Response([{"owner": {"id": "tea-1"}, "cursor": "c"}])
+        return Response([{"service": {"name": "taken"}, "cursor": "c"}])
+
+    monkeypatch.setattr(validation, "_installed", lambda *modules: True)
+    monkeypatch.setattr("httpx.get", fake_get)
+    validation.use_network(True)
+    assert validation.render_service_name_error("taken", "rnd-key") is not None
+    assert validation.render_service_name_error("free-name", "rnd-key") is None
 
 
 def test_dependent_questions_appear_only_when_relevant() -> None:

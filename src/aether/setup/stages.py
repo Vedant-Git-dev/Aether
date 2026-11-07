@@ -27,6 +27,8 @@ from .validation import (
     discord_token_error,
     embedding_key_error,
     model_key_error,
+    render_api_key_error,
+    render_service_name_error,
     telegram_token_error,
 )
 
@@ -571,12 +573,23 @@ def build_flow(ctx: SetupContext) -> list[Stage]:
             attribute="plan",
             visible=render,
         ),
+        secret_stage(
+            "render_api_key",
+            "RENDER_API_KEY",
+            "Render API key",
+            visible=render,
+            hint="  https://dashboard.render.com/u/settings#api-keys",
+            required=True,
+            validate=render_api_key_error,
+        ),
         text_stage(
             "service_name",
             "Render service name",
             attribute="service_name",
             default="aether",
             visible=render,
+            required=True,
+            validate=lambda value: render_service_name_error(value, ctx.secret("RENDER_API_KEY")),
         ),
         choice_stage(
             "region",
@@ -606,14 +619,6 @@ def build_flow(ctx: SetupContext) -> list[Stage]:
         ),
         _uptime_stage(),
         _alert_email_stage(),
-        secret_stage(
-            "render_api_key",
-            "RENDER_API_KEY",
-            "Render API key",
-            visible=render,
-            hint="  https://dashboard.render.com/u/settings#api-keys",
-            required=True,
-        ),
         secret_stage(
             "database_url",
             "DATABASE_URL",
