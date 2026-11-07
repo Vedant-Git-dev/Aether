@@ -162,7 +162,9 @@ class ChoiceList:
         def _cancel(event: Any) -> None:
             event.app.exit(exception=KeyboardInterrupt())
 
-        control = FormattedTextControl(self._fragments)
+        # The control's own block cursor would sit on the blank line above
+        # the question, looking like a stray grey square on every prompt.
+        control = FormattedTextControl(self._fragments, show_cursor=False)
         return Application(
             layout=Layout(Window(control, dont_extend_height=True)),
             key_bindings=kb,
