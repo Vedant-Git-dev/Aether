@@ -15,6 +15,8 @@ from rich.markup import escape
 from . import brand, catalogs
 from .artifacts import mask
 from .capabilities import color_enabled, glyphs, stdout_is_tty
+from .deploy import deploy_engine, deploy_failure
+from .panel import build_panel
 from .plan import SetupPlan, load_answers
 from .prompts import UI, Cancelled
 from .theme import build_console
@@ -43,7 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--yes",
         action="store_true",
-        help="Accept every default and never prompt. For scripted installs.",
+        help="Accept every default that has one and never prompt. Required values "
+        "still have to come from the environment or an answers file.",
     )
     parser.add_argument(
         "--no-animation",
@@ -71,18 +74,20 @@ def build_parser() -> argparse.ArgumentParser:
 def _print_plan(console: Console, plan: SetupPlan) -> None:
     console.print()
     console.rule("Your Aether")
+    console.print(f"  run:         {escape(plan.setup_target)}")
     console.print(f"  database:    {escape(plan.database_mode)}")
     console.print(f"  model:       {escape(plan.llm_provider)} / {escape(plan.llm_model)}")
+    console.print(f"  memory:      {'on' if plan.semantic_memory else 'off'}")
     console.print(f"  services:    {escape(', '.join(plan.services) or '(none)')}")
     console.print(f"  direct apps: {escape(', '.join(plan.apps) or '(none)')}")
     console.print(f"  channels:    {escape(', '.join(plan.channels) or '(none)')}")
-    console.print(f"  plan:        {escape(plan.plan)}")
-    console.print(f"  service:     {escape(plan.service_name)} ({escape(plan.region)})")
-    console.print(
-        f"  deploy:      {escape(plan.deploy_source)} ({escape(plan.repo_url or 'upstream')})"
-    )
-    console.print(f"  uptime:      {escape(plan.uptime_mode)}")
-    console.print(f"  local copy:  {'yes' if plan.local_copy else 'no'}")
+    if plan.setup_target == "render":
+        console.print(f"  plan:        {escape(plan.plan)}")
+        console.print(f"  service:     {escape(plan.service_name)} ({escape(plan.region)})")
+        console.print(
+            f"  deploy:      {escape(plan.deploy_source)} ({escape(plan.repo_url or 'upstream')})"
+        )
+        console.print(f"  uptime:      {escape(plan.uptime_mode)}")
 
 
 def _print_summary(console: Console, result: SetupResult) -> None:
@@ -91,7 +96,7 @@ def _print_summary(console: Console, result: SetupResult) -> None:
     if result.answers_path:
         console.print(f"  answers:  {escape(str(result.answers_path))}")
     if result.secrets_path:
-        console.print(f"  secrets:  {escape(str(result.secrets_path))}  (owner-only; back this up)")
+        console.print(f"  secrets:  {escape(str(result.secrets_path))}  (owner-only)")
     if result.config_path:
         console.print(f"  config:   {escape(str(result.config_path))}")
     if result.render_path:
@@ -99,16 +104,23 @@ def _print_summary(console: Console, result: SetupResult) -> None:
     token = result.secrets.get("AETHER_TOKEN", "")
     if token:
         console.print(f"  AETHER_TOKEN: {mask(token)}")
-    console.print()
-    console.print("  Next: deploy to Render. With a Render API key and a fork, run")
-    if result.env_answers_path:
-        console.print(
-            f"  scripts/deploy.sh --answers {escape(str(result.env_answers_path))}  (Linux)"
-        )
-        console.print("  or scripts\\deploy.bat --answers <same file>  (Windows).")
-    console.print("  Otherwise create a Blueprint and paste the sync:false secrets.")
-    console.print("  Back up AETHER_ENCRYPTION_KEY: losing it makes every stored")
-    console.print("  message, memory and token unrecoverable.")
+    if result.plan.setup_target == "local":
+        console.print()
+        console.print("  To run locally:")
+        if os.name == "nt":
+            console.print(
+                f'    for /f "usebackq tokens=1,* delims==" %a in '
+                f'("{escape(str(result.secrets_path))}") do @set "%a=%b"'
+            )
+            console.print(f"    set AETHER_CONFIG={escape(str(result.config_path))}")
+            console.print("    aether")
+        else:
+            console.print(f"    set -a; . {escape(str(result.secrets_path))}; set +a")
+            console.print(f"    AETHER_CONFIG={escape(str(result.config_path))} aether")
+    else:
+        console.print()
+        console.print("  Deploying to Render with the answers above.")
+        console.print("  Back up secrets.env.")
 
 
 def main(argv: Sequence[str] | None = None, *, stream: TextIO | None = None) -> int:
@@ -184,6 +196,15 @@ def main(argv: Sequence[str] | None = None, *, stream: TextIO | None = None) -> 
         console.print("Setup interrupted; nothing was written.")
         return 130
 
+    if ctx.problems:
+        console.print()
+        console.print("[aether.stop]Setup cannot continue; fix these values:[/]")
+        for problem in ctx.problems:
+            console.print(f"  - {escape(problem)}")
+        console.print()
+        console.print("Nothing was written.")
+        return 2
+
     _print_plan(console, ctx.plan)
 
     if args.dry_run:
@@ -192,7 +213,31 @@ def main(argv: Sequence[str] | None = None, *, stream: TextIO | None = None) -> 
         return 0
 
     result = persist(ctx, args.state_dir)
+    if ctx.plan.setup_target == "local" and root is not None:
+        panel_error = build_panel(root)
+        if panel_error:
+            console.print()
+            console.print(f"[aether.stop]{escape(panel_error)}[/]")
+            return 1
     _print_summary(console, result)
+    if ctx.plan.setup_target == "render":
+        if result.env_answers_path is None or root is None:
+            console.print("[aether.stop]The deploy engine could not be found.[/]")
+            return 1
+        console.print()
+        console.print("Deploying to Render...")
+        code, error = deploy_engine(
+            root,
+            result.env_answers_path,
+            Path(args.state_dir).expanduser(),
+            force=args.force,
+        )
+        if error:
+            console.print(f"[aether.stop]{escape(error)}[/]")
+            return 1
+        if code != 0:
+            console.print(f"[aether.stop]{escape(deploy_failure(code))}[/]")
+            return code
     return 0
 
 

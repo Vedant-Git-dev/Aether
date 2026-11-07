@@ -143,12 +143,31 @@ export default function SettingsPage() {
 
   const saveField = async (f, value) => {
     setErrors((e) => ({ ...e, [f.path]: "" }));
+    if (f.required && String(value ?? "").trim() === "") {
+      setErrors((e) => ({
+        ...e,
+        [f.path]: `${f.label} is required and can't be cleared.`,
+      }));
+      return;
+    }
     try {
       const d = await api(`/api/settings/fields/${f.path}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ value }),
       });
+      setFeed(d.feed);
+      clearDraft(f);
+      if (d.reply) toast(d.reply);
+    } catch (err) {
+      setErrors((e) => ({ ...e, [f.path]: err.message }));
+    }
+  };
+
+  const resetField = async (f) => {
+    setErrors((e) => ({ ...e, [f.path]: "" }));
+    try {
+      const d = await api(`/api/settings/fields/${f.path}`, { method: "DELETE" });
       setFeed(d.feed);
       clearDraft(f);
       if (d.reply) toast(d.reply);
@@ -387,30 +406,48 @@ export default function SettingsPage() {
     }
   };
 
-  const fieldRow = (f) => (
-    <SettingsRow
-      key={f.path}
-      label={f.label}
-      hint={f.hint}
-      note={f.note}
-      hideHint={!showHints}
-      error={errors[f.path]}
-      errorTestId={`settings-error-${f.path}`}
-    >
-      {f.kind !== "toggle" && dirty(f) ? (
-        <button
-          type="button"
-          data-testid={`settings-save-${f.path}`}
-          disabled={draftOf(f) === "" && !f.none_ok}
-          onClick={() => saveField(f, valueToSend(f))}
-          className="rounded-md px-2 py-1 text-[12px] font-medium text-accent hover:bg-accent/10 disabled:cursor-default disabled:opacity-40"
-        >
-          Save
-        </button>
-      ) : null}
-      {control(f)}
-    </SettingsRow>
-  );
+  const fieldRow = (f) => {
+    const emptyDraft = draftOf(f) === "";
+    const defaultText =
+      emptyDraft && !f.required && f.default !== null && f.default !== undefined && f.default !== ""
+        ? `Default: ${f.default}`
+        : "";
+    const note = [f.note, defaultText].filter(Boolean).join(" · ");
+    return (
+      <SettingsRow
+        key={f.path}
+        label={f.label}
+        hint={f.hint}
+        note={note}
+        hideHint={!showHints}
+        error={errors[f.path]}
+        errorTestId={`settings-error-${f.path}`}
+      >
+        {f.kind !== "toggle" && dirty(f) ? (
+          emptyDraft && !f.required ? (
+            <button
+              type="button"
+              data-testid={`settings-reset-${f.path}`}
+              onClick={() => resetField(f)}
+              className="rounded-md px-2 py-1 text-[12px] font-medium text-accent hover:bg-accent/10"
+            >
+              Reset
+            </button>
+          ) : (
+            <button
+              type="button"
+              data-testid={`settings-save-${f.path}`}
+              onClick={() => saveField(f, valueToSend(f))}
+              className="rounded-md px-2 py-1 text-[12px] font-medium text-accent hover:bg-accent/10"
+            >
+              Save
+            </button>
+          )
+        ) : null}
+        {control(f)}
+      </SettingsRow>
+    );
+  };
 
   const surfaceTable = (view, kind) => {
     const fields = view.fields;
@@ -538,7 +575,7 @@ export default function SettingsPage() {
           key="credentials"
           id="credentials"
           title="Credentials"
-          note="Paste-only: a value goes straight into the encrypted store and is never shown back, here or anywhere. This page only knows whether one is stored."
+          note="Paste-only. The value is stored encrypted and never shown back; this page only knows whether one is stored."
           badge={credentials.length ? `${stored} stored` : null}
         >
           {visibleCredentials.map((cred) => (
@@ -572,7 +609,7 @@ export default function SettingsPage() {
           key="personality"
           id="personality"
           title="Personality"
-          note="Free text appended to Aether's real system prompt on every turn — this changes how it behaves, not just how it looks. Leave empty for the default behavior."
+          note="Free text appended to Aether's system prompt on every turn. Empty uses the default behavior."
         >
           {!personalityLoaded ? (
             <div className="py-4 text-[12.5px] text-ink-3">Reading the current personality…</div>

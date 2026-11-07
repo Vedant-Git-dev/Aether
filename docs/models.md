@@ -111,9 +111,10 @@ a cheaper, faster model than the main one.
 
 ### Embeddings
 
-Semantic memory uses Gemini embeddings. The default is `gemini-embedding-001`, which is
-free-tier capable. A bare id is treated as a Gemini model. A value pointing at another
-provider logs a warning and leaves memory search off; the seam does not guess.
+Semantic memory uses Gemini embeddings and is off by default. Set a Gemini model such as
+`gemini-embedding-001` (free-tier capable) to turn it on; `off` leaves it off. A bare id
+is treated as a Gemini model. A value pointing at another provider logs a warning and
+leaves memory search off; the seam does not guess.
 
 Without embeddings, memory search still works through recent events and keyword
 matching, but not by meaning.

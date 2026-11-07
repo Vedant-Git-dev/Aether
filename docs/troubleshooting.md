@@ -133,9 +133,9 @@ or to a named vision-capable model:
 
 ## Memory search is unavailable
 
-Semantic recall needs `GEMINI_API_KEY` and a Gemini embedding model. The default is
-`gemini-embedding-001`. A value pointing at another provider is refused with a warning
-rather than guessed.
+Semantic recall needs `GEMINI_API_KEY` and a Gemini embedding model. `off` is the
+default. If memory search is on without the key, Aether refuses to start and says so. A
+value pointing at another provider is refused with a warning rather than guessed.
 
 Without embeddings, recent events and keyword search still work. Only meaning-based
 recall is off.
@@ -238,5 +238,5 @@ database remains readable only with the old key; delete it yourself when you are
 
 `llm.embedding_model` treats `none` as a literal model id. The off sentinels are
 `off`, `default`, and `base`. Use `off` (or leave it empty) to disable semantic
-memory, or `gemini-embedding-001` to enable it. `none` is sent to Gemini as a
-model named `none` and returns 404.
+memory, or a model such as `gemini-embedding-001` to enable it. `none` is sent to
+Gemini as a model named `none` and returns 404.

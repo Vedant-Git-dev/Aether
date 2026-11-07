@@ -21,6 +21,7 @@ from rich.console import Console
 from aether.setup import artifacts, brand, catalogs
 from aether.setup.capabilities import Glyphs, color_enabled, glyphs, stdout_is_tty
 from aether.setup.cli import main
+from aether.setup.panel import build_panel, needs_build
 from aether.setup.plan import SetupPlan, load_answers, write_answers, write_secrets
 from aether.setup.prompts import (
     UI,
@@ -33,7 +34,7 @@ from aether.setup.prompts import (
     select_many,
     select_one,
 )
-from aether.setup.stages import SetupContext, Stage, build_flow
+from aether.setup.stages import SetupContext, Stage, build_flow, secret_stage
 from aether.setup.wizard import collect, persist, preload_state, run_flow
 
 UNICODE = Glyphs(selected="●", unselected="○", pointer="❯", unicode=True)
@@ -367,9 +368,22 @@ def test_render_yaml_prompts_for_secrets_and_adds_a_disk_on_paid() -> None:
 
 def test_flow_covers_every_question_in_order() -> None:
     keys = [stage.key for stage in build_flow(ctx_for())]
-    assert keys[0] == "database"
-    assert keys[-1] == "uptime_api_key"
-    for expected in ("provider", "model", "services", "apps", "channels", "plan", "region"):
+    assert keys[0] == "setup_target"
+    assert "database" in keys
+    assert keys[-1] == "discord_token"
+    for expected in (
+        "provider",
+        "model",
+        "semantic_memory",
+        "services",
+        "apps",
+        "channels",
+        "plan",
+        "region",
+        "database_url",
+        "provider_key",
+        "gemini_key",
+    ):
         assert expected in keys
 
 
@@ -379,6 +393,8 @@ def test_dependent_questions_appear_only_when_relevant() -> None:
     assert stages["image_provider"].visible(ctx) is False
     assert stages["workbench_provider"].visible(ctx) is False
     assert stages["repo_url"].visible(ctx) is False
+    ctx.plan.setup_target = "render"
+    assert stages["repo_url"].visible(ctx) is False
     ctx.plan.deploy_source = "fork"
     assert stages["repo_url"].visible(ctx) is True
     ctx.plan.services = ["Image generation", "Background jobs"]
@@ -386,6 +402,10 @@ def test_dependent_questions_appear_only_when_relevant() -> None:
     assert stages["workbench_provider"].visible(ctx) is True
     ctx.plan.uptime_mode = "email"
     assert stages["alert_email"].visible(ctx) is True
+    ctx.plan.semantic_memory = True
+    assert stages["gemini_key"].visible(ctx) is True
+    ctx.plan.semantic_memory = False
+    assert stages["gemini_key"].visible(ctx) is False
     ctx.plan.apps = ["gmail"]
     assert stages["google_client_id"].visible(ctx) is True
 
@@ -432,6 +452,22 @@ def test_ctrl_c_becomes_a_clean_cancellation() -> None:
         run_flow(ctx_for(), interactive=True, stages=[first])
 
 
+def test_required_secret_reprompts_and_rejects_placeholders() -> None:
+    with create_pipe_input() as pipe:
+        pipe.send_text("\r" + "change-me\r" + "real-value\r")
+        ctx = SetupContext(plan=SetupPlan(), secrets={}, ui=make_ui(pipe))
+        secret_stage("key", "KEY", "Key", required=True).run(ctx)
+    assert ctx.secrets["KEY"] == "real-value"
+
+
+def test_optional_secret_can_be_skipped() -> None:
+    with create_pipe_input() as pipe:
+        pipe.send_text("\r")
+        ctx = SetupContext(plan=SetupPlan(), secrets={}, ui=make_ui(pipe))
+        secret_stage("key", "KEY", "Key").run(ctx)
+    assert "KEY" not in ctx.secrets
+
+
 # -- persistence -----------------------------------------------------------------
 
 
@@ -458,6 +494,53 @@ def test_preload_state_reads_an_earlier_run(tmp_path: Path) -> None:
     assert "AETHER_TOKEN" in secrets
 
 
+# -- prompt rendering ------------------------------------------------------------
+
+
+def test_choice_prompts_hide_the_stray_block_cursor() -> None:
+    app = ChoiceList(make_ui(), "Question", ["A", "B"], multi=False)._build()
+    assert app.layout.container.content.show_cursor is False
+
+
+def test_a_key_hint_opens_its_page(monkeypatch) -> None:
+    from aether.setup import links
+
+    opened: list[str] = []
+    monkeypatch.setattr(links.webbrowser, "open", lambda url, new=0: opened.append(url) or True)
+    links.use_browser(True)
+    assert links.open_hint("  https://t.me/BotFather") is True
+    assert opened == ["https://t.me/BotFather"]
+
+
+# -- local panel -----------------------------------------------------------------
+
+
+def test_a_wheel_without_webapp_has_nothing_to_build(tmp_path: Path) -> None:
+    assert needs_build(tmp_path) is False
+    assert build_panel(tmp_path) is None
+
+
+def test_a_fresh_checkout_needs_the_panel_built(tmp_path: Path) -> None:
+    (tmp_path / "webapp").mkdir()
+    (tmp_path / "webapp" / "package.json").write_text("{}", encoding="utf-8")
+    assert needs_build(tmp_path) is True
+
+
+def test_a_missing_node_reports_the_fix(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "webapp").mkdir()
+    (tmp_path / "webapp" / "package.json").write_text("{}", encoding="utf-8")
+    monkeypatch.delenv("AETHER_SETUP_SKIP_PANEL", raising=False)
+    monkeypatch.setattr("aether.setup.panel.shutil.which", lambda name: None)
+    assert "Node 22+" in build_panel(tmp_path)
+
+
+def test_the_opt_out_skips_the_build(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "webapp").mkdir()
+    (tmp_path / "webapp" / "package.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("AETHER_SETUP_SKIP_PANEL", "1")
+    assert build_panel(tmp_path) is None
+
+
 # -- CLI -------------------------------------------------------------------------
 
 
@@ -468,18 +551,26 @@ def test_cli_without_a_tty_explains_the_flags() -> None:
     assert "--yes" in stream.getvalue()
 
 
-def test_cli_yes_writes_state_without_a_tty(tmp_path: Path) -> None:
-    assert (
-        main(["--yes", "--no-animation", "--state-dir", str(tmp_path)], stream=io.StringIO()) == 0
+def test_cli_yes_without_required_values_fails_fast(tmp_path: Path) -> None:
+    stream = io.StringIO()
+    assert main(["--yes", "--no-animation", "--state-dir", str(tmp_path)], stream=stream) == 2
+    assert not (tmp_path / "answers.toml").exists()
+    assert "choose at least one chat channel" in stream.getvalue()
+
+
+def test_cli_answers_with_secrets_writes_state(tmp_path: Path) -> None:
+    source = tmp_path / "answers.env"
+    source.write_text(
+        "SETUP_TARGET=local\n"
+        "CHANNELS=telegram\n"
+        "SEMANTIC_MEMORY=no\n"
+        "LLM_PROVIDER=anthropic\n"
+        "LLM_MODEL=claude-opus-5\n"
+        "DATABASE_URL=postgresql://x\n"
+        "ANTHROPIC_KEY=sk-test\n"
+        "TELEGRAM_TOKEN=123:abc\n",
+        encoding="utf-8",
     )
-    assert (tmp_path / "answers.toml").is_file()
-    assert (tmp_path / "secrets.env").is_file()
-    assert (tmp_path / "config.generated.yaml").is_file()
-
-
-def test_cli_answers_toml_drives_a_scripted_install(tmp_path: Path) -> None:
-    source = tmp_path / "answers.toml"
-    write_answers(source, SetupPlan(llm_provider="openai", llm_model="openai/gpt-5.1"))
     state = tmp_path / "state"
     assert (
         main(
@@ -488,42 +579,68 @@ def test_cli_answers_toml_drives_a_scripted_install(tmp_path: Path) -> None:
         )
         == 0
     )
-    plan, _ = load_answers(state / "answers.toml")
-    assert plan.llm_provider == "openai"
-    assert plan.llm_model == "openai/gpt-5.1"
+    assert (state / "answers.toml").is_file()
+    assert (state / "secrets.env").is_file()
+    assert (state / "config.generated.yaml").is_file()
 
 
 def test_cli_dry_run_writes_nothing(tmp_path: Path) -> None:
-    assert main(["--yes", "--dry-run", "--state-dir", str(tmp_path)], stream=io.StringIO()) == 0
+    assert main(["--yes", "--dry-run", "--state-dir", str(tmp_path)], stream=io.StringIO()) == 2
     assert list(tmp_path.iterdir()) == []
 
 
 # -- end to end: only arrows, Space and Enter ------------------------------------
 
+_LOCKED = {
+    "DATABASE_URL": "postgresql://x",
+    "ANTHROPIC_KEY": "sk-x",
+    "GEMINI_KEY": "g-x",
+    "TELEGRAM_TOKEN": "123:abc",
+}
+
+
+def _ctx_locked(pipe):
+    return collect(
+        ui=make_ui(pipe),
+        root=catalogs.repo_root(),
+        interactive=True,
+        secrets=dict(_LOCKED),
+        locked_secrets=set(_LOCKED),
+    )
+
 
 def test_e2e_enter_through_the_whole_flow() -> None:
+    # setup_target, database, provider, model, memory, services, apps;
+    # then Space picks Telegram and Enter confirms the channel.
     with create_pipe_input() as pipe:
-        pipe.send_text("\r" * 40)
-        ctx = collect(ui=make_ui(pipe), root=catalogs.repo_root(), interactive=True)
+        pipe.send_text("\r" * 7 + " \r" + "\r" * 10)
+        ctx = _ctx_locked(pipe)
+    assert ctx.plan.setup_target == "local"
     assert ctx.plan.database_mode == "neon"
     assert ctx.plan.llm_provider == "anthropic"
-    assert ctx.plan.plan == "free"
-    assert ctx.plan.deploy_source == "public"
-    assert ctx.plan.local_copy is False
+    assert "telegram" in ctx.plan.channels
 
 
 def test_e2e_arrow_keys_pick_a_different_option() -> None:
     with create_pipe_input() as pipe:
-        pipe.send_text("\x1b[B\r" + "\r" * 40)  # down, enter, then accept the rest
-        ctx = collect(ui=make_ui(pipe), root=catalogs.repo_root(), interactive=True)
+        # keep the local target, then choose the second database option
+        pipe.send_text("\r\x1b[B\r" + "\r" * 5 + " \r" + "\r" * 10)
+        ctx = _ctx_locked(pipe)
     assert ctx.plan.database_mode == "existing"
 
 
 def test_e2e_space_toggles_a_multi_select() -> None:
     with create_pipe_input() as pipe:
-        # db, provider, model, then toggle the first service, then accept the rest
-        pipe.send_text("\r\r\r \r" + "\r" * 40)
-        ctx = collect(ui=make_ui(pipe), root=catalogs.repo_root(), interactive=True)
+        # setup_target, database, provider, model, memory; then toggle the
+        # first optional service, keep apps empty, pick a channel.
+        pipe.send_text("\r" * 5 + " \r" + "\r" + " \r" + "\r" * 10)
+        ctx = collect(
+            ui=make_ui(pipe),
+            root=catalogs.repo_root(),
+            interactive=True,
+            secrets={**_LOCKED, "TAVILY_KEY": "tavily-x"},
+            locked_secrets={*_LOCKED, "TAVILY_KEY"},
+        )
     assert "Web search" in ctx.plan.services
 
 
@@ -535,9 +652,9 @@ def test_e2e_ctrl_c_cancels_cleanly() -> None:
 
 
 def test_e2e_backspace_returns_to_the_previous_question() -> None:
-    # Answer the database question with the second option, then go back and
-    # take the first: the second stage must run twice.
+    # choose the second database option, go forward to the provider, go
+    # back twice to the database, then take the first option.
     with create_pipe_input() as pipe:
-        pipe.send_text("\x1b[B\r" + "\x08" + "\x1b[A\r" + "\r" * 40)
-        ctx = collect(ui=make_ui(pipe), root=catalogs.repo_root(), interactive=True)
+        pipe.send_text("\r" + "\x1b[B\r" + "\x08" + "\x1b[A\r" + "\r" * 5 + " \r" + "\r" * 10)
+        ctx = _ctx_locked(pipe)
     assert ctx.plan.database_mode == "neon"

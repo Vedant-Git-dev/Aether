@@ -34,6 +34,7 @@ from .config import (
     load_config,
 )
 from .config_store import ConfigManager, ConfigOverrides
+from .config_validation import format_startup_problems, startup_problems
 from .connectors import ProcessedUpdates, build_messaging_connectors
 from .connectors.attachments import AttachmentProcessor
 from .connectors.mail_allowlist import MailAllowlist
@@ -157,11 +158,11 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # --- fail-fast validation -----------------------------------------
-        if not settings.database_url:
-            raise StartupError(
-                "DATABASE_URL is not set. Aether persists everything to Postgres — "
-                "create a free Neon database and put its connection string in .env."
-            )
+        # Values that cannot be pasted after boot are checked before the
+        # database is touched. One plain list, every problem at once.
+        problems = startup_problems(settings, config, require_keys=False)
+        if problems:
+            raise StartupError(format_startup_problems(problems))
         cipher = _build_cipher(settings)
         try:
             token_keyring = TokenKeyring.from_values(
@@ -217,6 +218,14 @@ def create_app(
         # dropdown lists that key's models while every turn still says no
         # provider is configured.
         llm_settings = await settings_with_resolved_keys(settings, env_resolver)
+        # The key-dependent half of the required set: the chosen provider's
+        # key, the Gemini key when memory search is on, and each enabled
+        # surface's bot token. A key pasted in the panel counts exactly like
+        # one in .env. One plain list; boot refuses rather than running a
+        # feature that would quietly do nothing.
+        key_problems = startup_problems(llm_settings, config)
+        if key_problems:
+            raise StartupError(format_startup_problems(key_problems))
         # the Settings page's model dropdowns ask this for the models each
         # configured key can reach — fetched live per provider, cached by
         # key, so a pasted key lists its models without a restart

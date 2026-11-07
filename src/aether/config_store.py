@@ -48,6 +48,7 @@ from .config import (
     Settings,
     is_legacy_composio_server,
 )
+from .config_validation import REQUIRED_SETTINGS_PATHS, is_missing
 from .connectors import build_messaging_connectors
 from .memory.crypto import Cipher, CryptoError
 
@@ -654,6 +655,10 @@ class ConfigManager:
         """The validated form of `value` for this path — nothing is touched
         until validation has passed. Scalars and items re-validate the whole
         section copy (validate-then-mutate); lists go through a TypeAdapter."""
+        if resolved.canonical in REQUIRED_SETTINGS_PATHS and is_missing(value):
+            raise ConfigError(
+                f"{resolved.canonical} is required and can't be cleared — save a value instead."
+            )
         if resolved.kind == "list":
             if not isinstance(value, list):
                 raise ConfigError(

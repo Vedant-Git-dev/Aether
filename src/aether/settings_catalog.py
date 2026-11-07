@@ -38,6 +38,7 @@ class FieldSpec:
     note: str = ""  # when it bites, when apply_note has nothing
     none_ok: bool = False  # text fields where empty means "not set"
     model: bool = False  # a model picker: the feed names its sentinel choices
+    required: bool = False  # cannot be saved empty or cleared, only replaced
 
 
 @dataclass(frozen=True)
@@ -54,16 +55,15 @@ class GroupSpec:
 # The sentinel choices each model field offers, in order — the first is
 # also what an empty value behaves as (the honest off for the senses,
 # the main model for the first pass). The main model itself has no
-# sentinels — something has to think — and neither does memory search:
-# it is a forced choice of a real model. "base" is the legacy spelling
-# of "default" and renders as it.
+# sentinels — something has to think. Memory search is a real on/off
+# choice: a model id turns it on, "off" is the honest off.
 _MODEL_SENTINELS: dict[str, tuple[str, ...]] = {
     "llm.model": (),
     "llm.image_model": (MODEL_OFF, MODEL_DEFAULT),
     "llm.audio_model": (MODEL_OFF, MODEL_DEFAULT),
     "llm.video_model": (MODEL_OFF, MODEL_DEFAULT),
     "llm.salience_model": (MODEL_DEFAULT, MODEL_OFF),
-    "llm.embedding_model": (),
+    "llm.embedding_model": (MODEL_OFF,),
 }
 
 # the plain words the sentinels read as on the page
@@ -76,7 +76,7 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
     GroupSpec(
         key="llm",
         title="Model",
-        note="Saving one of these restarts Aether itself — it is back in a few seconds.",
+        note="Saving one of these restarts Aether.",
         restart=True,
         fields=(
             FieldSpec(
@@ -84,6 +84,7 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
                 label="Model",
                 hint="The model Aether thinks with, picked from the ones your keys can reach.",
                 model=True,
+                required=True,
             ),
             FieldSpec(
                 path="llm.image_model",
@@ -122,8 +123,9 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
                 path="llm.embedding_model",
                 label="Memory search model",
                 hint="The model that makes memory searchable by meaning, on your "
-                "Gemini key — a real model is always picked here.",
+                "Gemini key — none (off) leaves memory search off.",
                 model=True,
+                required=True,
             ),
             FieldSpec(
                 path="llm.max_tokens",
@@ -262,8 +264,7 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
     GroupSpec(
         key="proactive",
         title="Background work",
-        note="The worker is off by default and every cap is a hard stop. Watches "
-        "and reminders are on — they only ever act on something you asked about.",
+        note="The worker is off by default and every cap is a hard stop.",
         fields=(
             FieldSpec(
                 path="proactive.enabled",
@@ -545,6 +546,17 @@ def _field_type(model: type[BaseModel], field: str) -> tuple[str, list[str]]:
     return "text", []
 
 
+def _field_default(model: type[BaseModel], field: str) -> Any:
+    """The field's own default, for the page's "clear shows this" line."""
+    info = model.model_fields.get(field)
+    if info is None:
+        return None
+    try:
+        return info.get_default(call_default_factory=True)
+    except Exception:
+        return None
+
+
 def _field_feed(config: AppConfig, spec: FieldSpec, changed: set[str]) -> dict:
     model, field, value = _walk(config, spec.path)
     kind, choices = _field_type(model, field)
@@ -567,6 +579,8 @@ def _field_feed(config: AppConfig, spec: FieldSpec, changed: set[str]) -> dict:
         "kind": kind,
         "choices": choices,
         "value": value,
+        "default": _field_default(model, field),
+        "required": spec.required,
         "none_ok": spec.none_ok,
         "changed": spec.path in changed,
         "sentinels": sentinels,

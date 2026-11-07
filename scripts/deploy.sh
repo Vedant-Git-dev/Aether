@@ -619,8 +619,6 @@ ask_questions() {
   hr
   say "Aether hosted setup"
   hr
-  say "Nothing secret is written to the repo. Re-running with --force updates"
-  say "instead of duplicating. Ctrl+C at any point stops cleanly."
   say ""
 
   # 1. Database
@@ -644,9 +642,7 @@ ask_questions() {
   example_model=$(discover_example_model "$LLM_PROVIDER")
   [ -n "$example_model" ] || example_model="$DEFAULT_MODEL"
   say ""
-  say "  Model naming (from docs/models.md): a bare id uses llm.provider;"
-  say "  provider/model routes to that provider (for example openai/gpt-5.1)."
-  say "  Sentinel words off/default are meanings, not model ids."
+  say "  A bare id uses llm.provider; provider/model routes to that provider."
   ask_line LLM_MODEL "  Main model" "$example_model"
 
   # 3. Optional services (multi-select); screen capture is Linux-only and omitted.
@@ -667,7 +663,6 @@ SERVICES_LIST
     menu_multi SERVICES "3. Optional services (multi-select)" "" "${service_opts[@]}"
     SERVICES=$(map_indices "$SERVICES" "${service_opts[@]}")
   fi
-  say "  Semantic memory is always on (Gemini embeddings); it is not an optional choice."
   case "$(printf '%s' ",$SERVICES," | tr '[:upper:]' '[:lower:]')" in
     *"image generation"*) ask_line IMAGE_PROVIDER "  Image provider (pollinations|gemini|none)" "pollinations" ;;
     *) IMAGE_PROVIDER="none" ;;
@@ -687,8 +682,6 @@ $DIRECT_APPS
 APPS_LIST
   if [ "${#app_keys[@]}" -gt 0 ]; then
     say ""
-    say "  Direct apps use a sign-in you own. They need the token-encryption"
-    say "  keyring, which this script generates for you."
     menu_multi APPS "4. Direct apps (multi-select)" "" "${app_keys[@]}"
     APPS=$(map_indices "$APPS" "${app_keys[@]}")
   fi
@@ -705,19 +698,10 @@ CHANNEL_LIST
 
   # 6. Render plan
   say ""
-  say "  Plan trade-offs:"
-  say "    free    - 0 USD: 512 MB, 0.1 CPU, spins down after 15 idle minutes,"
-  say "              ephemeral disk (the workspace resets on restart),"
-  say "              750 instance-hours per workspace per month."
-  say "    starter - about 7 USD/month: 512 MB, 0.5 CPU, no spin-down, and a"
-  say "              1 GB persistent disk (\$0.25/GB/month) keeps the workspace."
+  say "  free has no cost and spins down when idle; starter keeps the workspace."
   menu_single PLAN "6. Render plan" 1 \
     "free" \
     "starter"
-  case "$PLAN" in
-    free) say "  Free: 512 MB RAM, 0.1 CPU, spins down after 15 idle minutes (a monitor keeps it awake), ephemeral disk, 750 instance-hours/workspace/month." ;;
-    starter) say "  Starter: about 7 USD/month, 512 MB RAM, 0.5 CPU, no spin-down, can attach a persistent disk so the workspace survives restarts." ;;
-  esac
 
   # 7. Render details
   ask_line SERVICE_NAME "7a. Render service name" "aether"
@@ -746,7 +730,6 @@ CHANNEL_LIST
   menu_single DEPLOY_SOURCE "  Deploy source" 1 "public" "fork"
   if [ "$DEPLOY_SOURCE" = "fork" ]; then
     ask_line REPO_URL "  Your fork URL" "https://github.com/CHANGE_ME/Aether"
-    say "  When Render asks, authorize the GitHub app so it can see your fork."
     say "  Dashboard: New, Blueprint, connect GitHub, pick the fork."
   else
     REPO_URL="$UPSTREAM_REPO"
@@ -828,8 +811,6 @@ gather_credentials() {
   hr
   say "Credentials"
   hr
-  say "Pasted values are read without echo, never printed, and stored only in"
-  say "Render (and in an owner-only file under $STATE_DIR for resume)."
   say ""
 
   # --- Render account and API key ---------------------------------------
@@ -912,12 +893,10 @@ gather_credentials() {
     open_url "https://console.groq.com/keys"
     ask_secret GROQ_KEY "Groq API key"
   fi
-  if [ -z "$GEMINI_KEY" ]; then
+  if [ "${SEMANTIC_MEMORY:-yes}" = "yes" ] && [ -z "$GEMINI_KEY" ]; then
     say ""
-    say "Semantic memory is always on and uses Gemini embeddings."
-    say "A Gemini API key is required for it."
     open_url "https://aistudio.google.com/apikey"
-    ask_secret GEMINI_KEY "Gemini API key (semantic memory)"
+    ask_secret GEMINI_KEY "Gemini API key (memory search)"
   fi
   if has_service "background jobs"; then
     say ""
@@ -944,14 +923,7 @@ gather_credentials() {
   # --- Direct apps -------------------------------------------------------
   if has_app "gmail" || has_app "calendar" || has_app "drive" || has_app "docs"; then
     say ""
-    say "Google direct apps need an OAuth client you own. Recipe (from the repo):"
-    say "  1. Create or select a project: https://console.cloud.google.com/apis/credentials"
-    say "  2. Enable the Gmail API and Google Calendar API under APIs and Services, then Library."
-    say "  3. For Drive, also enable the Google Drive API and Google Picker API."
-    say "  4. On the OAuth consent screen choose External; add your account as a test user; publish to Production so refresh tokens do not expire in 7 days."
-    say "  5. Create credentials, OAuth client ID, Web application."
-    say "  6. Authorized redirect URI: the exact value printed after deploy."
-    say "  7. Authorized JavaScript origin: the deployed origin (for the Drive picker)."
+    say "Google OAuth client: https://console.cloud.google.com/apis/credentials"
     open_url "https://console.cloud.google.com/apis/credentials"
     ask_secret GOOGLE_CLIENT_ID "Google OAuth client ID"
     ask_secret GOOGLE_CLIENT_SECRET "Google OAuth client secret"
@@ -964,14 +936,11 @@ gather_credentials() {
   fi
   if has_app "github"; then
     say ""
-    say "GitHub can connect with a fine-grained personal access token from the"
-    say "/apps walk after deploy, so no OAuth client is required. If you want an"
-    say "OAuth app instead, create it and use the redirect URI printed after deploy."
+    say "GitHub: a fine-grained personal access token also works."
     open_url "https://github.com/settings/developers"
   fi
   if has_app "linkedin"; then
     say ""
-    say "LinkedIn needs an OAuth app (tokens last about 60 days)."
     open_url "https://www.linkedin.com/developers/apps"
     ask_secret LINKEDIN_CLIENT_ID "LinkedIn client ID"
     ask_secret LINKEDIN_CLIENT_SECRET "LinkedIn client secret"
@@ -1001,8 +970,6 @@ gather_credentials() {
 
   # --- Generated secrets -------------------------------------------------
   say ""
-  say "AETHER_TOKEN is a shared secret: anyone holding it can read and change"
-  say "this instance. Use a long random value and never put it in a URL."
   say "Generating the encryption material."
   if [ -z "$AETHER_ENCRYPTION_KEY" ]; then
     AETHER_ENCRYPTION_KEY=$(gen_key_b64)

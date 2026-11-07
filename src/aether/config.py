@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     token_encryption_key_previous_id: str = Field(
         default="", validation_alias="AETHER_TOKEN_ENCRYPTION_KEY_PREVIOUS_ID"
     )
-    api_token: str = Field(default="change-me", validation_alias="AETHER_TOKEN")
+    api_token: str = Field(default="", validation_alias="AETHER_TOKEN")
     dev_ephemeral_key: bool = Field(default=False, validation_alias="AETHER_DEV_EPHEMERAL_KEY")
 
     database_url: str = ""
@@ -116,10 +116,30 @@ class LLMConfig(BaseModel):
     video_model: str | None = None
     salience_model: str | None = None
     # the free embedding model that makes memory semantically searchable —
-    # the Gemini key's own family; none (or a missing Gemini key) leaves
-    # memory search unavailable
-    embedding_model: str | None = "gemini-embedding-001"
+    # the Gemini key's own family. Off by default: memory search is a real
+    # choice, and an explicit "off" is an honest off rather than a feature
+    # that runs with no key and silently finds nothing.
+    embedding_model: str | None = MODEL_OFF
     max_tokens: int = 16000
+
+    @field_validator(
+        "image_model",
+        "audio_model",
+        "video_model",
+        "salience_model",
+        "embedding_model",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_yaml_bool(cls, v: object) -> object:
+        # YAML 1.1 parses bare off/on as booleans — the same trap the
+        # contacts switches handle. Coerce both spellings so a hand-edited
+        # config.yaml cannot fail on a quoted-looking word.
+        if v is False:
+            return MODEL_OFF
+        if v is True:
+            return MODEL_DEFAULT
+        return v
 
 
 class AgentConfig(BaseModel):

@@ -1612,7 +1612,7 @@ async def test_model_fields_render_as_pickers_with_their_sentinels() -> None:
         assert by_path[path]["choices"] == []
     # the main model has no sentinel — something has to think; the senses
     # offer the honest off and the main model; the first pass both; and
-    # memory search is a forced choice of a real model, so none at all
+    # memory search is a real on/off choice, so it offers off
     assert by_path["llm.model"]["sentinels"] == []
     assert by_path["llm.image_model"]["sentinels"] == [
         {"value": "off", "label": "None (off)"},
@@ -1623,7 +1623,9 @@ async def test_model_fields_render_as_pickers_with_their_sentinels() -> None:
         {"value": "default", "label": "Use default"},
         {"value": "off", "label": "None (off)"},
     ]
-    assert by_path["llm.embedding_model"]["sentinels"] == []
+    assert by_path["llm.embedding_model"]["sentinels"] == [
+        {"value": "off", "label": "None (off)"},
+    ]
     # the provider field is gone from the page feed; the key itself
     # stays for chat's bare ids
     assert "llm.provider" not in by_path

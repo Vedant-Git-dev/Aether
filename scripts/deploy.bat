@@ -333,9 +333,6 @@ echo.
 echo ------------------------------------------------------------
 echo Aether hosted setup
 echo ------------------------------------------------------------
-echo Nothing secret is written to the repo. Re-running with --force updates
-echo instead of duplicating. Ctrl+C stops the run; re-run setup.bat --force to
-echo resume if state was saved.
 
 call :pick_fixed DATABASE_MODE "1. Database" 1 "neon|existing|render"
 if /i "!DATABASE_MODE!"=="render" (
@@ -353,13 +350,11 @@ set "EX_MODEL="
 for /f "usebackq delims=" %%A in (`%PS% catalog examplemodel -Provider "!LLM_PROVIDER!" -RepoRoot "%REPO_ROOT%"`) do set "EX_MODEL=%%A"
 if "!EX_MODEL!"=="" set "EX_MODEL=%DEFAULT_MODEL%"
 echo.
-echo   Model naming (from docs/models.md): a bare id uses llm.provider;
-echo   provider/model routes to that provider (for example openai/gpt-5.1).
+echo   A bare id uses llm.provider; provider/model routes to that provider.
 call :ask_line LLM_MODEL "  Main model" "!EX_MODEL!"
 
 call :pick_many SERVICES "3. Optional services (multi-select)" "" services
 for /f "usebackq delims=" %%A in (`%PS% map -Kind services -Pick "!SERVICES!" -RepoRoot "%REPO_ROOT%"`) do set "SERVICES=%%A"
-echo   Semantic memory is always on (Gemini embeddings); it is not an optional choice.
 echo !SERVICES! | findstr /i /c:"image generation" >nul && (
   call :pick_fixed IMAGE_PROVIDER "  Image provider" 1 "pollinations|gemini|none"
 ) || set "IMAGE_PROVIDER=none"
@@ -374,18 +369,8 @@ call :pick_many CHANNELS "5. Chat channels (multi-select)" "" channels
 for /f "usebackq delims=" %%A in (`%PS% map -Kind channels -Pick "!CHANNELS!" -RepoRoot "%REPO_ROOT%"`) do set "CHANNELS=%%A"
 
 echo.
-echo   Plan trade-offs:
-echo     free    - 0 USD: 512 MB, 0.1 CPU, spins down after 15 idle minutes,
-echo               ephemeral disk (the workspace resets on restart),
-echo               750 instance-hours per workspace per month.
-echo     starter - about 7 USD/month: 512 MB, 0.5 CPU, no spin-down, and a
-echo               1 GB persistent disk keeps the workspace.
+echo   free has no cost and spins down when idle; starter keeps the workspace.
 call :pick_fixed PLAN "6. Render plan" 1 "free|starter"
-if /i "!PLAN!"=="free" (
-  echo   Free: 512 MB, 0.1 CPU, spins down after 15 idle minutes, ephemeral disk, 750 instance-hours/month.
-) else (
-  echo   Starter: about 7 USD/month, 0.5 CPU, no spin-down, can use a persistent disk.
-)
 
 call :ask_line SERVICE_NAME "7a. Render service name" "aether"
 set "SUBCODE=000"
@@ -472,7 +457,6 @@ echo.
 echo ------------------------------------------------------------
 echo Credentials
 echo ------------------------------------------------------------
-echo Pasted values are read without echo and never printed.
 echo.
 echo A Render account is required. If you do not have one, create it first:
 echo   https://dashboard.render.com/register
@@ -527,10 +511,9 @@ if not errorlevel 1 (
   call :open_url "https://console.groq.com/keys"
   call :ask_secret GROQ_KEY "Groq API key"
 )
-if "!GEMINI_KEY!"=="" (
-  echo Semantic memory is always on and uses Gemini embeddings.
+if "!GEMINI_KEY!"=="" if /i not "!SEMANTIC_MEMORY!"=="no" (
   call :open_url "https://aistudio.google.com/apikey"
-  call :ask_secret GEMINI_KEY "Gemini API key (semantic memory)"
+  call :ask_secret GEMINI_KEY "Gemini API key (memory search)"
 )
 call :has_word SERVICES "background jobs"
 if not errorlevel 1 (
@@ -557,13 +540,7 @@ goto after_google
 
 :google_apps
 echo.
-echo Google direct apps need an OAuth client you own. Recipe (from the repo):
-echo  1. Create or select a project at https://console.cloud.google.com/apis/credentials
-echo  2. Enable the Gmail API and Google Calendar API under APIs and Services, Library.
-echo  3. For Drive, also enable the Google Drive API and Google Picker API.
-echo  4. OAuth consent screen: External, add your account, publish to Production.
-echo  5. Create credentials, OAuth client ID, Web application.
-echo  6. Use the exact redirect URI printed after deploy.
+echo Google OAuth client: https://console.cloud.google.com/apis/credentials
 call :open_url "https://console.cloud.google.com/apis/credentials"
 call :ask_secret GOOGLE_CLIENT_ID "Google OAuth client ID"
 call :ask_secret GOOGLE_CLIENT_SECRET "Google OAuth client secret"
@@ -607,8 +584,6 @@ if /i "!UPTIME_MODE!"=="api" (
 
 REM --- generated secrets ---
 echo.
-echo AETHER_TOKEN is a shared secret: anyone holding it can read and change
-echo this instance. Use a long random value and never put it in a URL.
 if "!AETHER_ENCRYPTION_KEY!"=="" (
   for /f "usebackq delims=" %%V in (`%PS% randkey`) do set "AETHER_ENCRYPTION_KEY=%%V"
 )
