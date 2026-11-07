@@ -15,17 +15,16 @@ import sys
 from pathlib import Path
 
 
-def windows_command(script: Path, args: list[str]) -> str:
-    """A ``cmd /c`` command line that survives spaces in every path.
+def windows_command(script: Path, args: list[str]) -> list[str]:
+    """The Windows command that runs a batch file with spaces in any path.
 
-    Passing a list to ``subprocess`` lets ``list2cmdline`` quote the script
-    path, but ``cmd`` then reads only up to the first space ("'D:\\My' is
-    not recognized..."). The documented form wraps the whole ``/c`` payload
-    in one extra pair of quotes, which this builds.
+    ``cmd /c "<script>" ...`` fails because cmd reads only up to the first
+    space. Routing the call through ``call`` keeps the script path quoted
+    and lets ``list2cmdline`` quote every spaced argument, and ``call``
+    propagates the batch's exit code back to ``cmd /c``.
     """
     comspec = os.environ.get("COMSPEC", "cmd.exe")
-    inner = " ".join([f'"{script}"', *(f'"{arg}"' for arg in args)])
-    return f'"{comspec}" /c "{inner}"'
+    return [comspec, "/c", "call", str(script), *args]
 
 
 def deploy_engine(
@@ -43,7 +42,7 @@ def deploy_engine(
         common.append("--force")
     if sys.platform.startswith("win"):
         script = repo_root / "scripts" / "deploy.bat"
-        command: str | list[str] = windows_command(script, common)
+        command = windows_command(script, common)
     else:
         script = repo_root / "scripts" / "deploy.sh"
         command = ["bash", str(script), *common]

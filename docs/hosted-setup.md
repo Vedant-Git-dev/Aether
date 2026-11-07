@@ -65,7 +65,9 @@ working directory. The wizard opens with a short animated Aether wordmark
 Before asking anything, `scripts/setup.sh` / `scripts/setup.bat` run a
 preflight (`python -m aether.setup.requirements --mode setup`):
 
-- it checks the Python version and the `rich` and `prompt_toolkit` packages;
+- it checks the Python version and the packages the wizard and its live checks
+  need: `rich`, `prompt_toolkit`, `httpx`, `asyncpg`, and the provider SDKs
+  (`anthropic`, `openai`, `google-genai`);
 - missing packages are installed with `pip`; if the system Python refuses pip
   (PEP 668's externally-managed marker), the launcher creates a private
   virtual environment at `~/.aether-setup/venv` (override with

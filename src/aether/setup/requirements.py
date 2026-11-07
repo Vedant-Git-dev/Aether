@@ -20,9 +20,20 @@ from pathlib import Path
 
 MIN_PYTHON = (3, 12)
 
-# Distribution name -> import name. ``rich`` and ``prompt_toolkit`` are the
-# wizard's own dependencies and are declared in pyproject.toml.
-SETUP_PACKAGES: dict[str, str] = {"rich": "rich", "prompt_toolkit": "prompt_toolkit"}
+# Distribution name -> import name. The wizard's own dependencies plus the
+# clients its live checks need (httpx for Render and the bot APIs, asyncpg for
+# the database, and the provider SDKs for the model-list and embedding calls).
+# They are all declared in pyproject.toml, so installing the project satisfies
+# them; the preflight installs just these when the project is not installed.
+SETUP_PACKAGES: dict[str, str] = {
+    "rich": "rich",
+    "prompt_toolkit": "prompt_toolkit",
+    "httpx": "httpx",
+    "asyncpg": "asyncpg",
+    "anthropic": "anthropic",
+    "openai": "openai",
+    "google-genai": "google.genai",
+}
 
 # External commands the POSIX deploy engine cannot run without. `curl` posts
 # to the Render API; `base64` generates AETHER_ENCRYPTION_KEY / AETHER_TOKEN
@@ -301,10 +312,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def requirements_check(interpreter: str | Path) -> list[str]:
     """Ask a (possibly virtual) interpreter which setup packages it lacks."""
+    names = ", ".join(repr(module) for module in SETUP_PACKAGES.values())
     code = (
-        "import importlib.util,sys;"
-        "print(','.join(n for n in ('rich','prompt_toolkit') "
-        "if importlib.util.find_spec(n) is None))"
+        "import importlib.util;"
+        f"print(','.join(n for n in [{names}] if importlib.util.find_spec(n) is None))"
     )
     try:
         proc = subprocess.run(

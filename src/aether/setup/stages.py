@@ -493,6 +493,16 @@ def _uptime_stage() -> Stage:
     return Stage("uptime", run, autofill, visible=lambda c: c.plan.setup_target == "render")
 
 
+def _render_name_validator(ctx: SetupContext):
+    """Say the check is running, then run it on the entered name."""
+
+    def validate(value: str) -> str | None:
+        ctx.say(f"  Checking {value} on Render...")
+        return render_service_name_error(value, ctx.secret("RENDER_API_KEY"))
+
+    return validate
+
+
 def _alert_email_stage() -> Stage:
     return text_stage(
         "alert_email",
@@ -589,7 +599,7 @@ def build_flow(ctx: SetupContext) -> list[Stage]:
             default="aether",
             visible=render,
             required=True,
-            validate=lambda value: render_service_name_error(value, ctx.secret("RENDER_API_KEY")),
+            validate=_render_name_validator(ctx),
         ),
         choice_stage(
             "region",

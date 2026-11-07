@@ -43,7 +43,7 @@ def test_check_setup_only_looks_at_packages() -> None:
         find_spec=lambda module: None,
         which=lambda name: None,
     )
-    assert result.packages == ["rich", "prompt_toolkit"]
+    assert result.packages == list(requirements.SETUP_PACKAGES)
     assert result.commands == []
     assert result.any is True
 
@@ -177,7 +177,7 @@ def test_ensure_no_install_never_runs_anything() -> None:
         out=lambda line: None,
     )
     assert ran == []
-    assert missing.packages == ["rich", "prompt_toolkit"]
+    assert missing.packages == list(requirements.SETUP_PACKAGES)
 
 
 def test_main_reports_missing_requirements(monkeypatch, capsys) -> None:

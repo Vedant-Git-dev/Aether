@@ -65,12 +65,13 @@ def test_libpq_only_query_options_are_dropped() -> None:
     )
 
 
-def test_a_missing_driver_does_not_reject_a_correct_url(monkeypatch) -> None:
+def test_a_missing_driver_is_reported_not_skipped(monkeypatch) -> None:
     from aether.setup import validation
 
     monkeypatch.setattr(validation, "_installed", lambda *modules: False)
     validation.use_network(True)
-    assert validation.database_error("postgresql://u:p@127.0.0.1:1/db") is None
+    message = validation.database_error("postgresql://u:p@127.0.0.1:1/db")
+    assert message is not None and "asyncpg" in message
 
 
 def test_minimal_valid_config_has_no_problems() -> None:

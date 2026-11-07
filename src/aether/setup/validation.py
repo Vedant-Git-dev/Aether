@@ -45,17 +45,27 @@ def _run(coro):
 
 
 def _installed(*modules: str) -> bool:
-    """Whether the probe's own libraries are importable here.
-
-    The wizard can run from its bootstrap virtual environment, which holds
-    only rich and prompt_toolkit. A missing client library means the value
-    cannot be checked, not that the value is wrong, so the caller lets it
-    through instead of refusing a correct key.
-    """
+    """Whether the probe's own libraries are importable here."""
     try:
         return all(importlib.util.find_spec(name) is not None for name in modules)
     except Exception:
         return False
+
+
+def _missing_module(*modules: str) -> str | None:
+    """An error naming the library a check needs, or None when it can run.
+
+    The preflight installs these libraries, so this only appears on a
+    broken environment. The check is never silently skipped: a value that
+    cannot be verified is reported with what to install.
+    """
+    missing = [name for name in modules if not _installed(name)]
+    if not missing:
+        return None
+    return (
+        "the check needs " + ", ".join(missing) + " — install Aether's dependencies "
+        "with `pip install -e .`, then run setup again."
+    )
 
 
 def _reason(exc: Exception, url: str) -> str:
@@ -74,8 +84,11 @@ def database_error(url: str) -> str | None:
         return "DATABASE_URL is required — paste the connection string."
     if not value.startswith(("postgresql://", "postgres://")):
         return "a Postgres URL starts with postgresql:// or postgres://."
-    if not _NETWORK or not _installed("asyncpg"):
+    if not _NETWORK:
         return None
+    problem = _missing_module("asyncpg")
+    if problem:
+        return problem
     try:
         _run(_probe_database(value))
     except Exception as exc:
@@ -102,8 +115,11 @@ def model_key_error(provider: str, key: str, base_url: str | None = None) -> str
     if provider == "ollama":
         if is_missing(value):
             return "OLLAMA_BASE_URL is required — the local host address."
-        if not _NETWORK or not _installed("openai"):
+        if not _NETWORK:
             return None
+        problem = _missing_module("anthropic", "openai", "google.genai")
+        if problem:
+            return problem
         try:
             _run(_probe_models(provider, value))
         except Exception:
@@ -111,8 +127,11 @@ def model_key_error(provider: str, key: str, base_url: str | None = None) -> str
         return None
     if is_missing(value):
         return "this key is required for the chosen provider."
-    if not _NETWORK or not _installed("anthropic", "openai", "google.genai"):
+    if not _NETWORK:
         return None
+    problem = _missing_module("anthropic", "openai", "google.genai")
+    if problem:
+        return problem
     try:
         _run(_probe_models(provider, value, base_url))
     except Exception:
@@ -131,8 +150,11 @@ def embedding_key_error(key: str, model: str) -> str | None:
     value = (key or "").strip()
     if is_missing(value):
         return "a Gemini API key is required when memory search is on."
-    if not _NETWORK or not _installed("google.genai"):
+    if not _NETWORK:
         return None
+    problem = _missing_module("google.genai")
+    if problem:
+        return problem
     try:
         _run(_probe_embedding(value, model))
     except Exception:
@@ -178,8 +200,11 @@ def render_api_key_error(key: str) -> str | None:
     value = (key or "").strip()
     if is_missing(value):
         return "a Render API key is required to deploy."
-    if not _NETWORK or not _installed("httpx"):
+    if not _NETWORK:
         return None
+    problem = _missing_module("httpx")
+    if problem:
+        return problem
     import httpx
 
     try:
@@ -221,8 +246,11 @@ def render_service_name_error(name: str, key: str) -> str | None:
         return "a service name is required."
     if not _RENDER_NAME.match(value):
         return "use 2-63 characters: lowercase letters, numbers and hyphens."
-    if not _NETWORK or not _installed("httpx"):
+    if not _NETWORK:
         return None
+    problem = _missing_module("httpx")
+    if problem:
+        return problem
     if _render_subdomain_taken(value):
         return f"'{value}' is already taken on Render — choose another name."
     if is_missing(key):
@@ -258,8 +286,11 @@ def telegram_token_error(token: str) -> str | None:
     value = (token or "").strip()
     if is_missing(value):
         return "a Telegram bot token is required when Telegram is on."
-    if not _NETWORK or not _installed("httpx"):
+    if not _NETWORK:
         return None
+    problem = _missing_module("httpx")
+    if problem:
+        return problem
     import httpx
 
     try:
@@ -278,8 +309,11 @@ def discord_token_error(token: str) -> str | None:
     value = (token or "").strip()
     if is_missing(value):
         return "a Discord bot token is required when Discord is on."
-    if not _NETWORK or not _installed("httpx"):
+    if not _NETWORK:
         return None
+    problem = _missing_module("httpx")
+    if problem:
+        return problem
     import httpx
 
     try:

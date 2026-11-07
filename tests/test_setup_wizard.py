@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -395,7 +396,7 @@ def test_render_api_key_is_asked_before_the_service_name() -> None:
 
 def test_windows_deploy_command_quotes_every_space(monkeypatch) -> None:
     monkeypatch.setenv("COMSPEC", r"C:\Windows\system32\cmd.exe")
-    line = windows_command(
+    command = windows_command(
         Path(r"D:\My Projects\Aether\scripts\deploy.bat"),
         [
             "--answers",
@@ -403,8 +404,10 @@ def test_windows_deploy_command_quotes_every_space(monkeypatch) -> None:
             "--non-interactive",
         ],
     )
-    # cmd /c must receive one quoted payload, so the script path is wrapped
-    assert '/c ""D:\\My Projects\\Aether\\scripts\\deploy.bat"' in line
+    # the call goes through `call` so cmd does not stop at the first space
+    assert command[1:3] == ["/c", "call"]
+    line = subprocess.list2cmdline(command)
+    assert 'call "D:\\My Projects\\Aether\\scripts\\deploy.bat"' in line
     assert '"C:\\Users\\Vedant Pardeshi\\.aether-setup\\answers.env"' in line
 
 
