@@ -59,6 +59,20 @@ def test_check_deploy_only_looks_at_commands() -> None:
     assert result.packages == []
 
 
+def test_windows_deploy_does_not_require_base64() -> None:
+    assert requirements.deploy_commands("win32") == ("curl",)
+    assert requirements.deploy_commands("linux") == ("curl", "base64")
+    result = requirements.check(
+        "deploy",
+        version_info=(3, 12),
+        find_spec=lambda module: None,
+        which=lambda name: "/usr/bin/curl" if name == "curl" else None,
+        platform="win32",
+    )
+    assert result.commands == []
+    assert result.any is False
+
+
 def test_deploy_does_not_block_on_an_old_interpreter() -> None:
     result = requirements.check(
         "deploy",

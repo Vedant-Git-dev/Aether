@@ -74,10 +74,16 @@ preflight (`python -m aether.setup.requirements --mode setup`):
   for the platform and stops.
 
 The deploy engine (`scripts/deploy.sh` / `scripts/deploy.bat`) runs the same
-preflight in deploy mode: it checks `curl` and `base64`, tries to install them
-with the platform's package manager when they are missing, and otherwise
-prints the command to run. Python is optional there; the engine uses it for
-key generation and the UptimeRobot email flow, but has fallbacks.
+preflight in deploy mode. `curl` is needed on both platforms to talk to the
+Render API. `base64` is needed on Linux and macOS only: `deploy.sh` uses the
+`base64` command to generate `AETHER_ENCRYPTION_KEY` and `AETHER_TOKEN` and to
+encode `config.yaml` into `AETHER_CONFIG_B64`. Windows does all of that through
+PowerShell's `[Convert]::ToBase64String`, so `scripts/deploy.bat` requires only
+`curl.exe` (built into Windows 10/11) and never a `base64` executable. The
+preflight tries to install a missing tool with the platform's package manager
+when it can, and otherwise prints the command to run. Python is optional there;
+the engine uses it for key generation and the UptimeRobot email flow, but has
+fallbacks.
 
 The packages are declared in `pyproject.toml`; running `pip install -e .`
 installs them for an existing environment. The wizard never needs jq. A local
@@ -134,8 +140,9 @@ The multi-select questions start with nothing selected; use Space to add.
    telegram, discord. At least one is required.
 8. **Render details** - only for the Render target: plan, the Render API key,
    service name, region, deploy source, and uptime monitoring (on asks for an
-   alert email). The API key is checked with a workspace read, and the service
-   name is refused if the workspace already has a service with it.
+   alert email). The API key is checked with a workspace read. The service name
+   is refused when `<name>.onrender.com` already answers or when the workspace
+   already has a service with that name.
 9. **Credentials** follow the choices, one masked ask each. A required value is
    re-asked until it is valid; an invalid database, model key, embedding key or
    bot token shows a plain error and the fix.
@@ -317,8 +324,9 @@ the Blueprint.
   call itself starts Render's "First Deploy". If Render appends a suffix to the
   subdomain because the requested name is taken, a second deploy is needed to
   apply the real `AETHER_PUBLIC_URL`; the deploy engine skips that second deploy when
-  no OAuth app or GitHub Actions queue needs the URL. The wizard refuses a service
-  name the workspace already uses, so the exact name is available to the create call.
+  no OAuth app or GitHub Actions queue needs the URL. The wizard refuses a name
+  whose `onrender.com` subdomain already answers, and also a name the workspace
+  already uses, so the exact name is available to the create call.
 - Run `scripts/deploy.sh` directly without a key (or with the public upstream
   repo, which the API cannot attach to a workspace) and it writes a tailored
   `render.yaml`, opens the Blueprint page, and prints the exact values to paste.
@@ -333,9 +341,10 @@ the Blueprint.
 - The wizard reads secrets masked (`prompt_toolkit`'s password input) and writes
   them owner-only (`chmod 600` on Linux, `icacls` on Windows). A value is never
   echoed while it is being typed, logged, or committed.
-- At the end, the wizard prints every collected secret once, in full, so it can
-  be stored somewhere safe; that closing block is the only time the values
-  appear. `AETHER_TOKEN` is the panel access token.
+- At the end, the wizard prints `AETHER_TOKEN` once, in full, as the panel
+  access token to paste under **Settings > Access**. Every other collected
+  secret stays in `secrets.env` (owner-only, `chmod 600`); the wizard does not
+  echo them.
 - `AETHER_ENCRYPTION_KEY` is 32 random bytes, base64. Losing it makes stored
   data unrecoverable. The wizard says this once and keeps a backup copy in
   `~/.aether-setup/secrets.env`.

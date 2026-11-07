@@ -100,12 +100,13 @@ def _print_summary(console: Console, result: SetupResult) -> None:
         console.print(f"  config:   {escape(str(result.config_path))}")
     if result.render_path:
         console.print(f"  blueprint: {escape(str(result.render_path))}")
-    if result.secrets:
+    token = result.secrets.get("AETHER_TOKEN", "")
+    if token:
         console.print()
-        console.print("  Store these securely now; setup will not show them again:")
-        for key in sorted(result.secrets):
-            console.print(f"    {escape(key)} = {escape(result.secrets[key])}")
-        console.print("  AETHER_TOKEN is the panel access token; paste it under Settings > Access.")
+        console.print(f"  AETHER_TOKEN (panel access): {escape(token)}")
+        console.print(
+            "  Paste it under Settings > Access. Store it securely; it is not shown again."
+        )
     if result.plan.setup_target == "local":
         console.print()
         console.print("  To run locally:")

@@ -415,21 +415,38 @@ def test_a_render_service_name_must_be_subdomain_safe() -> None:
     assert message is not None and "lowercase" in message
 
 
+def test_a_live_onrender_subdomain_is_refused(monkeypatch) -> None:
+    from aether.setup import validation
+
+    class Response:
+        def __init__(self, status_code: int) -> None:
+            self.status_code = status_code
+
+        def json(self):
+            return []
+
+    monkeypatch.setattr(validation, "_installed", lambda *modules: True)
+    monkeypatch.setattr("httpx.get", lambda url, **kwargs: Response(200))
+    validation.use_network(True)
+    message = validation.render_service_name_error("aether", "rnd-key")
+    assert message is not None and "already taken" in message
+
+
 def test_a_taken_render_service_name_is_refused(monkeypatch) -> None:
     from aether.setup import validation
 
-    calls: list[str] = []
-
     class Response:
-        def __init__(self, payload) -> None:
-            self.status_code = 200
+        def __init__(self, payload, status_code: int = 200) -> None:
+            self.status_code = status_code
             self._payload = payload
 
         def json(self):
             return self._payload
 
     def fake_get(url, **kwargs):
-        calls.append(url)
+        if "onrender.com" in url:
+            name = url.removeprefix("https://").removesuffix(".onrender.com")
+            return Response([], status_code=200 if name == "taken" else 404)
         if url.endswith("/owners"):
             return Response([{"owner": {"id": "tea-1"}, "cursor": "c"}])
         return Response([{"service": {"name": "taken"}, "cursor": "c"}])

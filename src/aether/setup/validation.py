@@ -196,14 +196,36 @@ def render_api_key_error(key: str) -> str | None:
     return None
 
 
+def _render_subdomain_taken(name: str) -> bool:
+    """True when ``<name>.onrender.com`` already answers a Render service.
+
+    A live service answers 200; an unused name has no route. A sleeping free
+    service can answer 502/503, which is why the workspace lookup below is
+    kept — it catches a service the subdomain probe cannot.
+    """
+    import httpx
+
+    try:
+        response = httpx.get(
+            f"https://{name}.onrender.com", timeout=_TIMEOUT, follow_redirects=True
+        )
+    except Exception:
+        return False
+    return response.status_code == 200
+
+
 def render_service_name_error(name: str, key: str) -> str | None:
-    """The service name is free to use in the key's Render workspace."""
+    """The service name is free on ``onrender.com`` and in the workspace."""
     value = (name or "").strip()
     if is_missing(value):
         return "a service name is required."
     if not _RENDER_NAME.match(value):
-        return "use 2-30 characters: lowercase letters, numbers and hyphens."
-    if is_missing(key) or not _NETWORK or not _installed("httpx"):
+        return "use 2-63 characters: lowercase letters, numbers and hyphens."
+    if not _NETWORK or not _installed("httpx"):
+        return None
+    if _render_subdomain_taken(value):
+        return f"'{value}' is already taken on Render — choose another name."
+    if is_missing(key):
         return None
     import httpx
 
