@@ -88,6 +88,19 @@ def python_ok(version_info: Sequence[int] | None = None) -> bool:
     return info[:2] >= MIN_PYTHON
 
 
+def _module_present(finder: Callable[[str], object | None], module: str) -> bool:
+    """Whether an import name resolves, treating a missing parent as absent.
+
+    ``find_spec("google.genai")`` imports the ``google`` parent and raises
+    ``ModuleNotFoundError`` when it is not installed, rather than returning
+    None. That is the same answer for this purpose: the package is missing.
+    """
+    try:
+        return finder(module) is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
+
+
 def missing_packages(
     packages: Mapping[str, str] | None = None,
     *,
@@ -95,7 +108,7 @@ def missing_packages(
 ) -> list[str]:
     packages = packages if packages is not None else SETUP_PACKAGES
     finder = find_spec if find_spec is not None else importlib.util.find_spec
-    return [name for name, module in packages.items() if finder(module) is None]
+    return [name for name, module in packages.items() if not _module_present(finder, module)]
 
 
 def missing_commands(
@@ -314,8 +327,16 @@ def requirements_check(interpreter: str | Path) -> list[str]:
     """Ask a (possibly virtual) interpreter which setup packages it lacks."""
     names = ", ".join(repr(module) for module in SETUP_PACKAGES.values())
     code = (
-        "import importlib.util;"
-        f"print(','.join(n for n in [{names}] if importlib.util.find_spec(n) is None))"
+        "import importlib.util\n"
+        f"mods = [{names}]\n"
+        "out = []\n"
+        "for n in mods:\n"
+        "    try:\n"
+        "        if importlib.util.find_spec(n) is None:\n"
+        "            out.append(n)\n"
+        "    except Exception:\n"
+        "        out.append(n)\n"
+        "print(','.join(out))\n"
     )
     try:
         proc = subprocess.run(

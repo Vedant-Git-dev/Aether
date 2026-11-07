@@ -30,6 +30,19 @@ def test_missing_packages_uses_the_finder() -> None:
     ) == ["prompt_toolkit"]
 
 
+def test_missing_packages_treats_a_missing_parent_as_absent() -> None:
+    def find_spec(module: str):
+        if module == "google.genai":
+            raise ModuleNotFoundError("No module named 'google'")
+        return object()
+
+    missing = requirements.missing_packages(
+        {"rich": "rich", "google-genai": "google.genai"},
+        find_spec=find_spec,
+    )
+    assert missing == ["google-genai"]
+
+
 def test_missing_commands_reports_absent_tools() -> None:
     assert requirements.missing_commands(
         ("curl", "base64"), which=lambda name: "/usr/bin/curl" if name == "curl" else None
