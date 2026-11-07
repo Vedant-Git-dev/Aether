@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qsl, urlencode
 
 if TYPE_CHECKING:
     from .config import AppConfig, Settings
@@ -76,6 +77,53 @@ REQUIRED_SETTINGS_PATHS: frozenset[str] = frozenset(
         "llm.embedding_model",
     }
 )
+
+
+# libpq connection options that asyncpg forwards to the server as settings,
+# where Postgres then rejects them ("unrecognized configuration parameter").
+# Cloud dashboards add these to otherwise valid strings, so drop them before
+# asyncpg sees the URL. Client certificates and sslmode stay: asyncpg reads
+# those itself.
+_LIBPQ_ONLY_QUERY = frozenset(
+    {
+        "channel_binding",
+        "connect_timeout",
+        "connection_limit",
+        "gssencmode",
+        "keepalives",
+        "keepalives_count",
+        "keepalives_idle",
+        "keepalives_interval",
+        "load_balance_hosts",
+        "passfile",
+        "pgbouncer",
+        "pool_timeout",
+        "schema",
+        "service",
+        "sslcompression",
+        "statement_cache_size",
+        "tcp_user_timeout",
+    }
+)
+
+
+def normalize_database_url(url: str) -> str:
+    """A Postgres URL asyncpg can consume, without changing what it means.
+
+    Only libpq-only query options are removed. Everything else (host, user,
+    password, database, sslmode, server settings) is kept byte for byte.
+    """
+    text = (url or "").strip()
+    base, question, rest = text.partition("?")
+    if not question:
+        return text
+    query, hash_sep, fragment = rest.partition("#")
+    pairs = parse_qsl(query, keep_blank_values=True)
+    kept = [(key, value) for key, value in pairs if key.lower() not in _LIBPQ_ONLY_QUERY]
+    if len(kept) == len(pairs):
+        return text
+    normalized = f"{base}?{urlencode(kept)}" if kept else base
+    return f"{normalized}#{fragment}" if hash_sep else normalized
 
 
 def is_blank(value: object) -> bool:

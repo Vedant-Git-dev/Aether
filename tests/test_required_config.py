@@ -5,7 +5,11 @@ from __future__ import annotations
 from rich.console import Console
 
 from aether.config import AppConfig, Settings
-from aether.config_validation import is_placeholder, startup_problems
+from aether.config_validation import (
+    is_placeholder,
+    normalize_database_url,
+    startup_problems,
+)
 from aether.setup.capabilities import Glyphs
 from aether.setup.plan import SetupPlan
 from aether.setup.prompts import UI
@@ -39,6 +43,34 @@ def test_placeholders_and_blank_are_missing() -> None:
         assert is_placeholder(value), value
     for value in ("sk-real-key", "123456:abc", "https://example.test/x"):
         assert not is_placeholder(value), value
+
+
+def test_libpq_only_query_options_are_dropped() -> None:
+    url = (
+        "postgresql://user:pass@db.example:5432/aether"
+        "?sslmode=require&channel_binding=require&connect_timeout=10&pgbouncer=true"
+    )
+    normalized = normalize_database_url(url)
+    assert "channel_binding" not in normalized
+    assert "connect_timeout" not in normalized
+    assert "pgbouncer" not in normalized
+    assert "sslmode=require" in normalized
+    assert normalized.startswith("postgresql://user:pass@db.example:5432/aether")
+    plain = "postgresql://user:pass@db.example:5432/aether"
+    assert normalize_database_url(plain) == plain
+    # a Unix-socket URL keeps its triple slash when a query option is dropped
+    assert (
+        normalize_database_url("postgresql:///aether?channel_binding=require")
+        == "postgresql:///aether"
+    )
+
+
+def test_a_missing_driver_does_not_reject_a_correct_url(monkeypatch) -> None:
+    from aether.setup import validation
+
+    monkeypatch.setattr(validation, "_installed", lambda *modules: False)
+    validation.use_network(True)
+    assert validation.database_error("postgresql://u:p@127.0.0.1:1/db") is None
 
 
 def test_minimal_valid_config_has_no_problems() -> None:
