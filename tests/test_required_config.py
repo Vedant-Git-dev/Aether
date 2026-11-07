@@ -74,6 +74,31 @@ def test_a_missing_driver_is_reported_not_skipped(monkeypatch) -> None:
     assert message is not None and "asyncpg" in message
 
 
+def test_a_rate_limited_key_is_accepted(monkeypatch) -> None:
+    from aether.setup import validation
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("429 RESOURCE_EXHAUSTED quota")
+
+    monkeypatch.setattr(validation, "_installed", lambda *modules: True)
+    monkeypatch.setattr(validation, "_probe_embedding", boom)
+    validation.use_network(True)
+    assert validation.embedding_key_error("k", "gemini-embedding-001") is None
+
+
+def test_a_rejected_key_reports_the_reason(monkeypatch) -> None:
+    from aether.setup import validation
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("400 INVALID_ARGUMENT API key not valid")
+
+    monkeypatch.setattr(validation, "_installed", lambda *modules: True)
+    monkeypatch.setattr(validation, "_probe_embedding", boom)
+    validation.use_network(True)
+    message = validation.embedding_key_error("k", "gemini-embedding-001")
+    assert message is not None and "API key not valid" in message
+
+
 def test_minimal_valid_config_has_no_problems() -> None:
     assert startup_problems(_settings(), AppConfig()) == []
 

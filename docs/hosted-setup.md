@@ -66,8 +66,9 @@ Before asking anything, `scripts/setup.sh` / `scripts/setup.bat` run a
 preflight (`python -m aether.setup.requirements --mode setup`):
 
 - it checks the Python version and the packages the wizard and its live checks
-  need: `rich`, `prompt_toolkit`, `httpx`, `asyncpg`, and the provider SDKs
-  (`anthropic`, `openai`, `google-genai`);
+  need: `rich`, `prompt_toolkit`, `httpx`, `asyncpg`, `pydantic`,
+  `pydantic-settings`, `pyyaml`, and the provider SDKs (`anthropic`, `openai`,
+  `google-genai`);
 - missing packages are installed with `pip`; if the system Python refuses pip
   (PEP 668's externally-managed marker), the launcher creates a private
   virtual environment at `~/.aether-setup/venv` (override with
@@ -286,9 +287,12 @@ script prints this and opens the Blueprint page:
 4. Pick the repository and branch. Render reads `render.yaml` from the root.
 5. Paste the `sync: false` values when prompted.
 
-The Render API route requires the fork to be connected to your Render account;
-the API cannot attach an unconnected public repository. That is why the deploy
-engine falls back to the dashboard for the public-repo choice.
+Both deploy-source choices use the Render API. The **public** choice uses
+`https://github.com/Vedant-Git-dev/Aether`; the **fork** choice asks for your own
+URL. The chosen repository must be connected to your Render account (Render's
+GitHub app installed), because the API cannot attach a repository Render has not
+been granted access to. The dashboard route is only the fallback when no Render
+API key is given.
 
 ## Configuration without committing it
 
@@ -329,12 +333,10 @@ the Blueprint.
   no OAuth app or GitHub Actions queue needs the URL. The wizard refuses a name
   whose `onrender.com` subdomain already answers, and also a name the workspace
   already uses, so the exact name is available to the create call.
-- Run `scripts/deploy.sh` directly without a key (or with the public upstream
-  repo, which the API cannot attach to a workspace) and it writes a tailored
+- Run `scripts/deploy.sh` directly without an API key and it writes a tailored
   `render.yaml`, opens the Blueprint page, and prints the exact values to paste.
   Render prompts for the `sync: false` secrets. The repository's root
-  `render.yaml` is the single Blueprint Render reads for the public-repo route
-  and for a fork.
+  `render.yaml` is the Blueprint Render reads on that fallback route.
 - On failure the deploy engine prints the deploy status and recent Render events and
   links to the build log.
 

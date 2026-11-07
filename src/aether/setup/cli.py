@@ -120,10 +120,6 @@ def _print_summary(console: Console, result: SetupResult) -> None:
         else:
             console.print(f"    set -a; . {escape(str(result.secrets_path))}; set +a")
             console.print(f"    AETHER_CONFIG={escape(str(result.config_path))} aether")
-    else:
-        console.print()
-        console.print("  Deploying to Render with the answers above.")
-        console.print("  Back up secrets.env.")
 
 
 def main(argv: Sequence[str] | None = None, *, stream: TextIO | None = None) -> int:

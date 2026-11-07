@@ -20,7 +20,8 @@ import re
 from ..config_validation import is_missing, normalize_database_url
 
 _NETWORK = True
-_TIMEOUT = 10.0
+# A first call opens TLS and can be slow; the provider probes get room for it.
+_TIMEOUT = 30.0
 _CREDENTIALS = re.compile(r"(postgres(?:ql)?://)[^@\s]+@")
 
 _RENDER_API = "https://api.render.com/v1"
@@ -68,13 +69,28 @@ def _missing_module(*modules: str) -> str | None:
     )
 
 
-def _reason(exc: Exception, url: str) -> str:
-    """One short line from a failed probe, without echoing the URL."""
+_RATE_HINTS = ("429", "resource_exhausted", "rate limit", "quota")
+
+
+def _rate_limited(exc: Exception) -> bool:
+    """True when the provider accepted the key but throttled the request.
+
+    A rate limit means the key is valid; the wizard lets it through rather
+    than making the user wait out a quota window during setup.
+    """
+    text = str(exc).lower()
+    return any(hint in text for hint in _RATE_HINTS)
+
+
+def _reason(exc: Exception, secret: str = "") -> str:
+    """One short line from a failed probe, without echoing the secret."""
     text = str(exc).splitlines()[0].strip()
-    if url and url in text:
-        text = text.replace(url, "(connection string)")
+    # Only redact a real secret: a one- or two-character value would match
+    # inside ordinary words and garble the message.
+    if len(secret) >= 8 and secret in text:
+        text = text.replace(secret, "(value)")
     text = _CREDENTIALS.sub(r"\1***@", text)
-    return (text or type(exc).__name__)[:160]
+    return (text or type(exc).__name__)[:200]
 
 
 def database_error(url: str) -> str | None:
@@ -134,8 +150,10 @@ def model_key_error(provider: str, key: str, base_url: str | None = None) -> str
         return problem
     try:
         _run(_probe_models(provider, value, base_url))
-    except Exception:
-        return "the key could not be verified — check it and try again."
+    except Exception as exc:
+        if _rate_limited(exc):
+            return None
+        return f"the key could not be verified — {_reason(exc, value)}."
     return None
 
 
@@ -157,16 +175,28 @@ def embedding_key_error(key: str, model: str) -> str | None:
         return problem
     try:
         _run(_probe_embedding(value, model))
-    except Exception:
-        return "the Gemini key could not make an embedding — check it and try again."
+    except Exception as exc:
+        if _rate_limited(exc):
+            return None
+        return f"the Gemini key could not make an embedding — {_reason(exc, value)}."
     return None
 
 
 async def _probe_embedding(key: str, model: str) -> None:
-    from ..llm.embeddings import GeminiEmbedder
+    from google import genai
+    from google.genai import types as gtypes
 
-    embedder = GeminiEmbedder.build(key, model)
-    await asyncio.wait_for(embedder.embed(["setup check"], "query"), timeout=_TIMEOUT)
+    client = genai.Client(api_key=key)
+    await asyncio.wait_for(
+        client.aio.models.embed_content(
+            model=model,
+            contents=["setup check"],
+            config=gtypes.EmbedContentConfig(
+                output_dimensionality=768, task_type="RETRIEVAL_QUERY"
+            ),
+        ),
+        timeout=_TIMEOUT,
+    )
 
 
 def _render_owner_id(key: str) -> str:

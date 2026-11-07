@@ -411,6 +411,25 @@ def test_windows_deploy_command_quotes_every_space(monkeypatch) -> None:
     assert '"C:\\Users\\Vedant Pardeshi\\.aether-setup\\answers.env"' in line
 
 
+def test_windows_engine_reads_itself_before_parsing_args() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "scripts" / "deploy.bat").read_text(encoding="utf-8")
+    # the helper path is captured before SHIFT moves %0; the read uses it
+    assert 'set "SELF=%~f0"' in script
+    assert "$p='%SELF%'" in script
+    after_args = script.split(":parse_args", 1)[1]
+    assert "%~f0" not in after_args
+
+
+def test_windows_engine_never_reuses_a_poisoned_run_file() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "scripts" / "deploy.bat").read_text(encoding="utf-8")
+    # a per-run file name, and no fragile icacls grant that can strip access
+    assert "run-%RANDOM%%RANDOM%.env" in script
+    assert "/inheritance:r /grant:r" not in script
+    assert "Protect-OwnerOnly" in script
+
+
 def test_a_render_service_name_must_be_subdomain_safe() -> None:
     from aether.setup.validation import render_service_name_error
 

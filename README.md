@@ -202,8 +202,9 @@ macOS: `brew install python@3.12 postgresql node`. Node 22+ may need NodeSource 
 on older distributions.
 
 The setup wizard checks the Python version and installs the packages it needs to
-run and to verify real values: `rich`, `prompt_toolkit`, `httpx`, `asyncpg`, and
-the provider SDKs (`anthropic`, `openai`, `google-genai`), into a private venv
+run and to verify real values: `rich`, `prompt_toolkit`, `httpx`, `asyncpg`,
+`pydantic`, `pydantic-settings`, `pyyaml`, and the provider SDKs (`anthropic`,
+`openai`, `google-genai`), into a private venv
 when the system Python refuses `pip`. It does not install Python or Postgres for
 you.
 

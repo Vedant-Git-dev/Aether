@@ -19,11 +19,16 @@ REM  is the supported way to answer the questions.
 REM ===========================================================================
 
 set "SCRIPT_DIR=%~dp0"
+REM Capture the script path before the argument loop: SHIFT moves %0 along
+REM with the arguments, so %~f0 later would name the last option, not this file.
+set "SELF=%~f0"
 for %%I in ("%SCRIPT_DIR%..") do set "REPO_ROOT=%%~fI"
 set "TMPBASE=%TEMP%/aether-setup"
 if not exist "%TMPBASE%" mkdir "%TMPBASE%" >nul 2>&1
 set "HELPER=%TMPBASE%/helper.ps1"
-set "RUNENV=%TMPBASE%/run.env"
+REM A per-run name: an older build could leave run.env with a broken ACL,
+REM and reusing the name would inherit that denial.
+set "RUNENV=%TMPBASE%/run-%RANDOM%%RANDOM%.env"
 set "STATE_DIR=%USERPROFILE%/.aether-setup"
 if not exist "%STATE_DIR%" mkdir "%STATE_DIR%" >nul 2>&1
 set "STATE_FILE=%STATE_DIR%/state.env"
@@ -180,7 +185,7 @@ if defined HAVE_PY (
 REM ---------------------------------------------------------------------------
 REM Extract the embedded PowerShell helper and read the repo catalogs.
 REM ---------------------------------------------------------------------------
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$p='%~f0'; $s=[IO.File]::ReadAllText($p); $a=('<#PS'+'HELPER#>'); $b=('<#END'+'PS#>'); $i=$s.IndexOf($a); $j=$s.IndexOf($b); if($i -lt 0 -or $j -lt 0){exit 2}; [IO.File]::WriteAllText('%HELPER%', $s.Substring($i+$a.Length, $j-$i-$a.Length), (New-Object Text.UTF8Encoding($false)))"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p='%SELF%'; $s=[IO.File]::ReadAllText($p); $a=('<#PS'+'HELPER#>'); $b=('<#END'+'PS#>'); $i=$s.IndexOf($a); $j=$s.IndexOf($b); if($i -lt 0 -or $j -lt 0){exit 2}; [IO.File]::WriteAllText('%HELPER%', $s.Substring($i+$a.Length, $j-$i-$a.Length), (New-Object Text.UTF8Encoding($false)))"
 if errorlevel 1 (
   echo [stop] could not extract the PowerShell helper
   exit /b 1
@@ -211,6 +216,10 @@ set "DEFAULT_MODEL="
 for /f "usebackq delims=" %%A in (`%PS% catalog defaultmodel -RepoRoot "%REPO_ROOT%"`) do set "DEFAULT_MODEL=%%A"
 set "UPSTREAM_REPO="
 for /f "usebackq delims=" %%A in (`%PS% catalog upstream -RepoRoot "%REPO_ROOT%"`) do set "UPSTREAM_REPO=%%A"
+REM Q prefixes question-time echoes; in a non-interactive run they go to nul.
+set "Q="
+if "%NON_INTERACTIVE%"=="1" set "Q=>nul "
+
 goto questions
 
 REM Load KEY=value lines without executing them.
@@ -329,10 +338,10 @@ REM ---------------------------------------------------------------------------
 REM The questions, in the same order as setup.sh
 REM ---------------------------------------------------------------------------
 :questions
-echo.
-echo ------------------------------------------------------------
-echo Aether hosted setup
-echo ------------------------------------------------------------
+%Q%echo.
+%Q%echo ------------------------------------------------------------
+%Q%echo Aether hosted setup
+%Q%echo ------------------------------------------------------------
 
 call :pick_fixed DATABASE_MODE "1. Database" 1 "neon|existing|render"
 if /i "!DATABASE_MODE!"=="render" (
@@ -349,8 +358,8 @@ call :pick_one LLM_PROVIDER "2. Main model provider" !PROV_DEF! providers
 set "EX_MODEL="
 for /f "usebackq delims=" %%A in (`%PS% catalog examplemodel -Provider "!LLM_PROVIDER!" -RepoRoot "%REPO_ROOT%"`) do set "EX_MODEL=%%A"
 if "!EX_MODEL!"=="" set "EX_MODEL=%DEFAULT_MODEL%"
-echo.
-echo   A bare id uses llm.provider; provider/model routes to that provider.
+%Q%echo.
+%Q%echo   A bare id uses llm.provider; provider/model routes to that provider.
 call :ask_line LLM_MODEL "  Main model" "!EX_MODEL!"
 
 call :pick_many SERVICES "3. Optional services (multi-select)" "" services
@@ -368,8 +377,8 @@ for /f "usebackq delims=" %%A in (`%PS% map -Kind apps -Pick "!APPS!" -RepoRoot 
 call :pick_many CHANNELS "5. Chat channels (multi-select)" "" channels
 for /f "usebackq delims=" %%A in (`%PS% map -Kind channels -Pick "!CHANNELS!" -RepoRoot "%REPO_ROOT%"`) do set "CHANNELS=%%A"
 
-echo.
-echo   free has no cost and spins down when idle; starter keeps the workspace.
+%Q%echo.
+%Q%echo   free has no cost and spins down when idle; starter keeps the workspace.
 call :pick_fixed PLAN "6. Render plan" 1 "free|starter"
 
 call :ask_line SERVICE_NAME "7a. Render service name" "aether"
@@ -381,46 +390,46 @@ if "!SUBCODE!"=="302" echo [warn] https://!SERVICE_NAME!.onrender.com already an
 if "!SUBCODE!"=="403" echo [warn] https://!SERVICE_NAME!.onrender.com already answers; Render may append a suffix.
 if "!SUBCODE!"=="503" echo [warn] https://!SERVICE_NAME!.onrender.com already answers; Render may append a suffix.
 call :pick_fixed REGION "7b. Render region" 1 "oregon|ohio|virginia|frankfurt|singapore"
-echo.
-echo   7c. Deploy source
-echo     public - the public upstream repo (fastest; no GitHub link needed)
-echo     fork   - your own fork (required for full API automation)
+%Q%echo.
+%Q%echo   7c. Deploy source
+%Q%echo     public - deploy the upstream repo (https://github.com/Vedant-Git-dev/Aether)
+%Q%echo     fork   - deploy your own fork (required for full API automation)
 call :pick_fixed DEPLOY_SOURCE "  Deploy source" 1 "public|fork"
 if /i "!DEPLOY_SOURCE!"=="fork" (
   call :ask_line REPO_URL "  Your fork URL" "https://github.com/CHANGE_ME/Aether"
-  echo   When Render asks, authorize the GitHub app so it can see your fork.
-  echo   Dashboard: New, Blueprint, connect GitHub, pick the fork.
+  %Q%echo   When Render asks, authorize the GitHub app so it can see your fork.
+  %Q%echo   Dashboard: New, Blueprint, connect GitHub, pick the fork.
 ) else (
-  set "REPO_URL=%UPSTREAM_REPO%"
+  set "REPO_URL=https://github.com/Vedant-Git-dev/Aether"
 )
 
-echo.
-echo   8. Uptime monitoring
-echo     api     - create a keyword monitor with your UptimeRobot API key
-echo     email   - no API key: UptimeRobot emails a one-click confirm link
-echo     manual  - print the exact steps and open the page
-echo     skip    - do nothing
+%Q%echo.
+%Q%echo   8. Uptime monitoring
+%Q%echo     api     - create a keyword monitor with your UptimeRobot API key
+%Q%echo     email   - no API key: UptimeRobot emails a one-click confirm link
+%Q%echo     manual  - print the exact steps and open the page
+%Q%echo     skip    - do nothing
 call :pick_fixed UPTIME_MODE "  Uptime monitoring" 1 "api|email|manual|skip"
 if /i "!UPTIME_MODE!"=="api" call :ask_line ALERT_EMAIL "  Alert email address" ""
 if /i "!UPTIME_MODE!"=="email" call :ask_line ALERT_EMAIL "  Alert email address" ""
 
 call :pick_fixed LOCAL_COPY "9. Also set up a local copy for testing?" 1 "no|yes"
 
-echo.
-echo ------------------------------------------------------------
-echo Choices
-echo ------------------------------------------------------------
-echo   database:        !DATABASE_MODE!
-echo   model:           !LLM_PROVIDER! / !LLM_MODEL!
-echo   services:        !SERVICES!
-echo   direct apps:     !APPS!
-echo   channels:        !CHANNELS!
-echo   plan:            !PLAN!
-echo   service name:    !SERVICE_NAME!
-echo   region:          !REGION!
-echo   deploy source:   !DEPLOY_SOURCE! (!REPO_URL!)
-echo   uptime:          !UPTIME_MODE!
-echo   local copy:      !LOCAL_COPY!
+%Q%echo.
+%Q%echo ------------------------------------------------------------
+%Q%echo Choices
+%Q%echo ------------------------------------------------------------
+%Q%echo   database:        !DATABASE_MODE!
+%Q%echo   model:           !LLM_PROVIDER! / !LLM_MODEL!
+%Q%echo   services:        !SERVICES!
+%Q%echo   direct apps:     !APPS!
+%Q%echo   channels:        !CHANNELS!
+%Q%echo   plan:            !PLAN!
+%Q%echo   service name:    !SERVICE_NAME!
+%Q%echo   region:          !REGION!
+%Q%echo   deploy source:   !DEPLOY_SOURCE! (!REPO_URL!)
+%Q%echo   uptime:          !UPTIME_MODE!
+%Q%echo   local copy:      !LOCAL_COPY!
 if "%NON_INTERACTIVE%"=="0" if "%DRY_RUN%"=="0" (
   set /p "_go=Proceed? [Y/n]: "
   if /i "!_go!"=="n" ( echo [stop] nothing was changed & exit /b 1 )
@@ -434,7 +443,10 @@ REM ---------------------------------------------------------------------------
 set "_var=%~1"
 set "_q=%~2"
 set "_cur=!%_var%!"
-if not "!_cur!"=="" ( echo [ok] already set & exit /b 0 )
+if not "!_cur!"=="" (
+  if "%NON_INTERACTIVE%"=="0" echo [ok] already set
+  exit /b 0
+)
 if "%NON_INTERACTIVE%"=="1" (
   echo [warn] no value supplied for %_var% ^(non-interactive^)
   exit /b 0
@@ -444,7 +456,7 @@ exit /b 0
 
 :open_url
 if "%DRY_RUN%"=="1" ( echo   [dry-run] would open: %~1 & exit /b 0 )
-if "%NON_INTERACTIVE%"=="1" ( echo   %~1 & exit /b 0 )
+if "%NON_INTERACTIVE%"=="1" exit /b 0
 start "" "%~1"
 exit /b 0
 
@@ -453,32 +465,32 @@ echo !%~1! | findstr /i /c:"%~2" >nul
 exit /b !errorlevel!
 
 :credentials
-echo.
-echo ------------------------------------------------------------
-echo Credentials
-echo ------------------------------------------------------------
-echo.
-echo A Render account is required. If you do not have one, create it first:
-echo   https://dashboard.render.com/register
-echo Render dashboard: https://dashboard.render.com
-echo.
-echo A Render API key lets this script create and configure everything.
-echo Without one, a Blueprint and dashboard walkthrough are used.
+%Q%echo.
+%Q%echo ------------------------------------------------------------
+%Q%echo Credentials
+%Q%echo ------------------------------------------------------------
+%Q%echo.
+%Q%echo A Render account is required. If you do not have one, create it first:
+%Q%echo   https://dashboard.render.com/register
+%Q%echo   Render dashboard: https://dashboard.render.com
+%Q%echo.
+%Q%echo A Render API key lets this script create and configure everything.
+%Q%echo Without one, a Blueprint and dashboard walkthrough are used.
 call :open_url "https://dashboard.render.com/u/settings#api-keys"
-echo Dashboard, top right, Account Settings, API Keys, Create API Key.
+%Q%echo Dashboard, top right, Account Settings, API Keys, Create API Key.
 call :ask_secret RENDER_API_KEY "Render API key (Enter to skip and use the dashboard)"
-if not "!RENDER_API_KEY!"=="" echo   Render API key set.
+if not "!RENDER_API_KEY!"=="" if "%NON_INTERACTIVE%"=="0" echo   Render API key set.
 
 if /i "!DATABASE_MODE!"=="neon" (
-  echo.
-  echo Neon free Postgres: create a project at https://console.neon.tech
-  echo Copy the connection string and keep sslmode=require.
+  %Q%echo.
+  %Q%echo Neon free Postgres: create a project at https://console.neon.tech
+  %Q%echo Copy the connection string and keep sslmode=require.
   call :open_url "https://console.neon.tech"
   call :ask_secret DATABASE_URL "Paste the Neon connection string"
 )
 if /i "!DATABASE_MODE!"=="existing" call :ask_secret DATABASE_URL "Paste your Postgres connection string"
 if /i "!DATABASE_MODE!"=="render" (
-  echo Create it in the dashboard: New, Postgres. Copy the External Connection String.
+  %Q%echo Create it in the dashboard: New, Postgres. Copy the External Connection String.
   call :open_url "https://dashboard.render.com/new/database"
   call :ask_secret DATABASE_URL "Paste the Render Postgres external connection string"
 )
@@ -539,8 +551,8 @@ if not errorlevel 1 goto google_apps
 goto after_google
 
 :google_apps
-echo.
-echo Google OAuth client: https://console.cloud.google.com/apis/credentials
+%Q%echo.
+%Q%echo Google OAuth client: https://console.cloud.google.com/apis/credentials
 call :open_url "https://console.cloud.google.com/apis/credentials"
 call :ask_secret GOOGLE_CLIENT_ID "Google OAuth client ID"
 call :ask_secret GOOGLE_CLIENT_SECRET "Google OAuth client secret"
@@ -557,7 +569,7 @@ if not errorlevel 1 (
 :after_google
 call :has_word APPS "github"
 if not errorlevel 1 (
-  echo GitHub can connect with a fine-grained token from /apps after deploy.
+  %Q%echo GitHub can connect with a fine-grained token from /apps after deploy.
   call :open_url "https://github.com/settings/developers"
 )
 call :has_word APPS "linkedin"
@@ -691,6 +703,34 @@ function Read-Kv([string]$path) {
   return $h
 }
 
+function Write-Utf8Lines([string]$path, [object[]]$lines) {
+  # A file written by an older build can carry an ACL that denies the current
+  # user. Clear it before writing so setup never inherits that denial.
+  try {
+    [IO.File]::WriteAllLines($path, $lines, (New-Object Text.UTF8Encoding($false)))
+  } catch {
+    try { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue } catch { }
+    try { icacls $path /reset | Out-Null } catch { }
+    [IO.File]::WriteAllLines($path, $lines, (New-Object Text.UTF8Encoding($false)))
+  }
+}
+
+function Protect-OwnerOnly([string]$path) {
+  # Restrict a secrets file to the current user. Uses the resolved identity,
+  # not the bare USERNAME, so the grant cannot silently fail and leave the
+  # file with no access control entry.
+  try {
+    $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $acl = Get-Acl -LiteralPath $path
+    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($me, "FullControl", "Allow")
+    $acl.AddAccessRule($rule)
+    $acl.SetAccessRuleProtection($true, $false)
+    Set-Acl -LiteralPath $path -AclObject $acl
+  } catch {
+    # A permission tweak never fails the deploy; the profile is already private.
+  }
+}
+
 function Write-Kv([string]$path, [hashtable]$data) {
   $dir = Split-Path -Parent $path
   if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
@@ -698,7 +738,7 @@ function Write-Kv([string]$path, [hashtable]$data) {
   if ($null -eq $existing) { $existing = @{} }
   foreach ($k in $data.Keys) { $existing[$k] = $data[$k] }
   $lines = foreach ($k in ($existing.Keys | Sort-Object)) { "$k=$($existing[$k])" }
-  [IO.File]::WriteAllLines($path, $lines, (New-Object Text.UTF8Encoding($false)))
+  Write-Utf8Lines $path $lines
 }
 
 function Get-Text([string]$rel) {
@@ -824,7 +864,6 @@ function Invoke-Run {
   $name = G "SERVICE_NAME" "aether"
   $repo = G "REPO_URL"
   $repo = $repo -replace '^git@github.com:', 'https://github.com/' -replace '\.git$', ''
-  $source = G "DEPLOY_SOURCE" "public"
   $uptimeMode = G "UPTIME_MODE" "skip"
   $email = G "ALERT_EMAIL"
   $token = G "AETHER_TOKEN"
@@ -923,7 +962,7 @@ providers:
     return Invoke-RestMethod -Method $method -Uri $uri -Headers $headers
   }
 
-  if ($renderKey -and $source -eq "fork") {
+  if ($renderKey) {
     Out "Using the Render API (own fork detected)."
     $owner = "tea-dryrun"
     if (-not $dry) {
@@ -1028,10 +1067,7 @@ providers:
       }
     }
   } else {
-    if ($renderKey -and $source -eq "public") {
-      Out "[warn] The Render API cannot attach an unconnected public repo; using the dashboard route."
-    }
-    Out "[warn] No Render API key for a fork: creating the service with a Blueprint."
+    Out "[warn] No Render API key: creating the service with a Blueprint."
     $disk = if ($plan -ne "free") { "    disk:`n      name: workspace`n      mountPath: /opt/render/project/src/aether-workspace`n      sizeGB: 1`n" } else { "" }
     $need = @("DATABASE_URL", "AETHER_ENCRYPTION_KEY", "AETHER_TOKEN", "AETHER_CONFIG_B64")
     $keys = @("PYTHON_VERSION", "NODE_VERSION")
@@ -1087,15 +1123,9 @@ providers:
     $bp = Join-Path $StateDir "render.yaml"
     [IO.File]::WriteAllLines($bp, $y, (New-Object Text.UTF8Encoding($false)))
     Out "[ ok ] Blueprint written to $bp"
-    if ($source -eq "public") {
-      Out "  1. Open https://dashboard.render.com/blueprints and connect the public repo."
-      Out "  2. Render reads the complete render.yaml already committed at the repo root."
-      Out "  3. Paste the prompted sync:false values; core secrets are in $StateDir/secrets.env."
-    } else {
-      Out "  1. Push $bp as render.yaml to your fork."
-      Out "  2. Open https://dashboard.render.com/blueprints and connect the fork."
-      Out "  3. Render prompts only for the variables this plan uses."
-    }
+    Out "  1. Push $bp as render.yaml to the repo ($repo)."
+    Out "  2. Open https://dashboard.render.com/blueprints and connect it."
+    Out "  3. Render prompts only for the variables this plan uses."
     OpenUrl "https://dashboard.render.com/blueprints"
     Out "  AETHER_CONFIG_B64 (not secret): $b64"
     $url = "https://$name.onrender.com"
@@ -1314,14 +1344,14 @@ providers:
     if ($tokKey) { $sec["AETHER_TOKEN_ENCRYPTION_KEY"] = $tokKey }
     if ($tokKeyId) { $sec["AETHER_TOKEN_ENCRYPTION_KEY_ID"] = $tokKeyId }
     Write-Kv $secPath $sec
-    try { icacls $secPath /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null } catch { }
+    Protect-OwnerOnly $secPath
     if ((G "NON_INTERACTIVE") -ne "1") {
       $ans = Read-Host "Save an owner-only backup of the secrets to $env:USERPROFILE\aether-secrets.txt? [Y/n]"
       if ($ans -notmatch '^[Nn]') {
         $bp2 = Join-Path $env:USERPROFILE "aether-secrets.txt"
         $lines = @("# Aether deploy secrets. Keep this private.", "AETHER_ENCRYPTION_KEY=$enc", "AETHER_TOKEN=$token", "DATABASE_URL=$db", "SERVICE_URL=$url")
-        [IO.File]::WriteAllLines($bp2, $lines, (New-Object Text.UTF8Encoding($false)))
-        try { icacls $bp2 /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null } catch { }
+        Write-Utf8Lines $bp2 $lines
+        Protect-OwnerOnly $bp2
         Out "[ ok ] wrote owner-only backup to $bp2"
       }
     }
@@ -1352,8 +1382,7 @@ switch ($Command) {
       $v = [Environment]::GetEnvironmentVariable($n)
       if ($v) { $lines += "$n=$v" }
     }
-    [IO.File]::WriteAllLines($out, $lines, (New-Object Text.UTF8Encoding($false)))
-    try { icacls $out /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null } catch { }
+    Write-Utf8Lines $out $lines
     exit 0
   }
   "status" {
