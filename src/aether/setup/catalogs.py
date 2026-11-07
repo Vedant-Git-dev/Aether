@@ -36,6 +36,10 @@ _FALLBACK_APPS = [
 _FALLBACK_CHANNELS = [("telegram", "telegram"), ("discord", "discord")]
 
 REGIONS = ["oregon", "ohio", "virginia", "frankfurt", "singapore"]
+SETUP_TARGETS = [
+    ("local", "Run locally on this machine"),
+    ("render", "Deploy to Render"),
+]
 DATABASES = [
     ("neon", "Neon free Postgres (recommended)"),
     ("existing", "An existing Postgres connection string"),
@@ -137,7 +141,8 @@ def optional_services(root: Path | None = None) -> list[Choice]:
         if not capability or capability in {"Capability", "---"} or set(capability) <= {"-"}:
             continue
         lowered = capability.lower()
-        # Semantics memory is always on; screen capture needs the companion.
+        # Semantic memory has its own on/off question; screen capture needs
+        # the companion and is not offered here.
         if "screen capture" in lowered or "semantic memory" in lowered:
             continue
         found.append(Choice(capability.lower().replace(" ", "_"), capability))

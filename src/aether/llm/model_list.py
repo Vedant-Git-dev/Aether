@@ -99,6 +99,13 @@ def is_sentinel(value: str | None) -> bool:
     return value in (None, "", MODEL_OFF, MODEL_BASE, MODEL_DEFAULT)
 
 
+async def fetch_models(provider: str, secret: str, base_url: str | None = None) -> list[str]:
+    """One provider's model ids with one key — the same call the dropdown
+    makes, exposed so the setup wizard can verify a key before saving it."""
+    client = _default_client(provider, secret, base_url)
+    return await _FETCHERS[provider](client)
+
+
 class ModelCatalog:
     """Per-provider model lists with a by-key cache. One instance lives on
     app.state; the Settings endpoint asks it for the whole feed."""

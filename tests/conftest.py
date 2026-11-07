@@ -31,6 +31,20 @@ _TABLES = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_setup_probes(monkeypatch):
+    """Unit tests never reach the network from the setup wizard's probes,
+    and never run the local panel's npm build."""
+    from aether.setup import links, validation
+
+    monkeypatch.setenv("AETHER_SETUP_SKIP_PANEL", "1")
+    validation.use_network(False)
+    links.use_browser(False)
+    yield
+    validation.use_network(True)
+    links.use_browser(True)
+
+
 def pytest_collection_modifyitems(config, items):
     skip_integration = pytest.mark.skip(reason="integration: set AETHER_TEST_DATABASE_URL to run")
     skip_e2e = pytest.mark.skip(

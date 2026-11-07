@@ -241,7 +241,7 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     # group says it restarts, and every control carries its effective value;
     # the provider field itself is gone — every model name now carries its
     # own service in front
-    assert "Saving one of these restarts Aether itself" in text
+    assert "Saving one of these restarts Aether." in text
     assert page.locator('[data-testid="settings-field-llm.provider"]').count() == 0
     # the retired composio entry is ignored at boot and by the host, so it
     # must not appear as a live app server in settings either
@@ -596,8 +596,8 @@ def test_model_fields_are_pickers_over_the_live_catalog(page, live_server, token
     )
 
     # each field offers only the meanings it can really take: the
-    # first-pass skim has both its meanings, memory search is a forced
-    # choice — no off, no default, only real models
+    # first-pass skim has both its meanings; memory search is a real
+    # on/off choice, so it offers off and no default
     page.click('[data-testid="settings-field-llm.salience_model"]')
     page.wait_for_selector('[data-testid="settings-model-list-llm.salience_model"]')
     salience_list = page.locator('[data-testid="settings-model-list-llm.salience_model"]')
@@ -613,7 +613,7 @@ def test_model_fields_are_pickers_over_the_live_catalog(page, live_server, token
     page.click('[data-testid="settings-field-llm.embedding_model"]')
     page.wait_for_selector('[data-testid="settings-model-list-llm.embedding_model"]')
     embedding_list = page.locator('[data-testid="settings-model-list-llm.embedding_model"]')
-    assert embedding_list.locator('[data-testid="settings-model-option-off"]').count() == 0
+    assert embedding_list.locator('[data-testid="settings-model-option-off"]').count() == 1
     assert embedding_list.locator('[data-testid="settings-model-option-default"]').count() == 0
     assert (
         embedding_list.locator(

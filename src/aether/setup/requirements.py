@@ -20,15 +20,46 @@ from pathlib import Path
 
 MIN_PYTHON = (3, 12)
 
-# Distribution name -> import name. ``rich`` and ``prompt_toolkit`` are the
-# wizard's own dependencies and are declared in pyproject.toml.
-SETUP_PACKAGES: dict[str, str] = {"rich": "rich", "prompt_toolkit": "prompt_toolkit"}
+# Distribution name -> import name. The wizard's own dependencies plus the
+# clients its live checks need (httpx for Render and the bot APIs, asyncpg for
+# the database, and the provider SDKs for the model-list and embedding calls).
+# They are all declared in pyproject.toml, so installing the project satisfies
+# them; the preflight installs just these when the project is not installed.
+SETUP_PACKAGES: dict[str, str] = {
+    "rich": "rich",
+    "prompt_toolkit": "prompt_toolkit",
+    "httpx": "httpx",
+    "asyncpg": "asyncpg",
+    "pydantic": "pydantic",
+    "pydantic-settings": "pydantic_settings",
+    "pyyaml": "yaml",
+    "anthropic": "anthropic",
+    "openai": "openai",
+    "google-genai": "google.genai",
+}
 
-# External commands the deploy engine cannot run without.
+# External commands the POSIX deploy engine cannot run without. `curl` posts
+# to the Render API; `base64` generates AETHER_ENCRYPTION_KEY / AETHER_TOKEN
+# and encodes config.yaml into AETHER_CONFIG_B64. Windows does both with
+# PowerShell's [Convert]::ToBase64String, so it only needs curl.exe.
 DEPLOY_COMMANDS: tuple[str, ...] = ("curl", "base64")
+DEPLOY_COMMANDS_WINDOWS: tuple[str, ...] = ("curl",)
 
 # The distro package that provides a command, when it is not the command name.
 SYSTEM_PACKAGES: dict[str, str] = {"base64": "coreutils", "curl": "curl"}
+
+
+def deploy_commands(platform: str | None = None) -> tuple[str, ...]:
+    """The commands the deploy engine uses on this platform.
+
+    ``base64`` is POSIX-only. On Windows the batch engine routes every
+    encode and key/token generation through PowerShell, so requiring a
+    ``base64`` executable there would refuse a machine that can deploy.
+    """
+    if (platform or sys.platform).startswith("win"):
+        return DEPLOY_COMMANDS_WINDOWS
+    return DEPLOY_COMMANDS
+
 
 # A system tool installs through the first of these package managers found.
 SYSTEM_INSTALLERS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -60,6 +91,19 @@ def python_ok(version_info: Sequence[int] | None = None) -> bool:
     return info[:2] >= MIN_PYTHON
 
 
+def _module_present(finder: Callable[[str], object | None], module: str) -> bool:
+    """Whether an import name resolves, treating a missing parent as absent.
+
+    ``find_spec("google.genai")`` imports the ``google`` parent and raises
+    ``ModuleNotFoundError`` when it is not installed, rather than returning
+    None. That is the same answer for this purpose: the package is missing.
+    """
+    try:
+        return finder(module) is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
+
+
 def missing_packages(
     packages: Mapping[str, str] | None = None,
     *,
@@ -67,7 +111,7 @@ def missing_packages(
 ) -> list[str]:
     packages = packages if packages is not None else SETUP_PACKAGES
     finder = find_spec if find_spec is not None else importlib.util.find_spec
-    return [name for name, module in packages.items() if finder(module) is None]
+    return [name for name, module in packages.items() if not _module_present(finder, module)]
 
 
 def missing_commands(
@@ -85,6 +129,7 @@ def check(
     version_info: Sequence[int] | None = None,
     find_spec: Callable[[str], object | None] | None = None,
     which: Callable[[str], str | None] | None = None,
+    platform: str | None = None,
 ) -> Missing:
     """Report what a setup or deploy run is missing, without changing anything."""
     result = Missing()
@@ -94,7 +139,7 @@ def check(
         result.python_too_old = not python_ok(version_info)
         result.packages = missing_packages(find_spec=find_spec)
     else:
-        result.commands = missing_commands(DEPLOY_COMMANDS, which=which)
+        result.commands = missing_commands(deploy_commands(platform), which=which)
     return result
 
 
@@ -283,10 +328,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def requirements_check(interpreter: str | Path) -> list[str]:
     """Ask a (possibly virtual) interpreter which setup packages it lacks."""
+    names = ", ".join(repr(module) for module in SETUP_PACKAGES.values())
     code = (
-        "import importlib.util,sys;"
-        "print(','.join(n for n in ('rich','prompt_toolkit') "
-        "if importlib.util.find_spec(n) is None))"
+        "import importlib.util\n"
+        f"mods = [{names}]\n"
+        "out = []\n"
+        "for n in mods:\n"
+        "    try:\n"
+        "        if importlib.util.find_spec(n) is None:\n"
+        "            out.append(n)\n"
+        "    except Exception:\n"
+        "        out.append(n)\n"
+        "print(','.join(out))\n"
     )
     try:
         proc = subprocess.run(

@@ -20,6 +20,8 @@ _FIELD_TO_ENV = {
     "database_mode": "DATABASE_MODE",
     "llm_provider": "LLM_PROVIDER",
     "llm_model": "LLM_MODEL",
+    "semantic_memory": "SEMANTIC_MEMORY",
+    "setup_target": "SETUP_TARGET",
     "services": "SERVICES",
     "apps": "APPS",
     "channels": "CHANNELS",
@@ -89,6 +91,8 @@ class SetupPlan:
     database_mode: str = "neon"
     llm_provider: str = "anthropic"
     llm_model: str = "claude-opus-5"
+    semantic_memory: bool = True
+    setup_target: str = "local"
     services: list[str] = field(default_factory=list)
     apps: list[str] = field(default_factory=list)
     channels: list[str] = field(default_factory=list)
@@ -97,7 +101,7 @@ class SetupPlan:
     region: str = "oregon"
     deploy_source: str = "public"
     repo_url: str = ""
-    uptime_mode: str = "api"
+    uptime_mode: str = "skip"
     alert_email: str = ""
     local_copy: bool = False
     image_provider: str = "none"
@@ -155,7 +159,7 @@ def plan_from_mapping(data: Mapping[str, Any]) -> SetupPlan:
             continue
         if field_name in {"services", "apps", "channels"}:
             setattr(plan, field_name, _as_list(value))
-        elif field_name == "local_copy":
+        elif field_name in {"local_copy", "semantic_memory"}:
             setattr(plan, field_name, _as_bool(value))
         else:
             setattr(plan, field_name, str(value).strip())

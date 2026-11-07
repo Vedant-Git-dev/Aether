@@ -1027,6 +1027,9 @@ class FakeWorkspace:
     async def needs_bootstrap(self) -> bool:
         return False
 
+    async def feed(self) -> tuple[bool, dict[str, str]]:
+        return False, dict(self.files)
+
     async def read(self, file: str, *, date_str: str | None = None) -> str:
         return self.files.get(file, "")
 
@@ -1701,7 +1704,11 @@ def build_app() -> FastAPI:
         # existed — a bare id no key's list carries, so the picker's
         # kept-as-saved note has its e2e case (and the embedding default,
         # which the fake catalog does serve, has the no-note one)
-        llm=LLMConfig(provider="anthropic", model="claude-sonnet-5"),
+        llm=LLMConfig(
+            provider="anthropic",
+            model="claude-sonnet-5",
+            embedding_model="gemini-embedding-001",
+        ),
         authz=AuthzConfig(
             rules=[
                 AuthzRule(

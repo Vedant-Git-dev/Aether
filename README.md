@@ -201,9 +201,12 @@ Use your distro's package manager when it is not `apt` (`dnf`, `pacman`, `apk`).
 macOS: `brew install python@3.12 postgresql node`. Node 22+ may need NodeSource or `nvm`
 on older distributions.
 
-The setup wizard checks the Python version and installs its own `rich` and
-`prompt_toolkit` dependencies (into a private venv when the system Python refuses
-`pip`). It does not install Python or Postgres for you.
+The setup wizard checks the Python version and installs the packages it needs to
+run and to verify real values: `rich`, `prompt_toolkit`, `httpx`, `asyncpg`,
+`pydantic`, `pydantic-settings`, `pyyaml`, and the provider SDKs (`anthropic`,
+`openai`, `google-genai`), into a private venv
+when the system Python refuses `pip`. It does not install Python or Postgres for
+you.
 
 </details>
 
@@ -230,19 +233,28 @@ The wizard asks its questions with arrow keys, Space, and Enter. Secrets are mas
 no question needs a typed number or y/n. It writes your answers, the generated secrets,
 and a ready `config.generated.yaml` to `~/.aether-setup`.
 
-For a scripted install, accept every default with `--yes`, or point at an answers file:
+For a scripted install, point at an answers file. `--yes` accepts every default
+that has one, but required values still have to come from the environment or the
+answers file, and a missing one fails the run before anything is written:
 
 ```bash
-./scripts/setup.sh --yes
 ./scripts/setup.sh --answers answers.toml
+./scripts/setup.sh --yes
 ```
 
 ```powershell
-.\scripts\setup.bat --yes
 .\scripts\setup.bat --answers answers.toml
+.\scripts\setup.bat --yes
 ```
 
 ### 2. Deploy
+
+Choosing **Deploy to Render** in the wizard runs the deploy engine at the end of
+setup, so there is no second command. It uses the Render API key you paste to
+create or update the service, waits for the first build, verifies `/healthz` and
+the panel, and registers the uptime monitor when you asked for one.
+
+To update an existing deployment later:
 
 ```bash
 ./scripts/deploy.sh --answers ~/.aether-setup/answers.env
@@ -251,11 +263,6 @@ For a scripted install, accept every default with `--yes`, or point at an answer
 ```powershell
 .\scripts\deploy.bat --answers "$env:USERPROFILE\.aether-setup\answers.env"
 ```
-
-With a Render API key and your own fork, the deploy engine creates or updates the Render
-service, waits for the first build, verifies `/healthz` and the panel, and creates the
-uptime monitor. Without a key (or with the public upstream repo), it writes the Blueprint
-and prints the exact dashboard steps instead.
 
 Open the deployed URL, paste the token under **Settings > Access**, and send `/status`.
 It reports the resolved models, pending approvals, and queue depth without a model call.
@@ -266,25 +273,23 @@ It reports the resolved models, pending approvals, and queue depth without a mod
 
 ### Run locally instead
 
-The wizard's generated config and secrets are plain files.
+The wizard's generated config and secrets are plain files and stay in the state
+directory, so they never overwrite a `config.yaml` you already have.
 
 ```bash
-cp ~/.aether-setup/config.generated.yaml config.yaml
 set -a; . ~/.aether-setup/secrets.env; set +a
-cd webapp && npm ci && npm run build && cd ..
-aether
+AETHER_CONFIG=~/.aether-setup/config.generated.yaml aether
 ```
 
 <details>
 <summary><b>Windows (PowerShell)</b></summary>
 
 ```powershell
-Copy-Item "$env:USERPROFILE\.aether-setup\config.generated.yaml" config.yaml
 Get-Content "$env:USERPROFILE\.aether-setup\secrets.env" | ForEach-Object {
   $k, $v = $_ -split '=', 2
   if ($k -and $v) { Set-Item -Path "Env:$k" -Value $v }
 }
-cd webapp; npm ci; npm run build; cd ..
+$env:AETHER_CONFIG = "$env:USERPROFILE\.aether-setup\config.generated.yaml"
 aether
 ```
 

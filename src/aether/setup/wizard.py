@@ -10,6 +10,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..config_validation import is_missing, is_placeholder
 from . import artifacts, catalogs
 from .plan import (
     SECRET_KEYS,
@@ -20,7 +21,24 @@ from .plan import (
     write_secrets,
 )
 from .prompts import UI, Cancelled, GoBack
-from .stages import SetupContext, Stage, build_flow
+from .stages import (
+    EMBEDDING_MODEL,
+    GOOGLE_APPS,
+    PICKER_APPS,
+    PROVIDER_KEYS,
+    SetupContext,
+    Stage,
+    build_flow,
+)
+from .validation import (
+    database_error,
+    discord_token_error,
+    embedding_key_error,
+    model_key_error,
+    render_api_key_error,
+    render_service_name_error,
+    telegram_token_error,
+)
 
 
 @dataclass
@@ -75,6 +93,111 @@ def run_flow(
     return ctx.plan
 
 
+def required_errors(ctx: SetupContext) -> list[str]:
+    """Every missing or invalid required answer, in one list.
+
+    Non-interactive installs run this before anything is written, so a
+    script fails with every problem at once instead of discovering one at
+    a time (or, worse, exiting 0 with a feature that would do nothing).
+    """
+    problems: list[str] = []
+
+    def check(field: str, value: object, validator=None) -> None:
+        text = str(value or "").strip()
+        if is_missing(text):
+            problems.append(f"{field} is required")
+            return
+        if is_placeholder(text):
+            problems.append(f"{field} is a placeholder — enter the real value")
+            return
+        if validator is not None:
+            error = validator(text)
+            if error:
+                problems.append(f"{field}: {error}")
+
+    # The core secrets are generated, so this catches a placeholder handed
+    # in through the environment as well as a generation that failed.
+    check("AETHER_ENCRYPTION_KEY", ctx.secret("AETHER_ENCRYPTION_KEY"))
+    check("AETHER_TOKEN", ctx.secret("AETHER_TOKEN"))
+
+    check("DATABASE_URL", ctx.secret("DATABASE_URL"), database_error)
+
+    model = (ctx.plan.llm_model or "").strip()
+    if is_missing(model) or is_placeholder(model):
+        problems.append("LLM_MODEL is required")
+
+    if ctx.plan.llm_provider != "ollama":
+        entry = PROVIDER_KEYS.get(ctx.plan.llm_provider)
+        if entry is not None:
+            check(
+                entry[0],
+                ctx.secret(entry[0]),
+                lambda value: model_key_error(ctx.plan.llm_provider, value),
+            )
+
+    if ctx.plan.semantic_memory:
+        check(
+            "GEMINI_KEY",
+            ctx.secret("GEMINI_KEY"),
+            lambda value: embedding_key_error(value, EMBEDDING_MODEL),
+        )
+
+    if not ctx.plan.channels:
+        problems.append("choose at least one chat channel")
+    if ctx.has_channel("telegram"):
+        check("TELEGRAM_TOKEN", ctx.secret("TELEGRAM_TOKEN"), telegram_token_error)
+    if ctx.has_channel("discord"):
+        check("DISCORD_TOKEN", ctx.secret("DISCORD_TOKEN"), discord_token_error)
+
+    if ctx.has_service("web search"):
+        check("TAVILY_KEY", ctx.secret("TAVILY_KEY"))
+    if ctx.has_service("voice-note transcription"):
+        check("GROQ_KEY", ctx.secret("GROQ_KEY"))
+    if ctx.has_service("image generation") and ctx.plan.image_provider == "gemini":
+        check("GEMINI_KEY", ctx.secret("GEMINI_KEY"))
+
+    if ctx.has_service("background jobs"):
+        provider = ctx.plan.workbench_provider
+        if provider == "modal":
+            check("MODAL_TOKEN_ID", ctx.secret("MODAL_TOKEN_ID"))
+            check("MODAL_TOKEN_SECRET", ctx.secret("MODAL_TOKEN_SECRET"))
+        elif provider == "vercel":
+            for key in ("VERCEL_TOKEN", "VERCEL_TEAM_ID", "VERCEL_PROJECT_ID"):
+                check(key, ctx.secret(key))
+        elif provider == "github_actions":
+            check("GITHUB_ACTIONS_TOKEN", ctx.secret("GITHUB_ACTIONS_TOKEN"))
+
+    if any(ctx.has_app(key) for key in GOOGLE_APPS):
+        check("GOOGLE_CLIENT_ID", ctx.secret("GOOGLE_CLIENT_ID"))
+        check("GOOGLE_CLIENT_SECRET", ctx.secret("GOOGLE_CLIENT_SECRET"))
+    if any(ctx.has_app(key) for key in PICKER_APPS):
+        check("GOOGLE_PICKER_KEY", ctx.secret("GOOGLE_PICKER_KEY"))
+        check("GOOGLE_PICKER_APP_ID", ctx.secret("GOOGLE_PICKER_APP_ID"))
+    if ctx.has_app("linkedin"):
+        check("LINKEDIN_CLIENT_ID", ctx.secret("LINKEDIN_CLIENT_ID"))
+        check("LINKEDIN_CLIENT_SECRET", ctx.secret("LINKEDIN_CLIENT_SECRET"))
+
+    if ctx.plan.setup_target == "render":
+        check("RENDER_API_KEY", ctx.secret("RENDER_API_KEY"), render_api_key_error)
+        check(
+            "SERVICE_NAME",
+            ctx.plan.service_name,
+            lambda value: render_service_name_error(value, ctx.secret("RENDER_API_KEY")),
+        )
+        if ctx.plan.deploy_source == "fork":
+            url = (ctx.plan.repo_url or "").strip()
+            if is_missing(url) or "CHANGE_ME" in url or not url.startswith("https://github.com/"):
+                problems.append(
+                    "REPO_URL must be your fork's https://github.com/<owner>/<repo> URL"
+                )
+        if ctx.plan.uptime_mode == "email":
+            email = (ctx.plan.alert_email or "").strip()
+            if is_missing(email) or "@" not in email:
+                problems.append("ALERT_EMAIL is required when uptime monitoring is on")
+
+    return problems
+
+
 def collect(
     *,
     ui: UI,
@@ -93,6 +216,14 @@ def collect(
         locked_secrets=set(locked_secrets or ()),
     )
     run_flow(ctx, interactive=interactive, stages=stages)
+    # The generated core secrets exist before validation so a scripted
+    # install validates exactly what it will write. persist() calls this
+    # again; it never overwrites an existing value.
+    artifacts.ensure_core_secrets(ctx.secrets)
+    # One final set of checks for both modes: interactive already re-asked
+    # until each answer was valid, and this is the gate that keeps a
+    # missed or locked placeholder out of the written files.
+    ctx.problems = required_errors(ctx)
     return ctx
 
 

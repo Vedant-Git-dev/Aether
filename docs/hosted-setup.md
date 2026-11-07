@@ -18,9 +18,11 @@ writes its artifacts to `~/.aether-setup` (or the `--state-dir` you choose):
 | `render.yaml` | a Render blueprint with the `sync: false` secrets |
 
 Deployment is `scripts/deploy.sh` (Linux/macOS) and `scripts/deploy.bat`
-(Windows). Given the wizard's answers, they run non-interactively: they create
-or update the Render service, wait for the first deploy, verify `/healthz` and
-the panel, and create an UptimeRobot monitor.
+(Windows). Choosing **Deploy to Render** runs the platform's engine
+non-interactively at the end of setup: it creates or updates the Render
+service, waits for the first deploy, verifies `/healthz` and the panel, and
+creates an UptimeRobot monitor when monitoring was chosen. The same scripts
+with `--answers` update an existing deployment later.
 
 The wizard is implemented in `src/aether/setup`:
 
@@ -63,7 +65,10 @@ working directory. The wizard opens with a short animated Aether wordmark
 Before asking anything, `scripts/setup.sh` / `scripts/setup.bat` run a
 preflight (`python -m aether.setup.requirements --mode setup`):
 
-- it checks the Python version and the `rich` and `prompt_toolkit` packages;
+- it checks the Python version and the packages the wizard and its live checks
+  need: `rich`, `prompt_toolkit`, `httpx`, `asyncpg`, `pydantic`,
+  `pydantic-settings`, `pyyaml`, and the provider SDKs (`anthropic`, `openai`,
+  `google-genai`);
 - missing packages are installed with `pip`; if the system Python refuses pip
   (PEP 668's externally-managed marker), the launcher creates a private
   virtual environment at `~/.aether-setup/venv` (override with
@@ -72,14 +77,25 @@ preflight (`python -m aether.setup.requirements --mode setup`):
   for the platform and stops.
 
 The deploy engine (`scripts/deploy.sh` / `scripts/deploy.bat`) runs the same
-preflight in deploy mode: it checks `curl` and `base64`, tries to install them
-with the platform's package manager when they are missing, and otherwise
-prints the command to run. Python is optional there; the engine uses it for
-key generation and the UptimeRobot email flow, but has fallbacks.
+preflight in deploy mode. `curl` is needed on both platforms to talk to the
+Render API. `base64` is needed on Linux and macOS only: `deploy.sh` uses the
+`base64` command to generate `AETHER_ENCRYPTION_KEY` and `AETHER_TOKEN` and to
+encode `config.yaml` into `AETHER_CONFIG_B64`. Windows does all of that through
+PowerShell's `[Convert]::ToBase64String`, so `scripts/deploy.bat` requires only
+`curl.exe` (built into Windows 10/11) and never a `base64` executable. The
+preflight tries to install a missing tool with the platform's package manager
+when it can, and otherwise prints the command to run. Python is optional there;
+the engine uses it for key generation and the UptimeRobot email flow, but has
+fallbacks.
 
 The packages are declared in `pyproject.toml`; running `pip install -e .`
-installs them for an existing environment. The wizard itself never needs Node,
-jq, or a network connection once its packages are present.
+installs them for an existing environment. The wizard never needs jq. A local
+target builds the panel with `npm` at the end, so Node 22+ is needed for a
+source checkout (a Render deploy builds it on the service; an installed wheel
+already carries it). The wizard uses the network to verify what it can: a
+database connection, a model key's model-list call, a Gemini embedding, and the
+Telegram or Discord bot identity. A check that cannot run reports a plain error
+and the fix.
 
 ## Keyboard
 
@@ -107,34 +123,45 @@ console font cannot render the circles, the wizard falls back to `(*)` and
 
 ## The questions, in order
 
-Every question has a default a bare Enter accepts. The multi-select questions
-start with nothing selected; use Space to add.
+A question with a default accepts a bare Enter. A required value with no
+default must be entered, and a blank, placeholder or invalid answer is re-asked.
+The multi-select questions start with nothing selected; use Space to add.
 
-1. **Database** - `neon` (default, recommended), `existing` (paste a connection
-   string), or `render` (with a plain warning that Render's free Postgres
-   expires 30 days after creation).
-2. **Model provider** - read from `provider: Literal[...]` in
+1. **Where to run** - a local instance (default) or deploy to Render.
+2. **Database** - `neon` (default, recommended), `existing` (paste a connection
+   string), or `render`.
+3. **Model provider** - read from `provider: Literal[...]` in
    `src/aether/config.py` (`anthropic`, `openai`, `gemini`, `ollama`, `nvidia`).
-   Then **main model** - the example model comes from `config.example.yaml`.
-3. **Optional services** (multi-select) - read from the "Optional services"
+   Then **main model**, read from `config.example.yaml`.
+4. **Semantic memory** - on (Gemini embeddings) or off. On requires a Gemini key.
+5. **Optional services** (multi-select) - read from the "Optional services"
    table in `docs/quickstart.md`: web search, voice-note transcription, image
-   generation, background jobs. Semantic memory is always on (Gemini
-   embeddings) and is not a choice. Screen capture is deliberately omitted.
-4. **Direct apps** (multi-select) - from the `AppDefinition` blocks in
+   generation, background jobs. Screen capture is deliberately omitted.
+6. **Direct apps** (multi-select) - from the `AppDefinition` blocks in
    `src/aether/providers/*.py`: gmail, calendar, drive, docs, github, linkedin.
-5. **Chat channels** (multi-select) - from `src/aether/apps_catalog.py`:
-   telegram, discord.
-6. **Render plan** - `free` (default) or `starter` (paid), with the trade-offs.
-7. **Render details** - service name, region, and the deploy source (public
-   upstream repo, or your own fork).
-8. **Uptime monitoring** - `api`, `email`, `manual`, or `skip`.
-9. **Local copy for testing** - no (default) or yes.
+7. **Chat channels** (multi-select) - from `src/aether/apps_catalog.py`:
+   telegram, discord. At least one is required.
+8. **Render details** - only for the Render target: plan, the Render API key,
+   service name, region, deploy source, and uptime monitoring (on asks for an
+   alert email). The API key is checked with a workspace read. The service name
+   is refused when `<name>.onrender.com` already answers or when the workspace
+   already has a service with that name.
+9. **Credentials** follow the choices, one masked ask each. A required value is
+   re-asked until it is valid; an invalid database, model key, embedding key or
+   bot token shows a plain error and the fix.
 
-Credential prompts follow the choices, one masked ask each: Render API key,
-database URL, model provider key, optional-service keys, the Gemini key for
-semantic memory, the workbench keys, OAuth clients, Telegram/Discord tokens,
-and the UptimeRobot key. The wizard prints the link to open instead of opening
-browsers itself.
+When a question needs a key, the wizard opens the page that issues it in the
+default browser and prints the same link in the hint, so a machine without a
+browser still shows it. `AETHER_SETUP_NO_BROWSER=1` turns the automatic open
+off.
+
+When the Render target is chosen, the wizard runs the deploy engine
+non-interactively from the answers it just wrote. The user runs only
+`scripts/setup.sh` (or `scripts/setup.bat`); there is no second script.
+
+A non-interactive run (`--answers FILE` or `--yes`) validates every required
+answer before writing anything. If any are missing or invalid it lists them all
+and exits non-zero.
 
 ## Answers file and non-interactive mode
 
@@ -142,9 +169,11 @@ browsers itself.
 `KEY=value` file the old scripts used:
 
 ```toml
+setup_target = "render"
 database_mode = "neon"
 llm_provider = "openai"
 llm_model = "openai/gpt-5.1"
+semantic_memory = false
 services = ["Web search"]
 apps = ["gmail", "calendar"]
 channels = ["telegram"]
@@ -153,22 +182,26 @@ service_name = "aether"
 region = "oregon"
 deploy_source = "fork"
 repo_url = "https://github.com/you/Aether"
-uptime_mode = "api"
+uptime_mode = "email"
 alert_email = "you@example.com"
-local_copy = false
 workbench_provider = "none"
 image_provider = "none"
 ```
+
+Secrets (`RENDER_API_KEY`, `DATABASE_URL`, `OPENAI_KEY`, `TELEGRAM_TOKEN`, and
+so on) come from the environment or the same file; only the non-secret answers
+are written back to `answers.toml`.
 
 ```bash
 ./scripts/setup.sh --answers answers.toml
 ./scripts/setup.sh --yes
 ```
 
-`--yes` accepts every default and never prompts. `--answers` fills what the
-file provides and defaults the rest, so CI and scripted installs work without a
-TTY. If there is no TTY and neither flag is given, the wizard fails with a
-message that names both flags.
+`--yes` accepts every default that has one and never prompts; required values
+still have to come from the environment or an answers file. `--answers` fills
+what the file provides and defaults the rest, so CI and scripted installs work
+without a TTY. If there is no TTY and neither flag is given, the wizard fails
+with a message that names both flags.
 
 Secrets may live in the answers file (keep it owner-only) or in the
 environment; they are never written back to `answers.toml`. `--dry-run`
@@ -254,9 +287,12 @@ script prints this and opens the Blueprint page:
 4. Pick the repository and branch. Render reads `render.yaml` from the root.
 5. Paste the `sync: false` values when prompted.
 
-The Render API route requires the fork to be connected to your Render account;
-the API cannot attach an unconnected public repository. That is why the deploy
-engine falls back to the dashboard for the public-repo choice.
+Both deploy-source choices use the Render API. The **public** choice uses
+`https://github.com/Vedant-Git-dev/Aether`; the **fork** choice asks for your own
+URL. The chosen repository must be connected to your Render account (Render's
+GitHub app installed), because the API cannot attach a repository Render has not
+been granted access to. The dashboard route is only the fallback when no Render
+API key is given.
 
 ## Configuration without committing it
 
@@ -284,8 +320,8 @@ the Blueprint.
 
 ## Render creation
 
-- With a Render API key and your own fork, the deploy engine does everything through
-  the API: it finds the workspace id (`GET /v1/owners`), finds an existing
+- The wizard's Render path requires a Render API key, so the deploy engine does
+  everything through the API: it finds the workspace id (`GET /v1/owners`), finds an existing
   service by name (`GET /v1/services?name=...`), creates it (`POST /v1/services`
   with `runtime: python`, `healthCheckPath: /healthz`, `envSpecificDetails`,
   and the environment variables), reads the real URL
@@ -294,21 +330,25 @@ the Blueprint.
   call itself starts Render's "First Deploy". If Render appends a suffix to the
   subdomain because the requested name is taken, a second deploy is needed to
   apply the real `AETHER_PUBLIC_URL`; the deploy engine skips that second deploy when
-  no OAuth app or GitHub Actions queue needs the URL. Choosing an unused name
-  avoids the suffix and the extra deploy.
-- Without a key, or with the public upstream repo (which the API cannot attach
-  to a workspace), the deploy engine writes a tailored `render.yaml`, opens the
-  Blueprint page, and prints the exact values to paste. Render prompts for the
-  `sync: false` secrets. The repository's root `render.yaml` is the single
-  Blueprint Render reads for the public-repo route and for a fork.
+  no OAuth app or GitHub Actions queue needs the URL. The wizard refuses a name
+  whose `onrender.com` subdomain already answers, and also a name the workspace
+  already uses, so the exact name is available to the create call.
+- Run `scripts/deploy.sh` directly without an API key and it writes a tailored
+  `render.yaml`, opens the Blueprint page, and prints the exact values to paste.
+  Render prompts for the `sync: false` secrets. The repository's root
+  `render.yaml` is the Blueprint Render reads on that fallback route.
 - On failure the deploy engine prints the deploy status and recent Render events and
   links to the build log.
 
 ## Secrets
 
 - The wizard reads secrets masked (`prompt_toolkit`'s password input) and writes
-  them owner-only (`chmod 600` on Linux, `icacls` on Windows); they are never
-  echoed, logged, or committed.
+  them owner-only (`chmod 600` on Linux, `icacls` on Windows). A value is never
+  echoed while it is being typed, logged, or committed.
+- At the end, the wizard prints `AETHER_TOKEN` once, in full, as the panel
+  access token to paste under **Settings > Access**. Every other collected
+  secret stays in `secrets.env` (owner-only, `chmod 600`); the wizard does not
+  echo them.
 - `AETHER_ENCRYPTION_KEY` is 32 random bytes, base64. Losing it makes stored
   data unrecoverable. The wizard says this once and keeps a backup copy in
   `~/.aether-setup/secrets.env`.
@@ -363,7 +403,7 @@ is running.
 | `/healthz` never turns ok | Check Render logs for `database ready`; a bad `DATABASE_URL` or missing `AETHER_ENCRYPTION_KEY` stops boot. |
 | Logs say `trace N undecryptable` or `event N undecryptable` | The row was encrypted with a different `AETHER_ENCRYPTION_KEY` than the one the process is running with. Restore the original key if you have it; otherwise the row is treated as empty. Re-running setup no longer rotates the key. |
 | Panel returns 503 `panel not built` | The npm build failed, or the built panel was excluded from the wheel. `src/aether/web/` is gitignored and Hatchling respects `.gitignore`; `pyproject.toml` now pins it with `artifacts = ["src/aether/web/**"]`. Make sure the build command runs `cd webapp && npm ci && npm run build` before `pip install .`, then clear the build cache and redeploy. |
-| Embedding 404 `models/none is not found` | The embedding knob used the literal string `none`. Aether's off sentinels are `off`, `default`, and `base`; `none` is treated as a model id. Use `off` to disable or the default `gemini-embedding-001`. The setup scripts always write the default and require a Gemini key. |
+| Embedding 404 `models/none is not found` | The embedding knob used the literal string `none`. Aether's off sentinels are `off`, `default`, and `base`; `none` is treated as a model id. Use `off` to disable or a model such as `gemini-embedding-001` to enable it. The setup wizard writes a model only when memory search is on, and requires a Gemini key then. |
 | First build is slow | Normal: `npm ci`, Vite, and `pip install` on a small instance. |
 | Free instance asleep | The monitor is the fix; confirm it targets `/healthz` every 5 minutes. |
 | Settings reset after restart | Expected on free: `aether-workspace/` is disk-only. Use a paid plan with the disk. |

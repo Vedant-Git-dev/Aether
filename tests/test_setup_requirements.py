@@ -30,6 +30,19 @@ def test_missing_packages_uses_the_finder() -> None:
     ) == ["prompt_toolkit"]
 
 
+def test_missing_packages_treats_a_missing_parent_as_absent() -> None:
+    def find_spec(module: str):
+        if module == "google.genai":
+            raise ModuleNotFoundError("No module named 'google'")
+        return object()
+
+    missing = requirements.missing_packages(
+        {"rich": "rich", "google-genai": "google.genai"},
+        find_spec=find_spec,
+    )
+    assert missing == ["google-genai"]
+
+
 def test_missing_commands_reports_absent_tools() -> None:
     assert requirements.missing_commands(
         ("curl", "base64"), which=lambda name: "/usr/bin/curl" if name == "curl" else None
@@ -43,7 +56,7 @@ def test_check_setup_only_looks_at_packages() -> None:
         find_spec=lambda module: None,
         which=lambda name: None,
     )
-    assert result.packages == ["rich", "prompt_toolkit"]
+    assert result.packages == list(requirements.SETUP_PACKAGES)
     assert result.commands == []
     assert result.any is True
 
@@ -57,6 +70,20 @@ def test_check_deploy_only_looks_at_commands() -> None:
     )
     assert result.commands == ["curl", "base64"]
     assert result.packages == []
+
+
+def test_windows_deploy_does_not_require_base64() -> None:
+    assert requirements.deploy_commands("win32") == ("curl",)
+    assert requirements.deploy_commands("linux") == ("curl", "base64")
+    result = requirements.check(
+        "deploy",
+        version_info=(3, 12),
+        find_spec=lambda module: None,
+        which=lambda name: "/usr/bin/curl" if name == "curl" else None,
+        platform="win32",
+    )
+    assert result.commands == []
+    assert result.any is False
 
 
 def test_deploy_does_not_block_on_an_old_interpreter() -> None:
@@ -163,7 +190,7 @@ def test_ensure_no_install_never_runs_anything() -> None:
         out=lambda line: None,
     )
     assert ran == []
-    assert missing.packages == ["rich", "prompt_toolkit"]
+    assert missing.packages == list(requirements.SETUP_PACKAGES)
 
 
 def test_main_reports_missing_requirements(monkeypatch, capsys) -> None:

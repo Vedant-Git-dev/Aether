@@ -8,6 +8,8 @@ from pathlib import Path
 
 import asyncpg
 
+from ..config_validation import normalize_database_url
+
 log = logging.getLogger("aether.db")
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"
@@ -23,7 +25,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 
 async def create_pool(url: str) -> asyncpg.Pool:
-    return await asyncpg.create_pool(url, min_size=1, max_size=5, command_timeout=30)
+    return await asyncpg.create_pool(
+        normalize_database_url(url), min_size=1, max_size=5, command_timeout=30
+    )
 
 
 async def run_migrations(pool: asyncpg.Pool, *, before: Before | None = None) -> list[str]:

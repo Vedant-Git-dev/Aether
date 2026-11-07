@@ -974,3 +974,22 @@ async def test_capability_fields_are_the_only_vision_configuration() -> None:
         assert "image_model" in section
         assert "audio_model" in section
         assert "video_model" in section
+
+
+async def test_a_required_setting_cannot_be_cleared() -> None:
+    manager, store, config = _manager()
+    ok, note = await manager.set_verdict(op="set", path="llm.model", value="", source="panel")
+    assert ok is False
+    assert "can't be cleared" in note
+    assert config.llm.model == "claude-opus-5"
+    assert store.upserts == []
+
+
+async def test_a_required_setting_can_be_replaced() -> None:
+    manager, store, config = _manager()
+    ok, note = await manager.set_verdict(
+        op="set", path="llm.model", value="openai/gpt-5.1", source="panel"
+    )
+    assert ok is True
+    assert config.llm.model == "openai/gpt-5.1"
+    assert store.rows["llm.model"] == "openai/gpt-5.1"

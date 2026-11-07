@@ -50,6 +50,13 @@ These three are the minimum to boot.
 | `AETHER_ENCRYPTION_KEY` | Base64 of 32 random bytes. Encrypts content at rest. Losing it loses the data. |
 | `AETHER_TOKEN` | Shared token for the API, web chat, and companion uploads. |
 
+Boot also refuses to start when `llm.model` is empty, the chosen provider's key
+is missing (Ollama excepted), `llm.embedding_model` is on without
+`GEMINI_API_KEY`, or an enabled chat surface has no bot token. It prints one
+list of every missing value and the fix, rather than running a feature that
+would quietly do nothing. A placeholder such as `change-me` or `your_key_here`
+counts as missing.
+
 ### Content key rotation
 
 | Name | Default | Purpose |
@@ -196,7 +203,7 @@ authz:
 | `audio_model` | empty | Same as `image_model` |
 | `video_model` | empty | Same as `image_model` |
 | `salience_model` | empty | `off` disables the first pass, `default` uses the main model |
-| `embedding_model` | `gemini-embedding-001` | Gemini only; `none` disables semantic recall |
+| `embedding_model` | `off` | A Gemini model turns memory search on; `off` leaves it off. On requires `GEMINI_API_KEY`. |
 | `max_tokens` | `16000` | Reply ceiling. Do not lower it to save time. |
 
 ### `agent`

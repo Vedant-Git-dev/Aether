@@ -124,6 +124,11 @@ ok()   { printf '[ ok ] %s\n' "$*"; }
 warn() { printf '[warn] %s\n' "$*"; }
 die()  { printf '[stop] %s\n' "$*" >&2; exit 1; }
 
+# Question-time text. The wizard (scripts/setup.sh) already showed every
+# question, so a non-interactive run does not repeat it.
+hint()    { [ "$NON_INTERACTIVE" -eq 0 ] && say "$*"; return 0; }
+hint_hr() { [ "$NON_INTERACTIVE" -eq 0 ] && hr; return 0; }
+
 mask() {
   # Mask a secret, showing only enough to recognise it. Never logs the value.
   local v="$1"
@@ -166,7 +171,6 @@ open_url() {
     return 0
   fi
   if [ "$NON_INTERACTIVE" -eq 1 ]; then
-    say "  $url"
     return 0
   fi
   say "  Opening: $url"
@@ -473,7 +477,7 @@ ask_secret() {
   local var="$1" question="$2" current answer
   eval current="\${$var:-}"
   if [ -n "$current" ]; then
-    ok "already set: $(mask "$current")"
+    [ "$NON_INTERACTIVE" -eq 0 ] && ok "already set: $(mask "$current")"
     return 0
   fi
   if [ "$NON_INTERACTIVE" -eq 1 ]; then
@@ -615,13 +619,11 @@ map_indices() {
 }
 
 ask_questions() {
-  say ""
-  hr
-  say "Aether hosted setup"
-  hr
-  say "Nothing secret is written to the repo. Re-running with --force updates"
-  say "instead of duplicating. Ctrl+C at any point stops cleanly."
-  say ""
+  hint ""
+  hint_hr
+  hint "Aether hosted setup"
+  hint_hr
+  hint ""
 
   # 1. Database
   menu_single DATABASE_MODE "1. Database" 1 \
@@ -629,9 +631,9 @@ ask_questions() {
     "existing" \
     "render"
   case "$DATABASE_MODE" in
-    neon) say "  Neon free tier: 0.5 GB, 100 compute-hours/month, does not expire." ;;
+    neon) hint "  Neon free tier: 0.5 GB, 100 compute-hours/month, does not expire." ;;
     render) warn "Render's free Postgres expires 30 days after creation (14-day grace), 1 GB, no backups. Neon is recommended." ;;
-    existing) say "  You will paste a Postgres connection string (keep sslmode=require)." ;;
+    existing) hint "  You will paste a Postgres connection string (keep sslmode=require)." ;;
   esac
 
   # 2. Model provider and main model
@@ -643,10 +645,8 @@ ask_questions() {
   local example_model
   example_model=$(discover_example_model "$LLM_PROVIDER")
   [ -n "$example_model" ] || example_model="$DEFAULT_MODEL"
-  say ""
-  say "  Model naming (from docs/models.md): a bare id uses llm.provider;"
-  say "  provider/model routes to that provider (for example openai/gpt-5.1)."
-  say "  Sentinel words off/default are meanings, not model ids."
+  hint ""
+  hint "  A bare id uses llm.provider; provider/model routes to that provider."
   ask_line LLM_MODEL "  Main model" "$example_model"
 
   # 3. Optional services (multi-select); screen capture is Linux-only and omitted.
@@ -667,7 +667,6 @@ SERVICES_LIST
     menu_multi SERVICES "3. Optional services (multi-select)" "" "${service_opts[@]}"
     SERVICES=$(map_indices "$SERVICES" "${service_opts[@]}")
   fi
-  say "  Semantic memory is always on (Gemini embeddings); it is not an optional choice."
   case "$(printf '%s' ",$SERVICES," | tr '[:upper:]' '[:lower:]')" in
     *"image generation"*) ask_line IMAGE_PROVIDER "  Image provider (pollinations|gemini|none)" "pollinations" ;;
     *) IMAGE_PROVIDER="none" ;;
@@ -686,9 +685,7 @@ SERVICES_LIST
 $DIRECT_APPS
 APPS_LIST
   if [ "${#app_keys[@]}" -gt 0 ]; then
-    say ""
-    say "  Direct apps use a sign-in you own. They need the token-encryption"
-    say "  keyring, which this script generates for you."
+    hint ""
     menu_multi APPS "4. Direct apps (multi-select)" "" "${app_keys[@]}"
     APPS=$(map_indices "$APPS" "${app_keys[@]}")
   fi
@@ -704,20 +701,11 @@ CHANNEL_LIST
   fi
 
   # 6. Render plan
-  say ""
-  say "  Plan trade-offs:"
-  say "    free    - 0 USD: 512 MB, 0.1 CPU, spins down after 15 idle minutes,"
-  say "              ephemeral disk (the workspace resets on restart),"
-  say "              750 instance-hours per workspace per month."
-  say "    starter - about 7 USD/month: 512 MB, 0.5 CPU, no spin-down, and a"
-  say "              1 GB persistent disk (\$0.25/GB/month) keeps the workspace."
+  hint ""
+  hint "  free has no cost and spins down when idle; starter keeps the workspace."
   menu_single PLAN "6. Render plan" 1 \
     "free" \
     "starter"
-  case "$PLAN" in
-    free) say "  Free: 512 MB RAM, 0.1 CPU, spins down after 15 idle minutes (a monitor keeps it awake), ephemeral disk, 750 instance-hours/workspace/month." ;;
-    starter) say "  Starter: about 7 USD/month, 512 MB RAM, 0.5 CPU, no spin-down, can attach a persistent disk so the workspace survives restarts." ;;
-  esac
 
   # 7. Render details
   ask_line SERVICE_NAME "7a. Render service name" "aether"
@@ -738,29 +726,27 @@ CHANNEL_LIST
     done
   fi
   menu_single REGION "7b. Render region" 1 oregon ohio virginia frankfurt singapore
-  say ""
-  say "  7c. Deploy source"
-  say "    public - deploy the public upstream repo (fastest; no GitHub link needed,"
-  say "             but config.yaml defaults apply unless you add one via Render)"
-  say "    fork   - deploy your own fork (required for full API automation and commits)"
+  hint ""
+  hint "  7c. Deploy source"
+  hint "    public - deploy the upstream repo (https://github.com/Vedant-Git-dev/Aether)"
+  hint "    fork   - deploy your own fork (required for full API automation and commits)"
   menu_single DEPLOY_SOURCE "  Deploy source" 1 "public" "fork"
   if [ "$DEPLOY_SOURCE" = "fork" ]; then
     ask_line REPO_URL "  Your fork URL" "https://github.com/CHANGE_ME/Aether"
-    say "  When Render asks, authorize the GitHub app so it can see your fork."
-    say "  Dashboard: New, Blueprint, connect GitHub, pick the fork."
+    hint "  Dashboard: New, Blueprint, connect GitHub, pick the fork."
   else
-    REPO_URL="$UPSTREAM_REPO"
+    REPO_URL="https://github.com/Vedant-Git-dev/Aether"
   fi
   REPO_URL="${REPO_URL%.git}"
   REPO_URL=$(printf '%s' "$REPO_URL" | sed 's#^git@github.com:#https://github.com/#')
 
   # 8. Uptime monitoring
-  say ""
-  say "  8. Uptime monitoring (keeps the free instance awake and alerts you)"
-  say "    api     - create a keyword monitor with your UptimeRobot API key"
-  say "    email   - no API key: UptimeRobot emails you a one-click confirm link"
-  say "    manual  - print the exact steps and open the page"
-  say "    skip    - do nothing"
+  hint ""
+  hint "  8. Uptime monitoring (keeps the free instance awake and alerts you)"
+  hint "    api     - create a keyword monitor with your UptimeRobot API key"
+  hint "    email   - no API key: UptimeRobot emails you a one-click confirm link"
+  hint "    manual  - print the exact steps and open the page"
+  hint "    skip    - do nothing"
   menu_single UPTIME_MODE "  Uptime monitoring" 1 "api" "email" "manual" "skip"
   if [ "$UPTIME_MODE" = "api" ] || [ "$UPTIME_MODE" = "email" ]; then
     ask_line ALERT_EMAIL "  Alert email address" ""
@@ -769,21 +755,21 @@ CHANNEL_LIST
   # 9. Local copy
   menu_single LOCAL_COPY "9. Also set up a local copy for testing?" 1 "no" "yes"
 
-  say ""
-  hr
-  say "Choices"
-  hr
-  say "  database:        $DATABASE_MODE"
-  say "  model:           $LLM_PROVIDER / $LLM_MODEL"
-  say "  services:        ${SERVICES:-(none)}"
-  say "  direct apps:     ${APPS:-(none)}"
-  say "  channels:        ${CHANNELS:-(none)}"
-  say "  plan:            $PLAN"
-  say "  service name:    $SERVICE_NAME"
-  say "  region:          $REGION"
-  say "  deploy source:   $DEPLOY_SOURCE ($REPO_URL)"
-  say "  uptime:          $UPTIME_MODE"
-  say "  local copy:      $LOCAL_COPY"
+  hint ""
+  hint_hr
+  hint "Choices"
+  hint_hr
+  hint "  database:        $DATABASE_MODE"
+  hint "  model:           $LLM_PROVIDER / $LLM_MODEL"
+  hint "  services:        ${SERVICES:-(none)}"
+  hint "  direct apps:     ${APPS:-(none)}"
+  hint "  channels:        ${CHANNELS:-(none)}"
+  hint "  plan:            $PLAN"
+  hint "  service name:    $SERVICE_NAME"
+  hint "  region:          $REGION"
+  hint "  deploy source:   $DEPLOY_SOURCE ($REPO_URL)"
+  hint "  uptime:          $UPTIME_MODE"
+  hint "  local copy:      $LOCAL_COPY"
   if [ "$NON_INTERACTIVE" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
     local go
     printf 'Proceed? [Y/n]: '
@@ -824,42 +810,40 @@ has_service() {
 }
 
 gather_credentials() {
-  say ""
-  hr
-  say "Credentials"
-  hr
-  say "Pasted values are read without echo, never printed, and stored only in"
-  say "Render (and in an owner-only file under $STATE_DIR for resume)."
-  say ""
+  hint ""
+  hint_hr
+  hint "Credentials"
+  hint_hr
+  hint ""
 
   # --- Render account and API key ---------------------------------------
   # Only one browser tab is opened. The API key is what the next prompt needs,
   # so the API-keys page is opened and the sign-up link is printed instead of
   # also opening it (two Render tabs in a row was noise).
-  say "A Render account is required. If you do not have one, create it first:"
-  say "  https://dashboard.render.com/register"
-  say "  Render dashboard: https://dashboard.render.com"
-  say ""
-  say "A Render API key lets this script create and configure everything."
-  say "Without one, the script writes a Blueprint and walks you through the"
-  say "dashboard instead."
+  hint "A Render account is required. If you do not have one, create it first:"
+  hint "  https://dashboard.render.com/register"
+  hint "  Render dashboard: https://dashboard.render.com"
+  hint ""
+  hint "A Render API key lets this script create and configure everything."
+  hint "Without one, the script writes a Blueprint and walks you through the"
+  hint "dashboard instead."
   open_url "https://dashboard.render.com/u/settings#api-keys"
-  say "  Render Dashboard, top right, Account Settings, API Keys, Create API Key."
+  hint "  Render Dashboard, top right, Account Settings, API Keys, Create API Key."
   ask_secret RENDER_API_KEY "Render API key (or press Enter to skip and use the dashboard)"
   if [ -n "$RENDER_API_KEY" ]; then
-    say "  Render API key set: $(mask "$RENDER_API_KEY")"
+    hint "  Render API key set: $(mask "$RENDER_API_KEY")"
   else
-    say "  No Render API key: the dashboard walkthrough will be used."
+    hint "  No Render API key: the dashboard walkthrough will be used."
   fi
 
   # --- Database ----------------------------------------------------------
   case "$DATABASE_MODE" in
     neon)
-      say ""
-      say "Neon free Postgres (recommended). Steps:"
-      say "  1. Create a project at https://console.neon.tech"
-      say "  2. Open the project, copy the connection string"
-      say "  3. Keep sslmode=require"
+      hint ""
+      hint "Neon free Postgres (recommended). Steps:"
+      hint "  1. Create a project at https://console.neon.tech"
+      hint "  2. Open the project, copy the connection string"
+      hint "  3. Keep sslmode=require"
       open_url "https://console.neon.tech"
       ask_secret DATABASE_URL "Paste the Neon connection string (postgresql://...?sslmode=require)"
       ;;
@@ -868,8 +852,8 @@ gather_credentials() {
       ;;
     render)
       warn "Render's free Postgres expires 30 days after creation; Neon is recommended."
-      say "Create it in the dashboard: New, Postgres. Then copy its External"
-      say "Connection String here."
+      hint "Create it in the dashboard: New, Postgres. Then copy its External"
+      hint "Connection String here."
       open_url "https://dashboard.render.com/new/database"
       ask_secret DATABASE_URL "Paste the Render Postgres external connection string"
       ;;
@@ -877,22 +861,22 @@ gather_credentials() {
   [ -n "$DATABASE_URL" ] && save_secret DATABASE_URL "$DATABASE_URL"
 
   # --- Model provider key ------------------------------------------------
-  say ""
+  hint ""
   case "$LLM_PROVIDER" in
     anthropic)
-      say "Anthropic API key: create one in the Anthropic Console."
+      hint "Anthropic API key: create one in the Anthropic Console."
       open_url "https://console.anthropic.com/settings/keys"
       ask_secret ANTHROPIC_KEY "Anthropic API key" ;;
     openai)
-      say "OpenAI API key: create one in the OpenAI dashboard."
+      hint "OpenAI API key: create one in the OpenAI dashboard."
       open_url "https://platform.openai.com/api-keys"
       ask_secret OPENAI_KEY "OpenAI API key" ;;
     gemini)
-      say "Google Gemini API key: create one in Google AI Studio."
+      hint "Google Gemini API key: create one in Google AI Studio."
       open_url "https://aistudio.google.com/apikey"
       ask_secret GEMINI_KEY "Gemini API key" ;;
     nvidia)
-      say "NVIDIA NIM API key: create one on build.nvidia.com."
+      hint "NVIDIA NIM API key: create one on build.nvidia.com."
       open_url "https://build.nvidia.com/"
       ask_secret NVIDIA_KEY "NVIDIA API key" ;;
     ollama)
@@ -901,39 +885,37 @@ gather_credentials() {
 
   # --- Optional services -------------------------------------------------
   if has_service "web search"; then
-    say ""
-    say "Web search uses Tavily's free tier."
+    hint ""
+    hint "Web search uses Tavily's free tier."
     open_url "https://app.tavily.com"
     ask_secret TAVILY_KEY "Tavily API key"
   fi
   if has_service "voice-note transcription"; then
-    say ""
-    say "Voice-note transcription uses Groq (whisper-large-v3)."
+    hint ""
+    hint "Voice-note transcription uses Groq (whisper-large-v3)."
     open_url "https://console.groq.com/keys"
     ask_secret GROQ_KEY "Groq API key"
   fi
-  if [ -z "$GEMINI_KEY" ]; then
-    say ""
-    say "Semantic memory is always on and uses Gemini embeddings."
-    say "A Gemini API key is required for it."
+  if [ "${SEMANTIC_MEMORY:-yes}" = "yes" ] && [ -z "$GEMINI_KEY" ]; then
+    hint ""
     open_url "https://aistudio.google.com/apikey"
-    ask_secret GEMINI_KEY "Gemini API key (semantic memory)"
+    ask_secret GEMINI_KEY "Gemini API key (memory search)"
   fi
   if has_service "background jobs"; then
-    say ""
-    say "Background jobs run in a cloud sandbox ($WORKBENCH_PROVIDER)."
+    hint ""
+    hint "Background jobs run in a cloud sandbox ($WORKBENCH_PROVIDER)."
     case "$WORKBENCH_PROVIDER" in
       modal)
-        say "  Modal: create a token pair in the Modal dashboard."
+        hint "  Modal: create a token pair in the Modal dashboard."
         open_url "https://modal.com/settings/tokens"
         ask_secret MODAL_TOKEN_ID "Modal token ID"
         ask_secret MODAL_TOKEN_SECRET "Modal token secret" ;;
       vercel)
-        say "  Vercel: create a token at https://vercel.com/account/tokens and note the team and project ids."
+        hint "  Vercel: create a token at https://vercel.com/account/tokens and note the team and project ids."
         open_url "https://vercel.com/account/tokens"
         ask_secret VERCEL_TOKEN "Vercel token" ;;
       github_actions)
-        say "  GitHub Actions batch queue: a token with repo and workflow scope."
+        hint "  GitHub Actions batch queue: a token with repo and workflow scope."
         open_url "https://github.com/settings/tokens"
         ask_secret GITHUB_CLIENT_ID "GitHub Actions token (stored as GITHUB_ACTIONS_TOKEN placeholder)" ;;
       *)
@@ -943,35 +925,25 @@ gather_credentials() {
 
   # --- Direct apps -------------------------------------------------------
   if has_app "gmail" || has_app "calendar" || has_app "drive" || has_app "docs"; then
-    say ""
-    say "Google direct apps need an OAuth client you own. Recipe (from the repo):"
-    say "  1. Create or select a project: https://console.cloud.google.com/apis/credentials"
-    say "  2. Enable the Gmail API and Google Calendar API under APIs and Services, then Library."
-    say "  3. For Drive, also enable the Google Drive API and Google Picker API."
-    say "  4. On the OAuth consent screen choose External; add your account as a test user; publish to Production so refresh tokens do not expire in 7 days."
-    say "  5. Create credentials, OAuth client ID, Web application."
-    say "  6. Authorized redirect URI: the exact value printed after deploy."
-    say "  7. Authorized JavaScript origin: the deployed origin (for the Drive picker)."
+    hint ""
+    hint "Google OAuth client: https://console.cloud.google.com/apis/credentials"
     open_url "https://console.cloud.google.com/apis/credentials"
     ask_secret GOOGLE_CLIENT_ID "Google OAuth client ID"
     ask_secret GOOGLE_CLIENT_SECRET "Google OAuth client secret"
     if has_app "drive" || has_app "docs"; then
-      say "  Drive and Docs also use the Google Picker key and app id."
+      hint "  Drive and Docs also use the Google Picker key and app id."
       open_url "https://console.cloud.google.com/apis/credentials"
       ask_secret GOOGLE_PICKER_KEY "Google Picker API key"
       ask_secret GOOGLE_PICKER_APP_ID "Google Picker app id"
     fi
   fi
   if has_app "github"; then
-    say ""
-    say "GitHub can connect with a fine-grained personal access token from the"
-    say "/apps walk after deploy, so no OAuth client is required. If you want an"
-    say "OAuth app instead, create it and use the redirect URI printed after deploy."
+    hint ""
+    hint "GitHub: a fine-grained personal access token also works."
     open_url "https://github.com/settings/developers"
   fi
   if has_app "linkedin"; then
-    say ""
-    say "LinkedIn needs an OAuth app (tokens last about 60 days)."
+    hint ""
     open_url "https://www.linkedin.com/developers/apps"
     ask_secret LINKEDIN_CLIENT_ID "LinkedIn client ID"
     ask_secret LINKEDIN_CLIENT_SECRET "LinkedIn client secret"
@@ -979,30 +951,28 @@ gather_credentials() {
 
   # --- Chat channels -----------------------------------------------------
   if has_channel "telegram"; then
-    say ""
-    say "Telegram: create a bot with BotFather and copy the token."
+    hint ""
+    hint "Telegram: create a bot with BotFather and copy the token."
     open_url "https://t.me/BotFather"
     ask_secret TELEGRAM_TOKEN "Telegram bot token"
   fi
   if has_channel "discord"; then
-    say ""
-    say "Discord: create an application and bot, enable the Message Content intent, copy the token."
+    hint ""
+    hint "Discord: create an application and bot, enable the Message Content intent, copy the token."
     open_url "https://discord.com/developers/applications"
     ask_secret DISCORD_TOKEN "Discord bot token"
   fi
 
   # --- UptimeRobot -------------------------------------------------------
   if [ "$UPTIME_MODE" = "api" ]; then
-    say ""
-    say "UptimeRobot API key: dashboard, Integrations and API, API, Create API key."
+    hint ""
+    hint "UptimeRobot API key: dashboard, Integrations and API, API, Create API key."
     open_url "https://dashboard.uptimerobot.com/integrations"
     ask_secret UPTIME_API_KEY "UptimeRobot main API key"
   fi
 
   # --- Generated secrets -------------------------------------------------
   say ""
-  say "AETHER_TOKEN is a shared secret: anyone holding it can read and change"
-  say "this instance. Use a long random value and never put it in a URL."
   say "Generating the encryption material."
   if [ -z "$AETHER_ENCRYPTION_KEY" ]; then
     AETHER_ENCRYPTION_KEY=$(gen_key_b64)
@@ -1346,19 +1316,11 @@ write_blueprint() {
   } > "$path"
   ok "Blueprint written to $path"
   say ""
-  if [ "$DEPLOY_SOURCE" = "public" ]; then
-    say "Dashboard route (public repo):"
-    say "  1. Open https://dashboard.render.com/blueprints and connect the public repo."
-    say "  2. Render reads the complete render.yaml already committed at the repo root."
-    say "  3. Paste the prompted sync:false values. Core secrets are in $SECRETS_FILE (chmod 600)."
-    say "  4. AETHER_CONFIG_B64 is printed below; it is not secret."
-  else
-    say "Dashboard route (fork):"
-    say "  1. Push $path as render.yaml to your fork."
-    say "  2. Open https://dashboard.render.com/blueprints and connect the fork."
-    say "  3. Render prompts only for the variables this plan uses."
-    say "     The generated secrets are in $SECRETS_FILE (chmod 600)."
-  fi
+  say "Dashboard route:"
+  say "  1. Push $path as render.yaml to the repo ($REPO_URL)."
+  say "  2. Open https://dashboard.render.com/blueprints and connect it."
+  say "  3. Render prompts only for the variables this plan uses."
+  say "     The generated secrets are in $SECRETS_FILE (chmod 600)."
   open_url "https://dashboard.render.com/blueprints"
   say ""
   say "  The non-secret AETHER_CONFIG_B64 value to paste is printed now:"
@@ -1815,8 +1777,8 @@ main() {
   hr
   say "Deploying to Render"
   hr
-  if [ -n "$RENDER_API_KEY" ] && [ "$DEPLOY_SOURCE" = "fork" ]; then
-    say "  Using the Render API (own fork detected)."
+  if [ -n "$RENDER_API_KEY" ]; then
+    say "  Using the Render API."
     # Reuse the id from a previous run when it still exists. Render may append
     # a suffix to the onrender.com subdomain, so name lookup can miss it.
     if [ -n "$SERVICE_ID" ] && [ "$DRY_RUN" -eq 0 ]; then
@@ -1852,10 +1814,6 @@ main() {
     fi
     poll_render_deploy
   else
-    if [ -n "$RENDER_API_KEY" ] && [ "$DEPLOY_SOURCE" = "public" ]; then
-      warn "The Render API cannot attach an unconnected public repo, so the"
-      warn "dashboard route is used. Everything else still works."
-    fi
     deploy_dashboard_route
     say ""
     if [ "$NON_INTERACTIVE" -eq 0 ]; then

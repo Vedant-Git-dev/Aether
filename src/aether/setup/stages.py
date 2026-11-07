@@ -5,6 +5,10 @@ fill itself in non-interactive mode, when it applies, and how to clear itself
 when the user goes back. The wizard walks the list and calls a stage only when
 it applies, so dependent questions (image provider, fork URL, uptime email)
 appear exactly when the earlier answers make them relevant.
+
+Copy rule: a question carries a prompt and at most a one-line hint. Results
+and errors say what happened and what to do; nothing announces a decision or
+explains why a feature exists.
 """
 
 from __future__ import annotations
@@ -13,9 +17,20 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..config_validation import is_missing, is_placeholder
 from . import catalogs
+from .links import open_hint, open_link
 from .plan import SetupPlan
 from .prompts import UI, ask_secret, ask_text, select_many, select_one
+from .validation import (
+    database_error,
+    discord_token_error,
+    embedding_key_error,
+    model_key_error,
+    render_api_key_error,
+    render_service_name_error,
+    telegram_token_error,
+)
 
 PROVIDER_KEYS = {
     "anthropic": ("ANTHROPIC_KEY", "Anthropic API key"),
@@ -32,6 +47,8 @@ PROVIDER_LINKS = {
 GOOGLE_APPS = {"gmail", "calendar", "drive", "docs"}
 PICKER_APPS = {"drive", "docs"}
 
+EMBEDDING_MODEL = "gemini-embedding-001"
+
 
 @dataclass
 class SetupContext:
@@ -40,6 +57,7 @@ class SetupContext:
     ui: UI
     root: Path | None = None
     locked_secrets: set[str] = field(default_factory=set)
+    problems: list[str] = field(default_factory=list)
 
     def say(self, text: str = "") -> None:
         self.ui.console.print(text)
@@ -89,15 +107,15 @@ def choice_stage(
     *,
     attribute: str,
     default: int = 0,
-    note: str = "",
+    hint: str = "",
     visible: Callable[[SetupContext], bool] = _always,
 ) -> Stage:
     keys = [choice.key for choice in choices]
     labels = [choice.label for choice in choices]
 
     def run(ctx: SetupContext) -> None:
-        if note:
-            ctx.say(note)
+        if hint:
+            ctx.say(hint)
         current = getattr(ctx.plan, attribute)
         found = _index_of(keys, current)
         picked = select_one(
@@ -119,18 +137,25 @@ def multi_stage(
     *,
     attribute: str,
     store: str = "key",
-    note: str = "",
+    min_selected: int = 0,
+    hint: str = "",
 ) -> Stage:
     labels = [choice.label for choice in choices]
     values = [(choice.label if store == "label" else choice.key) for choice in choices]
 
     def run(ctx: SetupContext) -> None:
-        if note:
-            ctx.say(note)
+        if hint:
+            ctx.say(hint)
         current = set(getattr(ctx.plan, attribute))
         selected = {index for index, value in enumerate(values) if value in current}
-        picked = select_many(ctx.ui, question, labels, default_selected=selected)
-        setattr(ctx.plan, attribute, [values[index] for index in picked])
+        while True:
+            picked = select_many(ctx.ui, question, labels, default_selected=selected)
+            chosen = [values[index] for index in picked]
+            if len(chosen) >= min_selected:
+                setattr(ctx.plan, attribute, chosen)
+                return
+            noun = "one" if min_selected == 1 else str(min_selected)
+            ctx.say(f"  choose at least {noun}.")
 
     def autofill(ctx: SetupContext) -> None:
         # Keep whatever the answers file or the defaults set.
@@ -146,14 +171,33 @@ def text_stage(
     *,
     attribute: str,
     default: Callable[[SetupContext], str] | str = "",
+    required: bool = False,
+    validate: Callable[[str], str | None] | None = None,
     visible: Callable[[SetupContext], bool] = _always,
 ) -> Stage:
     def default_value(ctx: SetupContext) -> str:
         return default(ctx) if callable(default) else default
 
     def run(ctx: SetupContext) -> None:
-        current = getattr(ctx.plan, attribute) or default_value(ctx)
-        setattr(ctx.plan, attribute, ask_text(ctx.ui, question, default=current))
+        while True:
+            current = getattr(ctx.plan, attribute) or default_value(ctx)
+            value = ask_text(ctx.ui, question, default=current)
+            if is_missing(value):
+                if not required:
+                    setattr(ctx.plan, attribute, "")
+                    return
+                ctx.say("  this value is required.")
+                continue
+            if is_placeholder(value):
+                ctx.say("  that looks like a placeholder — enter the real value.")
+                continue
+            if validate is not None:
+                error = validate(value)
+                if error:
+                    ctx.say(f"  {error}")
+                    continue
+            setattr(ctx.plan, attribute, value)
+            return
 
     def autofill(ctx: SetupContext) -> None:
         if not getattr(ctx.plan, attribute):
@@ -170,6 +214,7 @@ def secret_stage(
     visible: Callable[[SetupContext], bool] = _always,
     hint: str = "",
     required: bool = False,
+    validate: Callable[[str], str | None] | None = None,
 ) -> Stage:
     def applies(ctx: SetupContext) -> bool:
         if secret_key in ctx.locked_secrets:
@@ -179,27 +224,39 @@ def secret_stage(
     def run(ctx: SetupContext) -> None:
         if hint:
             ctx.say(hint)
+            open_hint(hint)
             ctx.say("")
         while True:
-            value = ask_secret(ctx.ui, question)
-            if value:
-                ctx.secrets[secret_key] = value
-                ctx.say(f"  stored {secret_key} (masked)")
-                return
-            if not required:
-                ctx.say(f"  skipped {secret_key}")
-                return
-            ctx.say(f"  {secret_key} is required; paste it, or press Esc to go back")
+            value = ask_secret(ctx.ui, question).strip()
+            if not value:
+                if not required:
+                    ctx.say(f"  skipped {secret_key}")
+                    return
+                ctx.say(f"  {secret_key} is required — paste it, or Ctrl+C to stop.")
+                continue
+            if is_placeholder(value):
+                ctx.say("  that looks like a placeholder — paste the real value.")
+                continue
+            if validate is not None:
+                error = validate(value)
+                if error:
+                    ctx.say(f"  {error}")
+                    continue
+            ctx.secrets[secret_key] = value
+            ctx.say(f"  stored {secret_key} (masked)")
+            return
 
     def autofill(ctx: SetupContext) -> None:
-        if required and not ctx.secret(secret_key):
-            ctx.say(f"  warning: {secret_key} is not set")
+        if required and is_missing(ctx.secret(secret_key)):
+            ctx.problems.append(f"{secret_key} is required")
 
     return Stage(name, run, autofill, applies)
 
 
-def _yes_no(name: str, question: str, *, attribute: str) -> Stage:
+def _yes_no(name: str, question: str, *, attribute: str, hint: str = "") -> Stage:
     def run(ctx: SetupContext) -> None:
+        if hint:
+            ctx.say(hint)
         current = bool(getattr(ctx.plan, attribute))
         picked = select_one(ctx.ui, question, ["No", "Yes"], default_index=1 if current else 0)
         setattr(ctx.plan, attribute, bool(picked))
@@ -254,7 +311,7 @@ def _has_picker(ctx: SetupContext) -> bool:
 def _provider_key_stage() -> Stage:
     def applies(ctx: SetupContext) -> bool:
         entry = PROVIDER_KEYS.get(ctx.plan.llm_provider)
-        if entry is None:
+        if entry is None:  # Ollama has no key; its host is checked at the end
             return False
         return entry[0] not in ctx.locked_secrets and not ctx.secret(entry[0])
 
@@ -266,38 +323,61 @@ def _provider_key_stage() -> Stage:
         link = PROVIDER_LINKS.get(ctx.plan.llm_provider, "")
         if link:
             ctx.say(f"  Create it here: {link}")
-        value = ask_secret(ctx.ui, label)
-        if value:
+            open_link(link)
+        while True:
+            value = ask_secret(ctx.ui, label).strip()
+            if is_missing(value):
+                ctx.say(f"  {label} is required — paste it, or Ctrl+C to stop.")
+                continue
+            if is_placeholder(value):
+                ctx.say("  that looks like a placeholder — paste the real value.")
+                continue
+            error = model_key_error(ctx.plan.llm_provider, value)
+            if error:
+                ctx.say(f"  {error}")
+                continue
             ctx.secrets[key] = value
             ctx.say(f"  stored {key} (masked)")
-        else:
-            ctx.say(f"  skipped {key}")
+            return
 
     def autofill(ctx: SetupContext) -> None:
         entry = PROVIDER_KEYS.get(ctx.plan.llm_provider)
-        if entry and not ctx.secret(entry[0]):
-            ctx.say(f"  warning: {entry[0]} is not set")
+        if entry and is_missing(ctx.secret(entry[0])):
+            ctx.problems.append(f"{entry[0]} is required for {ctx.plan.llm_provider}")
 
     return Stage("provider_key", run, autofill, applies)
 
 
 def _gemini_stage() -> Stage:
     def applies(ctx: SetupContext) -> bool:
-        return "GEMINI_KEY" not in ctx.locked_secrets and not ctx.secret("GEMINI_KEY")
+        return (
+            ctx.plan.semantic_memory
+            and "GEMINI_KEY" not in ctx.locked_secrets
+            and not ctx.secret("GEMINI_KEY")
+        )
 
     def run(ctx: SetupContext) -> None:
-        ctx.say("  Semantic memory is always on and uses Gemini embeddings.")
         ctx.say("  Create a key here: https://aistudio.google.com/apikey")
-        value = ask_secret(ctx.ui, "Gemini API key (semantic memory)")
-        if value:
+        open_link("https://aistudio.google.com/apikey")
+        while True:
+            value = ask_secret(ctx.ui, "Gemini API key").strip()
+            if is_missing(value):
+                ctx.say("  a Gemini API key is required while memory search is on.")
+                continue
+            if is_placeholder(value):
+                ctx.say("  that looks like a placeholder — paste the real value.")
+                continue
+            error = embedding_key_error(value, EMBEDDING_MODEL)
+            if error:
+                ctx.say(f"  {error}")
+                continue
             ctx.secrets["GEMINI_KEY"] = value
             ctx.say("  stored GEMINI_KEY (masked)")
-        else:
-            ctx.say("  skipped GEMINI_KEY (memory search will stay off)")
+            return
 
     def autofill(ctx: SetupContext) -> None:
-        if not ctx.secret("GEMINI_KEY"):
-            ctx.say("  warning: GEMINI_KEY is not set (semantic memory will stay off)")
+        if ctx.plan.semantic_memory and is_missing(ctx.secret("GEMINI_KEY")):
+            ctx.problems.append("GEMINI_KEY is required while memory search is on")
 
     return Stage("gemini_key", run, autofill, applies)
 
@@ -315,20 +395,45 @@ def _workbench_secret_stages() -> list[Stage]:
             "MODAL_TOKEN_ID",
             "Modal token ID",
             visible=modal,
-            hint="  Create a token pair at https://modal.com/settings/tokens",
+            hint="  https://modal.com/settings/tokens",
+            required=True,
         ),
         secret_stage(
             "modal_token_secret",
             "MODAL_TOKEN_SECRET",
             "Modal token secret",
             visible=modal,
+            required=True,
         ),
         secret_stage(
             "vercel_token",
             "VERCEL_TOKEN",
             "Vercel token",
             visible=vercel,
-            hint="  Create a token at https://vercel.com/account/tokens",
+            hint="  https://vercel.com/account/tokens",
+            required=True,
+        ),
+        secret_stage(
+            "vercel_team_id",
+            "VERCEL_TEAM_ID",
+            "Vercel team id",
+            visible=vercel,
+            required=True,
+        ),
+        secret_stage(
+            "vercel_project_id",
+            "VERCEL_PROJECT_ID",
+            "Vercel project id",
+            visible=vercel,
+            required=True,
+        ),
+        secret_stage(
+            "github_actions_token",
+            "GITHUB_ACTIONS_TOKEN",
+            "GitHub Actions token",
+            visible=lambda c: c.plan.workbench_provider == "github_actions",
+            hint="  https://github.com/settings/tokens",
+            required=True,
         ),
     ]
 
@@ -340,30 +445,72 @@ def _google_stages() -> list[Stage]:
             "GOOGLE_CLIENT_ID",
             "Google OAuth client ID",
             visible=_has_google,
-            hint=(
-                "  Google direct apps need an OAuth client you own.\n"
-                "  https://console.cloud.google.com/apis/credentials"
-            ),
+            hint="  https://console.cloud.google.com/apis/credentials",
+            required=True,
         ),
         secret_stage(
             "google_client_secret",
             "GOOGLE_CLIENT_SECRET",
             "Google OAuth client secret",
             visible=_has_google,
+            required=True,
         ),
         secret_stage(
             "google_picker_key",
             "GOOGLE_PICKER_KEY",
             "Google Picker API key",
             visible=_has_picker,
+            required=True,
         ),
         secret_stage(
             "google_picker_app_id",
             "GOOGLE_PICKER_APP_ID",
             "Google Picker app id",
             visible=_has_picker,
+            required=True,
         ),
     ]
+
+
+def _uptime_stage() -> Stage:
+    """On/off for the deployed instance's keep-awake monitor, plus its email."""
+
+    def run(ctx: SetupContext) -> None:
+        on = select_one(
+            ctx.ui,
+            "Keep the deployed instance awake with uptime monitoring?",
+            ["No", "Yes"],
+            default_index=0,
+        )
+        ctx.plan.uptime_mode = "email" if on == 1 else "skip"
+        if on == 0:
+            ctx.plan.alert_email = ""
+
+    def autofill(ctx: SetupContext) -> None:
+        if ctx.plan.uptime_mode not in {"email", "skip"}:
+            ctx.plan.uptime_mode = "skip"
+
+    return Stage("uptime", run, autofill, visible=lambda c: c.plan.setup_target == "render")
+
+
+def _render_name_validator(ctx: SetupContext):
+    """Say the check is running, then run it on the entered name."""
+
+    def validate(value: str) -> str | None:
+        ctx.say(f"  Checking {value} on Render...")
+        return render_service_name_error(value, ctx.secret("RENDER_API_KEY"))
+
+    return validate
+
+
+def _alert_email_stage() -> Stage:
+    return text_stage(
+        "alert_email",
+        "Alert email address",
+        attribute="alert_email",
+        required=True,
+        visible=lambda c: c.plan.setup_target == "render" and c.plan.uptime_mode == "email",
+    )
 
 
 def build_flow(ctx: SetupContext) -> list[Stage]:
@@ -371,18 +518,21 @@ def build_flow(ctx: SetupContext) -> list[Stage]:
     services = catalogs.optional_services(ctx.root)
     apps = catalogs.direct_apps(ctx.root)
     channels = catalogs.chat_channels()
+    render = lambda c: c.plan.setup_target == "render"  # noqa: E731
 
     flow: list[Stage] = [
+        choice_stage(
+            "setup_target",
+            "Where should Aether run?",
+            _state_choices(catalogs.SETUP_TARGETS),
+            attribute="setup_target",
+        ),
         choice_stage(
             "database",
             "Database",
             _state_choices(catalogs.DATABASES),
             attribute="database_mode",
-            note=(
-                "Neon's free tier does not expire; Render's free Postgres expires\n"
-                "30 days after creation. An existing database needs a connection\n"
-                "string with sslmode=require."
-            ),
+            hint="  Neon or any Postgres; keep sslmode=require.",
         ),
         provider_stage(),
         text_stage(
@@ -390,6 +540,12 @@ def build_flow(ctx: SetupContext) -> list[Stage]:
             "Main model",
             attribute="llm_model",
             default=lambda c: catalogs.example_model(c.plan.llm_provider, c.root),
+            required=True,
+        ),
+        _yes_no(
+            "semantic_memory",
+            "Semantic memory (Gemini embeddings)?",
+            attribute="semantic_memory",
         ),
         multi_stage(
             "services",
@@ -397,7 +553,6 @@ def build_flow(ctx: SetupContext) -> list[Stage]:
             services,
             attribute="services",
             store="label",
-            note="  Semantic memory is always on and is not an optional choice.",
         ),
         choice_stage(
             "image_provider",
@@ -413,78 +568,74 @@ def build_flow(ctx: SetupContext) -> list[Stage]:
             attribute="workbench_provider",
             visible=_has_jobs,
         ),
+        multi_stage("apps", "Direct apps", apps, attribute="apps"),
         multi_stage(
-            "apps",
-            "Direct apps",
-            apps,
-            attribute="apps",
-            note="  Direct apps use a sign-in you own; the token keyring is generated for you.",
+            "channels",
+            "Chat channels (choose at least one)",
+            channels,
+            attribute="channels",
+            min_selected=1,
         ),
-        multi_stage("channels", "Chat channels", channels, attribute="channels"),
         choice_stage(
             "plan",
             "Render plan",
             _state_choices(catalogs.PLANS),
             attribute="plan",
-            note=(
-                "Free: 512 MB, spins down after 15 idle minutes, ephemeral disk.\n"
-                "Starter: about $7/month, no spin-down, 1 GB persistent disk."
-            ),
+            visible=render,
+        ),
+        secret_stage(
+            "render_api_key",
+            "RENDER_API_KEY",
+            "Render API key",
+            visible=render,
+            hint="  https://dashboard.render.com/u/settings#api-keys",
+            required=True,
+            validate=render_api_key_error,
         ),
         text_stage(
-            "service_name", "Render service name", attribute="service_name", default="aether"
+            "service_name",
+            "Render service name",
+            attribute="service_name",
+            default="aether",
+            visible=render,
+            required=True,
+            validate=_render_name_validator(ctx),
         ),
         choice_stage(
             "region",
             "Render region",
             _state_choices([(region, region) for region in catalogs.REGIONS]),
             attribute="region",
+            visible=render,
         ),
         choice_stage(
             "deploy_source",
             "Deploy source",
             _state_choices(catalogs.DEPLOY_SOURCES),
             attribute="deploy_source",
-            note=(
-                "Public: no GitHub link needed; config defaults apply unless added in Render.\n"
-                "Fork: required for full Render API automation and commits."
-            ),
+            visible=render,
         ),
         text_stage(
             "repo_url",
             "Your fork URL",
             attribute="repo_url",
-            default="https://github.com/CHANGE_ME/Aether",
-            visible=lambda c: c.plan.deploy_source == "fork",
-        ),
-        choice_stage(
-            "uptime",
-            "Uptime monitoring",
-            _state_choices(catalogs.UPTIME_MODES),
-            attribute="uptime_mode",
-        ),
-        text_stage(
-            "alert_email",
-            "Alert email address",
-            attribute="alert_email",
-            visible=lambda c: c.plan.uptime_mode in {"api", "email"},
-        ),
-        _yes_no("local_copy", "Also set up a local copy for testing?", attribute="local_copy"),
-        secret_stage(
-            "render_api_key",
-            "RENDER_API_KEY",
-            "Render API key (or press Enter to skip)",
-            hint=(
-                "  A Render API key lets the deploy step create everything for you.\n"
-                "  Without one the dashboard walkthrough is used.\n"
-                "  https://dashboard.render.com/u/settings#api-keys"
+            visible=lambda c: render(c) and c.plan.deploy_source == "fork",
+            required=True,
+            validate=lambda value: (
+                None
+                if value.startswith("https://github.com/") and "CHANGE_ME" not in value
+                else "use your fork's https://github.com/<owner>/<repo> URL."
             ),
         ),
+        _uptime_stage(),
+        _alert_email_stage(),
         secret_stage(
             "database_url",
             "DATABASE_URL",
             "Postgres connection string (keep sslmode=require)",
             hint="  Paste the connection string from Neon, Render, or your own server.",
+            required=True,
+            validate=database_error,
         ),
         _provider_key_stage(),
         secret_stage(
@@ -492,14 +643,16 @@ def build_flow(ctx: SetupContext) -> list[Stage]:
             "TAVILY_KEY",
             "Tavily API key",
             visible=lambda c: c.has_service("web search"),
-            hint="  Web search uses Tavily's free tier: https://app.tavily.com",
+            hint="  https://app.tavily.com",
+            required=True,
         ),
         secret_stage(
             "groq_key",
             "GROQ_KEY",
             "Groq API key",
             visible=lambda c: c.has_service("voice-note transcription"),
-            hint="  Voice-note transcription uses Groq: https://console.groq.com/keys",
+            hint="  https://console.groq.com/keys",
+            required=True,
         ),
         _gemini_stage(),
         *_workbench_secret_stages(),
@@ -510,19 +663,23 @@ def build_flow(ctx: SetupContext) -> list[Stage]:
             "LinkedIn client ID",
             visible=lambda c: c.has_app("linkedin"),
             hint="  https://www.linkedin.com/developers/apps",
+            required=True,
         ),
         secret_stage(
             "linkedin_client_secret",
             "LINKEDIN_CLIENT_SECRET",
             "LinkedIn client secret",
             visible=lambda c: c.has_app("linkedin"),
+            required=True,
         ),
         secret_stage(
             "telegram_token",
             "TELEGRAM_TOKEN",
             "Telegram bot token",
             visible=lambda c: c.has_channel("telegram"),
-            hint="  Create a bot with BotFather: https://t.me/BotFather",
+            hint="  https://t.me/BotFather",
+            required=True,
+            validate=telegram_token_error,
         ),
         secret_stage(
             "discord_token",
@@ -530,13 +687,8 @@ def build_flow(ctx: SetupContext) -> list[Stage]:
             "Discord bot token",
             visible=lambda c: c.has_channel("discord"),
             hint="  https://discord.com/developers/applications",
-        ),
-        secret_stage(
-            "uptime_api_key",
-            "UPTIME_API_KEY",
-            "UptimeRobot main API key",
-            visible=lambda c: c.plan.uptime_mode == "api",
-            hint="  https://dashboard.uptimerobot.com/integrations",
+            required=True,
+            validate=discord_token_error,
         ),
     ]
     return flow

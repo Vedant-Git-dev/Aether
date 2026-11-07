@@ -96,6 +96,12 @@ On Windows, in PowerShell:
 .\scripts\setup.bat
 ```
 
+The first question picks where Aether runs. Choosing **Deploy to Render** runs the
+platform's engine at the end of setup with the Render API key you paste, so there is no
+second command. The wizard re-asks a required value until it is valid and verifies what
+it can: the database connection, the model key, the Gemini key when memory search is on,
+and the Telegram or Discord bot token.
+
 It writes everything to `~/.aether-setup`:
 
 | File | Contents |
@@ -106,26 +112,24 @@ It writes everything to `~/.aether-setup`:
 | `config.generated.yaml` | A ready-to-use `config.yaml` |
 | `render.yaml` | The Render Blueprint |
 
-**2. Deploy to Render**
+A local target also builds the panel with npm before the run ends; a Render
+deploy builds it on the service.
+
+**2. If you chose local, start it**
 
 ```bash
-./scripts/deploy.sh --answers ~/.aether-setup/answers.env
+set -a; . ~/.aether-setup/secrets.env; set +a
+AETHER_CONFIG=~/.aether-setup/config.generated.yaml aether
 ```
 
-On Windows, in PowerShell:
-
-```powershell
-.\scripts\deploy.bat --answers "$env:USERPROFILE\.aether-setup\answers.env"
-```
-
-With a Render API key and your own fork, the deploy engine creates or updates the
-service, waits for the first build, verifies `/healthz` and the panel, and creates the
-uptime monitor. Without a key (or with the public upstream repo), it writes the
-Blueprint and prints the dashboard steps instead.
+To update a Render deployment later, run
+`./scripts/deploy.sh --answers ~/.aether-setup/answers.env` (or `deploy.bat` on
+Windows).
 
 **3. Open the panel and check in**
 
-Open the deployed URL, paste the token under **Settings > Access**, and send `/status`.
+Open the local or deployed URL, paste the token under **Settings > Access**, and send
+`/status`.
 
 > [!CAUTION]
 > Back up `~/.aether-setup/secrets.env`. Losing `AETHER_ENCRYPTION_KEY` makes every

@@ -1,23 +1,7 @@
 # Aether on Render - Blueprint (no secrets).
 #
-# This is the Blueprint Render reads from the repository root. It works for the
-# public upstream repo and for a fork. scripts/setup.sh and scripts/setup.bat
-# generate a smaller, tailored copy (only the variables your choices need) in
-# their state directory for the fork route.
-#
-# Render Dashboard -> New -> Blueprint -> pick the repo. Render prompts for
-# every `sync: false` value; paste them there. They are stored in Render, never
-# in this file.
-#
-# Why the build command decodes AETHER_CONFIG_B64:
-#   config.yaml is gitignored and holds no secrets. Aether reads structure from
-#   config.yaml (or $AETHER_CONFIG). Delivering the YAML as a base64 environment
-#   variable keeps the user's config out of the repository while still giving the
-#   app a real file at boot. Empty/omitted -> Aether uses its built-in defaults.
-#
-# Runtime versions: Render's Python runtime ships Node and npm (see
-# https://render.com/docs/native-runtimes). Aether needs Python >= 3.12 and
-# Node >= 22; both are pinned here for reproducibility.
+# Render Dashboard -> New -> Blueprint -> pick the repo. Paste each
+# sync: false value when Render prompts for it.
 
 services:
   - type: web

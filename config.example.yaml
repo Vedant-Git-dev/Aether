@@ -1,222 +1,122 @@
-# Aether configuration
+# Aether configuration.
 #
-# Copy this file to config.yaml and edit what you need.
-# Secrets belong in .env, never here.
+# Copy to config.yaml and edit. Secrets belong in .env, never here.
+# The same settings are editable from chat (/config) and the Settings page.
 #
-# The same settings can be changed from chat with /config or from the
-# Settings page. Changes made there persist in Postgres and override this
-# file until you run /config reset.
-#
-# Only setup belongs here. Agent cadence, salience thresholds, workspace
-# paths, background budgets, workbench limits, media quotas, and poll timing
-# default in code and are editable from Settings or chat. Add a value here
-# only to pin it in the YAML baseline.
-#
-# Apps can be connected from chat too: send /apps and follow the steps.
-# MCP entries written that way reference keys by name ($NAME), never values.
-
-# ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
+# Every field is marked REQUIRED or optional with its default. Structure
+# only: agent cadence, thresholds and budgets default in code.
 
 llm:
-  provider: anthropic              # anthropic | openai | gemini | ollama | nvidia
+  # REQUIRED one of: anthropic | openai | gemini | ollama | nvidia
+  provider: anthropic
+  # REQUIRED a model id the provider can reach
   model: claude-opus-5
 
-  # Other provider examples:
-  #   provider: openai,  model: gpt-5.1
-  #   provider: gemini,  model: gemini-2.5-pro
-  #   provider: ollama,  model: llama3.3
-  #   provider: nvidia,  model: meta/llama-3.1-405b-instruct
+  # other examples: openai,  model: gpt-5.1
+  #                 gemini,  model: gemini-2.5-pro
+  #                 ollama,  model: llama3.3
+  #                 nvidia,  model: meta/llama-3.1-405b-instruct
 
-  # Perception models, one per medium. Empty turns that medium off,
-  # "base" lets the main model handle it, or name a model to route it
-  # separately. Every field pools all providers and is named with the
-  # provider first (for example "ollama/qwen2.5vl:7b").
-  image_model:                     # reads images
-  audio_model:                     # listens to audio
-  video_model:                     # watches video
+  # optional (default: off) memory search is on with a model id, off with "off"
+  embedding_model: "off"
 
-  # Optional cheaper model for the salience judge.
+  # optional (default: off) image reading
+  image_model:
+  # optional (default: off) audio listening
+  audio_model:
+  # optional (default: off) video watching
+  video_model:
+  # optional (default: use the main model) the first-pass skim
   salience_model:
 
-  # Embeddings make memory searchable. The default is free on the Gemini
-  # API key; "off" (or empty) leaves memory search unavailable.
-  embedding_model: gemini-embedding-001
-
-# ---------------------------------------------------------------------------
-# MCP servers
-# ---------------------------------------------------------------------------
-
-# Most apps connect from chat with /apps add <name>, or from the Apps page.
-# Anything that speaks MCP directly can be listed here. Keys are referenced
-# by name ($NAME) from the encrypted store.
+# Optional MCP servers. Keys are referenced by name ($NAME) from the
+# encrypted store.
 mcp_servers: []
 
-# To add a server, replace the empty list above with a block like this:
-#
-# mcp_servers:
-#   - name: weather
-#     transport: {type: stdio, command: npx, args: ["-y", "mcp-weather"]}
-#
-#   - name: news
-#     transport:
-#       type: http
-#       url: "https://mcp.example.com/mcp"
-#       headers: {Authorization: "Bearer $NEWS_API_KEY"}
-#     poll_tools: [{tool: list_headlines, every_minutes: 15}]
-
-# ---------------------------------------------------------------------------
-# Messaging
-# ---------------------------------------------------------------------------
-
 messaging:
+  # optional (default: false) requires TELEGRAM_BOT_TOKEN
   telegram:
-    enabled: false                 # set true and add TELEGRAM_BOT_TOKEN in .env
+    enabled: false
+  # optional (default: false) requires DISCORD_BOT_TOKEN
   discord:
-    enabled: false                 # set true and add DISCORD_BOT_TOKEN in .env
-
-# ---------------------------------------------------------------------------
-# Contacts
-# ---------------------------------------------------------------------------
+    enabled: false
 
 contacts:
-  # Default for every app:
-  #   "enforce" = the agent only sees allowlisted senders
-  #   "off"     = no filtering
+  # optional (default: off) enforce | off
   mode: "off"
-
-  # The cross-app bucket. Rules here count on every platform.
   allowlist: []
-  # Replace [] above with entries like:
-  #   - {platform: telegram, handle: "@you"}
-  #   - {platform: "*", handle: "friend@example.com"}
-
-  # Each app can override the default and keep its own list.
-  # Gmail's list also controls which inbox mail the agent may read.
   gmail:
-    mode: null                     # null follows the default; "enforce" | "off"
+    mode: null
     allowlist: []
-    # Replace [] above with entries like:
-    #   - {platform: gmail, handle: "friend@example.com"}
-
   telegram:
     mode: null
     allowlist: []
-
   discord:
     mode: null
     allowlist: []
 
-# ---------------------------------------------------------------------------
-# Authorization
-# ---------------------------------------------------------------------------
-
-# Rules run before the built-in risk rules.
 authz:
+  # optional (default: [])
   rules: []
-  # Replace [] above with rules like:
-  #   - tool_pattern: "telegram__send_message"
-  #     decision: "approve"
-  #     note: "Telegram sends are one tap"
+  # optional (default: 24)
+  approval_ttl_hours: 24.0
 
-# ---------------------------------------------------------------------------
-# Memory
-# ---------------------------------------------------------------------------
-
-# Write-time enrichment turns each event into an urgency, a deadline, entity
-# links, commitments and a one-line summary, so "anything urgent?" and "what's
-# due?" are lookups rather than searches. On by default after the evaluation;
-# set it false to keep only the deterministic urgent-word floor. Entity linking
-# and the delivery rules do not ride this flag (they need no model call).
 memory:
+  # optional (default: true)
   enrichment: true
-  # the routed query pipeline: route the question, search lexically and
-  # structurally, fuse and cite, with an explicit "no relevant memory"
-  # abstain. On by default after the evaluation; false keeps the older
-  # vector-only recall.
+  # optional (default: true)
   query_pipeline: true
-  # model-written thread/daily/weekly summaries; a per-window model cost,
-  # off until it earns it
+  # optional (default: false)
   summaries: false
-  # a thread summary refreshes after this many new messages
+  # optional (default: 10)
   summary_thread_messages: 10
-  # the always-on facts block: standing rules and query-relevant claims
+  # optional (default: 1500)
   core_facts_chars: 1500
-  # how long an answer about live state ("nothing urgent", "inbox clear")
-  # stays usable — an older answer is re-queried rather than reused
+  # optional (default: 120)
   conclusion_ttl_seconds: 120
-  # --- the evaluation's own knobs (tests/eval_ablation.py) ---
-  # the paraphrase recall@5 the optional embedding path must add over lexical
-  # search to keep its place; docs/evaluation.md records the measured margin
-  embedding_min_paraphrase_gain: 0.10
-  # the offline retrieval budget a query may not exceed (p95, milliseconds)
-  retrieve_latency_p95_ms: 300
-  # how many times each golden case runs for the p50/p95 numbers
-  eval_repeats: 10
-  # the combined attention/deadline/commitment answer rate write-time
-  # enrichment must add before its default may flip to true
-  enrichment_min_answer_gain: 0.15
-  #
-  # Forgetting: the owner can remove one remembered item for good from the
-  # Memory page or by asking in chat ("forget that email"). It is audited,
-  # and a tombstone keeps the next poll from storing the same message again.
-  # Provider history, backups and WAL may still hold old copies.
+  # optional (default: enforce) off | warn | enforce
+  schema_audit: enforce
 
-# ---------------------------------------------------------------------------
-# Workspace
-# ---------------------------------------------------------------------------
-
-# Human-editable identity and memory Markdown files.
 workspace:
+  # optional (default: true)
   enabled: true
-  encrypted: true                  # keep files encrypted at rest
-
-# ---------------------------------------------------------------------------
-# Background worker
-# ---------------------------------------------------------------------------
+  # optional (default: aether-workspace)
+  path: aether-workspace
+  # optional (default: true, retained for older files)
+  encrypted: true
 
 proactive:
-  enabled: false                   # off by default
+  # optional (default: false)
+  enabled: false
   skills:
     - followups
     - research
     - media
-
-  # The proactive path. Watches ("keep checking mail and tell me if it's
-  # urgent") and commitment reminders run on their own; the worker switch
-  # above does not gate them.
-  watches_enabled: true            # watches and the urgent-mail card
-  urgent_mail_alerts: true         # card for mail whose own words say urgent
-  urgent_urgency_min: 2            # 0 to 3
+  # optional (default: true)
+  watches_enabled: true
+  # optional (default: true)
+  urgent_mail_alerts: true
+  # optional (default: 2, range 0-3)
+  urgent_urgency_min: 2
+  # optional (default: 6)
   max_alerts_per_hour: 6
-  reminders_enabled: true          # due reminders, then one overdue
-  poll_jitter: 0.15                # spread poll intervals by this share
+  # optional (default: true)
+  reminders_enabled: true
+  # optional (default: 0.15)
+  poll_jitter: 0.15
 
-# ---------------------------------------------------------------------------
-# Cloud workbench
-# ---------------------------------------------------------------------------
-
-# Where background jobs run when they cannot run on this machine.
 workbench:
-  provider: modal                  # modal | vercel | github_actions | none
-  actions_repo: ""                 # batch queue repository (owner/name)
-  actions_workflow: ""             # runner workflow file in that repository
+  # optional (default: modal) modal | vercel | github_actions | none
+  provider: modal
+  # optional (default: "", required for the GitHub Actions queue)
+  actions_repo: ""
+  # optional (default: "", required for the GitHub Actions queue)
+  actions_workflow: ""
 
-# ---------------------------------------------------------------------------
-# Media
-# ---------------------------------------------------------------------------
-
-# Shared and generated media, kept encrypted.
 media:
-  image_provider: pollinations     # pollinations | gemini | none
+  # optional (default: pollinations) pollinations | gemini | none
+  image_provider: pollinations
 
-# ---------------------------------------------------------------------------
-# Direct app connections
-# ---------------------------------------------------------------------------
-
-# Aether owns the OAuth client and stores tokens encrypted. This section needs
-# AETHER_TOKEN_ENCRYPTION_KEY in .env; without that keyring the providers stay
-# disabled and the rest of Aether still boots.
 providers:
+  # optional (default: true) needs AETHER_TOKEN_ENCRYPTION_KEY
   enabled: true
