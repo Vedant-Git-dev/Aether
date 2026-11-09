@@ -1,0 +1,12 @@
+# Fixed user-facing text, keyed and parameterised.
+#
+# Every key lives under a locale. The loader falls back to the default
+# locale, so adding a language is data work, not a code change. Model-authored
+# text never lives here; this file is only for the sentences the backend owns.
+default_locale: en
+locales:
+  en:
+    ask.options: "{question}\n\nOptions: {options}"
+    verification.caveat: "I left out {count} detail(s) I could not confirm."
+    verification.safe_fallback: "I could not put that answer together reliably. Could you ask me again?"
+    verification.unsupported: "I could not confirm part of that answer, so I left it out."

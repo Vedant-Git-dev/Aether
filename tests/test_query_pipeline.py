@@ -11,12 +11,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from aether.agent.composer import deterministic_compose
 from aether.memory.focus import FocusState
 from aether.memory.indexes import IndexedEvent, MemoryIndex
 from aether.memory.lexical import LexicalIndex, tokenize
 from aether.memory.query import RewriteCache, Routing, classify, resolve_reference, rewrite
 from aether.memory.retrieve import Candidate, RetrievalConfig, Retriever
-from aether.memory.verify import repair_reply, verify_reply
+from aether.memory.verify import find_findings, unsupported, verify_reply
 from aether.memory.views import Views
 
 NOW = datetime(2026, 11, 3, 6, 16, tzinfo=UTC)
@@ -539,17 +540,15 @@ def test_an_invented_id_is_caught() -> None:
     assert [v.kind for v in violations] == ["id"]
 
 
-def test_a_fabricated_quote_is_caught_and_repaired() -> None:
-    violations = verify_reply(
-        'They said "the payment cleared yesterday".',
-        chunks_by_event={1: ["[E1 | mail] The invoice is due on Friday."]},
-        known_event_ids={1},
-    )
+def test_a_fabricated_quote_is_caught_and_removed() -> None:
+    reply = 'They said "the payment cleared yesterday".'
+    chunks = {1: ["[E1 | mail] The invoice is due on Friday."]}
+    findings = find_findings(reply, chunks_by_event=chunks, known_event_ids={1})
 
-    assert [v.kind for v in violations] == ["quote"]
-    repaired = repair_reply('They said "the payment cleared yesterday".', violations)
-    assert "the payment cleared yesterday" not in repaired.text
-    assert "not verbatim" in repaired.text
+    assert [f.kind for f in unsupported(findings)] == ["quote"]
+    composed = deterministic_compose(reply, unsupported(findings))
+    assert "the payment cleared yesterday" not in composed
+    assert "could not confirm" in composed
 
 
 def test_a_date_is_checked_across_spellings() -> None:
@@ -578,14 +577,14 @@ def test_quoting_the_users_own_words_is_not_a_memory_claim() -> None:
     )
 
 
-def test_an_unsourced_number_or_date_gets_one_hedge() -> None:
-    violations = verify_reply(
-        "The invoice is 45000 and due 2026-12-01.",
-        chunks_by_event={1: ["[E1 | mail] The invoice is due on Friday."]},
-        known_event_ids={1},
-    )
+def test_an_unsourced_number_or_date_gets_one_catalog_caveat() -> None:
+    reply = "The invoice is 45000 and due 2026-12-01."
+    chunks = {1: ["[E1 | mail] The invoice is due on Friday."]}
+    findings = find_findings(reply, chunks_by_event=chunks, known_event_ids={1})
 
-    assert any(v.kind == "number" for v in violations)
-    assert any(v.kind == "date" for v in violations)
-    repaired = repair_reply("The invoice is 45000 and due 2026-12-01.", violations)
-    assert "could not be checked" in repaired.text
+    assert any(f.kind == "number" for f in unsupported(findings))
+    assert any(f.kind == "date" for f in unsupported(findings))
+    composed = deterministic_compose(reply, unsupported(findings))
+    assert "could not confirm" in composed
+    assert "45000" not in composed
+    assert "2026-12-01" not in composed

@@ -85,6 +85,8 @@ def apply_note(path: str) -> str:
         return " — applies to the next message I see"
     if path.startswith("proactive."):
         return " — applies from the next cycle"
+    if path.startswith("notifications."):
+        return " — applies to the next unprompted turn"
     if path.startswith("workbench."):
         return " — applies to the next job"
     if path.startswith("media."):
@@ -98,6 +100,7 @@ _SECTION_NAMES = (
     "llm",
     "agent",
     "salience",
+    "notifications",
     "memory",
     "messaging",
     "contacts",
@@ -1010,6 +1013,7 @@ class ConfigManager:
             ("llm", type(self._live.llm)),
             ("agent", type(self._live.agent)),
             ("salience", type(self._live.salience)),
+            ("notifications", type(self._live.notifications)),
             ("contacts", type(self._live.contacts)),
             ("authz", type(self._live.authz)),
             ("proactive", type(self._live.proactive)),
@@ -1123,6 +1127,14 @@ class ConfigManager:
         if name == "salience":
             s = live.salience
             return f"salience: notice at {_plain_value(s.threshold)} · at most {s.rate_cap_per_hour} an hour"
+        if name == "notifications":
+            n = live.notifications
+            state = "on" if n.enabled else "off"
+            return (
+                f"notifications: unprompted notes {state}"
+                f" · urgency at least {_plain_value(n.min_urgency)}"
+                f" · remember a report for {n.repeat_window_minutes}min"
+            )
         if name == "messaging":
             m = live.messaging
             onoff = lambda t: "on" if t.enabled else "off"  # noqa: E731

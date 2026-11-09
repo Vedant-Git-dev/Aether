@@ -128,7 +128,21 @@ async def test_an_unprompted_tick_never_pulses(monkeypatch) -> None:
     """Nobody is waiting on an answer when the agent talks to itself —
     an observation-only turn never starts the indicator."""
     monkeypatch.setattr("aether.agent.loop.TYPING_REFRESH_SECONDS", 0.02)
-    kit = LoopKit(FakeProvider([Turn(text="saw the mail")]))
+    kit = LoopKit(
+        FakeProvider(
+            [
+                Turn(
+                    tool_calls=[
+                        ToolCall(
+                            id="n1",
+                            name="notify_user",
+                            arguments={"content": "saw the mail"},
+                        )
+                    ]
+                )
+            ]
+        )
+    )
     typing = _wire_typing(kit)
     kit.events.events[1] = _event(1)  # an observation, no message anywhere
 

@@ -846,6 +846,13 @@ class FakeTraces:
                         'The whole batch came back as [{"id": "msg-8", "subject": "hi"}].',
                     ],
                     "reply": "I've drafted the reply to Sam — approve it and it goes out.",
+                    # the model's internal notes and the decisions behind the
+                    # turn: stored sealed, rendered under "Internal", and
+                    # scrubbed of finding ids and source tags before display
+                    "internal_notes": (
+                        "Resolved finding-7 by removing the claim; [E99] was not in the pack."
+                    ),
+                    "internal": "Nothing worth sending on this tick.",
                 },
                 created_at=now - timedelta(minutes=6),
             ),

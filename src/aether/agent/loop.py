@@ -67,14 +67,16 @@ from ..memory.events import Event, EventStore
 from ..memory.focus import Focus
 from ..memory.inbound import MemoryInboundStates
 from ..memory.mail import MAIL_KIND, MAIL_SOURCE, render_mail_event, split_mail
+from ..memory.notifications import MemoryNotificationStates
 from ..memory.pipeline import QueryPipeline
 from ..memory.salience import Salience
 from ..memory.timewindow import in_quiet_window as _in_quiet_window
 from ..memory.timewindow import local_clock as _local_clock
 from ..memory.timewindow import parse_quiet_hours as _parse_quiet_hours
 from ..memory.vectors import MemoryHit, VectorMemory
-from ..memory.verify import feedback, repair_reply, verify_reply
+from ..memory.verify import find_findings, unsupported
 from ..memory.views import Views, wants_attention
+from ..message_catalog import render as render_message
 from ..outbound import clean_outbound, is_deliverable
 from ..providers.runtime import ProviderRuntime
 from ..providers.types import ConnectResult, ProviderError, ProviderNotConfigured
@@ -85,8 +87,23 @@ from ..secret_env import EnvResolver
 from ..secret_store import SecretStore
 from ..workspace import SecretRejected, WorkspaceWriteError
 from .apps_wizard import AppsWizard
+from .composer import compose_answer, deterministic_compose, unresolved
 from .config_wizard import ConfigWizard
 from .config_wizard import coerce_config_value as _coerce_config_value
+from .leaks import LeakGuard, collect_internal_values, strip_values
+from .outcomes import (
+    TERMINAL_TOOLS,
+    Ask,
+    Notify,
+    Reply,
+    evaluate_notification_policy,
+    is_terminal_tool,
+    notification_keys,
+    outcome_from_calls,
+    outcome_specs,
+    record_notification,
+    render_ask,
+)
 from .prompts import SYSTEM_PROMPT
 from .settings import AgentSettings
 from .tools import (
@@ -689,6 +706,7 @@ class AgentLoop:
         conclusions: Conclusions | None = None,
         deliveries: Deliveries | None = None,
         inbound_states: Any = None,
+        notification_states: Any = None,
         query_pipeline: QueryPipeline | None = None,
         proactive_path: Any = None,
         summary_job: Any = None,
@@ -765,6 +783,10 @@ class AgentLoop:
         # turn. The in-memory ledger is the default; the boot wires the
         # sealed database one.
         self._inbound_states = inbound_states or MemoryInboundStates()
+        # what has already been reported to the user, per event or action —
+        # the notification policy reads it before a proactive turn offers
+        # the notify action at all
+        self._notification_states = notification_states or MemoryNotificationStates()
         # the code-only re-delivery lines for the turn ahead (never a model
         # observation) — collected by the tick, read by the turn
         self._delivery_lines: list[str] = []
@@ -892,6 +914,43 @@ class AgentLoop:
         change (a malformed value refuses at the config layer, never
         here)."""
         self._quiet = _parse_quiet_hours(self._config.agent.quiet_hours)
+
+    async def _notification_decision(self, observations: list[Event]) -> Any:
+        """Whether this unprompted turn may offer the notify action.
+
+        The inputs are all data: the stored preferences in the
+        `notifications` section, the quiet window, the loudest observation's
+        urgency, and the sealed report state filtered by the configured
+        window. Model text is not part of the decision.
+        """
+        keys = notification_keys(observations)
+        urgency = max((event.salience_score for event in observations), default=0.0)
+        window = timedelta(minutes=self._config.notifications.repeat_window_minutes)
+        reported: set[str] = set()
+        if keys:
+            try:
+                reported = await self._notification_states.recently_reported(
+                    keys, window, now=datetime.now(UTC)
+                )
+            except Exception:
+                log.warning("could not read the notification state — treating all as new")
+        return evaluate_notification_policy(
+            self._config,
+            quiet=self._quiet,
+            now=datetime.now(),
+            urgency=urgency,
+            keys=keys,
+            reported=reported,
+        )
+
+    async def _mark_reported(self, keys: tuple[str, ...]) -> None:
+        """Record that the user was actually told about these events/actions."""
+        if not keys:
+            return
+        try:
+            await self._notification_states.mark_reported(keys)
+        except Exception:
+            log.warning("could not record the notification state — continuing")
 
     async def _notify(
         self, text: str, *, urgent: float = 0.0, channel: str = ""
@@ -2205,6 +2264,16 @@ class AgentLoop:
             force_quote = True  # a resumed answer is late by definition
         records = list(records or [])
 
+        # the notification decision is made in code before the turn: a
+        # proactive turn is offered the notify action only when the stored
+        # preferences, quiet window, urgency and report state all allow it
+        notification = None if messages else await self._notification_decision(observations)
+        outcome_tools = outcome_specs(
+            solicited=bool(messages),
+            notify_allowed=bool(notification and notification.allowed),
+        )
+        offered_outcomes = {spec.name for spec in outcome_tools}
+
         recalled: list[dict[str, Any]] = []
         pipeline_result: Any = None
         if resume is None:
@@ -2354,6 +2423,11 @@ class AgentLoop:
             },
             "calls": calls,
         }
+        if notification is not None:
+            trace["notification_policy"] = {
+                "allowed": notification.allowed,
+                "reason": notification.reason,
+            }
         if pipeline_result is not None and pipeline_result.packed.notes:
             trace["retrieval_notes"] = list(pipeline_result.packed.notes)
         if resume is not None:
@@ -2362,6 +2436,9 @@ class AgentLoop:
             trace["resumed_from"] = resume.turn_ref
         full_history: list[Message] = []
         reply = ""
+        internal_notes = ""
+        internal_text = ""
+        outcome: Any = None
         # tool gating: natives always; MCP tools whose names match the
         # trigger text or anything the model has said/called this turn, plus
         # whatever search_tools found — recorded by name in `unlocked`,
@@ -2412,9 +2489,25 @@ class AgentLoop:
                 + " "
                 + " ".join(m.text + " " + " ".join(c.name for c in m.tool_calls) for m in so_far)
             )
-            return self._tools.gated_specs(said, unlocked=active | unlocked)
+            return self._tools.gated_specs(said, unlocked=active | unlocked) + outcome_tools
 
         async def _execute_unlocking(call: ToolCall) -> ToolResult:
+            if is_terminal_tool(call.name):
+                accepted = call.name in offered_outcomes
+                record_notification(
+                    calls,
+                    call,
+                    accepted=accepted,
+                    plain=describe_call(call.name, call.arguments),
+                )
+                return ToolResult(
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=(
+                        "outcome accepted" if accepted else "that action is not offered this turn"
+                    ),
+                    is_error=not accepted,
+                )
             result = await self._execute(call, trace=calls, settled=settled)
             if call.name == "search_tools":
                 # re-run the same search the handler did and offer its
@@ -2454,12 +2547,29 @@ class AgentLoop:
                     _execute_unlocking,
                     max_iterations=self._config.agent.max_tool_iterations,
                     progress=loop_history,
+                    terminal=TERMINAL_TOOLS,
                 ),
                 timeout=self._config.agent.turn_timeout_seconds,
             )
-            # a blank or a placeholder stand-in is not an answer — it is
-            # treated exactly like an empty model output below
-            reply = clean_outbound(final.text)
+            # the typed outcome is the only door to the user. An answer turn
+            # uses reply/ask; an unprompted turn uses notify/ask. Free text
+            # on an unprompted turn is internal by definition.
+            outcome = outcome_from_calls(calls)
+            if isinstance(outcome, Reply):
+                reply = clean_outbound(outcome.text)
+                internal_notes = outcome.internal_notes
+            elif isinstance(outcome, Ask):
+                if messages:
+                    reply = render_ask(outcome, locale=self._config.agent.locale)
+                else:
+                    internal_text = clean_outbound(final.text)
+            elif isinstance(outcome, Notify):
+                internal_text = clean_outbound(final.text)
+            else:
+                if messages:
+                    reply = clean_outbound(final.text)
+                else:
+                    internal_text = clean_outbound(final.text)
             delivered = _delivered_by_tool(calls)
             parked = _parked_this_turn(calls)
             reply_was_fallback = False
@@ -2475,10 +2585,11 @@ class AgentLoop:
                     trace["error"] = "empty model reply"
                     log.warning("turn %s produced no deliverable reply — fallback sent", turn_ref)
             # the verifier checks every memory claim in the reply against the
-            # packed chunks: one regeneration with feedback, then a
-            # deterministic repair. It only runs for a reply that will
-            # actually reach the user — a tool that already delivered, or a
-            # parked approval card, has no reply to check.
+            # packed chunks and returns findings only. The composer resolves
+            # each unsupported claim, and a value guard blocks internal ids
+            # and tags. It only runs for a reply that will actually reach the
+            # user — a tool that already delivered, or a parked approval card,
+            # has no reply to check.
             verification: dict[str, Any] | None = None
             if (
                 reply
@@ -2489,13 +2600,22 @@ class AgentLoop:
                 and not delivered
                 and not parked
             ):
-                reply, verification = await self._verified_reply(
-                    provider, reply, full_history, pipeline_result
+                reply, verification, compose_notes = await self._verified_reply(
+                    provider,
+                    reply,
+                    full_history,
+                    pipeline_result,
+                    messages=messages,
+                    locale=self._config.agent.locale,
                 )
+                if compose_notes:
+                    internal_notes = "\n".join(
+                        part for part in (internal_notes, compose_notes) if part
+                    )
             if verification is not None:
                 trace["verification"] = verification
-            if reply and not delivered and not parked:
-                if messages:
+            if messages:
+                if reply and not delivered and not parked:
                     # the user spoke first — a reply is solicited, it never
                     # waits; record where it landed so a later "why?" can
                     # find this trace
@@ -2517,38 +2637,60 @@ class AgentLoop:
                         reason="empty model reply" if reply_was_fallback else "reply not delivered",
                         refs=refs,
                     )
-                else:
-                    # unprompted commentary: the interruption budget decides,
-                    # urgent = the loudest thing this turn saw (0-10 salience).
-                    # A reply that replays a closed question or a message
-                    # already sent is blocked before it interrupts anyone.
-                    if await self._proactive_reply_allowed(reply):
+                elif reply:
+                    # the turn already ended in front of the user — a sending
+                    # tool delivered, or an approval card is waiting on a tap;
+                    # a final reply beside either reads as the same answer
+                    # twice, differently worded, or as filler ("OK.") after
+                    # the card. The reply stays in the trace, so replay still
+                    # shows how the turn ended.
+                    log.info(
+                        "reply not sent — the turn already reached the user "
+                        "(turn %s, delivered=%s parked=%s)",
+                        turn_ref,
+                        delivered,
+                        parked,
+                    )
+                    await self._settle_inbound(records, answered=True)
+            elif not delivered:
+                # an unprompted turn reaches the user only through notify or
+                # ask. Anything else the model wrote is internal.
+                if isinstance(outcome, Notify) and notification is not None:
+                    if notification.allowed and await self._proactive_reply_allowed(
+                        outcome.content
+                    ):
                         refs = await self._notify(
-                            reply,
+                            outcome.content,
                             urgent=max((e.salience_score for e in observations), default=0.0),
                         )
                         if refs:
                             trace["chat_refs"] = refs
+                            await self._mark_reported(notification.keys)
                     else:
                         trace["reply_blocked"] = True
-                        log.info("proactive reply blocked as a stale replay (turn %s)", turn_ref)
-            elif reply:
-                # the turn already ended in front of the user — a sending
-                # tool delivered, or an approval card is waiting on a tap;
-                # a final reply beside either reads as the same answer
-                # twice, differently worded, or as filler ("OK.") after
-                # the card. The reply stays in the trace, so replay still
-                # shows how the turn ended.
-                log.info(
-                    "reply not sent — the turn already reached the user "
-                    "(turn %s, delivered=%s parked=%s)",
-                    turn_ref,
-                    delivered,
-                    parked,
-                )
-                # both a tool delivery and a parked card are terminal
-                # outcomes for the inbound this turn answered
-                await self._settle_inbound(records, answered=True)
+                        log.info(
+                            "proactive notify blocked (turn %s, policy=%s)",
+                            turn_ref,
+                            notification.reason or "stale replay",
+                        )
+                elif isinstance(outcome, Ask):
+                    question = render_ask(outcome, locale=self._config.agent.locale)
+                    if (
+                        notification is not None
+                        and notification.allowed
+                        and await self._proactive_reply_allowed(question)
+                    ):
+                        outcomes: dict[str, bool] = {}
+                        refs = await self._surfaces.send_to_user(question, outcomes=outcomes)
+                        if refs:
+                            trace["chat_refs"] = refs
+                        if (refs or any(outcomes.values())) and notification is not None:
+                            await self._mark_reported(notification.keys)
+                    else:
+                        trace["reply_blocked"] = True
+                        log.info(
+                            "proactive ask blocked by the notification policy (turn %s)", turn_ref
+                        )
         except TimeoutError:
             # the ceiling bit: a handled outcome, not a crash — the trace
             # keeps the fact, the user gets plain words, and the tick
@@ -2613,10 +2755,25 @@ class AgentLoop:
             ]
             if reasoning and reply and reasoning[-1] == reply:
                 reasoning.pop()  # the reply is stored as its own field
+            if reasoning and internal_text and reasoning[-1] == internal_text:
+                reasoning.pop()  # internal text is stored as its own field
             if reasoning:
                 trace["reasoning"] = reasoning
             if reply:
                 trace["reply"] = reply
+            if internal_notes:
+                trace["internal_notes"] = internal_notes
+            if internal_text:
+                trace["internal"] = internal_text
+            trace["outcome"] = (
+                "reply"
+                if isinstance(outcome, Reply)
+                else "notify"
+                if isinstance(outcome, Notify)
+                else "ask"
+                if isinstance(outcome, Ask)
+                else "none"
+            )
             await self._save_trace(
                 kind=TURN,
                 label=self._trace_label(messages, observations),
@@ -2839,13 +2996,20 @@ class AgentLoop:
         reply: str,
         history: list[Message],
         pipeline_result: Any,
-    ) -> tuple[str, dict[str, Any]]:
-        """Check the reply against the pack, regenerate once on failure, then
-        repair deterministically. Verification never costs the turn: a broken
-        verifier logs and sends the reply it already had."""
+        *,
+        messages: list[InboundMessage],
+        locale: str = "en",
+    ) -> tuple[str, dict[str, Any], str]:
+        """Check the reply against the pack, compose a safe answer, and keep
+        internal findings out of the words that leave.
+
+        The verifier returns data only. The composer resolves each
+        unsupported claim (remove, soften or ask). A value-based guard then
+        blocks any finding id, source id, tag or internal label that
+        survived; on a hit it regenerates once with the user-safe view and
+        refuses delivery if the leak persists.
+        """
         packed = pipeline_result.packed
-        # the conversation is part of what a reply may quote — the user's
-        # own words and the model's earlier lines are not memory claims
         conversation = "\n".join(
             text
             for text in ((getattr(message, "text", "") or "").strip() for message in history[-24:])
@@ -2853,7 +3017,7 @@ class AgentLoop:
         )
         extra_corpus = conversation[-8_000:]
         try:
-            violations = verify_reply(
+            findings = find_findings(
                 reply,
                 chunks_by_event=packed.chunks_by_event,
                 known_event_ids=set(packed.event_ids),
@@ -2863,51 +3027,105 @@ class AgentLoop:
             log.warning(
                 "citation verification failed — sending the reply as written", exc_info=True
             )
-            return reply, {"ok": False, "error": "verifier failed"}
-        if not violations:
-            return reply, {"ok": True, "violations": []}
+            return reply, {"ok": False, "error": "verifier failed"}, ""
+        unsupported_findings = unsupported(findings)
         record: dict[str, Any] = {
-            "ok": False,
-            "violations": [{"kind": v.kind, "detail": v.detail} for v in violations],
+            "ok": not unsupported_findings,
+            "findings": [finding.as_dict() for finding in findings],
         }
-        # one regeneration, text only — no tools, so nothing runs twice.
-        # Bounded: a hung provider must not hold the turn open after the
-        # answer is already written.
-        candidate = ""
+        internal_values = collect_internal_values(
+            findings=findings,
+            event_ids=packed.event_ids,
+            extra_texts=[
+                "[internal verification findings]",
+                "verification feedback",
+                "internal_notes",
+            ],
+        )
+        guard = LeakGuard(internal_values)
+        if not unsupported_findings:
+            # nothing to resolve: the answer stands, with any bracketed id or
+            # finding tag removed by value before it leaves
+            text = strip_values(reply, internal_values)
+            if text != reply:
+                record["stripped"] = True
+            return text, record, ""
+        if not findings:
+            return reply, record, ""
+
+        system = await self._system_prompt()
+        timeout = min(60.0, self._config.agent.turn_timeout_seconds)
+        composed = None
         try:
-            system = await self._system_prompt()
-            attempt = await asyncio.wait_for(
-                provider.complete(
+            composed = await asyncio.wait_for(
+                compose_answer(
+                    provider,
                     system,
-                    list(history) + [Message.user(feedback(violations))],
-                    [],
+                    list(history),
+                    findings=findings,
+                    candidate=reply,
                 ),
-                timeout=min(60.0, self._config.agent.turn_timeout_seconds),
+                timeout=timeout,
             )
-            candidate = attempt.text.strip()
         except Exception:
-            log.warning("verification regeneration failed — repairing in place", exc_info=True)
-        if candidate:
+            log.warning("composer failed — using the deterministic fallback", exc_info=True)
+
+        notes = ""
+        if composed is not None and composed.reply:
+            text = composed.reply
+            notes = composed.internal_notes
+            record["resolutions"] = dict(composed.resolutions)
+            if "ask" in composed.resolutions.values():
+                record["asked"] = True
+            missing = unresolved(findings, composed.resolutions)
+            if missing:
+                text = deterministic_compose(
+                    text, missing, locale=locale, internal_values=internal_values
+                )
+                record["deterministic"] = True
+        else:
+            text = deterministic_compose(
+                reply, unsupported_findings, locale=locale, internal_values=internal_values
+            )
+            record["deterministic"] = True
+
+        hits = guard.scan(text)
+        if hits:
+            # the composer echoed an internal value — record it and try once
+            # with only the user-safe view
+            record["leak"] = {
+                "blocked": [hit.value for hit in hits],
+                "regenerated": True,
+            }
+            log.info("verification leak blocked — regenerating once with the safe view")
+            safe_history = [Message.user(message.text) for message in messages if message.text]
+            safe = None
             try:
-                second = verify_reply(
-                    candidate,
-                    chunks_by_event=packed.chunks_by_event,
-                    known_event_ids=set(packed.event_ids),
-                    extra_corpus=extra_corpus,
+                safe = await asyncio.wait_for(
+                    compose_answer(
+                        provider,
+                        system,
+                        safe_history,
+                        findings=[],
+                        candidate="",
+                        safe_only=True,
+                    ),
+                    timeout=timeout,
                 )
             except Exception:
-                second = violations
-            record["regenerated"] = True
-            if not second:
-                record["ok"] = True
-                return candidate, record
-            repaired = repair_reply(candidate, second)
-            record["repaired"] = True
-            record["violations"] = [{"kind": v.kind, "detail": v.detail} for v in second]
-            return repaired.text, record
-        repaired = repair_reply(reply, violations)
-        record["repaired"] = True
-        return repaired.text, record
+                log.warning("safe regeneration failed — using the catalog fallback", exc_info=True)
+            if safe is not None and safe.reply:
+                text = safe.reply
+                notes = safe.internal_notes or notes
+            else:
+                text = render_message("verification.safe_fallback", locale=locale)
+            remaining = guard.scan(text)
+            if remaining:
+                record["leak"]["still_leaking"] = [hit.value for hit in remaining]
+                text = render_message("verification.safe_fallback", locale=locale)
+
+        record["ok"] = not record.get("leak", {}).get("still_leaking")
+        return text, record, notes
 
     async def _recall_related(
         self,
