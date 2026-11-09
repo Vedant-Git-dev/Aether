@@ -63,6 +63,7 @@ SQL_MODULES = frozenset(
         "src/aether/memory/facts.py",
         "src/aether/memory/focus.py",
         "src/aether/memory/inbound.py",
+        "src/aether/memory/notifications.py",
         "src/aether/memory/seal_migrate.py",
         "src/aether/memory/storage.py",
         "src/aether/memory/summaries.py",

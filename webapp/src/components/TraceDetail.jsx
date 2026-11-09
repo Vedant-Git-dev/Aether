@@ -1,7 +1,7 @@
 // The expanded trace: what triggered it, every gated call with its ruling,
 // the reasoning, the reply, and the result. All plain text, colored only by
 // the decision classes.
-import { appLabel, personName, describeTool, describeRule, describeObservation, describeRecall, describeTrigger, humanize, plainText, summarizeResult, quote, paramRows, AUDIT_DECISIONS } from "../lib/describe.js";
+import { appLabel, personName, describeTool, describeRule, describeObservation, describeRecall, describeTrigger, humanize, plainText, summarizeResult, quote, paramRows, AUDIT_DECISIONS, TRACE_SECTIONS } from "../lib/describe.js";
 import { fmtTime } from "../lib/format.js";
 import { statusColor } from "../lib/status.js";
 
@@ -121,6 +121,18 @@ export default function TraceDetail({ t }) {
       )}
       {p.reply && (
         <div className="mt-1 text-sm text-ink-2">{plainText(p.reply)}</div>
+      )}
+
+      {(p.internal || p.internal_notes) && (
+        <>
+          <div className="surface-head mt-5">{TRACE_SECTIONS.internal}</div>
+          {p.internal && (
+            <div className="mt-1 text-xs text-ink-3">{plainText(p.internal)}</div>
+          )}
+          {p.internal_notes && (
+            <div className="mt-1 text-xs text-ink-3">{plainText(p.internal_notes)}</div>
+          )}
+        </>
       )}
 
       {p.result !== undefined && t.kind !== "turn" && (

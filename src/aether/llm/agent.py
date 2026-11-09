@@ -39,6 +39,7 @@ async def run_tool_loop(
     execute: ToolExecutor,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
     progress: list[Message] | None = None,
+    terminal: frozenset[str] | set[str] | None = None,
 ) -> tuple[Turn, list[Message]]:
     """Run reason -> act -> observe until the model replies without tool calls.
 
@@ -124,6 +125,11 @@ async def run_tool_loop(
                 # record of it are real
                 results.append(await _guarded(call))
         history.append(Message.tool_results(results))
+        # A terminal outcome tool ends the turn. The caller records the
+        # typed outcome from its call record; letting the model keep going
+        # would invite a second, differently worded delivery.
+        if terminal and any(result.name in terminal for result in results):
+            return turn, history
 
     # Iteration budget exhausted with the model still proposing tools: force
     # a text-only wrap-up turn so the conversation ends in words, not an

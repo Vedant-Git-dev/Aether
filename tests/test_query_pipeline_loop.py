@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from fakes import FakeEntities, FakeProvider
 from test_agent_loop import LoopKit, _msg
 
+from aether.agent.composer import tool_call_for_testing as compose_turn
 from aether.agent.tools import register_native_tools
 from aether.config import AppConfig, MemoryConfig
 from aether.llm.types import ToolCall, Turn
@@ -74,6 +75,10 @@ def _config(*, pipeline: bool = True) -> AppConfig:
     return AppConfig(memory=MemoryConfig(query_pipeline=pipeline))
 
 
+def _answer(text: str) -> Turn:
+    return Turn(tool_calls=[ToolCall(id="r1", name="reply_user", arguments={"reply": text})])
+
+
 def _working_context(provider: FakeProvider, call_index: int = 0) -> str:
     """Everything the model saw before its Nth completion."""
     return "\n".join(
@@ -85,7 +90,7 @@ def _working_context(provider: FakeProvider, call_index: int = 0) -> str:
 
 
 async def test_a_question_reaches_the_model_with_cited_memory() -> None:
-    provider = FakeProvider([Turn(text="Rahul's invoice is due on Friday [E1].")])
+    provider = FakeProvider([_answer("Rahul's invoice is due on Friday [E1].")])
     kit = LoopKit(
         provider,
         config=_config(),
@@ -98,14 +103,18 @@ async def test_a_question_reaches_the_model_with_cited_memory() -> None:
     context = _working_context(provider)
     assert "[E1 |" in context
     assert "invoice is due on Friday" in context
-    assert kit.connector.sent == ["Rahul's invoice is due on Friday [E1]."]
+    # the bracketed id is internal: it is stripped before the words leave
+    assert kit.connector.sent == ["Rahul's invoice is due on Friday."]
 
 
-async def test_an_unsupported_quote_is_regenerated_once_before_sending() -> None:
+async def test_an_unsupported_quote_is_composed_once_before_sending() -> None:
     provider = FakeProvider(
         [
-            Turn(text='He said "the payment cleared yesterday" [E1].'),
-            Turn(text="Rahul's invoice is due on Friday [E1]."),
+            _answer('He said "the payment cleared yesterday" [E1].'),
+            compose_turn(
+                "Rahul's invoice is due on Friday.",
+                resolutions={"finding-2": "remove"},
+            ),
         ]
     )
     kit = LoopKit(
@@ -118,7 +127,10 @@ async def test_an_unsupported_quote_is_regenerated_once_before_sending() -> None
     await kit.loop._tick()
 
     assert len(provider.calls) == 2
-    assert kit.connector.sent == ["Rahul's invoice is due on Friday [E1]."]
+    assert kit.connector.sent == ["Rahul's invoice is due on Friday."]
+    record = kit.traces.created[-1]["payload"]["verification"]
+    assert record["ok"] is True
+    assert record["resolutions"]
 
 
 async def test_no_relevant_memory_tells_the_model_to_abstain() -> None:

@@ -287,6 +287,9 @@ _PROVIDER_ACTION_WORDS: dict[tuple[str, str], ActionWords] = {
 
 _NATIVE_WORDS: dict[str, ActionWords] = {
     "send_chat_message": ActionWords("Send the message", "messaging you", "sent you the message"),
+    "reply_user": ActionWords("Answer you", "answering you", "answered you"),
+    "notify_user": ActionWords("Tell you", "telling you", "told you"),
+    "ask_user": ActionWords("Ask you", "asking you", "asked you"),
     "memory_search": ActionWords("Search my memory", "searching my memory", "searched my memory"),
     "memory_forget": ActionWords(
         "Forget that memory", "forgetting that memory", "forgot that memory"

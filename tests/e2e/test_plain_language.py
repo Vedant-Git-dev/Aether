@@ -49,6 +49,11 @@ RAW_PATTERNS = [
         "raw id dump",
     ),
     (re.compile(r"\bunread\s*:", re.I), "raw unread flag"),
+    # internal verification identities: finding ids and bracketed source
+    # tags are bookkeeping, never visible text
+    (re.compile(r"\bfinding[-_ ]?\d+\b", re.I), "raw finding id"),
+    (re.compile(r"\[E\d+", re.I), "raw source tag"),
+    (re.compile(r"\bsource_ids?\b", re.I), "raw source field"),
 ]
 
 
@@ -121,6 +126,12 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     assert "Inputs" in text and "Tool calls" in text and "Answer" in text
     assert "Thread id" in text and "(kept in the decision record)" in text
     assert "19c2e6fe0b2f1a34" not in text
+    # the turn's internal section renders under its own heading, with the
+    # finding ids and source tags scrubbed out of it
+    assert "Internal" in text
+    assert "Nothing worth sending on this tick." in text
+    assert "finding-7" not in text
+    assert "[E99]" not in text
 
     page.goto(f"{live_server}/#/activity")
     page.wait_for_selector('[data-testid="event-row"]')

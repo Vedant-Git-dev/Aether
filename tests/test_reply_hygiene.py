@@ -19,7 +19,7 @@ from test_agent_loop import LoopKit, _event
 
 from aether.agent.tools import EMPTY_REPLY
 from aether.connectors.base import InboundMessage
-from aether.llm.types import Turn
+from aether.llm.types import ToolCall, Turn
 from aether.memory.inbound import EXPIRED, FAILED, RECEIVED
 from aether.outbound import is_deliverable
 
@@ -293,7 +293,19 @@ def _closed_rows() -> list[dict]:
 
 
 async def test_a_proactive_reply_that_echoes_a_closed_question_is_blocked() -> None:
-    provider = FakeProvider([Turn(text="how many commits are there on it?")])
+    provider = FakeProvider(
+        [
+            Turn(
+                tool_calls=[
+                    ToolCall(
+                        id="n1",
+                        name="notify_user",
+                        arguments={"content": "how many commits are there on it?"},
+                    )
+                ]
+            )
+        ]
+    )
     kit = LoopKit(provider, transcript=FakeTranscript(_closed_rows()))
     kit.events.events[1] = _event(1)  # an unrelated feed event
     await kit.loop._tick()
@@ -303,7 +315,19 @@ async def test_a_proactive_reply_that_echoes_a_closed_question_is_blocked() -> N
 
 
 async def test_a_proactive_reply_that_duplicates_a_recent_send_is_blocked() -> None:
-    provider = FakeProvider([Turn(text="There are 42 commits on that branch.")])
+    provider = FakeProvider(
+        [
+            Turn(
+                tool_calls=[
+                    ToolCall(
+                        id="n1",
+                        name="notify_user",
+                        arguments={"content": "There are 42 commits on that branch."},
+                    )
+                ]
+            )
+        ]
+    )
     kit = LoopKit(provider, transcript=FakeTranscript(_closed_rows()))
     kit.events.events[1] = _event(1)
     await kit.loop._tick()
@@ -371,7 +395,9 @@ async def test_two_pending_questions_are_each_answered_to_their_own_message() ->
 
 
 async def test_a_proactive_alert_never_quotes_a_user_message() -> None:
-    provider = FakeProvider([Turn(text="noted")])
+    provider = FakeProvider(
+        [Turn(tool_calls=[ToolCall(id="n1", name="notify_user", arguments={"content": "noted"})])]
+    )
     kit = LoopKit(provider)
     kit.events.events[1] = _event(1)
     await kit.loop._tick()

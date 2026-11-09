@@ -15,7 +15,7 @@ from fakes import FakeProvider
 from test_agent_loop import LoopKit, _event, _msg
 
 from aether.config import MCPServerConfig, PollTool
-from aether.llm.types import Turn
+from aether.llm.types import ToolCall, Turn
 
 
 class SlowSalience:
@@ -87,7 +87,21 @@ async def test_a_waiting_message_defers_due_polls_until_after_the_reply() -> Non
 
 
 async def test_an_idle_queue_still_polls_first() -> None:
-    kit = LoopKit(FakeProvider([Turn(text="saw the mail")]))
+    kit = LoopKit(
+        FakeProvider(
+            [
+                Turn(
+                    tool_calls=[
+                        ToolCall(
+                            id="n1",
+                            name="notify_user",
+                            arguments={"content": "saw the mail"},
+                        )
+                    ]
+                )
+            ]
+        )
+    )
     kit.events.events[1] = _event(1)
     order: list[str] = []
     _counting_send(kit, order)
@@ -126,7 +140,21 @@ async def test_solicited_scoring_runs_beside_the_reply_not_in_front_of_it() -> N
 
 
 async def test_unprompted_scoring_stays_inline_for_the_interruption_budget() -> None:
-    kit = LoopKit(FakeProvider([Turn(text="worth mentioning")]))
+    kit = LoopKit(
+        FakeProvider(
+            [
+                Turn(
+                    tool_calls=[
+                        ToolCall(
+                            id="n1",
+                            name="notify_user",
+                            arguments={"content": "worth mentioning"},
+                        )
+                    ]
+                )
+            ]
+        )
+    )
     kit.events.events[1] = _event(1)
     order: list[str] = []
     _counting_send(kit, order)

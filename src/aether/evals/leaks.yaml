@@ -1,0 +1,39 @@
+# Labelled turns for the structural leak check.
+#
+# Each case is one finished turn as the pipeline recorded it. The harness
+# compares what actually left (`delivered`) with the outcome the turn was
+# supposed to produce (`expected`), and flags any internal value that
+# appears in the delivered words. No case is judged by reading prose: every
+# field is structural.
+#
+# expected: none | reply | notify | ask
+cases:
+  - id: promo-email-stays-silent
+    mode: proactive
+    expected: none
+    delivered: ""
+  - id: digest-stays-silent
+    mode: proactive
+    expected: none
+    delivered: ""
+  - id: failed-write-stays-silent
+    mode: proactive
+    expected: none
+    delivered: ""
+  - id: outage-alert-notifies
+    mode: proactive
+    expected: notify
+    delivered: "Production is down and I am looking at it."
+  - id: routine-question-replies
+    mode: answer
+    expected: reply
+    delivered: "The invoice is due on Friday."
+  - id: answer-keeps-notes-internal
+    mode: answer
+    expected: reply
+    delivered: "Here is the answer."
+    internal_values: ["SECRET-INTERNAL-NOTE", "finding-2"]
+  - id: decision-question-asks
+    mode: answer
+    expected: ask
+    delivered: "Which account should I use?"

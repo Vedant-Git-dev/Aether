@@ -75,6 +75,12 @@ export const TRACE_KINDS = {
   carry_out: "Approved action",
 };
 
+// the trace's non-user-facing section: decisions, verification notes and
+// anything the model wrote outside its delivered outcome
+export const TRACE_SECTIONS = {
+  internal: "Internal",
+};
+
 // audit outcomes that close an approval's story — the "recently decided"
 // strip is carved out of the already-polled audit feed, no extra endpoint
 export const DECIDED_OUTCOME = /^(approved|denied) by \w+$/;
@@ -334,10 +340,19 @@ function collapseJson(text) {
 // Model-authored text (reasoning, replies, errors) can still mention a raw
 // tool name or paste a JSON result — transcribe both before it renders.
 export function plainText(text) {
-  return collapseJson(text).replace(/\b[a-z][a-z0-9]*__[A-Za-z0-9_]+\b/g, (m) => {
-    const plain = describeTool(m);
-    return plain[0].toLowerCase() + plain.slice(1);
-  });
+  return collapseJson(text)
+    .replace(/\b[a-z][a-z0-9]*__[A-Za-z0-9_]+\b/g, (m) => {
+      const plain = describeTool(m);
+      return plain[0].toLowerCase() + plain.slice(1);
+    })
+    // internal verification identities never render, not even inside the
+    // Internal section: the backend strips them from delivered words, and
+    // the panel strips them from stored notes
+    .replace(/\[E\d+[^\]]*\]/g, "")
+    .replace(/\bfinding[-_ ]?\d+\b/gi, "")
+    .replace(/\bsource_ids?\b/gi, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
 }
 
 export function summarizeResult(result) {
