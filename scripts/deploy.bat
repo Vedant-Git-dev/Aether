@@ -163,7 +163,7 @@ echo --rotate-encryption-key replaces the deployed content key on an existing
 echo service, making every previously stored chat, memory, and trace row
 echo unreadable. It is off by default, and needs --force on an already-run
 echo machine.
-echo See docs/hosted-setup.md.
+echo See docs/start/setup-wizard.md.
 exit /b 0
 
 :args_done

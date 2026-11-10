@@ -30,7 +30,7 @@
 #   ./scripts/setup.sh [--dry-run] [--answers FILE] [--secrets FILE]
 #                      [--non-interactive] [--help]
 #
-# See docs/hosted-setup.md for the shared answers-file format and the full
+# See docs/start/setup-wizard.md for the shared answers-file format and the full
 # question list. scripts/setup.bat asks the same questions in the same order and
 # reads the same answers file.
 
@@ -582,7 +582,7 @@ index_of() {
 }
 
 # ---------------------------------------------------------------------------
-# The questions (same order as setup.bat and docs/hosted-setup.md)
+# The questions (same order as setup.bat and docs/start/setup-wizard.md)
 # ---------------------------------------------------------------------------
 
 discover_upstream_repo() {

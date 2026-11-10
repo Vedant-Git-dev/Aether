@@ -1,3 +1,12 @@
+---
+title: "Setup wizard and deployment"
+summary: "The keyboard-driven setup wizard, the answers file, and the deploy engine for a local or Render instance."
+read_when:
+  - You are running scripts/setup.sh or scripts/setup.bat
+  - You are deploying to Render
+  - You want a non-interactive or scripted install
+---
+
 # Setup wizard and deployment
 
 `scripts/setup.sh` (Linux and macOS) and `scripts/setup.bat` (Windows 10/11)

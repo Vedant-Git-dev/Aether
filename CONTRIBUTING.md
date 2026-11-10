@@ -7,7 +7,7 @@ Thanks for helping build a personal agent people can actually trust.
 For a user-facing install and deploy, run the setup scripts instead:
 `./scripts/setup.sh` then `./scripts/deploy.sh --answers ~/.aether-setup/answers.env`
 (on Windows: `scripts\setup.bat`, then `scripts\deploy.bat`). See
-[docs/hosted-setup.md](docs/hosted-setup.md). The steps below are for a contributor
+[docs/start/setup-wizard.md](docs/start/setup-wizard.md). The steps below are for a contributor
 checkout you will edit and test.
 
 ```bash

@@ -1,3 +1,12 @@
+---
+title: "Troubleshooting"
+summary: "Boot failures, panel errors, channel problems, approval surprises, and how to reset."
+read_when:
+  - Aether will not start
+  - A surface is not sending
+  - Something was approved but did not run
+---
+
 # Troubleshooting
 
 Start with the startup log and `/status`. Both are plain language and neither costs a
@@ -6,7 +15,7 @@ model call.
 If you are setting up for the first time, run `scripts/setup.sh` (or
 `scripts\setup.bat`). The wizard collects the database URL, generates the keys and
 writes sealed copies to `~/.aether-setup`; see
-[docs/hosted-setup.md](hosted-setup.md). The fixes below are for an existing install.
+[the setup wizard](../start/setup-wizard.md). The fixes below are for an existing install.
 
 ## Boot stops immediately
 
@@ -180,7 +189,7 @@ rule or built-in that parked the call.
 - `builtin:provider-write` means the provider declared the tool as a write.
 
 Rules are evaluated first, so a user rule can loosen the built-ins for the tools you
-trust. See [policy.md](policy.md).
+trust. See [the policy guide](../concepts/policy.md).
 
 ## Something was approved but never ran
 

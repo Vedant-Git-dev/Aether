@@ -1,3 +1,12 @@
+---
+title: "Channels"
+summary: "The web panel, Telegram, and Discord surfaces, plus contact filtering and screen capture."
+read_when:
+  - You are connecting Telegram or Discord
+  - You are setting up contact allowlists
+  - You want the screen-capture companion
+---
+
 # Channels
 
 Aether has one web surface and two native chat connectors. All three carry
@@ -164,5 +173,6 @@ X11, macOS, and Windows capture are not implemented.
 
 - Use the web panel for setup, audit review, and traces.
 - Use Telegram or Discord for approvals when you are away from the desk.
+- The panel only shows the work and the audit trail
 - Enable both if you want redundancy. Approving on one surface settles the request
   everywhere; a second tap is told the request was already decided.

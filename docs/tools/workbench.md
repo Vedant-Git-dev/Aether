@@ -1,3 +1,12 @@
+---
+title: "The cloud workbench"
+summary: "Where sandbox jobs run, the deterministic provider ladder, the job classes, and the limits."
+read_when:
+  - You are configuring sandbox providers
+  - A background job needs a sandbox
+  - You want to know what a sandbox receives
+---
+
 # The cloud workbench
 
 Some work should not run on the machine serving Aether: watching a video, extracting
@@ -70,7 +79,7 @@ The fail-safe defaults matter:
 - Each job is one workflow run. The run is deleted after collection.
 
 Full setup, including the two workflow files and the one-time URL exchange, is in
-[github-actions-sandbox.md](github-actions-sandbox.md).
+[batch-queue.md](batch-queue.md).
 
 ## What a sandbox receives
 

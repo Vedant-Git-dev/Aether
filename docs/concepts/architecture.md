@@ -1,3 +1,11 @@
+---
+title: "Architecture"
+summary: "One asyncio process: boot order, components, data flow, persistence, encryption, and failure behavior."
+read_when:
+  - You want to understand how Aether is wired
+  - You are changing the agent loop, memory, or the policy gate
+---
+
 # Architecture
 
 Aether is **one asyncio process**. The API, the web panel, the agent loop, the scheduler,
@@ -323,7 +331,7 @@ Provider OAuth tokens use a separate keyring (`providers/crypto.py`). This lets 
 rotate the token key without re-encrypting message history. The rotation tool is
 `python -m aether.providers.rotate_tokens`.
 
-See the [configuration reference](configuration.md#content-key-rotation) for the key
+See the [configuration reference](../reference/configuration.md#content-key-rotation) for the key
 variables and rotation steps.
 
 ## Concurrency and restart behavior

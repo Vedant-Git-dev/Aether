@@ -1,0 +1,58 @@
+{
+  "name": "Aether",
+  "description": "A self-hosted personal agent that checks every action against a policy you wrote, waits for one tap on anything that leaves, and records the decision in a tamper-evident log.",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Start",
+        "pages": [
+          "index",
+          "quickstart",
+          "start/why-aether",
+          "start/setup-wizard",
+          "start/faq"
+        ]
+      },
+      {
+        "group": "Concepts",
+        "pages": [
+          "concepts/architecture",
+          "concepts/policy",
+          "concepts/sealed-storage"
+        ]
+      },
+      {
+        "group": "Channels",
+        "pages": [
+          "channels"
+        ]
+      },
+      {
+        "group": "Models",
+        "pages": [
+          "models"
+        ]
+      },
+      {
+        "group": "Tools",
+        "pages": [
+          "tools/workbench",
+          "tools/batch-queue"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "reference/configuration",
+          "reference/evaluation"
+        ]
+      },
+      {
+        "group": "Help",
+        "pages": [
+          "help/troubleshooting"
+        ]
+      }
+    ]
+  }
+}

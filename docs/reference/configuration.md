@@ -1,3 +1,12 @@
+---
+title: "Configuration reference"
+summary: "Every environment variable and config.yaml field, with precedence, chat edits, and validation."
+read_when:
+  - You are looking up a config key or an environment variable
+  - You are setting a value from chat with /config
+  - You are rotating an encryption key
+---
+
 # Configuration reference
 
 Aether splits configuration in two on purpose:
@@ -76,7 +85,7 @@ one as previous: old rows stay readable, and new writes use the new version.
 > python -m aether.memory.seal_migrate --retokenize
 > ```
 
-See [sealed-storage.md](sealed-storage.md) for the plaintext allowlist and the sealer.
+See [sealed storage](../concepts/sealed-storage.md) for the plaintext allowlist and the sealer.
 
 ### Core options
 
@@ -309,7 +318,7 @@ senders.
 | `approval_ttl_hours` | `24` | How long a parked call stays decidable |
 
 `tool_pattern` and `param_pattern` are Python regular expressions, matched with
-`search`. `decision` is `allow`, `approve`, or `deny`. See the [policy guide](policy.md).
+`search`. `decision` is `allow`, `approve`, or `deny`. See the [policy guide](../concepts/policy.md).
 
 ### `workspace`
 

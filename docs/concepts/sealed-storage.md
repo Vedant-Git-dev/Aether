@@ -1,3 +1,12 @@
+---
+title: "Sealed storage"
+summary: "What is encrypted at rest, what may stay plaintext, and how to seal or rotate an existing history."
+read_when:
+  - You are reviewing what Aether stores
+  - You are rotating the encryption key
+  - You are running the sealer or the canary sweep
+---
+
 # Sealed storage
 
 Everything Aether derives from the user's world is encrypted at rest. This page
