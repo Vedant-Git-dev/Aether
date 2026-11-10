@@ -1,3 +1,11 @@
+---
+title: "The evaluation: what the numbers say"
+summary: "The golden set, the ablation arms, and the decisions they justify for embeddings and enrichment."
+read_when:
+  - You are changing retrieval, embeddings, or write-time enrichment
+  - You want the measured numbers behind a default
+---
+
 # The evaluation: what the numbers say
 
 Plan.md section 11 asks for an evaluation that decides what ships: whether the

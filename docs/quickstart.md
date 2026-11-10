@@ -5,7 +5,7 @@ that fits what you want to do.
 
 | I want to... | Go to |
 | --- | --- |
-| Look at the panel and the approval flow, with no setup | [Path 1: Try the panel](#path-1-try-the-panel-with-no-database) |
+| Look at the panel and the live task state, with no setup | [Path 1: Try the panel](#path-1-try-the-panel-with-no-database) |
 | Run Aether for real, with the guided wizard | [Path 2a: Setup scripts](#2a-use-the-setup-scripts-recommended) |
 | Understand and control every step | [Path 2b: Manual setup](#2b-manual-setup) |
 
@@ -70,8 +70,7 @@ secret
 
 > [!NOTE]
 > The fixture data is fake, and nothing survives a restart. This path is for evaluating
-> the panel and the approval flow, not for connecting real apps.
-
+> the panel and the live task state, not for connecting real apps
 ---
 
 ## Path 2: Set up the agent
@@ -148,7 +147,7 @@ For a local Postgres, choose **existing** for the database question and paste th
 connection string (for example `postgresql:///aether`).
 
 The full question list, the `answers.toml` format, `--yes`, `--answers`, `--dry-run`,
-and `--no-animation` are in [hosted-setup.md](hosted-setup.md).
+and `--no-animation` are in [setup-wizard.md](start/setup-wizard.md).
 
 ### 2b. Manual setup
 
@@ -405,8 +404,8 @@ approvals keep their expiry clock.
 
 ## Where to go next
 
-- [Configuration](configuration.md): every field and environment variable.
-- [Policy](policy.md): rules and the built-in ladder.
-- [Channels](channels.md): Telegram, Discord, and screen capture.
-- [Models](models.md): model slots and provider routing.
-- [Troubleshooting](troubleshooting.md): when boot fails.
+- [Configuration](reference/configuration.md): every field and environment variable.
+- [Policy](concepts/policy.md): rules and the built-in ladder.
+- [Channels](channels/index.md): Telegram, Discord, and screen capture.
+- [Models](models/index.md): model slots and provider routing.
+- [Troubleshooting](help/troubleshooting.md): when boot fails.

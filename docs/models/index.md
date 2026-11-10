@@ -1,3 +1,12 @@
+---
+title: "Models and modality slots"
+summary: "Providers, model names, and how the reasoning, image, audio, video, salience, and embedding slots route."
+read_when:
+  - You are choosing a provider or model
+  - You want images, audio, video, or semantic memory
+  - You are checking what a slot does
+---
+
 # Models and modality slots
 
 Aether separates the model that reasons from the model that reads an image, hears

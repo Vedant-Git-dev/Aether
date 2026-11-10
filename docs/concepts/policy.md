@@ -1,3 +1,12 @@
+---
+title: "Authorization and policy"
+summary: "How the deterministic gate classifies every tool call, the rule grammar, and how approvals work."
+read_when:
+  - You are writing authz rules
+  - A tool keeps asking for approval
+  - You want to know what policy does and does not do
+---
+
 # Authorization and policy
 
 Aether's authorization layer is deterministic. The model proposes a tool call; code

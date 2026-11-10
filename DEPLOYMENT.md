@@ -5,21 +5,26 @@ The reference deployment runs on two free tiers — **Neon** (Postgres) and
 uptime ping. Everything is one always-on process: the API, the web chat,
 the agent loop, the scheduler, and the connectors.
 
-> The fastest path is the setup wizard and the deploy engine:
+The fastest path is the setup wizard and the deploy engine:
 >
 > ```bash
 > ./scripts/setup.sh
 > ./scripts/deploy.sh --answers ~/.aether-setup/answers.env
 > ```
 >
-> Windows, in PowerShell: `.\scripts\setup.bat`, then
-> `.\scripts\deploy.bat --answers "$env:USERPROFILE\.aether-setup\answers.env"`.
-> The rest of this page explains what those scripts do, step by step, so you can
-> follow along or do it by hand. Running locally instead? The wizard also writes
-> `config.generated.yaml` and `secrets.env`; copy them into place, run
-> `pip install -e ".[dev]"`, build the panel, and start `aether`.
+
+ Windows, in PowerShell:
+> ```bash 
+> .\scripts\setup.bat
+> .\scripts\deploy.bat --answers "$env:USERPROFILE\.aether-setup\answers.env"
+> ```
+
+The rest of this page explains what those scripts do, step by step, so you can
+ follow along or do it by hand. Running locally instead? The wizard also writes
+ `config.generated.yaml` and `secrets.env`; copy them into place, run
+ `pip install -e ".[dev]"`, build the panel, and start `aether`.
 >
-> Full wizard details: [docs/hosted-setup.md](docs/hosted-setup.md).
+Full wizard details: [docs/start/setup-wizard.md](docs/start/setup-wizard.md).
 
 ## What you need
 

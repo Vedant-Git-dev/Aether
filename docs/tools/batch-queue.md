@@ -1,3 +1,11 @@
+---
+title: "The batch queue (GitHub Actions)"
+summary: "Full setup for running patient, non-sensitive background jobs in your own repository's workflow queue."
+read_when:
+  - You want background jobs without a paid sandbox
+  - You are setting up the GitHub Actions runner
+---
+
 # The batch queue (GitHub Actions)
 
 Aether can run patient, non-sensitive background jobs in **your own code
