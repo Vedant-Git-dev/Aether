@@ -196,7 +196,7 @@ recall@5, MRR, route accuracy, abstain precision and recall, and claim support.
   message again. `forget_fact`, `forget_commitment` and `forget_summary` end one claim,
   promise or summary. Every action is audited as `memory.forget`.
 - The chat tool `memory_forget` rides the same control. Its provenance gate is the
-  watch boundary exactly: only the user's own words (`forget_origin` in the loop) may
+  alert boundary exactly: only the user's own words (`forget_origin` in the loop) may
   ask for it, so an instruction inside an email can never delete memory.
 - A forgotten item is gone from Aether's own store. Provider history, backups and WAL
   may still hold old copies until they expire, and the tombstone is permanent — there
@@ -250,12 +250,12 @@ editing, frame extraction, and Groq transcription.
 time, runs skills, stores results, and records verdicts. `src/aether/skills/` holds the
 three shipped skills: **follow-ups**, **research**, and **media**.
 
-The same package carries the proactive path. `path.py` evaluates the user's watches on
+The same package carries the proactive path. `path.py` evaluates the user's alerts on
 every ingest, sends one deduplicated, rate-limited alert per match (with a default
 urgent-mail policy), and fires commitment reminders on their urgency-scaled leads.
 
 > [!IMPORTANT]
-> Only the user's own words can arm a watch. An email can never create one.
+> Only the user's own words can set an alert. An email can never create one.
 
 `src/aether/workbench/` routes sandbox jobs across Modal, Vercel, and a GitHub Actions
 batch queue. Routing is code; the model is not consulted.

@@ -767,7 +767,7 @@ def create_app(
             editor=editor,
             generator=image_generator,
             proactive_path=proactive_path,
-            watch_origin=agent.watch_origin,
+            alert_basis=agent.alert_basis,
             forget_origin=agent.forget_origin,
             memory_control=memory_control,
         )

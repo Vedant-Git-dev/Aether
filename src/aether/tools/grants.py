@@ -23,6 +23,7 @@ INTERNAL_CAPABILITIES = frozenset(
         "screen",
         "media",
         "routines",
+        "alerts",
         "watches",
         "traces",
         "audit",

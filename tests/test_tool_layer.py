@@ -8,6 +8,7 @@ from test_agent_loop import LoopKit, _msg
 
 from aether.authz.policy import Decision, Policy
 from aether.config import AuthzRule
+from aether.connectors.registry import ToolRegistry
 from aether.llm.types import ToolCall, Turn
 from aether.tools.grants import BackendHealth
 from aether.tools.model import ToolSpec
@@ -170,8 +171,33 @@ def test_the_policy_sees_new_internal_names_as_internal() -> None:
     policy = Policy([])
     assert policy.classify("routines__delete", internal=True).decision is Decision.ALLOW
     assert policy.classify("routines__delete", internal=True).matched_rule == "builtin:internal"
+    assert policy.classify("alerts__create", internal=True).matched_rule == "builtin:internal"
     # the same name without the registry's word is just a risky verb — an
     # MCP server called routines must never inherit Aether's own trust
     assert policy.classify("routines__delete", internal=False).decision is (
         Decision.REQUIRE_APPROVAL
     )
+
+
+def test_an_alert_tool_is_registered_as_internal() -> None:
+    registry = ToolRegistry()
+
+    async def handler(params: dict) -> str:
+        return "ok"
+
+    registry.add_native(
+        ToolSpec(
+            id="alerts.create",
+            capability="alerts",
+            intent="create",
+            summary="Set an alert.",
+            description="Set an alert.",
+            risk="write",
+            raw_schema={"type": "object", "properties": {}},
+            aliases=("watches__create",),
+        ),
+        handler,
+    )
+
+    assert registry.is_internal("alerts__create") is True
+    assert registry.is_internal("watches__create") is True

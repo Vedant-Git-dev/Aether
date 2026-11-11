@@ -57,6 +57,11 @@ def _clean(value: Any, limit: int = 200) -> str:
     return str(value or "").strip()[:limit]
 
 
+def _form(value: Any) -> str:
+    """Wording only: an old or malformed value reads as an alert."""
+    return "reminder" if str(value or "").strip().lower() == "reminder" else "alert"
+
+
 @dataclass(frozen=True)
 class WatchSpec:
     """What one watch watches. Every field is sealed with the label.
@@ -65,7 +70,8 @@ class WatchSpec:
     concrete source such as "gmail", or "*" for anything. `kind`, `sender`,
     `contains`, `urgency_min` and `needs_reply` narrow it further; every
     present condition must hold, so an empty watch is deliberately not
-    offered by the tool.
+    offered by the tool. `form` is wording only: "alert" by default, or
+    "reminder" when the user framed the request that way.
     """
 
     label: str = ""
@@ -77,6 +83,7 @@ class WatchSpec:
     needs_reply: bool = False
     channel: str = ""
     quiet_hours: str = ""
+    form: str = "alert"
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -89,6 +96,7 @@ class WatchSpec:
             "needs_reply": self.needs_reply,
             "channel": self.channel,
             "quiet_hours": self.quiet_hours,
+            "form": self.form,
         }
 
     @classmethod
@@ -111,6 +119,7 @@ class WatchSpec:
             needs_reply=bool(data.get("needs_reply", False)),
             channel=_clean(data.get("channel"), 40),
             quiet_hours=_clean(data.get("quiet_hours"), 40),
+            form=_form(data.get("form")),
         )
 
 
@@ -158,6 +167,7 @@ def normalize_spec(spec: WatchSpec) -> WatchSpec:
         needs_reply=bool(spec.needs_reply),
         channel=_clean(spec.channel, 40),
         quiet_hours=_clean(spec.quiet_hours, 40),
+        form=_form(spec.form),
     )
 
 
@@ -291,7 +301,7 @@ class WatchStore:
             tool_name="watch",
             decision="info",
             params={"watch_id": watch_id, "scope": spec.scope, "channel": spec.channel},
-            outcome="watch armed",
+            outcome="alert armed",
         )
         return Watch(
             id=watch_id,
@@ -355,7 +365,7 @@ class WatchStore:
                 tool_name="watch",
                 decision="info",
                 params={"watch_id": watch_id},
-                outcome="watch removed",
+                outcome="alert removed",
             )
         return row is not None
 
@@ -463,7 +473,8 @@ def render_alert(
     head = "Urgent " if urgent else ""
     if watch is not None and watch.label:
         title = f"{head}{word} from {sender}" if sender else f"{head}{word}"
-        line = f'{title} — matched your watch "{watch.label}"'
+        noun = "reminder" if _form(watch.spec.form) == "reminder" else "alert"
+        line = f'{title} — matched your {noun} "{watch.label}"'
     else:
         line = f"{head}{word} from {sender}" if sender else f"{head}{word}"
     if summary:

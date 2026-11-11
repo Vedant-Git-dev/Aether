@@ -89,6 +89,8 @@ _RESERVED_WORDS = frozenset(
         "policy",
         "permission",
         "watch",
+        "alert",
+        "reminder",
     }
 )
 _RESERVED_RE = re.compile(

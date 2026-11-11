@@ -193,7 +193,7 @@ async def test_a_watch_match_names_the_watch_and_its_channel() -> None:
     text = await path.evaluate_event(_mail(urgency=2, sender="Vedant <vedant@other.example>"))
 
     assert text is not None
-    assert 'matched your watch "urgent mail"' in text
+    assert 'matched your alert "urgent mail"' in text
     assert "vedant@other.example" in text
     assert recorder.sent[0]["channel"] == "telegram"
 
