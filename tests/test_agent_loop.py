@@ -737,6 +737,65 @@ async def test_the_web_panel_decide_path_carries_out_a_fresh_approval() -> None:
     assert any("Sent the email" in s for s in kit.connector.sent)
 
 
+async def test_an_unquoted_alert_create_parks_and_arms_only_on_approval() -> None:
+    class FakeAlertPath:
+        def __init__(self) -> None:
+            self.created: list = []
+
+        async def create_watch(self, spec, *, origin: str):
+            self.created.append(spec)
+            return SimpleNamespace(id=1, spec=spec, label=spec.label, status="active")
+
+        async def list_watches(self, limit: int = 50):
+            return []
+
+        async def get_watch(self, watch_id: int):
+            return None
+
+        async def update_watch(self, watch_id: int, spec, *, origin: str):
+            return None
+
+        async def set_watch_enabled(self, watch_id: int, enabled: bool, *, origin: str):
+            return None
+
+        async def delete_watch(self, watch_id: int, *, origin: str) -> bool:
+            return False
+
+    kit = LoopKit(None)
+    path = FakeAlertPath()
+    register_native_tools(
+        registry=kit.tools,
+        events=kit.events,
+        entities=None,
+        approvals=kit.approvals,
+        scheduler=kit.scheduler,
+        surfaces=kit.loop._surfaces,
+        capture_box=kit.capture_box,
+        proactive_path=path,
+        alert_basis=kit.loop.alert_basis,
+    )
+
+    result = await kit.loop._execute(
+        ToolCall(
+            id="t1",
+            name="alerts__create",
+            arguments={"scope": "mail", "description": "offer letter"},
+        )
+    )
+
+    assert result.content.startswith("held for approval")
+    approval = kit.approvals.created[0]
+    assert approval.tool_name == "alerts__create"
+
+    approval.status = APPROVED
+    kit.approvals.result = approval
+    await kit.loop.decide(approval.id, "approve")
+
+    assert len(path.created) == 1
+    assert path.created[0].description == "offer letter"
+    assert kit.approvals.executed == [approval.id]
+
+
 async def test_a_stale_web_decide_touches_nothing() -> None:
     kit = LoopKit(None)
     kit.add_tool("mail__send_message")

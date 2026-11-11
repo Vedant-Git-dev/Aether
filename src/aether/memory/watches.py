@@ -20,6 +20,7 @@ the row through the cipher's AAD.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -62,6 +63,29 @@ def _form(value: Any) -> str:
     return "reminder" if str(value or "").strip().lower() == "reminder" else "alert"
 
 
+# Significant words are three letters or longer; the short function words a
+# description carries ("the", "of", "an") never decide a match.
+_WORD_RE = re.compile(r"[a-z0-9]+")
+_WORD_MIN = 3
+
+
+def _words(text: str) -> set[str]:
+    return {word for word in _WORD_RE.findall((text or "").lower()) if len(word) >= _WORD_MIN}
+
+
+def text_overlap(description: str, text: str) -> bool:
+    """Softer than an exact phrase: at least half of the description's
+    significant words appear anywhere in the event. A one- or two-word
+    description therefore needs one of them; a longer one needs about half.
+    The scope and sender conditions still bound what can match."""
+    wanted = _words(description)
+    if not wanted:
+        return False
+    found = _words(text)
+    needed = max(1, len(wanted) // 2)
+    return len(wanted & found) >= needed
+
+
 @dataclass(frozen=True)
 class WatchSpec:
     """What one watch watches. Every field is sealed with the label.
@@ -79,6 +103,7 @@ class WatchSpec:
     kind: str = ""
     sender: str = ""
     contains: str = ""
+    description: str = ""
     urgency_min: int = 0
     needs_reply: bool = False
     channel: str = ""
@@ -92,6 +117,7 @@ class WatchSpec:
             "kind": self.kind,
             "sender": self.sender,
             "contains": self.contains,
+            "description": self.description,
             "urgency_min": self.urgency_min,
             "needs_reply": self.needs_reply,
             "channel": self.channel,
@@ -115,6 +141,7 @@ class WatchSpec:
             kind=_clean(data.get("kind"), 80),
             sender=_clean(data.get("sender")),
             contains=_clean(data.get("contains"), 300),
+            description=_clean(data.get("description"), 300),
             urgency_min=max(0, min(3, urgency)),
             needs_reply=bool(data.get("needs_reply", False)),
             channel=_clean(data.get("channel"), 40),
@@ -149,6 +176,7 @@ class Watch:
             and self.spec.kind == spec.kind
             and self.spec.sender.lower() == spec.sender.lower()
             and self.spec.contains.lower() == spec.contains.lower()
+            and self.spec.description.lower() == spec.description.lower()
             and self.spec.urgency_min == spec.urgency_min
             and self.spec.needs_reply == spec.needs_reply
             and self.spec.channel == spec.channel
@@ -163,6 +191,7 @@ def normalize_spec(spec: WatchSpec) -> WatchSpec:
         kind=_clean(spec.kind, 80),
         sender=_clean(spec.sender),
         contains=_clean(spec.contains, 300),
+        description=_clean(spec.description, 300),
         urgency_min=max(0, min(3, int(spec.urgency_min))),
         needs_reply=bool(spec.needs_reply),
         channel=_clean(spec.channel, 40),
@@ -179,6 +208,7 @@ def has_criteria(spec: WatchSpec) -> bool:
         or spec.kind
         or spec.sender
         or spec.contains
+        or spec.description
         or spec.urgency_min
         or spec.needs_reply
     )
@@ -243,9 +273,11 @@ def watch_matches(spec: WatchSpec, event: Any) -> bool:
         return False
     if spec.sender and not _sender_matches(spec.sender, event):
         return False
-    if spec.contains:
+    if spec.contains or spec.description:
         text = enrichment_text(getattr(event, "kind", ""), event.payload or {})
-        if spec.contains.lower() not in text.lower():
+        if spec.contains and spec.contains.lower() not in text.lower():
+            return False
+        if spec.description and not text_overlap(spec.description, text):
             return False
     return True
 
@@ -353,6 +385,38 @@ class WatchStore:
             watch_id,
         )
         return self._to_watch(row) if row else None
+
+    async def update(
+        self, watch_id: int, *, spec: WatchSpec, origin: str = "owner"
+    ) -> Watch | None:
+        """Replace one alert's stored condition. The id and its watermark
+        stay; only the sealed spec and the plaintext routing columns move."""
+        if origin != "owner":
+            log.warning("refused a watch change from a %s origin", origin or "unknown")
+            return None
+        spec = normalize_spec(spec)
+        if not has_criteria(spec):
+            return None
+        row = await self._pool.fetchrow(
+            "UPDATE watches SET spec_enc = $1, channel = $2, scope_token = $3"
+            " WHERE id = $4"
+            " RETURNING id, status, spec_enc, channel, last_event_id, last_run_at,"
+            " last_notified_at, created_at",
+            self._cipher.encrypt_json(spec.to_payload(), aad=_aad(watch_id)),
+            spec.channel,
+            self._cipher.blind_token("watch_scope", spec.scope),
+            watch_id,
+        )
+        if row is None:
+            return None
+        await self._audit.append(
+            actor="owner",
+            tool_name="watch",
+            decision="info",
+            params={"watch_id": watch_id, "scope": spec.scope, "channel": spec.channel},
+            outcome="alert updated",
+        )
+        return self._to_watch(row)
 
     async def delete(self, watch_id: int, *, origin: str = "owner") -> bool:
         if origin != "owner":

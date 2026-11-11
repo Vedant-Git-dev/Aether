@@ -81,7 +81,8 @@ _INTERNAL = re.compile(
     r"|create_routine|list_routines"
     r"|set_routine_enabled|delete_routine"
     r"|create_watch|list_watches|set_watch_enabled|delete_watch"
-    r"|create_alert|list_alerts|set_alert_enabled|delete_alert"
+    r"|create_alert|update_alert|delete_alert"
+    r"|list_alerts|set_alert_enabled"
     r"|explain_decision|verify_integrity"
     r"|get_config|workspace_\w+)$"
 )
@@ -95,6 +96,11 @@ _INTERNAL_WIRE = re.compile(
     r"|config|workspace)__[a-z_]+$"
     r"|^(?:message__note|media__(?:find|view|share|edit))$"
 )
+
+# A create call with no quote from the user is an offer, not a silent write.
+# The policy parks it for a one-tap card; the approval carries the user's
+# decision, and only then does the tool arm it.
+_ALERT_CREATE = re.compile(r"^(?:alerts__create|create_alert|watches__create|create_watch)$")
 
 # Verbs that reach an external system or are hard to undo. The verb must
 # start a word inside the name ("fetch_and_delete" is risky, "resend" and
@@ -207,6 +213,16 @@ class Policy:
                 Decision.REQUIRE_APPROVAL,
                 "builtin:provider-write" if effect == "write" else "builtin:provider-destructive",
                 "changes something in a connected app — the user decides that with one tap",
+            )
+        if (
+            internal
+            and _ALERT_CREATE.match(tool_name)
+            and not str(params.get("basis") or "").strip()
+        ):
+            return Ruling(
+                Decision.REQUIRE_APPROVAL,
+                "builtin:alert-offer",
+                "an alert Aether spotted — the user confirms it with one tap",
             )
         if (internal and _INTERNAL_WIRE.match(tool_name)) or _INTERNAL.match(tool_name):
             return Ruling(
