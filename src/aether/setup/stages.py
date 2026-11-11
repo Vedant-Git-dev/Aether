@@ -37,12 +37,14 @@ PROVIDER_KEYS = {
     "openai": ("OPENAI_KEY", "OpenAI API key"),
     "gemini": ("GEMINI_KEY", "Gemini API key"),
     "nvidia": ("NVIDIA_KEY", "NVIDIA API key"),
+    "groq": ("GROQ_KEY", "Groq API key"),
 }
 PROVIDER_LINKS = {
     "anthropic": "https://console.anthropic.com/settings/keys",
     "openai": "https://platform.openai.com/api-keys",
     "gemini": "https://aistudio.google.com/apikey",
     "nvidia": "https://build.nvidia.com/",
+    "groq": "https://console.groq.com/keys",
 }
 GOOGLE_APPS = {"gmail", "calendar", "drive", "docs"}
 PICKER_APPS = {"drive", "docs"}

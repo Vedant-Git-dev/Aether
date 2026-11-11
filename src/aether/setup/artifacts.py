@@ -143,6 +143,7 @@ def render_yaml(plan: SetupPlan) -> str:
         "openai": "OPENAI_API_KEY",
         "gemini": "GEMINI_API_KEY",
         "nvidia": "NVIDIA_API_KEY",
+        "groq": "GROQ_API_KEY",
     }.get(plan.llm_provider)
     if provider_key:
         keys.append(provider_key)

@@ -879,6 +879,10 @@ gather_credentials() {
       hint "NVIDIA NIM API key: create one on build.nvidia.com."
       open_url "https://build.nvidia.com/"
       ask_secret NVIDIA_KEY "NVIDIA API key" ;;
+    groq)
+      hint "Groq API key: create a free one in the Groq Console."
+      open_url "https://console.groq.com/keys"
+      ask_secret GROQ_KEY "Groq API key" ;;
     ollama)
       warn "Ollama runs on your machine only; it cannot run on Render. Aether will boot but the main model will be unavailable." ;;
   esac
@@ -1262,6 +1266,7 @@ write_blueprint() {
     openai) keys="$keys OPENAI_API_KEY" ;;
     gemini) keys="$keys GEMINI_API_KEY" ;;
     nvidia) keys="$keys NVIDIA_API_KEY" ;;
+    groq) keys="$keys GROQ_API_KEY" ;;
   esac
   if has_service "web search"; then keys="$keys TAVILY_API_KEY"; fi
   if has_service "voice-note transcription"; then keys="$keys GROQ_API_KEY"; fi

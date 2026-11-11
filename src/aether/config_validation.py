@@ -66,6 +66,7 @@ PROVIDER_KEY_ENV: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "nvidia": "NVIDIA_API_KEY",
+    "groq": "GROQ_API_KEY",
 }
 
 # Settings the page may not save blank or clear. A reset (back to
@@ -165,6 +166,7 @@ def provider_key_value(settings: Settings, provider: str) -> str:
         "openai": settings.openai_api_key,
         "gemini": settings.gemini_api_key,
         "nvidia": settings.nvidia_api_key,
+        "groq": settings.groq_api_key,
     }.get(provider, "")
 
 

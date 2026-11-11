@@ -141,13 +141,14 @@ _SECTIONS: tuple[_Section, ...] = (
                 "who makes me think",
                 "who should make me think? (currently {cur} — heads-up: "
                 "llm changes restart me, back in a few seconds)\n"
-                "1 — anthropic\n2 — openai\n3 — gemini\n4 — ollama\n5 — nvidia",
+                "1 — anthropic\n2 — openai\n3 — gemini\n4 — ollama\n5 — nvidia\n6 — groq",
                 (
                     ("anthropic", "anthropic"),
                     ("openai", "openai"),
                     ("gemini", "gemini"),
                     ("ollama", "ollama"),
                     ("nvidia", "nvidia"),
+                    ("groq", "groq"),
                 ),
             ),
             _Setting(

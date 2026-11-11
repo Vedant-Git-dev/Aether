@@ -48,10 +48,11 @@ services:
         sync: false
       - key: NVIDIA_API_KEY
         sync: false
+      # also the voice-note transcription key
+      - key: GROQ_API_KEY
+        sync: false
       # --- optional services ---
       - key: TAVILY_API_KEY
-        sync: false
-      - key: GROQ_API_KEY
         sync: false
       - key: MODAL_TOKEN_ID
         sync: false

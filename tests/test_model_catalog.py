@@ -214,6 +214,31 @@ async def test_nvidia_lists_through_its_openai_style_endpoint() -> None:
     assert seen_base == ["https://integrate.api.nvidia.com/v1"]
 
 
+async def test_groq_lists_through_its_openai_style_endpoint() -> None:
+    # Groq serves the OpenAI models shape; its key is what makes it
+    # configured, and its base URL rides to the client factory
+    calls: list[str] = []
+    seen_base: list[str | None] = []
+
+    def factory(provider: str, secret: str, base_url: str | None = None) -> object:
+        calls.append(provider)
+        seen_base.append(base_url)
+        return _openai_client(["llama-3.3-70b-versatile"])
+
+    catalog = ModelCatalog(
+        FakeResolver({"GROQ_API_KEY": "gsk-test"}),
+        client_for=factory,
+        base_urls={"groq": "https://api.groq.com/openai/v1"},
+    )
+    feed = await catalog.feed()
+    assert feed["configured"] is True
+    assert feed["providers"] == [
+        {"provider": "groq", "models": ["llama-3.3-70b-versatile"], "error": ""}
+    ]
+    assert calls == ["groq"]
+    assert seen_base == ["https://api.groq.com/openai/v1"]
+
+
 async def test_an_unreachable_provider_logs_one_plain_line(caplog) -> None:
     # an Ollama address with no server is ordinary, not a crash — the
     # feed carries the inline note and the log stays one line, no traceback

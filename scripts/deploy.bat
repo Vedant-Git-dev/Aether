@@ -511,6 +511,10 @@ if /i "!LLM_PROVIDER!"=="nvidia" (
   call :open_url "https://build.nvidia.com/"
   call :ask_secret NVIDIA_KEY "NVIDIA API key"
 )
+if /i "!LLM_PROVIDER!"=="groq" (
+  call :open_url "https://console.groq.com/keys"
+  call :ask_secret GROQ_KEY "Groq API key"
+)
 if /i "!LLM_PROVIDER!"=="ollama" echo [warn] Ollama cannot run on Render; the main model will be unavailable.
 
 call :has_word SERVICES "web search"
@@ -1076,6 +1080,7 @@ providers:
       "openai" { $keys += "OPENAI_API_KEY" }
       "gemini" { $keys += "GEMINI_API_KEY" }
       "nvidia" { $keys += "NVIDIA_API_KEY" }
+      "groq" { $keys += "GROQ_API_KEY" }
     }
     if (HasList $services "web search") { $keys += "TAVILY_API_KEY" }
     if (HasList $services "voice-note transcription") { $keys += "GROQ_API_KEY" }

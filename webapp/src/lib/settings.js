@@ -59,7 +59,7 @@ const CREDENTIAL_TITLES = {
   ANTHROPIC_API_KEY: "Anthropic API key",
   OPENAI_API_KEY: "OpenAI API key",
   GEMINI_API_KEY: "Gemini API key",
-  GROQ_API_KEY: "Groq voice key",
+  GROQ_API_KEY: "Groq API key",
   NVIDIA_API_KEY: "NVIDIA API key",
   TELEGRAM_BOT_TOKEN: "Telegram bot token",
   DISCORD_BOT_TOKEN: "Discord bot token",

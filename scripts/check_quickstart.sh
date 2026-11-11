@@ -65,7 +65,7 @@ echo "1/4 checking the example config parses"
 from aether.config import load_config
 
 config = load_config("config.example.yaml")
-assert config.llm.provider in {"anthropic", "openai", "gemini", "ollama", "nvidia"}
+assert config.llm.provider in {"anthropic", "openai", "gemini", "ollama", "nvidia", "groq"}
 assert config.authz.approval_ttl_hours > 0
 assert config.workspace.path
 print(f"   config ok: provider={config.llm.provider} model={config.llm.model}")

@@ -17,7 +17,7 @@ from typing import Any, get_args
 from .plan import SetupPlan
 
 # Used only when the repository's own files are not on disk.
-_FALLBACK_PROVIDERS = ["anthropic", "openai", "gemini", "ollama", "nvidia"]
+_FALLBACK_PROVIDERS = ["anthropic", "openai", "gemini", "ollama", "nvidia", "groq"]
 _FALLBACK_MODEL = "claude-opus-5"
 _FALLBACK_SERVICES = [
     "Web search",

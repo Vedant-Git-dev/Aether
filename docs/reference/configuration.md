@@ -128,6 +128,8 @@ slot may route to a different provider.
 | `GEMINI_API_KEY` | Google Gemini, and the free embedding model |
 | `NVIDIA_API_KEY` | NVIDIA NIM |
 | `NVIDIA_BASE_URL` | Defaults to `https://integrate.api.nvidia.com/v1` |
+| `GROQ_API_KEY` | Groq, and voice-note transcription |
+| `GROQ_BASE_URL` | Defaults to `https://api.groq.com/openai/v1` |
 | `OLLAMA_BASE_URL` | Defaults to `http://localhost:11434/v1` |
 
 ### Chat surfaces
@@ -157,7 +159,7 @@ at a time.
 | Name | Purpose |
 | --- | --- |
 | `TAVILY_API_KEY` | Web search. Without it, `web_search` refuses in plain words. `web_fetch` still works. |
-| `GROQ_API_KEY` | Voice-note transcription with `whisper-large-v3`. |
+| `GROQ_API_KEY` | Also Groq as a model provider. Voice-note transcription with `whisper-large-v3`. |
 | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | Modal sandbox, the default workbench. |
 | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Vercel sandbox, the fallback. |
 | `GITHUB_ACTIONS_TOKEN` | GitHub Actions batch queue. Also needs `workbench.actions_repo` and the public URL. |
@@ -206,7 +208,7 @@ authz:
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `provider` | `anthropic` | `anthropic`, `openai`, `gemini`, `ollama`, or `nvidia` |
+| `provider` | `anthropic` | `anthropic`, `openai`, `gemini`, `ollama`, `nvidia`, or `groq` |
 | `model` | `claude-opus-5` | A bare id, or `provider/model` to override the provider |
 | `image_model` | empty | Empty = off, `default` = main model, or a named model |
 | `audio_model` | empty | Same as `image_model` |

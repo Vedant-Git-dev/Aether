@@ -49,8 +49,8 @@ Aether    Sent. The decision record shows the rule that matched and your approva
   `/verify` re-walks the chain and reports the first break.
 - **Cross-app memory.** Events are deduplicated, people are resolved across handles, and
   recall is semantic when the free embedding model is configured.
-- **Bring your own model.** Anthropic, OpenAI, Google Gemini, NVIDIA NIM, or a local
-  Ollama model, with separate slots for images, audio, and video.
+- **Bring your own model.** Anthropic, OpenAI, Google Gemini, NVIDIA NIM, Groq, or a
+  local Ollama model, with separate slots for images, audio, and video.
 - **Yours to host.** One asyncio process and Postgres. No hosted instance, no vendor in
   the middle. Deploy it locally, on your own VPS or any other platform you want
 
@@ -307,7 +307,7 @@ data from training, and no hosted service-level agreement.
 | Approvals | Telegram, Discord | Where approvals land and whether they expire |
 | Audit | SHA-256 chain, verifiable in chat | Whether logs are append-only and checkable |
 | Integrations | Native providers plus MCP | Whether your specific apps are covered |
-| Models | Anthropic, OpenAI, Gemini, NVIDIA NIM, Ollama | Whether you can bring a key and route per role |
+| Models | Anthropic, OpenAI, Gemini, NVIDIA NIM, Groq, Ollama | Whether you can bring a key and route per role |
 
 ## FAQ
 

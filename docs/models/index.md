@@ -21,6 +21,7 @@ several slots, or each slot can route somewhere else.
 | OpenAI | `OPENAI_API_KEY` | GPT models |
 | Google Gemini | `GEMINI_API_KEY` | Gemini models, and the embedding model |
 | NVIDIA NIM | `NVIDIA_API_KEY` | NVIDIA's hosted model catalog |
+| Groq | `GROQ_API_KEY` | Groq's hosted models, same key as voice-note transcription |
 | Ollama | none, uses `OLLAMA_BASE_URL` | Local models; defaults to `http://localhost:11434/v1` |
 
 The main model is built from `llm.provider` and `llm.model`. If no matching key is
@@ -48,13 +49,19 @@ llm:
   model: gemini-2.5-pro
 ```
 
-Under `provider: nvidia`, a prefix that is not a known provider is treated as part of
-the model id, because NIM ids carry a vendor slash:
+Under `provider: nvidia` or `provider: groq`, a prefix that is not a known provider is
+treated as part of the model id, because both carry a vendor slash:
 
 ```yaml
 llm:
   provider: nvidia
   model: meta/llama-3.1-405b-instruct
+```
+
+```yaml
+llm:
+  provider: groq
+  model: meta-llama/llama-4-scout-17b-16e-instruct
 ```
 
 The three sentinel words are meanings, never model ids: `off`, `default`, and the

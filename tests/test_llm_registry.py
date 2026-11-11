@@ -6,6 +6,7 @@ from aether.config import LLMConfig, Settings
 from aether.llm.anthropic_provider import AnthropicProvider
 from aether.llm.base import Provider, ProviderError
 from aether.llm.gemini_provider import GeminiProvider
+from aether.llm.groq_provider import GroqProvider
 from aether.llm.nvidia_provider import NvidiaProvider
 from aether.llm.ollama_provider import OllamaProvider
 from aether.llm.openai_provider import OpenAIProvider
@@ -21,6 +22,7 @@ def _settings(**kwargs) -> Settings:
         "openai_api_key": "",
         "gemini_api_key": "",
         "nvidia_api_key": "",
+        "groq_api_key": "",
     }
     values.update(kwargs)
     return Settings.without_env_file(**values)
@@ -58,6 +60,13 @@ async def test_a_key_absent_from_the_store_keeps_the_boot_value() -> None:
     assert settings.nvidia_api_key == "from-env"
 
 
+async def test_a_pasted_groq_key_counts_like_an_env_one() -> None:
+    settings = await settings_with_resolved_keys(
+        _settings(), _Resolver({"GROQ_API_KEY": "gsk-pasted"})
+    )
+    assert settings.groq_api_key == "gsk-pasted"
+
+
 def test_registry_builds_each_configured_provider() -> None:
     cases = [
         ("anthropic", AnthropicProvider, {"anthropic_api_key": "sk-test"}),
@@ -65,6 +74,7 @@ def test_registry_builds_each_configured_provider() -> None:
         ("gemini", GeminiProvider, {"gemini_api_key": "test"}),
         ("ollama", OllamaProvider, {}),
         ("nvidia", NvidiaProvider, {"nvidia_api_key": "nvapi-test"}),
+        ("groq", GroqProvider, {"groq_api_key": "gsk-test"}),
     ]
     for provider_name, cls, settings_kwargs in cases:
         registry = ProviderRegistry.from_config(
@@ -83,6 +93,7 @@ def test_missing_api_key_error_names_the_variable() -> None:
         ("openai", "OPENAI_API_KEY"),
         ("gemini", "GEMINI_API_KEY"),
         ("nvidia", "NVIDIA_API_KEY"),
+        ("groq", "GROQ_API_KEY"),
     ]:
         with pytest.raises(ProviderError, match=env_var):
             ProviderRegistry.from_config(_settings(), LLMConfig(provider=provider_name))
@@ -248,6 +259,38 @@ def test_a_prefixed_nvidia_image_model_is_trusted_to_see() -> None:
     assert image is not registry.for_role("reasoning")
     assert image.model == "meta/llama-3.2-90b-vision-instruct"
     assert image.supports_vision is True
+
+
+def test_groq_ids_with_a_vendor_slash_route_through_the_global_provider() -> None:
+    # Groq ids carry their own slash ("meta-llama/..."); under
+    # llm.provider groq the whole value is the id, not a prefix
+    registry = ProviderRegistry.from_config(
+        _settings(groq_api_key="gsk-test"),
+        LLMConfig(provider="groq", model="meta-llama/llama-4-scout-17b-16e-instruct"),
+    )
+    reasoning = registry.for_role("reasoning")
+    assert isinstance(reasoning, GroqProvider)
+    assert reasoning.model == "meta-llama/llama-4-scout-17b-16e-instruct"
+
+
+def test_the_image_knob_declares_a_groq_models_vision() -> None:
+    # Groq hosts both text-only and vision models behind one key; the image
+    # field is the one place the choice lives
+    seeing = ProviderRegistry.from_config(
+        _settings(groq_api_key="gsk-test"),
+        LLMConfig(
+            provider="groq",
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            image_model="base",
+        ),
+    )
+    assert seeing.for_role("image") is seeing.for_role("reasoning")
+    assert seeing.for_role("image").supports_vision is True
+    text_only = ProviderRegistry.from_config(
+        _settings(groq_api_key="gsk-test"),
+        LLMConfig(provider="groq", model="llama-3.3-70b-versatile"),
+    )
+    assert text_only.for_role("reasoning").supports_vision is False
 
 
 def test_unknown_role_falls_back_to_reasoning() -> None:

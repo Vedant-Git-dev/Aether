@@ -476,8 +476,9 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
     ),
     CredentialSpec(
         name="GROQ_API_KEY",
-        label="Voice transcription key",
-        hint="Groq's free key — with it, Aether reads the voice notes you send.",
+        label="Provider and voice key",
+        hint="Powers Groq as a model provider, and reads the voice notes you send.",
+        llm_key=True,
     ),
     CredentialSpec(
         name="NVIDIA_API_KEY",

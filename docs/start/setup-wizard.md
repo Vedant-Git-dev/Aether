@@ -140,7 +140,8 @@ The multi-select questions start with nothing selected; use Space to add.
 2. **Database** - `neon` (default, recommended), `existing` (paste a connection
    string), or `render`.
 3. **Model provider** - read from `provider: Literal[...]` in
-   `src/aether/config.py` (`anthropic`, `openai`, `gemini`, `ollama`, `nvidia`).
+   `src/aether/config.py` (`anthropic`, `openai`, `gemini`, `ollama`, `nvidia`,
+   `groq`).
    Then **main model**, read from `config.example.yaml`.
 4. **Semantic memory** - on (Gemini embeddings) or off. On requires a Gemini key.
 5. **Optional services** (multi-select) - read from the "Optional services"

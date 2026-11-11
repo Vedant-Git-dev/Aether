@@ -27,7 +27,7 @@ class Provider(Protocol):
     audio to transcription — or says so plainly.
     """
 
-    name: str  # "anthropic" | "openai" | "gemini" | "ollama" | "nvidia" | "fake"
+    name: str  # "anthropic" | "openai" | "gemini" | "ollama" | "nvidia" | "groq" | "fake"
     model: str  # concrete model id sent to the API
     supports_tools: bool
     supports_vision: bool  # accepts ImageBlock

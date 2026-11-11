@@ -11,9 +11,10 @@ provider's API answers to, so an id may itself contain slashes
 ("openai/gpt/gpt-5.6" is OpenAI with the id "gpt/gpt-5.6"). A bare id
 routes through the global llm.provider, the legacy spelling; the
 sentinel words ("off", "default", "base") name meanings, never models.
-NVIDIA NIM ids carry a vendor slash of their own
-("meta/llama-3.1-405b-instruct"), so under llm.provider nvidia a prefix
-that names no known provider is read as part of the id.
+NVIDIA NIM and Groq ids carry a vendor slash of their own
+("meta/llama-3.1-405b-instruct", "meta-llama/llama-4-scout-17b-16e-instruct"),
+so under llm.provider nvidia or groq a prefix that names no known provider
+is read as part of the id.
 
 Perception is per-medium: image, audio, and video are separate roles,
 each set by a knob — off (default), "default"/"base" (the main model
@@ -38,6 +39,7 @@ from ..config import (
 from .anthropic_provider import AnthropicProvider
 from .base import Provider, ProviderError
 from .gemini_provider import GeminiProvider
+from .groq_provider import GroqProvider
 from .nvidia_provider import NvidiaProvider
 from .ollama_provider import OllamaProvider
 from .openai_provider import OpenAIProvider
@@ -54,6 +56,7 @@ _PROVIDER_KEY_FIELDS: tuple[tuple[str, str], ...] = (
     ("openai_api_key", "OPENAI_API_KEY"),
     ("gemini_api_key", "GEMINI_API_KEY"),
     ("nvidia_api_key", "NVIDIA_API_KEY"),
+    ("groq_api_key", "GROQ_API_KEY"),
 )
 
 
@@ -92,28 +95,29 @@ def _split(model: str) -> tuple[str, str]:
     return provider, rest
 
 
-_PROVIDER_NAMES = ("anthropic", "openai", "gemini", "ollama", "nvidia")
+_PROVIDER_NAMES = ("anthropic", "openai", "gemini", "ollama", "nvidia", "groq")
 
 
 def _route(model: str, fallback: str) -> tuple[str, str]:
     """(provider, model id) for a stored model value.
 
-    A prefix that names a known provider routes there. Under NVIDIA the
-    first segment may instead belong to the model id itself — NIM ids
-    carry a vendor slash ("meta/llama-3.1-405b-instruct") — so a value
-    whose prefix is no known provider is read as the id, whole. Under
-    every other provider an unknown prefix stays the typo it looks like.
+    A prefix that names a known provider routes there. Under NVIDIA and
+    Groq the first segment may instead belong to the model id itself —
+    both carry vendor slashes ("meta/llama-3.1-405b-instruct",
+    "meta-llama/llama-4-scout-17b-16e-instruct") — so a value whose
+    prefix is no known provider is read as the id, whole. Under every
+    other provider an unknown prefix stays the typo it looks like.
     """
     provider, model_id = _split(model)
     if not provider:
         return fallback, model_id
     if provider in _PROVIDER_NAMES:
         return provider, model_id
-    if fallback == "nvidia":
-        return "nvidia", model
+    if fallback in ("nvidia", "groq"):
+        return fallback, model
     raise ProviderError(
         f"unknown provider in model name: {provider!r} — expected one of "
-        "anthropic, openai, gemini, ollama, nvidia"
+        "anthropic, openai, gemini, ollama, nvidia, groq"
     )
 
 
@@ -144,9 +148,17 @@ def _build(settings: Settings, llm: LLMConfig, model: str, vision_capable: bool)
             supports_vision=vision_capable,
             base_url=settings.nvidia_base_url,
         )
+    if provider == "groq":
+        return GroqProvider.build(
+            settings.groq_api_key,
+            model_id,
+            llm.max_tokens,
+            supports_vision=vision_capable,
+            base_url=settings.groq_base_url,
+        )
     raise ProviderError(
         f"unknown provider in model name: {provider!r} — expected one of "
-        "anthropic, openai, gemini, ollama, nvidia"
+        "anthropic, openai, gemini, ollama, nvidia, groq"
     )
 
 

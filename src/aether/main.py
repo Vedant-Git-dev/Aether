@@ -232,7 +232,11 @@ def create_app(
         # configured key can reach — fetched live per provider, cached by
         # key, so a pasted key lists its models without a restart
         app.state.model_catalog = ModelCatalog(
-            env_resolver, base_urls={"nvidia": settings.nvidia_base_url}
+            env_resolver,
+            base_urls={
+                "nvidia": settings.nvidia_base_url,
+                "groq": settings.groq_base_url,
+            },
         )
 
         # --- chat-made config: rows merge onto the live config, in place ----

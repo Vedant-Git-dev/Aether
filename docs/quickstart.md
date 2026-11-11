@@ -227,6 +227,8 @@ OPENAI_API_KEY=sk-...
 GEMINI_API_KEY=...
 # or
 NVIDIA_API_KEY=...
+# or
+GROQ_API_KEY=...
 ```
 
 > [!IMPORTANT]
@@ -386,7 +388,7 @@ mcp_servers:
 | Capability | Needs |
 | --- | --- |
 | Web search | `TAVILY_API_KEY`. Without it, `web_search` refuses; `web_fetch` still works. |
-| Voice-note transcription | `GROQ_API_KEY`. Without it, voice notes are kept but not transcribed unless an audio model is set. |
+| Voice-note transcription | `GROQ_API_KEY`. Without it, voice notes are kept but not transcribed unless an audio model is set. The same key can also serve Groq as a model provider. |
 | Background jobs | A key pair for Modal, Vercel, or a GitHub Actions batch queue. |
 | Semantic memory | `GEMINI_API_KEY` and `llm.embedding_model`. |
 | Image generation | Nothing for Pollinations; `GEMINI_API_KEY` for the Gemini rung. |

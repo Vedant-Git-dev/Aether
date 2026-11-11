@@ -38,10 +38,14 @@ _PROVIDER_SECRETS: dict[str, str] = {
     "gemini": "GEMINI_API_KEY",
     "ollama": "OLLAMA_BASE_URL",
     "nvidia": "NVIDIA_API_KEY",
+    "groq": "GROQ_API_KEY",
 }
 
 # NIM's OpenAI-compatible endpoint — the same default the adapter uses
 _DEFAULT_NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+
+# Groq's OpenAI-compatible endpoint — the same default the adapter uses
+_DEFAULT_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
 # the plain words a failed fetch carries — the provider's name rides with
 # the group in the feed, so the note itself stays generic
@@ -63,6 +67,8 @@ def _default_client(provider: str, secret: str, base_url: str | None = None) -> 
         return AsyncOpenAI(base_url=secret, api_key="ollama")
     if provider == "nvidia":
         return AsyncOpenAI(base_url=base_url or _DEFAULT_NVIDIA_BASE_URL, api_key=secret)
+    if provider == "groq":
+        return AsyncOpenAI(base_url=base_url or _DEFAULT_GROQ_BASE_URL, api_key=secret)
     raise ValueError(f"unknown provider: {provider}")
 
 
@@ -88,6 +94,7 @@ _FETCHERS = {
     "openai": _fetch_openai_style,
     "ollama": _fetch_openai_style,
     "nvidia": _fetch_openai_style,
+    "groq": _fetch_openai_style,
     "gemini": _fetch_gemini,
 }
 
