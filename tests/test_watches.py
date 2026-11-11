@@ -182,7 +182,7 @@ def test_an_alert_names_the_sender_raw_and_marks_the_owner_second_address() -> N
     assert "(your other address)" in text
     assert "production is down" in text
     assert "Due 2026-11-03 12:46 IST" in text
-    assert 'matched your watch "urgent mail"' in text
+    assert 'matched your alert "urgent mail"' in text
     assert "reply, forward it, or remind you later" in text
     # a card is plain words, never a JSON or an internal id
     assert "{" not in text and "E1" not in text
@@ -196,13 +196,51 @@ def test_an_alert_marks_an_overdue_deadline() -> None:
     assert "Overdue since" in text
 
 
-def test_a_default_urgent_alert_has_no_watch_label() -> None:
+def test_a_reminder_card_uses_reminder_wording() -> None:
+    event = _mail(urgency=2, summary="the landlord replied")
+    watch = Watch(
+        id=4,
+        spec=WatchSpec(label="landlord", form="reminder"),
+        status=ACTIVE,
+        last_event_id=0,
+        last_run_at=None,
+        last_notified_at=None,
+        created_at=NOW,
+    )
+
+    text = render_alert(event, watch=watch, timezone="UTC", now=NOW)
+
+    assert 'matched your reminder "landlord"' in text
+    assert "matched your alert" not in text
+
+
+def test_an_old_spec_without_a_form_reads_as_an_alert() -> None:
+    spec = WatchSpec.from_payload({"label": "x", "scope": "mail"})
+    assert spec.form == "alert"
+
+
+def test_a_reminder_form_is_not_a_different_condition() -> None:
+    watch = Watch(
+        id=1,
+        spec=WatchSpec(label="x", scope="mail", urgency_min=2),
+        status=ACTIVE,
+        last_event_id=0,
+        last_run_at=None,
+        last_notified_at=None,
+        created_at=NOW,
+    )
+    same = WatchSpec(label="x", scope="mail", urgency_min=2, form="reminder")
+
+    assert watch.equivalent(same) is True
+
+
+def test_a_default_urgent_alert_has_no_alert_label() -> None:
     event = _mail(urgency=2, summary="the server is down")
 
     text = render_alert(event, timezone="UTC", now=NOW)
 
     assert "Urgent mail from" in text
-    assert "matched your watch" not in text
+    assert "matched your alert" not in text
     assert "the server is down" in text
 
 

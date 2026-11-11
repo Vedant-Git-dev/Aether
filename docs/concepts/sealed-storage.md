@@ -148,7 +148,7 @@ content.
   is plaintext vocabulary. The key, value, valid window, provenance event ids,
   confidence and trust flag are sealed. A superseded claim keeps its words and
   gains an end of validity; a forgotten one keeps its history but never reads
-  back; an untrusted claim on identity, contacts, policy or watches is held
+  back; an untrusted claim on identity, contacts, policy or alerts is held
   disputed and asked about once.
 - `forgotten_events` — the tombstone that makes forgetting stick. One row per
   forgotten event, holding the same keyed `dedup_mac` and `source_token` the
@@ -161,7 +161,7 @@ content.
   and source event are plaintext vocabulary and ids; the text, due time,
   original phrase, urgency and the artifact links (thread, document name,
   media id) are sealed.
-- `watches` — the standing instructions the user asked for. The scope is a
+- `watches` — the standing alerts and reminders the user asked for. The scope is a
   keyed blind token, the channel and status are plaintext vocabulary, and the
   id watermark and timestamps are bookkeeping; the label and every criterion
   are sealed and bound to the row.

@@ -81,6 +81,7 @@ _INTERNAL = re.compile(
     r"|create_routine|list_routines"
     r"|set_routine_enabled|delete_routine"
     r"|create_watch|list_watches|set_watch_enabled|delete_watch"
+    r"|create_alert|list_alerts|set_alert_enabled|delete_alert"
     r"|explain_decision|verify_integrity"
     r"|get_config|workspace_\w+)$"
 )
@@ -90,7 +91,7 @@ _INTERNAL = re.compile(
 # so an MCP server that happens to be named "memory" can never inherit
 # this rule. Web research and image generation keep their own rules.
 _INTERNAL_WIRE = re.compile(
-    r"^(?:tools|memory|approvals|schedule|screen|routines|watches|traces|audit"
+    r"^(?:tools|memory|approvals|schedule|screen|routines|alerts|watches|traces|audit"
     r"|config|workspace)__[a-z_]+$"
     r"|^(?:message__note|media__(?:find|view|share|edit))$"
 )

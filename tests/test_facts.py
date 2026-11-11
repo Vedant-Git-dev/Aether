@@ -41,6 +41,8 @@ def test_key_normalization_and_reserved_domains() -> None:
     assert is_reserved_key("home address") is True
     assert is_reserved_key("login password") is True
     assert is_reserved_key("watch criteria") is True
+    assert is_reserved_key("alert criteria") is True
+    assert is_reserved_key("reminder time") is True
     assert is_reserved_key("favourite colour") is False
     assert is_reserved_key("invoice_due") is False
 

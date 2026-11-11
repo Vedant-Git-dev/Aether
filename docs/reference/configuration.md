@@ -348,7 +348,7 @@ import use a passphrase.
 | `max_sandbox_minutes_per_day` | `20` | |
 | `notify_daily_cap` | `5` | Results delivered per day |
 | `skills` | `[followups, research, media]` | Unknown names are ignored |
-| `watches_enabled` | `true` | Watches and the urgent-mail card; independent of `enabled` |
+| `watches_enabled` | `true` | Alerts and the urgent-mail card; independent of `enabled` |
 | `urgent_mail_alerts` | `true` | One card for mail whose own words read urgent |
 | `urgent_urgency_min` | `2` | Minimum urgency for the default card, 0 to 3 |
 | `max_alerts_per_hour` | `6` | Every alert the proactive path sends |

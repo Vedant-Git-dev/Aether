@@ -126,17 +126,6 @@ log = logging.getLogger("aether.agent")
 
 _MAX_OBSERVATIONS = 20
 
-# The words a user's own message uses when they want a standing watch.
-# Only a message matching one of these makes `watch_origin()` return
-# "owner" — the deterministic half of "email content can never create or
-# change a watch" (plan.md section 6, test 12.11).
-_WATCH_INTENT = re.compile(
-    r"\b(keep\s+(checking|watching|an\s+eye)|watch\s+(for|out)|alert\s+me|"
-    r"notify\s+me|tell\s+me\s+(if|when|whenever)|let\s+me\s+know\s+(if|when)|"
-    r"monitor|keep\s+me\s+(posted|informed))\b",
-    re.IGNORECASE,
-)
-
 # Only a message matching one of these makes `forget_origin()` return "owner".
 # The same boundary as a watch: memory is deleted on the user's own words,
 # never on an instruction read out of an email or a polled feed.
@@ -1028,20 +1017,19 @@ class AgentLoop:
         delivers through this loop's interruption budget."""
         self._proactive_path = path
 
-    def watch_origin(self) -> str:
-        """`owner` only when the user's own message this turn asked to be
-        watched; `context` for an unprompted tick, a routine or the
-        background worker. The watch tools refuse anything but `owner`, so
-        an instruction inside an email can never arm or change one."""
-        for message in self._turn_messages:
-            if _WATCH_INTENT.search(message.text or ""):
-                return "owner"
-        return "context"
+    def alert_basis(self) -> list[str]:
+        """The user's own messages this turn, for the alert tools' basis check.
+
+        An unprompted tick, a routine or the background worker has no user
+        messages, so an instruction inside an email or a feed can never arm,
+        change or list an alert.
+        """
+        return [message.text or "" for message in self._turn_messages]
 
     def forget_origin(self) -> str:
         """`owner` only when the user's own message asked to forget something.
 
-        The same boundary the watch tools ride: an email or a polled feed can
+        The same boundary the alert tools ride: an email or a polled feed can
         describe the world, but only the person can delete what Aether keeps.
         """
         for message in self._turn_messages:
@@ -2627,8 +2615,8 @@ class AgentLoop:
         # can resume from the exact step that died instead of starting over
         loop_history: list[Message] = []
         attempt = 1 if resume is None else resume.attempts + 1
-        # what this turn answers, for the watch tools' provenance check —
-        # an unprompted tick leaves it empty, so an email cannot arm a watch
+        # what this turn answers, for the alert tools' basis check — an
+        # unprompted tick leaves it empty, so an email cannot arm an alert
         self._turn_messages = list(messages)
         system = await self._system_prompt()
         system = f"{system}\n\n{self._tool_index(outcome_tools)}"
