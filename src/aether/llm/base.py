@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from .types import Message, ToolSpec, Turn
+from .types import Message, Turn, WireSpec
 
 
 class ProviderError(RuntimeError):
@@ -36,5 +36,5 @@ class Provider(Protocol):
         self,
         system: str,
         messages: list[Message],
-        tools: list[ToolSpec],
+        tools: list[WireSpec],
     ) -> Turn: ...

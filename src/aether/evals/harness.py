@@ -63,6 +63,43 @@ def load_cases(path: str | Path | None = None) -> list[dict[str, Any]]:
     return cases
 
 
+def load_triage_cases(path: str | Path | None = None) -> list[dict[str, Any]]:
+    """The labelled candidate notes for the free-text triage decision."""
+    target = Path(path) if path is not None else _DATASET
+    data = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+    cases = data.get("triage_cases") if isinstance(data, dict) else None
+    if not isinstance(cases, list):
+        raise ValueError("the leak dataset must contain a list of triage cases")
+    for case in cases:
+        if not isinstance(case, dict) or not case.get("id"):
+            raise ValueError("every triage case needs an id")
+        if case.get("expected") not in ("send", "internal"):
+            raise ValueError(f"triage case {case['id']!r} has an unknown decision")
+    return cases
+
+
+@dataclass(frozen=True)
+class TriageResult:
+    total: int
+    correct: int
+    accuracy: float
+
+
+def score_triage(cases: list[dict[str, Any]], decisions: dict[str, bool]) -> TriageResult:
+    """Score supplied triage decisions against the labels.
+
+    `decisions` maps a case id to True for send and False for internal. The
+    harness never invents a decision; a real run supplies the model's.
+    """
+    total = len(cases)
+    correct = 0
+    for case in cases:
+        wanted = case["expected"] == "send"
+        if decisions.get(str(case["id"])) is wanted:
+            correct += 1
+    return TriageResult(total=total, correct=correct, accuracy=(correct / total) if total else 0.0)
+
+
 def _review_sample(ids: list[str], size: int) -> tuple[str, ...]:
     if size <= 0 or not ids:
         return ()

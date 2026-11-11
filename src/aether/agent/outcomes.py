@@ -24,15 +24,36 @@ from datetime import datetime
 from typing import Any
 
 from ..config import AppConfig
-from ..llm.types import ToolCall, ToolSpec
+from ..llm.types import ToolCall, WireSpec, with_plain_param
 from ..memory.timewindow import in_quiet_window
 from ..message_catalog import render
 
-REPLY_TOOL = "reply_user"
-NOTIFY_TOOL = "notify_user"
-ASK_TOOL = "ask_user"
+REPLY_TOOL = "message__reply"
+NOTIFY_TOOL = "message__notify"
+ASK_TOOL = "message__ask"
 
-TERMINAL_TOOLS = frozenset({REPLY_TOOL, NOTIFY_TOOL, ASK_TOOL})
+# Old traces, stored approvals and scripted turns still carry the first names;
+# they resolve to the same outcome, so nothing has to be migrated.
+LEGACY_TERMINAL = {
+    "reply_user": REPLY_TOOL,
+    "notify_user": NOTIFY_TOOL,
+    "ask_user": ASK_TOOL,
+    "message.reply": REPLY_TOOL,
+    "message.notify": NOTIFY_TOOL,
+    "message.ask": ASK_TOOL,
+}
+TERMINAL_TOOLS = frozenset({REPLY_TOOL, NOTIFY_TOOL, ASK_TOOL, *LEGACY_TERMINAL})
+
+# one line each for the prompt index — the same shape every other tool has
+OUTCOME_SUMMARIES = {
+    REPLY_TOOL: "Send the user the answer they asked for.",
+    NOTIFY_TOOL: "Tell the user something they need to know now.",
+    ASK_TOOL: "Ask the user one question and wait for their answer.",
+}
+
+
+def canonical_tool(name: str) -> str:
+    return LEGACY_TERMINAL.get(name, name)
 
 
 @dataclass(frozen=True)
@@ -70,11 +91,11 @@ class NotificationDecision:
 
 
 def _schema(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
-    return {"type": "object", "properties": properties, "required": required}
+    return with_plain_param({"type": "object", "properties": properties, "required": required})
 
 
-def reply_spec() -> ToolSpec:
-    return ToolSpec(
+def reply_spec() -> WireSpec:
+    return WireSpec(
         name=REPLY_TOOL,
         description=(
             "Deliver your answer to the user. Put the words they should read in "
@@ -101,8 +122,8 @@ def reply_spec() -> ToolSpec:
     )
 
 
-def notify_spec() -> ToolSpec:
-    return ToolSpec(
+def notify_spec() -> WireSpec:
+    return WireSpec(
         name=NOTIFY_TOOL,
         description=(
             "Send one unprompted note to the user. Use it only when there is "
@@ -121,8 +142,8 @@ def notify_spec() -> ToolSpec:
     )
 
 
-def ask_spec() -> ToolSpec:
-    return ToolSpec(
+def ask_spec() -> WireSpec:
+    return WireSpec(
         name=ASK_TOOL,
         description=(
             "Ask the user one question. `options` is an optional short list of "
@@ -146,15 +167,15 @@ def ask_spec() -> ToolSpec:
     )
 
 
-def outcome_specs(*, solicited: bool, notify_allowed: bool) -> list[ToolSpec]:
+def outcome_specs(*, solicited: bool, notify_allowed: bool) -> list[WireSpec]:
     """The terminal tools this turn offers.
 
-    A solicited turn always gets `reply_user` and `ask_user`. An unprompted
-    turn gets `ask_user`, and gets `notify_user` only when the policy says
-    the user may be notified now — when it says no, the action does not
-    exist for the model to call.
+    A solicited turn always gets ``message__reply`` and ``message__ask``.
+    An unprompted turn gets ``message__ask``, and gets ``message__notify``
+    only when the policy says the user may be notified now — when it says
+    no, the action does not exist for the model to call.
     """
-    specs: list[ToolSpec] = []
+    specs: list[WireSpec] = []
     if solicited:
         specs.append(reply_spec())
         specs.append(ask_spec())
@@ -167,11 +188,12 @@ def outcome_specs(*, solicited: bool, notify_allowed: bool) -> list[ToolSpec]:
 
 
 def is_terminal_tool(name: str) -> bool:
-    return name in TERMINAL_TOOLS
+    return canonical_tool(name) in (REPLY_TOOL, NOTIFY_TOOL, ASK_TOOL)
 
 
 def outcome_from_params(name: str, params: dict[str, Any]) -> Outcome | None:
     """Parse one terminal call's arguments into a typed outcome."""
+    name = canonical_tool(name)
     if name == REPLY_TOOL:
         text = str(params.get("reply") or "").strip()
         notes = str(params.get("internal_notes") or "").strip()

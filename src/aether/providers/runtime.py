@@ -15,7 +15,7 @@ from ..authz.audit import AuditLog
 from ..config import AppConfig
 from ..connectors.polling import next_poll_delay
 from ..connectors.registry import ToolRegistry
-from ..llm.types import ToolSpec, with_plain_param
+from ..llm.types import WireSpec, with_plain_param
 from ..secret_env import EnvResolver
 from ..secret_store import SecretStore
 from .oauth import OAuthEngine
@@ -131,7 +131,7 @@ class ProviderRuntime:
             if connection is None or connection.status != "active":
                 continue
             for tool in self._available_tools(connection, app):
-                spec = ToolSpec(
+                spec = WireSpec(
                     name=f"{app.key}__{tool.key}",
                     description=tool.description,
                     input_schema=with_plain_param(tool.input_schema),

@@ -37,3 +37,26 @@ cases:
     mode: answer
     expected: ask
     delivered: "Which account should I use?"
+
+# Triage labels: a candidate note written as free text on an unprompted turn,
+# and the decision a person-facing rule expects. A real run scores its own
+# decisions against these; the shipped set is the reference.
+triage_cases:
+  - id: deadline-message
+    candidate: "The invoice is due tomorrow and the account is short."
+    expected: send
+  - id: action-suggestion
+    candidate: "Two messages are waiting on a reply — want me to draft one?"
+    expected: send
+  - id: decision-narration
+    candidate: "Nothing here is worth interrupting you about."
+    expected: internal
+  - id: silence-explanation
+    candidate: "I am staying quiet about this digest."
+    expected: internal
+  - id: process-status
+    candidate: "The check ran and found no new items."
+    expected: internal
+  - id: routine-feed-summary
+    candidate: "Three routine feed items arrived this hour."
+    expected: internal

@@ -85,6 +85,16 @@ _INTERNAL = re.compile(
     r"|get_config|workspace_\w+)$"
 )
 
+# The same internal tools under their provider-safe wire names. Only used
+# when the caller says the tool is one of Aether's own (`internal=True`),
+# so an MCP server that happens to be named "memory" can never inherit
+# this rule. Web research and image generation keep their own rules.
+_INTERNAL_WIRE = re.compile(
+    r"^(?:tools|memory|approvals|schedule|screen|routines|watches|traces|audit"
+    r"|config|workspace)__[a-z_]+$"
+    r"|^(?:message__note|media__(?:find|view|share|edit))$"
+)
+
 # Verbs that reach an external system or are hard to undo. The verb must
 # start a word inside the name ("fetch_and_delete" is risky, "resend" and
 # "facebook" are not), and risky is checked before read-only so a compound
@@ -104,7 +114,7 @@ _READONLY = re.compile(r"(^|__)(list|search|get|read|fetch|find|query)([a-z_]|$)
 # the fetcher's address rules and byte caps make it observation, not
 # action. Explicit rather than riding the verb ladder, because the names
 # start with "web_" and the read-only verb anchor would miss them.
-_WEB_RESEARCH = re.compile(r"^web_(fetch|search)$")
+_WEB_RESEARCH = re.compile(r"^(?:web_(?:fetch|search)|web__(?:fetch|search))$")
 
 # Aether's image generation. Keyed or keyless, the call is external —
 # the prompt reaches the image provider, a stated and capped channel —
@@ -112,7 +122,7 @@ _WEB_RESEARCH = re.compile(r"^web_(fetch|search)$")
 # until a separate send parks or shares it. Explicit rather than riding
 # the verb ladder because "generate" is neither risky nor read-only,
 # and the fail-safe default would park every attempt.
-_MEDIA_GENERATION = re.compile(r"^generate_image$")
+_MEDIA_GENERATION = re.compile(r"^(?:generate_image|media__generate)$")
 
 
 # The config vocabulary's two faces, by path root. Personal tuning applies
@@ -165,10 +175,14 @@ class Policy:
         params: dict[str, Any] | None = None,
         origin: str | None = None,
         effect: str | None = None,
+        *,
+        internal: bool = False,
+        aliases: tuple[str, ...] = (),
     ) -> Ruling:
         params = params or {}
+        names = (tool_name, *aliases)
         for tool_re, param_re, decision, note in self._rules:
-            if tool_re.search(tool_name) and (
+            if any(tool_re.search(name) for name in names) and (
                 param_re is None or param_re.search(params_blob(params))
             ):
                 return Ruling(
@@ -176,7 +190,7 @@ class Policy:
                     f"user:{tool_re.pattern}",
                     note or f"user rule {tool_re.pattern!r}",
                 )
-        if tool_name == "set_config":
+        if tool_name in ("set_config", "config__set"):
             connect = self._classify_connect(params, origin)
             if connect is not None:
                 return connect
@@ -193,7 +207,7 @@ class Policy:
                 "builtin:provider-write" if effect == "write" else "builtin:provider-destructive",
                 "changes something in a connected app — the user decides that with one tap",
             )
-        if _INTERNAL.match(tool_name):
+        if (internal and _INTERNAL_WIRE.match(tool_name)) or _INTERNAL.match(tool_name):
             return Ruling(
                 Decision.ALLOW, "builtin:internal", "internal tool, touches only Aether's own state"
             )

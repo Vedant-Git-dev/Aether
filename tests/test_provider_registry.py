@@ -7,15 +7,15 @@ import json
 import pytest
 
 from aether.connectors.registry import ToolRegistry
-from aether.llm.types import ToolSpec
+from aether.llm.types import WireSpec
 
 
 async def _echo(params: dict) -> dict:
     return {"ok": True, "text": params.get("text", "")}
 
 
-def _spec(name: str = "demo__ping") -> ToolSpec:
-    return ToolSpec(
+def _spec(name: str = "demo__ping") -> WireSpec:
+    return WireSpec(
         name=name,
         description="Ping the demo app",
         input_schema={"type": "object", "properties": {"text": {"type": "string"}}},
@@ -23,14 +23,17 @@ def _spec(name: str = "demo__ping") -> ToolSpec:
     )
 
 
-def test_provider_tools_are_gated_until_mentioned() -> None:
+def test_provider_tools_are_visible_but_not_core() -> None:
     registry = ToolRegistry()
     registry.add_provider(_spec(), _echo, effect="read", source="demo", auth_mode="oauth")
-    assert [spec.name for spec in registry.gated_specs("hello")] == []
-    assert [spec.name for spec in registry.gated_specs("ping the demo app")] == ["demo__ping"]
-    assert [spec.name for spec in registry.gated_specs("", unlocked={"demo__ping"})] == [
-        "demo__ping"
-    ]
+    assert registry.core_specs() == []
+    assert [spec.wire_name for spec in registry.visible()] == ["demo__ping"]
+    assert [spec.wire_name for spec in registry.search("ping demo")] == ["demo__ping"]
+    loaded: set[str] = set()
+    accepted, _ = registry.load(["demo__ping"], loaded)
+    assert accepted == ["demo.ping"]
+    loaded.update(accepted)
+    assert [spec.name for spec in registry.schemas(loaded)] == ["demo__ping"]
 
 
 @pytest.mark.asyncio
@@ -58,13 +61,13 @@ def test_drop_app_only_removes_that_app() -> None:
     assert registry.provider_apps() == ["other"]
 
 
-def test_gmail_tools_appear_for_the_words_people_actually_use() -> None:
+def test_gmail_tools_become_the_email_capability() -> None:
     from aether.providers.google import GMAIL_APP
 
     registry = ToolRegistry()
     for tool in GMAIL_APP.tools:
         registry.add_provider(
-            ToolSpec(
+            WireSpec(
                 name=f"gmail__{tool.key}",
                 description=tool.description,
                 input_schema=tool.input_schema,
@@ -76,9 +79,18 @@ def test_gmail_tools_appear_for_the_words_people_actually_use() -> None:
             auth_mode="oauth",
         )
 
-    assert [s.name for s in registry.gated_specs("check my mail")] == ["gmail__list_messages"]
-    assert "gmail__get_message" in [s.name for s in registry.gated_specs("read my email")]
-    assert "gmail__send_email" in [s.name for s in registry.gated_specs("send an email")]
+    # the model-facing capability is email; gmail stays the backend and the
+    # legacy wire name still resolves
+    assert registry.get("gmail__list_messages").spec.id == "email.list_messages"
+    assert registry.get("gmail__list_messages").spec.wire_name == "email__list_messages"
+    assert registry.get("gmail__list_messages").spec.backends == ("gmail",)
+    assert [s.wire_name for s in registry.search("check my mail")] == ["email__list_messages"]
+    assert "email__get_message" in [s.wire_name for s in registry.search("read my email")]
+    assert "email__send_email" in [s.wire_name for s in registry.search("send an email")]
+    # a stored approval or old rule can still name the gmail form
+    loaded: set[str] = set()
+    accepted, _ = registry.load(["gmail__send_email"], loaded)
+    assert accepted == ["email.send_email"]
 
 
 def test_calendar_tools_appear_for_calendar_words() -> None:
@@ -87,7 +99,7 @@ def test_calendar_tools_appear_for_calendar_words() -> None:
     registry = ToolRegistry()
     for tool in CALENDAR_APP.tools:
         registry.add_provider(
-            ToolSpec(
+            WireSpec(
                 name=f"calendar__{tool.key}",
                 description=tool.description,
                 input_schema=tool.input_schema,
@@ -99,11 +111,11 @@ def test_calendar_tools_appear_for_calendar_words() -> None:
             auth_mode="oauth",
         )
 
-    names = [s.name for s in registry.gated_specs("check my calendar")]
+    names = [s.wire_name for s in registry.search("check my calendar")]
     assert "calendar__list_events" in names
     assert "calendar__create_event" in names
-    assert "calendar__create_event" in [s.name for s in registry.gated_specs("schedule a meeting")]
-    assert [s.name for s in registry.gated_specs("am i free")] == ["calendar__freebusy"]
+    assert "calendar__create_event" in [s.wire_name for s in registry.search("schedule a meeting")]
+    assert [s.wire_name for s in registry.search("am i free")] == ["calendar__freebusy"]
 
 
 def test_github_tools_appear_for_github_words() -> None:
@@ -112,7 +124,7 @@ def test_github_tools_appear_for_github_words() -> None:
     registry = ToolRegistry()
     for tool in GITHUB_APP.tools:
         registry.add_provider(
-            ToolSpec(
+            WireSpec(
                 name=f"github__{tool.key}",
                 description=tool.description,
                 input_schema=tool.input_schema,
@@ -124,11 +136,11 @@ def test_github_tools_appear_for_github_words() -> None:
             auth_mode="oauth",
         )
 
-    names = [s.name for s in registry.gated_specs("check my github issues")]
+    names = [s.wire_name for s in registry.search("check my github issues")]
     assert "github__list_issues" in names
     assert "github__get_issue" in names
-    assert "github__create_issue" in [s.name for s in registry.gated_specs("open an issue")]
+    assert "github__create_issue" in [s.wire_name for s in registry.search("open an issue")]
     assert "github__list_notifications" in [
-        s.name for s in registry.gated_specs("github notifications")
+        s.wire_name for s in registry.search("github notifications")
     ]
-    assert "github__search" in [s.name for s in registry.gated_specs("search github")]
+    assert "github__search" in [s.wire_name for s in registry.search("search github")]

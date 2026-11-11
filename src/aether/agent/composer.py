@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..llm.base import Provider
-from ..llm.types import Message, ToolCall, ToolSpec, Turn
+from ..llm.types import Message, ToolCall, Turn, WireSpec
 from ..message_catalog import render
 from .leaks import strip_values
 
@@ -31,8 +31,8 @@ class Composed:
     resolutions: dict[str, str] = field(default_factory=dict)
 
 
-def compose_spec() -> ToolSpec:
-    return ToolSpec(
+def compose_spec() -> WireSpec:
+    return WireSpec(
         name=COMPOSE_TOOL,
         description=(
             "Return the final answer. For every unsupported finding, choose one "

@@ -9,7 +9,7 @@ the turn should have produced and what actually left.
 from __future__ import annotations
 
 from aether.config import EvaluationConfig
-from aether.evals.harness import gate, load_cases, run
+from aether.evals.harness import gate, load_cases, load_triage_cases, run, score_triage
 
 LEAKY_CASE = {
     "id": "planted-decision-narration",
@@ -70,3 +70,17 @@ def test_an_internal_value_in_delivered_text_is_a_leak() -> None:
 
     assert result.leaks == 1
     assert result.cases[0].blocked == ("finding-2",)
+
+
+def test_triage_labels_score_against_supplied_decisions() -> None:
+    cases = load_triage_cases()
+    perfect = {str(case["id"]): case["expected"] == "send" for case in cases}
+
+    score = score_triage(cases, perfect)
+
+    assert score.total == len(cases)
+    assert score.accuracy == 1.0
+
+    wrong = dict(perfect)
+    wrong[str(cases[0]["id"])] = not perfect[str(cases[0]["id"])]
+    assert score_triage(cases, wrong).accuracy < 1.0

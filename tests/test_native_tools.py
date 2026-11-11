@@ -89,12 +89,12 @@ class NativeKit:
         return await self.registry.execute(name, params)
 
 
-async def test_seven_native_tools_register() -> None:
+async def test_core_native_tools_register() -> None:
     kit = NativeKit()
-    assert kit.count == 7
-    assert len(kit.registry) == 7
+    assert kit.count == 8
+    assert len(kit.registry) == 8
     names = {
-        t.spec.name
+        t.spec.wire_name
         for t in (
             kit.registry.get(n)
             for n in (
@@ -104,17 +104,21 @@ async def test_seven_native_tools_register() -> None:
                 "schedule_action",
                 "request_screen_capture",
                 "send_chat_message",
+                "search_tools",
+                "load_tools",
             )
         )
         if t is not None
     }
     assert names == {
-        "memory_search",
-        "note_entity",
-        "get_pending_approvals",
-        "schedule_action",
-        "request_screen_capture",
-        "send_chat_message",
+        "memory__search",
+        "memory__note",
+        "approvals__list",
+        "schedule__create",
+        "screen__capture",
+        "message__note",
+        "tools__search",
+        "tools__load",
     }
 
 
@@ -344,14 +348,12 @@ async def test_look_at_media_registers_only_when_store_and_eyes_are_wired() -> N
     def names(kit: NativeKit) -> set[str]:
         return {s.name for s in kit.registry.specs()}
 
-    assert "look_at_media" not in names(NativeKit())
-    assert "look_at_media" not in names(NativeKit(media=store))  # bytes but no eyes
-    assert "look_at_media" not in names(
+    assert "media__view" not in names(NativeKit())
+    assert "media__view" not in names(NativeKit(media=store))  # bytes but no eyes
+    assert "media__view" not in names(
         NativeKit(providers=FakeRegistry(FakeProvider([])))
     )  # eyes but no bytes
-    assert "look_at_media" in names(
-        NativeKit(media=store, providers=FakeRegistry(FakeProvider([])))
-    )
+    assert "media__view" in names(NativeKit(media=store, providers=FakeRegistry(FakeProvider([]))))
 
 
 async def test_look_at_media_describes_the_stored_image_again() -> None:
@@ -435,8 +437,8 @@ async def test_share_media_registers_when_the_store_is_wired() -> None:
     def names(kit: NativeKit) -> set[str]:
         return {s.name for s in kit.registry.specs()}
 
-    assert "share_media" not in names(NativeKit())
-    assert "share_media" in names(NativeKit(media=store))
+    assert "media__share" not in names(NativeKit())
+    assert "media__share" in names(NativeKit(media=store))
 
 
 async def test_share_media_sends_the_stored_file_with_the_note() -> None:
@@ -510,8 +512,8 @@ async def test_edit_video_registers_only_when_the_editor_is_wired() -> None:
     def names(kit: NativeKit) -> set[str]:
         return {s.name for s in kit.registry.specs()}
 
-    assert "edit_video" not in names(NativeKit())
-    assert "edit_video" in names(NativeKit(editor=FakeEditor()))
+    assert "media__edit" not in names(NativeKit())
+    assert "media__edit" in names(NativeKit(editor=FakeEditor()))
 
 
 async def test_edit_video_names_the_new_media_id() -> None:
@@ -557,7 +559,7 @@ async def test_audit_wiring_adds_the_integrity_tool() -> None:
     audit = FakeAudit()
     await audit.append(actor="agent", tool_name="mail__list_unread", decision="allow")
     kit = NativeKit(audit=audit)
-    assert kit.count == 8
+    assert kit.count == 9
 
     out = await kit.run("verify_integrity", {})
     assert "decision record" in out
@@ -782,7 +784,7 @@ async def test_config_tools_register_only_when_wired() -> None:
     main.py logs at boot (the workspace tools are counted separately,
     below)."""
     bare = NativeKit(routines=FakeRoutines(), traces=FakeTraces(), audit=FakeAudit())
-    assert bare.count == 13
+    assert bare.count == 14
     assert bare.registry.get("get_config") is None
     assert bare.registry.get("set_config") is None
 
@@ -792,7 +794,7 @@ async def test_config_tools_register_only_when_wired() -> None:
         audit=FakeAudit(),
         config_manager=FakeConfigManager(),
     )
-    assert wired.count == 15
+    assert wired.count == 16
     assert wired.registry.get("get_config") is not None
     assert wired.registry.get("set_config") is not None
 
@@ -856,11 +858,11 @@ async def _workspace(db) -> Workspace:
 @pytest.mark.integration
 async def test_workspace_tools_register_only_when_wired(db) -> None:
     bare = NativeKit()
-    assert bare.count == 7
+    assert bare.count == 8
     assert bare.registry.get("workspace_read") is None
 
     wired = NativeKit(workspace=await _workspace(db))
-    assert wired.count == 13
+    assert wired.count == 14
     for name in (
         "workspace_read",
         "workspace_search",
@@ -1043,8 +1045,8 @@ async def test_generate_image_registers_only_when_the_generator_is_wired() -> No
     def names(kit: NativeKit) -> set[str]:
         return {s.name for s in kit.registry.specs()}
 
-    assert "generate_image" not in names(NativeKit())
-    assert "generate_image" in names(NativeKit(generator=FakeGenerator()))
+    assert "media__generate" not in names(NativeKit())
+    assert "media__generate" in names(NativeKit(generator=FakeGenerator()))
 
 
 async def test_generate_image_delegates_to_the_generator() -> None:

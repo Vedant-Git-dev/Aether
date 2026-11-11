@@ -5,11 +5,11 @@ import asyncio
 from fakes import CrashingExecutor, FakeExecutor, FakeProvider
 
 from aether.llm.agent import DEFAULT_MAX_ITERATIONS, run_tool_loop
-from aether.llm.types import Message, ToolCall, ToolResult, ToolSpec, Turn
+from aether.llm.types import Message, ToolCall, ToolResult, Turn, WireSpec
 
 
-def _spec(name: str = "search") -> ToolSpec:
-    return ToolSpec(name=name, description="test tool", input_schema={"type": "object"})
+def _spec(name: str = "search") -> WireSpec:
+    return WireSpec(name=name, description="test tool", input_schema={"type": "object"})
 
 
 async def test_multi_tool_call_conversation() -> None:

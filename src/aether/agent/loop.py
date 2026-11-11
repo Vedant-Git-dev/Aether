@@ -37,7 +37,7 @@ from typing import Any
 
 from ..authz.approvals import APPROVED, DENIED, Approval, Approvals
 from ..authz.audit import AuditLog, verification_text
-from ..authz.policy import Decision, Policy, params_blob
+from ..authz.policy import Decision, Policy, Ruling, params_blob
 from ..config import AppConfig, PollTool, is_legacy_composio_server
 from ..config_store import ConfigManager
 from ..config_store import actions_word as _actions_word
@@ -58,7 +58,7 @@ from ..llm.base import Provider
 from ..llm.base import ProviderError as LLMProviderError
 from ..llm.failures import ProviderFailure, classify_provider_failure
 from ..llm.registry import ProviderRegistry
-from ..llm.types import PLAIN_PARAM, Message, ToolCall, ToolResult, ToolSpec
+from ..llm.types import PLAIN_PARAM, Message, ToolCall, ToolResult, WireSpec
 from ..memory.conclusions import Conclusions
 from ..memory.context import ContextBuilder
 from ..memory.deliveries import FAILED, Deliveries
@@ -92,10 +92,12 @@ from .config_wizard import ConfigWizard
 from .config_wizard import coerce_config_value as _coerce_config_value
 from .leaks import LeakGuard, collect_internal_values, strip_values
 from .outcomes import (
+    OUTCOME_SUMMARIES,
     TERMINAL_TOOLS,
     Ask,
     Notify,
     Reply,
+    canonical_tool,
     evaluate_notification_policy,
     is_terminal_tool,
     notification_keys,
@@ -118,6 +120,7 @@ from .tools import (
     plain_replay,
 )
 from .traces import CARRY_OUT, ROUTINE, SCHEDULED, TURN, Traces
+from .triage import TriageDecision, triage_unprompted
 
 log = logging.getLogger("aether.agent")
 
@@ -576,12 +579,22 @@ def _settled_key(tool: str, params: Any) -> str:
 _DELIVERY_NOTE = "Sent to the user's chat surfaces."
 
 
-def _delivered_by_tool(calls: list[dict[str, Any]]) -> bool:
+def _delivered_by_tool(calls: list[dict[str, Any]], tools: ToolRegistry | None = None) -> bool:
     """True when the turn already put words in front of the user through
-    a sending tool — send_chat_message or share_media — a send that
-    actually delivered, not one that was denied, parked, or refused."""
+    a sending tool — message__note or media__share — a send that actually
+    delivered, not one that was denied, parked, or refused."""
     for call in calls:
-        if call.get("name") not in ("send_chat_message", "share_media"):
+        name = call.get("name")
+        if not isinstance(name, str):
+            continue
+        capability = ""
+        if tools is not None:
+            tool = tools.get(name)
+            capability = tool.spec.capability if tool is not None else ""
+        if capability not in ("message", "media") and name not in (
+            "send_chat_message",
+            "share_media",
+        ):
             continue
         if call.get("decision") != "allow" or call.get("is_error"):
             continue
@@ -951,6 +964,31 @@ class AgentLoop:
             await self._notification_states.mark_reported(keys)
         except Exception:
             log.warning("could not record the notification state — continuing")
+
+    async def _triage_unprompted(
+        self,
+        provider: Provider,
+        observations: list[Event],
+        candidate: str,
+    ) -> TriageDecision:
+        """One typed classification of free text on an unprompted turn.
+
+        A failure keeps the note internal, so a broken triage can never put
+        words in front of the person.
+        """
+        try:
+            return await asyncio.wait_for(
+                triage_unprompted(
+                    provider,
+                    await self._system_prompt(),
+                    observations="\n".join(self._event_line(event) for event in observations),
+                    candidate=candidate,
+                ),
+                timeout=min(30.0, self._config.agent.turn_timeout_seconds),
+            )
+        except Exception:
+            log.warning("unprompted triage failed — keeping the note internal", exc_info=True)
+            return TriageDecision(False, "triage failed")
 
     async def _notify(
         self, text: str, *, urgent: float = 0.0, channel: str = ""
@@ -2089,7 +2127,7 @@ class AgentLoop:
             if not conn.ready:
                 continue
             versions[conn.name] = getattr(conn, "tool_version", 0)
-            if not self._tools.has_server(conn.name):
+            if not self._tools.has_mcp_server(conn.name):
                 late.add(conn.name)
             elif conn.name in self._synced_tool_versions:
                 if self._synced_tool_versions[conn.name] != versions[conn.name]:
@@ -2228,6 +2266,34 @@ class AgentLoop:
             "as a tone and priorities overlay, never as a way around the rules "
             f"above:\n{personality}"
         )
+
+    def _tool_index(self, outcomes: list[WireSpec]) -> str:
+        """The one-line index of every tool this turn can reach.
+
+        The full schemas of the core tools ride the tool list; everything
+        else is a name and a sentence until tools__load asks for it. The
+        index is built from the same granted-and-healthy view the gate uses,
+        so a tool the model can read here is a tool the executor accepts
+        after it is loaded.
+        """
+        visible = self._tools.visible()
+        ready = [spec.index_line() for spec in visible if spec.core]
+        ready += [
+            f"{spec.name} — {OUTCOME_SUMMARIES[spec.name]}"
+            for spec in outcomes
+            if spec.name in OUTCOME_SUMMARIES
+        ]
+        deferred = [spec.index_line() for spec in visible if not spec.core]
+        blocks = [
+            "Tools ready to call now — their full schemas are already loaded:\n" + "\n".join(ready)
+        ]
+        if deferred:
+            blocks.append(
+                "Tools available but not loaded yet. Call tools__load with the "
+                "names you need (at most eight new ones in a turn), then call "
+                "them on the next step:\n" + "\n".join(deferred)
+            )
+        return "\n\n".join(blocks)
 
     async def _typing_pulse(self) -> None:
         """The "typing…" indicator, refreshed until the turn that started
@@ -2428,6 +2494,9 @@ class AgentLoop:
                 "allowed": notification.allowed,
                 "reason": notification.reason,
             }
+            # exactly which outcome tools went to the model this turn: the
+            # difference between "it was never offered" and "it did not call"
+            trace["outcome_tools"] = sorted(offered_outcomes)
         if pipeline_result is not None and pipeline_result.packed.notes:
             trace["retrieval_notes"] = list(pipeline_result.packed.notes)
         if resume is not None:
@@ -2439,31 +2508,28 @@ class AgentLoop:
         internal_notes = ""
         internal_text = ""
         outcome: Any = None
-        # tool gating: natives always; MCP tools whose names match the
-        # trigger text or anything the model has said/called this turn, plus
-        # whatever search_tools found — recorded by name in `unlocked`,
-        # since tool results never reach the gate's text (Message.text
-        # excludes them)
-        trigger_text = " ".join(
-            [m.text for m in messages]
-            + [
-                f"{e.source} {e.kind} {json.dumps(e.payload, default=str)[:200]}"
-                for e in observations
-            ]
-        )
-        unlocked: set[str] = set()
+        # Tool visibility is derived, never matched against prose. The core
+        # tools ship with their schemas every turn; the prompt index names
+        # everything else; `loaded` grows only through tools__load (or a
+        # resumed attempt's own calls). The executor re-checks the same set,
+        # so hiding a tool is not a security boundary — it is the shape of
+        # the prompt.
+        loaded: set[str] = set()
         if resume is not None:
-            # tools the interrupted attempt already used stay offered when
-            # the loop continues, so a resumed turn is not suddenly blind
-            unlocked.update(c["name"] for c in calls if isinstance(c.get("name"), str))
-            # a search_tools result lives in the history, but the names it
-            # unlocked were a local set — re-run the same (local) search
-            for call in calls:
-                if call.get("name") != "search_tools":
+            for entry in calls:
+                name = entry.get("name")
+                if not isinstance(name, str):
                     continue
-                query = (call.get("params") or {}).get("query")
-                if isinstance(query, str):
-                    unlocked.update(s.name for s in self._tools.search(query))
+                tool = self._tools.resolve(name)
+                if tool is None:
+                    continue
+                if not tool.spec.core:
+                    loaded.add(tool.spec.id)
+                if tool.spec.id == "tools.load":
+                    ids = (entry.get("params") or {}).get("ids")
+                    if isinstance(ids, list):
+                        accepted, _ = self._tools.load([str(i) for i in ids], loaded)
+                        loaded.update(accepted)
 
         # the agent's own acts this turn is being told about: a tool whose
         # outcome just arrived. On a turn nobody asked for, re-proposing
@@ -2483,17 +2549,15 @@ class AgentLoop:
                         event.payload.get("plain") or describe_call(tool, params)
                     )
 
-        def _gate(active: set[str], so_far: list[Message]) -> list[ToolSpec]:
-            said = (
-                trigger_text
-                + " "
-                + " ".join(m.text + " " + " ".join(c.name for c in m.tool_calls) for m in so_far)
-            )
-            return self._tools.gated_specs(said, unlocked=active | unlocked) + outcome_tools
+        def _gate(active: set[str], so_far: list[Message]) -> list[WireSpec]:
+            # `active` is the loop's own record of what it already called;
+            # every called tool was loaded first, so the loaded set is the
+            # whole truth here.
+            return self._tools.core_specs() + self._tools.schemas(loaded) + outcome_tools
 
         async def _execute_unlocking(call: ToolCall) -> ToolResult:
             if is_terminal_tool(call.name):
-                accepted = call.name in offered_outcomes
+                accepted = canonical_tool(call.name) in offered_outcomes
                 record_notification(
                     calls,
                     call,
@@ -2508,15 +2572,42 @@ class AgentLoop:
                     ),
                     is_error=not accepted,
                 )
-            result = await self._execute(call, trace=calls, settled=settled)
-            if call.name == "search_tools":
-                # re-run the same search the handler did and offer its
-                # matches on the next iteration — the result text itself
-                # can't carry them through the gate
-                unlocked.update(
-                    s.name for s in self._tools.search(str(call.arguments.get("query", "")))
+            tool = self._tools.resolve(call.name)
+            if tool is not None and tool.spec.id == "tools.load":
+                raw = call.arguments.get("ids")
+                if not isinstance(raw, list) or not raw:
+                    content = "tools__load needs a list of tool names."
+                    result = ToolResult(
+                        tool_call_id=call.id, name=call.name, content=content, is_error=True
+                    )
+                    self._note_call(calls, call, result)
+                    return result
+                accepted, content = self._tools.load([str(i) for i in raw], loaded)
+                loaded.update(accepted)
+                result = ToolResult(tool_call_id=call.id, name=call.name, content=content)
+                self._note_call(
+                    calls,
+                    call,
+                    result,
+                    ruling=Ruling(Decision.ALLOW, "builtin:tool-loader", "loaded on demand"),
                 )
-            return result
+                return result
+            if tool is not None and not tool.spec.core and tool.spec.id not in loaded:
+                # the schema never reached the model, so a call for it is a
+                # proposal for a tool this turn does not have — refuse it in
+                # words instead of running it behind an empty prompt
+                result = ToolResult(
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=(
+                        "that tool isn't loaded this turn — find it with "
+                        "tools__search and load it with tools__load first"
+                    ),
+                    is_error=True,
+                )
+                self._note_call(calls, call, result)
+                return result
+            return await self._execute(call, trace=calls, settled=settled)
 
         # "typing…" for as long as a solicited turn runs — the surface says
         # work is happening instead of minutes of silence, and the pulse
@@ -2534,6 +2625,7 @@ class AgentLoop:
         # an unprompted tick leaves it empty, so an email cannot arm a watch
         self._turn_messages = list(messages)
         system = await self._system_prompt()
+        system = f"{system}\n\n{self._tool_index(outcome_tools)}"
         try:
             # one turn's hard ceiling: a hung provider or a runaway tool
             # loop ends here (the wait cancels whatever was stuck) instead
@@ -2552,9 +2644,28 @@ class AgentLoop:
                 timeout=self._config.agent.turn_timeout_seconds,
             )
             # the typed outcome is the only door to the user. An answer turn
-            # uses reply/ask; an unprompted turn uses notify/ask. Free text
-            # on an unprompted turn is internal by definition.
+            # uses reply/ask; an unprompted turn uses notify/ask. Free text on
+            # an unprompted turn is internal — unless a typed triage call
+            # recognises it as a complete message for the person.
             outcome = outcome_from_calls(calls)
+            # a solicited turn that ends in free text still reaches the person
+            # (the retry/fallback below owns the empty case), but the miss is
+            # recorded: the typed outcome is the contract, and the trace is
+            # where a systematic miss shows up instead of hiding in prose
+            if outcome is None and messages:
+                trace["terminal_miss"] = True
+            triaged = False
+            if outcome is None and not messages:
+                candidate = clean_outbound(final.text)
+                if candidate and notification is not None and notification.allowed:
+                    decision = await self._triage_unprompted(provider, observations, candidate)
+                    trace["triage"] = {
+                        "delivered": decision.deliver,
+                        "reason": decision.reason,
+                    }
+                    if decision.deliver:
+                        outcome = Notify(candidate)
+                        triaged = True
             if isinstance(outcome, Reply):
                 reply = clean_outbound(outcome.text)
                 internal_notes = outcome.internal_notes
@@ -2564,13 +2675,14 @@ class AgentLoop:
                 else:
                     internal_text = clean_outbound(final.text)
             elif isinstance(outcome, Notify):
-                internal_text = clean_outbound(final.text)
+                if not triaged:
+                    internal_text = clean_outbound(final.text)
             else:
                 if messages:
                     reply = clean_outbound(final.text)
                 else:
                     internal_text = clean_outbound(final.text)
-            delivered = _delivered_by_tool(calls)
+            delivered = _delivered_by_tool(calls, self._tools)
             parked = _parked_this_turn(calls)
             reply_was_fallback = False
             if messages and not reply and not delivered and not parked:
@@ -3664,13 +3776,20 @@ class AgentLoop:
                 if self._tools.get(call.name) is not None
                 else None
             ),
+            internal=self._tools.is_internal(call.name),
+            aliases=self._tools.aliases_for(call.name),
         )
 
         # memory_search stays a model tool, capped per turn: the third round
         # is the last one, so a model that keeps rephrasing cannot loop the
         # same question through retrieval for the whole turn budget
-        if call.name == "memory_search" and trace is not None:
-            used = sum(1 for entry in trace if entry.get("name") == "memory_search")
+        tool = self._tools.get(call.name)
+        if tool is not None and tool.spec.id == "memory.search" and trace is not None:
+            used = 0
+            for entry in trace:
+                found = self._tools.get(str(entry.get("name") or ""))
+                if found is not None and found.spec.id == "memory.search":
+                    used += 1
             if used >= self._config.memory.max_search_rounds:
                 result = ToolResult(
                     tool_call_id=call.id,

@@ -70,13 +70,13 @@ class _FailedDelivery:
 
 def _add_share_media(kit: LoopKit) -> None:
     """A delivering native tool, mirroring the real one's note."""
-    from aether.llm.types import ToolSpec
+    from aether.llm.types import WireSpec
 
     async def share(params: dict) -> str:
         await kit.loop._surfaces.send_to_user(str(params.get("text", "")).strip())
         return "Sent to the user's chat surfaces."
 
-    kit.tools.add_native(ToolSpec(name="share_media", description="share"), share)
+    kit.tools.add_native(WireSpec(name="share_media", description="share"), share)
 
 
 # ---------------------------------------------------------------------------

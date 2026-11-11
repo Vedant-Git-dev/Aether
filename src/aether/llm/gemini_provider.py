@@ -17,9 +17,9 @@ from .types import (
     TextBlock,
     ToolCall,
     ToolResult,
-    ToolSpec,
     Turn,
     VideoBlock,
+    WireSpec,
 )
 
 # JSON Schema spellings -> the casing the genai SDK's Schema type expects.
@@ -154,7 +154,7 @@ def messages_to_gemini(messages: list[Message]) -> list[dict[str, Any]]:
     return out
 
 
-def tools_to_gemini(tools: list[ToolSpec]) -> list[dict[str, Any]]:
+def tools_to_gemini(tools: list[WireSpec]) -> list[dict[str, Any]]:
     return [
         {
             "function_declarations": [
@@ -251,7 +251,7 @@ class GeminiProvider:
         self,
         system: str,
         messages: list[Message],
-        tools: list[ToolSpec],
+        tools: list[WireSpec],
     ) -> Turn:
         config_kwargs: dict[str, Any] = {
             "system_instruction": system,

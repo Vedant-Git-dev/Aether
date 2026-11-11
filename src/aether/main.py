@@ -93,6 +93,7 @@ from .scheduler import Scheduler, SchedulerWorker
 from .secret_env import EnvResolver
 from .secret_store import SecretStore
 from .skills import build_skills
+from .tools.grants import BackendHealth
 from .web import WebTools, build_client
 from .workbench import Workbench, ordered
 from .workbench import run as run_workbench
@@ -396,7 +397,7 @@ def create_app(
         host = MCPHost(config.mcp_servers, resolver=env_resolver)
         host.start()
         app.state.mcp_host = host
-        tools = ToolRegistry()
+        tools = ToolRegistry(health=BackendHealth(host.is_healthy))
         tools.attach_mcp(host)
         # the gmail allowlist rides every bulk read the namespace executes
         mail_filter = MailAllowlist(config.contacts, audit)

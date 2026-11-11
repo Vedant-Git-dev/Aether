@@ -16,7 +16,7 @@ from fakes import FakeProvider
 from test_agent_loop import LoopKit, _msg
 
 from aether.connectors.base import ConnectorUnavailableError
-from aether.llm.types import ToolCall, ToolSpec, Turn
+from aether.llm.types import ToolCall, Turn, WireSpec
 
 
 def _add_share_media(kit: LoopKit, *, refuse: bool = False) -> None:
@@ -38,7 +38,7 @@ def _add_share_media(kit: LoopKit, *, refuse: bool = False) -> None:
         await surfaces.send_to_user(text)
         return "Sent to the user's chat surfaces."
 
-    kit.tools.add_native(ToolSpec(name="share_media", description="share"), share)
+    kit.tools.add_native(WireSpec(name="share_media", description="share"), share)
 
 
 async def test_a_share_media_delivery_suppresses_the_duplicated_reply() -> None:
@@ -198,7 +198,7 @@ async def test_a_failed_send_stays_retryable_in_the_same_turn() -> None:
         await kit.loop._surfaces.send_to_user(str(params.get("text", "")))
         return "Sent to the user's chat surfaces."
 
-    kit.tools.add_native(ToolSpec(name="send_chat_message", description="send"), flaky)
+    kit.tools.add_native(WireSpec(name="send_chat_message", description="send"), flaky)
     kit.loop.submit_message(_msg("say it"))
     await kit.loop._tick()
 

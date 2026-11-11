@@ -40,6 +40,18 @@ def _ask(question: str, options: list[str] | None = None) -> Turn:
     )
 
 
+def _triage(decision: str) -> Turn:
+    return Turn(
+        tool_calls=[
+            ToolCall(
+                id="t1",
+                name="decide_message",
+                arguments={"decision": decision, "reason": "test"},
+            )
+        ]
+    )
+
+
 def _action_event(
     event_id: int,
     *,
@@ -76,7 +88,7 @@ async def test_a_disabled_preference_never_offers_notify_and_delivers_nothing() 
 
     await kit.loop._tick()
 
-    assert "notify_user" not in _offered(provider)
+    assert "message__notify" not in _offered(provider)
     assert kit.connector.sent == []
     payload = kit.traces.created[-1]["payload"]
     assert payload["notification_policy"] == {
@@ -93,7 +105,7 @@ async def test_quiet_hours_never_offer_notify_and_deliver_nothing() -> None:
 
     await kit.loop._tick()
 
-    assert "notify_user" not in _offered(provider)
+    assert "message__notify" not in _offered(provider)
     assert kit.connector.sent == []
     assert kit.traces.created[-1]["payload"]["notification_policy"]["reason"] == "quiet hours"
 
@@ -110,7 +122,7 @@ async def test_an_already_reported_action_never_offers_notify() -> None:
 
     await kit.loop._tick()
 
-    assert "notify_user" not in _offered(provider)
+    assert "message__notify" not in _offered(provider)
     assert kit.connector.sent == []
     assert kit.traces.created[-1]["payload"]["notification_policy"]["reason"] == "already reported"
 
@@ -125,7 +137,7 @@ async def test_a_proactive_question_is_not_offered_when_policy_says_no() -> None
 
     await kit.loop._tick()
 
-    assert "ask_user" not in _offered(provider)
+    assert "message__ask" not in _offered(provider)
     assert kit.connector.sent == []
 
 
@@ -135,7 +147,9 @@ async def test_a_proactive_question_is_not_offered_when_policy_says_no() -> None
 
 
 async def test_a_proactive_turn_that_returns_free_text_delivers_nothing() -> None:
-    provider = FakeProvider([Turn(text="no reply needed - well below your bar for a ping")])
+    provider = FakeProvider(
+        [Turn(text="no reply needed - well below your bar for a ping"), _triage("internal")]
+    )
     kit = LoopKit(provider)
     kit.events.events[1] = _event(1)
 
@@ -145,7 +159,68 @@ async def test_a_proactive_turn_that_returns_free_text_delivers_nothing() -> Non
     payload = kit.traces.created[-1]["payload"]
     assert payload["internal"] == "no reply needed - well below your bar for a ping"
     assert payload["outcome"] == "none"
+    assert payload["triage"]["delivered"] is False
     assert "reply" not in payload
+
+
+async def test_a_useful_free_text_message_is_delivered_after_triage() -> None:
+    note = "The invoice is due tomorrow — want me to draft the reply?"
+    provider = FakeProvider([Turn(text=note), _triage("send")])
+    kit = LoopKit(provider)
+    kit.events.events[1] = _event(1)
+
+    await kit.loop._tick()
+
+    assert kit.connector.sent == [note]
+    payload = kit.traces.created[-1]["payload"]
+    assert payload["outcome"] == "notify"
+    assert payload["triage"]["delivered"] is True
+    # the trace records that the model actually had the tool this turn
+    assert payload["outcome_tools"] == ["message__ask", "message__notify"]
+    # the delivered words are not repeated under Internal
+    assert "internal" not in payload
+
+
+async def test_triage_never_runs_when_the_policy_denies_notify() -> None:
+    provider = FakeProvider([Turn(text="a useful note")])
+    kit = LoopKit(
+        provider,
+        config=AppConfig(notifications=NotificationConfig(enabled=False)),
+    )
+    kit.events.events[1] = _event(1)
+
+    await kit.loop._tick()
+
+    assert kit.connector.sent == []
+    assert len(provider.calls) == 1  # no triage call was made
+    payload = kit.traces.created[-1]["payload"]
+    assert payload["outcome_tools"] == []  # the model was never offered notify
+    assert "triage" not in payload
+
+
+async def test_a_terminal_notify_is_not_triaged() -> None:
+    provider = FakeProvider([_notify("the note")])
+    kit = LoopKit(provider)
+    kit.events.events[1] = _event(1)
+
+    await kit.loop._tick()
+
+    assert kit.connector.sent == ["the note"]
+    assert len(provider.calls) == 1
+    assert "triage" not in kit.traces.created[-1]["payload"]
+
+
+async def test_a_failed_triage_keeps_the_note_internal() -> None:
+    provider = FakeProvider([Turn(text="a note that must not slip out"), Turn(text="no decision")])
+    kit = LoopKit(provider)
+    kit.events.events[1] = _event(1)
+
+    await kit.loop._tick()
+
+    assert kit.connector.sent == []
+    payload = kit.traces.created[-1]["payload"]
+    assert payload["internal"] == "a note that must not slip out"
+    assert payload["triage"]["delivered"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +292,7 @@ async def test_a_reported_failure_is_not_repeated_inside_the_window_and_returns_
     await kit.loop._tick()
 
     assert kit.connector.sent == ["the write failed"]  # not repeated
-    assert "notify_user" not in _offered(provider, 1)
+    assert "message__notify" not in _offered(provider, 1)
 
     # outside the window the same action may be reported again
     keys = notification_keys([first])
@@ -249,7 +324,7 @@ async def test_changing_the_preference_changes_the_offer() -> None:
     kit.events.events[2] = _event(2)
     await kit.loop._tick()
 
-    assert "notify_user" in _offered(provider, 1)
+    assert "message__notify" in _offered(provider, 1)
     assert kit.connector.sent == ["second"]
 
 
@@ -265,7 +340,7 @@ async def test_changing_quiet_hours_changes_the_offer() -> None:
     kit.events.events[2] = _event(2, salience=0.0)
     await kit.loop._tick()
 
-    assert "notify_user" in _offered(provider, 1)
+    assert "message__notify" in _offered(provider, 1)
     assert kit.connector.sent == ["second"]
 
 
@@ -284,5 +359,5 @@ async def test_changing_the_repeat_window_changes_the_offer() -> None:
 
     await kit.loop._tick()
 
-    assert "notify_user" in _offered(provider)
+    assert "message__notify" in _offered(provider)
     assert kit.connector.sent == ["reported again"]

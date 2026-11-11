@@ -31,8 +31,8 @@ from aether.llm.types import (
     Message,
     ToolCall,
     ToolResult,
-    ToolSpec,
     VideoBlock,
+    WireSpec,
 )
 
 # ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@ def test_anthropic_empty_messages_are_dropped() -> None:
 
 
 def test_anthropic_tools_shape() -> None:
-    spec = ToolSpec(name="search", description="Search memory", input_schema={"type": "object"})
+    spec = WireSpec(name="search", description="Search memory", input_schema={"type": "object"})
     assert tools_to_anthropic([spec]) == [
         {"name": "search", "description": "Search memory", "input_schema": {"type": "object"}}
     ]
@@ -203,7 +203,7 @@ def test_openai_tool_result_shape() -> None:
 
 
 def test_openai_tools_shape() -> None:
-    spec = ToolSpec(name="f", description="d", input_schema={"type": "object"})
+    spec = WireSpec(name="f", description="d", input_schema={"type": "object"})
     assert tools_to_openai([spec]) == [
         {
             "type": "function",
@@ -340,7 +340,7 @@ def test_gemini_schema_never_rewrites_payload_values() -> None:
 
 
 def test_gemini_tools_shape() -> None:
-    spec = ToolSpec(name="f", description="d", input_schema={"type": "object"})
+    spec = WireSpec(name="f", description="d", input_schema={"type": "object"})
     assert tools_to_gemini([spec]) == [
         {
             "function_declarations": [

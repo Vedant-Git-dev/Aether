@@ -14,9 +14,9 @@ from .types import (
     TextBlock,
     ToolCall,
     ToolResult,
-    ToolSpec,
     Turn,
     VideoBlock,
+    WireSpec,
 )
 
 # Adaptive thinking: the model decides per request whether to think and how
@@ -89,7 +89,7 @@ def messages_to_anthropic(messages: list[Message]) -> list[dict[str, Any]]:
     return out
 
 
-def tools_to_anthropic(tools: list[ToolSpec]) -> list[dict[str, Any]]:
+def tools_to_anthropic(tools: list[WireSpec]) -> list[dict[str, Any]]:
     return [
         {"name": t.name, "description": t.description, "input_schema": t.input_schema}
         for t in tools
@@ -166,7 +166,7 @@ class AnthropicProvider:
         self,
         system: str,
         messages: list[Message],
-        tools: list[ToolSpec],
+        tools: list[WireSpec],
     ) -> Turn:
         kwargs: dict[str, Any] = {
             "model": self.model,
