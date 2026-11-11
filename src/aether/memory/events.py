@@ -22,6 +22,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -166,9 +167,10 @@ class EventStore:
         # the proactive path (watches + reminders) joins here after the
         # agent exists, because an alert is delivered through the loop
         self._proactive: Any = None
-        # background enrichment in flight — tracked so shutdown and tests
-        # never assert on work still mid-air
-        self._enriching: set[asyncio.Task[None]] = set()
+        # background enrichment in flight, by event id — tracked so a turn
+        # can wait for the events it is about to read without waiting for
+        # every other event, and shutdown/tests can wait for all of them
+        self._enriching: dict[int, asyncio.Task[None]] = {}
         # One lock for every sealed-meta merge. Salience and enrichment are
         # both read-modify-write on the same blob, and two spawned writers
         # racing would silently drop whichever finished first. Writes are a
@@ -177,10 +179,42 @@ class EventStore:
 
     async def wait_idle(self) -> None:
         """Every enrichment currently in flight.
-        A watcher evaluation rides the same task, so waiting here also
-        waits out the alert an event owes."""
+
+        Cancelling this wait never cancels the work: the tasks are
+        independent and keep running, so a caller that stops waiting loses
+        only the wait, not the enrichment. A watcher evaluation rides the
+        same task, so waiting here also waits out the alert an event owes.
+        """
         while self._enriching:
-            await asyncio.gather(*self._enriching, return_exceptions=True)
+            tasks = list(self._enriching.values())
+            done, _ = await asyncio.wait(tasks)
+            for task in done:
+                if not task.cancelled():
+                    task.exception()  # retrieve it; never raise from a wait
+
+    async def wait_for_events(
+        self, event_ids: Iterable[int], timeout: float | None = None
+    ) -> set[int]:
+        """Wait for these events' enrichment, up to ``timeout`` seconds.
+
+        Returns the ids still enriching when the deadline expires. The
+        tasks keep running either way — this only bounds the caller's wait.
+        An event with no task (already enriched, or never spawned) is not
+        pending.
+        """
+        wanted = {int(event_id) for event_id in event_ids}
+        tasks = {
+            event_id: self._enriching[event_id]
+            for event_id in wanted
+            if event_id in self._enriching
+        }
+        if not tasks:
+            return set()
+        done, pending = await asyncio.wait(tasks.values(), timeout=timeout)
+        for task in done:
+            if not task.cancelled():
+                task.exception()  # retrieve it; never raise from a wait
+        return {event_id for event_id, task in tasks.items() if task in pending}
 
     def attach_proactive(self, proactive: Any) -> None:
         """Join the proactive path (watches, urgent alerts) to the store.
@@ -364,8 +398,18 @@ class EventStore:
         known — a failure costs detail, never the event.
         """
         task = asyncio.create_task(self._enrich(event_id, kind, payload, occurred_at))
-        self._enriching.add(task)
-        task.add_done_callback(self._enriching.discard)
+        self._enriching[event_id] = task
+        task.add_done_callback(
+            lambda done, event_id=event_id: self._reap_enrichment(event_id, done)
+        )
+
+    def _reap_enrichment(self, event_id: int, task: asyncio.Task[None]) -> None:
+        """Drop a finished task, but never let a newer task for the same
+        event be forgotten if one somehow replaced it."""
+        if self._enriching.get(event_id) is task:
+            del self._enriching[event_id]
+        if not task.cancelled():
+            task.exception()  # retrieve it; a failure already logged itself
 
     async def _enrich(
         self, event_id: int, kind: str, payload: dict[str, Any], occurred_at: datetime
