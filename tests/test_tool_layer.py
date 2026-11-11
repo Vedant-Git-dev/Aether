@@ -171,12 +171,26 @@ def test_the_policy_sees_new_internal_names_as_internal() -> None:
     policy = Policy([])
     assert policy.classify("routines__delete", internal=True).decision is Decision.ALLOW
     assert policy.classify("routines__delete", internal=True).matched_rule == "builtin:internal"
-    assert policy.classify("alerts__create", internal=True).matched_rule == "builtin:internal"
+    assert (
+        policy.classify("alerts__create", {"basis": "ping me"}, internal=True).matched_rule
+        == "builtin:internal"
+    )
     # the same name without the registry's word is just a risky verb — an
     # MCP server called routines must never inherit Aether's own trust
     assert policy.classify("routines__delete", internal=False).decision is (
         Decision.REQUIRE_APPROVAL
     )
+
+
+def test_an_unquoted_alert_create_parks_for_the_user() -> None:
+    policy = Policy([])
+
+    offered = policy.classify("alerts__create", {"scope": "mail"}, internal=True)
+    armed = policy.classify("alerts__create", {"basis": "ping me"}, internal=True)
+
+    assert offered.decision is Decision.REQUIRE_APPROVAL
+    assert offered.matched_rule == "builtin:alert-offer"
+    assert armed.decision is Decision.ALLOW
 
 
 def test_an_alert_tool_is_registered_as_internal() -> None:

@@ -1,9 +1,10 @@
-"""Provenance: only the user's own words can set, change or list an alert.
+"""Provenance: only the user's own words can set or change an alert.
 
 The old gate matched a fixed phrase list. The new gate is structural: the
 model must quote a phrase from the user's message, and the executor verifies
 the quote against the turn's own messages. An unprompted turn has none, so
-an instruction inside an email can never arm one.
+an instruction inside an email can never arm one; the policy turns that
+call into a one-tap offer instead.
 """
 
 from __future__ import annotations
@@ -19,30 +20,49 @@ from aether.connectors.registry import ToolRegistry
 class FakePath:
     def __init__(self) -> None:
         self.created: list = []
+        self.updated: list[tuple[int, object]] = []
         self.toggled: list[tuple[int, bool]] = []
         self.deleted: list[int] = []
+        self.watches: dict[int, SimpleNamespace] = {}
 
     async def create_watch(self, spec, *, origin: str):
         if origin != "owner":
             return None
         self.created.append(spec)
-        return SimpleNamespace(id=1, spec=spec, label=spec.label, status="active")
+        watch = SimpleNamespace(
+            id=len(self.watches) + 1,
+            spec=spec,
+            label=spec.label,
+            status="active",
+        )
+        self.watches[watch.id] = watch
+        return watch
 
     async def list_watches(self, limit: int = 50):
-        return []
+        return list(self.watches.values())
+
+    async def get_watch(self, watch_id: int):
+        return self.watches.get(watch_id)
+
+    async def update_watch(self, watch_id: int, spec, *, origin: str):
+        if watch_id not in self.watches:
+            return None
+        self.updated.append((watch_id, spec))
+        watch = self.watches[watch_id]
+        watch.spec = spec
+        return watch
 
     async def set_watch_enabled(self, watch_id: int, enabled: bool, *, origin: str):
         self.toggled.append((watch_id, enabled))
-        return SimpleNamespace(
-            id=watch_id,
-            spec=SimpleNamespace(form="alert"),
-            label="",
-            status="active" if enabled else "paused",
-        )
+        watch = self.watches.get(watch_id)
+        if watch is None:
+            return None
+        watch.status = "active" if enabled else "paused"
+        return watch
 
     async def delete_watch(self, watch_id: int, *, origin: str) -> bool:
         self.deleted.append(watch_id)
-        return True
+        return self.watches.pop(watch_id, None) is not None
 
 
 def _registry(path: FakePath, basis) -> ToolRegistry:
@@ -78,7 +98,7 @@ async def test_a_quote_from_the_users_message_can_create_an_alert() -> None:
         },
     )
 
-    assert result.startswith("Alert set")
+    assert result.startswith("armed alert #1")
     assert len(path.created) == 1
     assert path.created[0].sender == "Rahul"
 
@@ -93,13 +113,13 @@ async def test_a_concrete_waiting_condition_arms_an_alert() -> None:
         {
             "basis": text,
             "scope": "mail",
-            "contains": "offer letter",
+            "description": "offer letter",
             "label": "offer letter",
         },
     )
 
-    assert result.startswith("Alert set: offer letter")
-    assert path.created[0].contains == "offer letter"
+    assert result.startswith("armed alert #1")
+    assert path.created[0].description == "offer letter"
 
 
 async def test_a_missing_basis_is_refused() -> None:
@@ -111,7 +131,7 @@ async def test_a_missing_basis_is_refused() -> None:
         {"scope": "mail", "sender": "Rahul"},
     )
 
-    assert "I can only set an alert from your own words" in result
+    assert result.startswith("no alert set")
     assert path.created == []
 
 
@@ -128,7 +148,7 @@ async def test_a_paraphrased_basis_is_refused() -> None:
         },
     )
 
-    assert "I can only set an alert from your own words" in result
+    assert result.startswith("no alert set")
     assert path.created == []
 
 
@@ -145,19 +165,18 @@ async def test_an_email_driven_turn_cannot_create_an_alert() -> None:
         },
     )
 
-    assert "I can only set an alert from your own words" in result
+    assert result.startswith("no alert set")
     assert path.created == []
 
 
-async def test_a_vague_request_gets_a_natural_question() -> None:
+async def test_a_vague_request_gets_a_natural_refusal() -> None:
     path = FakePath()
     text = "I'm waiting for things to settle"
     registry = _registry(path, lambda: [text])
 
     result = await registry.execute("create_alert", {"basis": text, "label": "everything"})
 
-    assert "too broad to alert on" in result
-    assert "Ask what should count" in result
+    assert "needs a condition" in result
     assert "watch" not in result.lower()
     assert path.created == []
 
@@ -177,7 +196,7 @@ async def test_a_reminder_request_uses_reminder_wording() -> None:
         },
     )
 
-    assert result.startswith("Reminder set")
+    assert result.startswith("armed reminder #1")
     assert path.created[0].form == "reminder"
 
 
@@ -194,7 +213,7 @@ async def test_a_legacy_raw_tool_name_still_resolves() -> None:
         },
     )
 
-    assert result.startswith("Alert set")
+    assert result.startswith("armed alert #1")
     assert len(path.created) == 1
 
 
@@ -211,23 +230,51 @@ async def test_a_legacy_tool_name_still_resolves() -> None:
         },
     )
 
-    assert result.startswith("Alert set")
+    assert result.startswith("armed alert #1")
     assert len(path.created) == 1
+
+
+async def test_update_with_no_id_lists_the_alerts() -> None:
+    path = FakePath()
+    registry = _registry(path, lambda: ["show my alerts"])
+    await registry.execute(
+        "create_alert",
+        {"basis": "show my alerts", "scope": "mail", "sender": "Rahul"},
+    )
+
+    result = await registry.execute("update_alert", {"basis": "show my alerts"})
+
+    assert result.startswith("alerts:")
+    assert "#1" in result
+
+
+async def test_update_changes_only_the_supplied_fields() -> None:
+    path = FakePath()
+    registry = _registry(path, lambda: ["show my alerts"])
+    await registry.execute(
+        "create_alert",
+        {"basis": "show my alerts", "scope": "mail", "sender": "Rahul"},
+    )
+
+    result = await registry.execute(
+        "update_alert",
+        {"basis": "show my alerts", "watch_id": 1, "urgency_min": 2},
+    )
+
+    assert result.startswith("updated alert #1")
+    assert path.updated[0][1].sender == "Rahul"
+    assert path.updated[0][1].urgency_min == 2
 
 
 async def test_alert_management_tools_also_require_a_basis() -> None:
     path = FakePath()
     registry = _registry(path, lambda: ["show my alerts"])
 
-    calls = [
-        ("list_alerts", {}),
-        ("set_alert_enabled", {"watch_id": 1, "enabled": False}),
-        ("delete_alert", {"watch_id": 1}),
-    ]
-    for tool, params in calls:
-        result = await registry.execute(tool, params)
-        assert result.startswith("I can only"), (tool, result)
+    changed = await registry.execute("update_alert", {"watch_id": 1, "enabled": False})
+    deleted = await registry.execute("delete_alert", {"watch_id": 1})
 
+    assert changed.startswith("no alert changed")
+    assert deleted.startswith("no alert deleted")
     assert path.toggled == []
     assert path.deleted == []
 
@@ -235,6 +282,10 @@ async def test_alert_management_tools_also_require_a_basis() -> None:
 async def test_a_legacy_management_name_still_resolves() -> None:
     path = FakePath()
     registry = _registry(path, lambda: ["pause the Rahul alert"])
+    await registry.execute(
+        "create_alert",
+        {"basis": "pause the Rahul alert", "scope": "mail", "sender": "Rahul"},
+    )
 
     paused = await registry.execute(
         "set_watch_enabled",
@@ -245,8 +296,8 @@ async def test_a_legacy_management_name_still_resolves() -> None:
         {"basis": "pause the Rahul alert", "watch_id": 1},
     )
 
-    assert paused == "Alert 1 paused."
-    assert removed == "Alert 1 removed."
+    assert paused.startswith("alert #1 paused")
+    assert removed == "deleted alert #1"
     assert path.toggled == [(1, False)]
     assert path.deleted == [1]
 

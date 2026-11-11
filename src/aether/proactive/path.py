@@ -238,6 +238,21 @@ class ProactivePath:
             await self.refresh()
         return watch
 
+    async def update_watch(self, watch_id: int, spec: WatchSpec, *, origin: str) -> Watch | None:
+        """Replace one alert's condition through the owner gate."""
+        if self._watches is None:
+            return None
+        spec = replace(spec, channel=self._normalized_channel(spec.channel))
+        watch = await self._watches.update(watch_id, spec=spec, origin=origin)
+        if watch is not None:
+            await self.refresh()
+        return watch
+
+    async def get_watch(self, watch_id: int) -> Watch | None:
+        if self._watches is None:
+            return None
+        return await self._watches.get(watch_id)
+
     async def delete_watch(self, watch_id: int, *, origin: str) -> bool:
         if self._watches is None:
             return False

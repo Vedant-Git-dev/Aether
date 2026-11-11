@@ -122,6 +122,13 @@ def test_contains_reads_the_event_words_not_its_json() -> None:
     )
 
 
+def test_a_description_matches_related_wording() -> None:
+    spec = WatchSpec(label="offer", scope="mail", description="offer letter")
+
+    assert watch_matches(spec, _mail(payload={"subject": "Your job offer"})) is True
+    assert watch_matches(spec, _mail(payload={"subject": "Lunch tomorrow"})) is False
+
+
 def test_noise_never_matches_even_when_it_looks_urgent() -> None:
     spec = WatchSpec(label="urgent", scope="mail", urgency_min=2)
 
@@ -302,6 +309,26 @@ async def test_the_same_watch_is_not_armed_twice(db) -> None:
 
     assert first is not None and second is not None and first.id == second.id
     assert await db.fetchval("SELECT COUNT(*) FROM watches") == 1
+
+
+@pytest.mark.integration
+async def test_updating_an_alert_replaces_its_condition(db) -> None:
+    watches = _store(db)
+    stored = await watches.create(
+        spec=WatchSpec(label="x", scope="mail", sender="first@example.com"),
+        origin="owner",
+    )
+    assert stored is not None
+
+    updated = await watches.update(
+        stored.id,
+        spec=WatchSpec(label="x", scope="mail", sender="second@example.com"),
+        origin="owner",
+    )
+
+    assert updated is not None and updated.spec.sender == "second@example.com"
+    fetched = await watches.get(stored.id)
+    assert fetched is not None and fetched.spec.sender == "second@example.com"
 
 
 @pytest.mark.integration

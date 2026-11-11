@@ -3759,13 +3759,13 @@ class AgentLoop:
         # (see PLAIN_PARAM): lift it onto the record and hand the policy,
         # the audit, and the tool a call that never carries it
         plain = call.arguments.get(PLAIN_PARAM)
-        if plain is not None:
-            call = ToolCall(
-                call.id,
-                call.name,
-                {k: v for k, v in call.arguments.items() if k != PLAIN_PARAM},
-                plain=str(plain),
-            )
+        # reserved keys are wiring, never model arguments: `_plain` becomes
+        # the trace's sentence, and `_approved` is added by the approval
+        # path only. A model can never smuggle either through a call.
+        arguments = {k: v for k, v in call.arguments.items() if not k.startswith("_")}
+        call = ToolCall(
+            call.id, call.name, arguments, plain=str(plain) if plain is not None else ""
+        )
         ruling = self._policy.classify(
             call.name,
             call.arguments,
@@ -4051,7 +4051,13 @@ class AgentLoop:
             "decided_by": approval.decided_by,
         }
         try:
-            result = await self._tools.execute(approval.tool_name, approval.params)
+            run_params = dict(approval.params)
+            tool = self._tools.get(approval.tool_name)
+            if tool is not None and tool.spec.id == "alerts.create":
+                # the tap is the user's decision; the tool arms what the
+                # card described instead of asking for a chat quote again
+                run_params["_approved"] = True
+            result = await self._tools.execute(approval.tool_name, run_params)
         except UnknownToolError as exc:
             # rows parked before the up-front check — or an app unlinked
             # while one sat pending — still land here. The user hears plain
