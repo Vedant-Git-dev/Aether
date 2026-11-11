@@ -2348,7 +2348,13 @@ class AgentLoop:
             # assembly below — one API wait hidden instead of added
             recall_embed: asyncio.Task[list[float] | None] | None = None
             await self._refresh_owner_addresses()
-            await self._await_enrichment()
+            # a solicited turn already holds the user's own words, so the
+            # classifier running behind ingest is detail it does not need;
+            # waiting for it here would put a model round trip in front of
+            # every reply. An unprompted turn reads events, so it waits only
+            # for those events, briefly, and never cancels their work.
+            if not messages:
+                await self._await_enrichment(observations)
             # code-only re-delivery, already done by the tick that built this
             # turn — never a model observation
             delivery_lines = list(self._delivery_lines)
@@ -3425,27 +3431,32 @@ class AgentLoop:
         except Exception:
             log.warning("could not read the owner addresses — rendering without them")
 
-    async def _await_enrichment(self) -> None:
-        """Give enrichment still in flight a short, bounded head start.
+    async def _await_enrichment(self, events: list[Event]) -> None:
+        """Give the events this turn reads a short, bounded head start.
 
-        The floor already made an urgent event visible at ingest, so this is
+        The floor already made an event visible at ingest, so this is
         detail — a summary, a deadline, a classifier urgency — not the thing
-        that makes the event exist. A turn never waits longer than
-        `ENRICHMENT_WAIT_SECONDS`, and a wait that times out answers from the
-        floor rather than delaying the user.
+        that makes the event exist. A turn waits only for the events it is
+        about to read, never for unrelated work, and a deadline that expires
+        stops the wait without cancelling the enrichment.
         """
-        wait = getattr(self._events, "wait_idle", None)
+        wait = getattr(self._events, "wait_for_events", None)
         if wait is None:
             return
+        event_ids = [event.id for event in events]
+        if not event_ids:
+            return
         try:
-            await asyncio.wait_for(wait(), timeout=ENRICHMENT_WAIT_SECONDS)
-        except TimeoutError:
-            log.info(
-                "enrichment still in flight after %.1fs — answering from the floor",
-                ENRICHMENT_WAIT_SECONDS,
-            )
+            still = await wait(event_ids, timeout=ENRICHMENT_WAIT_SECONDS)
         except Exception:
             log.warning("could not wait for enrichment — answering from the floor", exc_info=True)
+            return
+        if still:
+            log.info(
+                "enrichment still in flight after %.1fs for %d event(s) — answering from the floor",
+                ENRICHMENT_WAIT_SECONDS,
+                len(still),
+            )
 
     # -- structured views, focus and delivery ---------------------------------
 

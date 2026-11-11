@@ -17,6 +17,7 @@ marked integration.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -158,6 +159,52 @@ def test_the_alias_question_names_the_address_and_says_how_to_answer() -> None:
     assert "vedant@work.com" in text
     assert "owner_alias" in text
     assert "ask once" in text
+
+
+# ---------------------------------------------------------------------------
+# waiting for enrichment without cancelling it
+# ---------------------------------------------------------------------------
+
+
+async def test_wait_for_events_returns_pending_without_cancelling_the_work() -> None:
+    store = EventStore(None, None, None, ContactsConfig())
+    release = asyncio.Event()
+
+    async def work() -> None:
+        await release.wait()
+
+    task = asyncio.create_task(work())
+    store._enriching[7] = task
+    try:
+        pending = await store.wait_for_events([7], timeout=0.01)
+        assert pending == {7}
+        assert not task.done()
+    finally:
+        release.set()
+        await task
+        store._enriching.pop(7, None)
+
+
+async def test_cancelling_wait_idle_leaves_the_enrichment_running() -> None:
+    store = EventStore(None, None, None, ContactsConfig())
+    release = asyncio.Event()
+
+    async def work() -> None:
+        await release.wait()
+
+    task = asyncio.create_task(work())
+    store._enriching[7] = task
+    waiter = asyncio.create_task(store.wait_idle())
+    await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    try:
+        assert not task.done()
+    finally:
+        release.set()
+        await task
+        store._enriching.pop(7, None)
 
 
 # ---------------------------------------------------------------------------

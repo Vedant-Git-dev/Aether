@@ -1263,37 +1263,58 @@ async def test_a_failed_redelivery_is_abandoned_not_retried_forever() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_enrichment_is_awaited_briefly_on_a_solicited_turn() -> None:
-    kit = LoopKit(None)
-    waited: list[bool] = []
+async def test_a_solicited_turn_never_waits_for_enrichment() -> None:
+    provider = FakeProvider([Turn(text="Here is the answer.")])
+    kit = LoopKit(provider)
+    waited: list[list[int]] = []
 
-    async def wait_idle() -> None:
-        waited.append(True)
+    async def wait_for_events(ids, timeout=None):
+        waited.append(list(ids))
+        return set()
 
-    kit.events.wait_idle = wait_idle
+    kit.events.wait_for_events = wait_for_events
+    kit.loop.submit_message(_msg("first question"))
+    await kit.loop._tick()
 
-    await kit.loop._await_enrichment()
+    assert kit.connector.sent == ["Here is the answer."]
+    assert waited == []
 
-    assert waited == [True]
+
+async def test_an_unprompted_turn_waits_only_for_its_observations() -> None:
+    kit = LoopKit(FakeProvider([Turn(text="noted")]))
+    waited: list[tuple[list[int], float | None]] = []
+
+    async def wait_for_events(ids, timeout=None):
+        waited.append((list(ids), timeout))
+        return set()
+
+    kit.events.wait_for_events = wait_for_events
+    kit.events.events[1] = _event(1)
+    await kit.loop._tick()
+
+    assert [event_id for event_id, _ in waited] == [[1]]
 
 
 async def test_the_enrichment_wait_is_bounded(monkeypatch) -> None:
     kit = LoopKit(None)
+    pending: list[float | None] = []
 
-    async def never() -> None:
-        await asyncio.sleep(30)
+    async def wait_for_events(ids, timeout=None):
+        pending.append(timeout)
+        return set(ids)
 
-    kit.events.wait_idle = never
+    kit.events.wait_for_events = wait_for_events
     monkeypatch.setattr("aether.agent.loop.ENRICHMENT_WAIT_SECONDS", 0.01)
 
-    # it returns rather than hanging the turn
-    await kit.loop._await_enrichment()
+    await kit.loop._await_enrichment([_event(1)])
+
+    assert pending == [0.01]
 
 
 async def test_a_store_without_enrichment_never_waits() -> None:
     kit = LoopKit(None)
-    # LoopKit's FakeEventStore has no wait_idle; the helper is a no-op
-    await kit.loop._await_enrichment()
+    # LoopKit's FakeEventStore has no wait_for_events; the helper is a no-op
+    await kit.loop._await_enrichment([_event(1)])
 
 
 async def test_an_urgent_question_gets_an_as_of_attention_line() -> None:
