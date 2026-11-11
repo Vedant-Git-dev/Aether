@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable
 
 from ..outbound import is_deliverable
 from .base import Provider
-from .types import Message, ToolCall, ToolResult, ToolSpec, Turn
+from .types import Message, ToolCall, ToolResult, Turn, WireSpec
 
 log = logging.getLogger("aether.llm.agent")
 
@@ -26,16 +26,16 @@ ToolExecutor = Callable[[ToolCall], Awaitable[ToolResult]]
 DEFAULT_MAX_ITERATIONS = 12
 
 #: Callable that maps (already-active tool names, conversation so far) ->
-#: the next call's tool list. Injected by the agent loop so search_tools
-#: results and the model's own words can widen the set mid-turn.
-ToolGate = Callable[[set[str], list[Message]], list[ToolSpec]]
+#: the next call's tool list. Injected by the agent loop so tools loaded
+#: mid-turn join the next completion.
+ToolGate = Callable[[set[str], list[Message]], list[WireSpec]]
 
 
 async def run_tool_loop(
     provider: Provider,
     system: str,
     messages: list[Message],
-    tools: list[ToolSpec] | ToolGate,
+    tools: list[WireSpec] | ToolGate,
     execute: ToolExecutor,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
     progress: list[Message] | None = None,
@@ -52,8 +52,8 @@ async def run_tool_loop(
 
     `tools` may be a plain list (static) or a ToolGate: called with the
     names already in play before every completion, returning that call's
-    tool list — this is how a search_tools result unlocks more tools for
-    the very next iteration.
+    tool list — this is how a tools__load result joins the very next
+    iteration.
 
     Returns (final_turn, full_history): the last completion, plus the input
     messages extended with everything the loop appended. When `progress` is

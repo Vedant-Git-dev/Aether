@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from ..config import MCPServerConfig, PollTool, is_legacy_composio_server
-from ..llm.types import ToolSpec, with_plain_param
+from ..llm.types import WireSpec, with_plain_param
 from ..secret_env import EnvResolver
 from .base import ConnectorUnavailableError, UnknownToolError
 
@@ -235,9 +235,9 @@ class MCPServerConnection:
         if len(self._tools) != before:
             log.info("mcp server %s — tool list changed, %d tools now", self.name, len(self._tools))
 
-    def tool_specs(self) -> list[ToolSpec]:
+    def tool_specs(self) -> list[WireSpec]:
         """Current tools with their flat-namespace names. Empty until connected."""
-        specs: list[ToolSpec] = []
+        specs: list[WireSpec] = []
         for tool in self._tools.values():
             schema = getattr(tool, "input_schema", None) or {
                 "type": "object",
@@ -245,7 +245,7 @@ class MCPServerConnection:
             }
             description = (getattr(tool, "description", "") or "").strip()
             specs.append(
-                ToolSpec(
+                WireSpec(
                     name=f"{self.name}__{tool.name}",
                     description=description or f"{self.name} tool {tool.name}",
                     input_schema=with_plain_param(schema),
@@ -358,11 +358,23 @@ class MCPHost:
         for conn in self._connections:
             await conn.stop()
 
-    def tool_specs(self) -> list[ToolSpec]:
-        specs: list[ToolSpec] = []
+    def tool_specs(self) -> list[WireSpec]:
+        specs: list[WireSpec] = []
         for conn in self._connections:
             specs.extend(conn.tool_specs())
         return specs
+
+    def is_healthy(self, server: str) -> bool:
+        """Whether a configured server's session is ready right now.
+
+        An unknown server is not a health failure — provider capabilities
+        are not MCP servers and answer for themselves. A configured but
+        unready server hides its tools and refuses its calls.
+        """
+        conn = self._by_name.get(server)
+        if conn is None:
+            return True
+        return conn.ready
 
     async def call(self, qualified_name: str, args: dict[str, Any]) -> str:
         server, sep, tool = qualified_name.partition("__")

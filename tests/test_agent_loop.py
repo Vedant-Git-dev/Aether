@@ -59,7 +59,7 @@ from aether.config import (
 )
 from aether.connectors.base import InboundMessage
 from aether.connectors.registry import ToolRegistry
-from aether.llm.types import ImageBlock, ToolCall, ToolResult, ToolSpec, Turn
+from aether.llm.types import ImageBlock, ToolCall, ToolResult, Turn, WireSpec
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.events import Event, IngestResult
 from aether.memory.vectors import MemoryHit
@@ -234,7 +234,7 @@ class LoopKit:
             executed.append((name, dict(params)))
             return result
 
-        self.tools.add_native(ToolSpec(name=name, description=f"test {name}"), handler)
+        self.tools.add_native(WireSpec(name=name, description=f"test {name}"), handler)
 
     def add_send_chat_message(self) -> None:
         """The real native tool's mirror: fans out through the loop's own
@@ -248,7 +248,7 @@ class LoopKit:
             await self.loop._surfaces.send_to_user(text)
             return "Sent to the user's chat surfaces."
 
-        self.tools.add_native(ToolSpec(name="send_chat_message", description="send"), send)
+        self.tools.add_native(WireSpec(name="send_chat_message", description="send"), send)
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +301,7 @@ async def test_a_provider_write_parks_with_its_declared_effect() -> None:
         return "sent"
 
     kit.tools.add_provider(
-        ToolSpec(name="gmail__send_email", description="send"),
+        WireSpec(name="gmail__send_email", description="send"),
         send,
         effect="write",
         source="gmail",
@@ -780,7 +780,7 @@ async def test_unavailable_tools_come_back_in_plain_words() -> None:
     async def down(params: dict) -> str:
         raise ConnectorUnavailableError("mail server is not connected")
 
-    kit.tools.add_native(ToolSpec(name="mail__list_down", description=""), down)
+    kit.tools.add_native(WireSpec(name="mail__list_down", description=""), down)
     result = await kit.loop._execute(ToolCall(id="t2", name="mail__list_down", arguments={}))
     assert result.is_error is True
     assert result.content == "mail isn't responding right now"
@@ -857,7 +857,7 @@ async def test_a_linked_app_that_dies_before_carry_out_is_said_plainly() -> None
     async def down(params: dict) -> str:
         raise ConnectorUnavailableError("mail server is not connected")
 
-    kit.tools.add_native(ToolSpec(name="mail__send_message", description=""), down)
+    kit.tools.add_native(WireSpec(name="mail__send_message", description=""), down)
     # registered, so the gate parks it in good faith — the server is only
     # discovered down when the approved call runs
     result = await kit.loop._execute(
@@ -1790,7 +1790,7 @@ async def test_the_prompt_tells_the_model_which_apps_are_connected() -> None:
     provider = FakeProvider([Turn(text="no mail is connected right now")])
     kit = LoopKit(provider)
     kit.tools.attach_mcp(
-        SimpleNamespace(tool_specs=lambda: [ToolSpec(name="calendar__list_events", description="")])
+        SimpleNamespace(tool_specs=lambda: [WireSpec(name="calendar__list_events", description="")])
     )
     kit.tools.sync_mcp_tools()
     kit.loop.submit_message(_msg("can you send emails?"))
@@ -2382,9 +2382,9 @@ class FakeMcpHost:
     def __init__(self, *connections: SimpleNamespace) -> None:
         self.connections = list(connections)
 
-    def tool_specs(self) -> list[ToolSpec]:
+    def tool_specs(self) -> list[WireSpec]:
         return [
-            ToolSpec(name=f"{c.name}__{tool}", description="one action", source=c.name)
+            WireSpec(name=f"{c.name}__{tool}", description="one action", source=c.name)
             for c in self.connections
             if c.ready
             for tool in getattr(c, "tools", ("act",))
@@ -2639,13 +2639,13 @@ async def test_the_tick_announces_a_late_ready_server_once() -> None:
     )
     kit.tools.attach_mcp(host)
     kit.loop._host = host
-    assert not kit.tools.has_server("stub")  # the gap: ready, but not callable
+    assert not kit.tools.has_mcp_server("stub")  # the gap: ready, but not callable
 
     await kit.loop._tick()
     # it joined the namespace and said so, once, with its action count
     assert kit.connector.sent == ["stub is up — 1 action in my vocabulary"]
-    assert kit.tools.has_server("stub")
-    assert not kit.tools.has_server("mail")  # still silent — no false promise
+    assert kit.tools.has_mcp_server("stub")
+    assert not kit.tools.has_mcp_server("mail")  # still silent — no false promise
 
     await kit.loop._tick()
     assert len(kit.connector.sent) == 1  # once per boot, never again

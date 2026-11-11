@@ -18,9 +18,9 @@ from .types import (
     TextBlock,
     ToolCall,
     ToolResult,
-    ToolSpec,
     Turn,
     VideoBlock,
+    WireSpec,
 )
 
 
@@ -82,7 +82,7 @@ def messages_to_openai(system: str, messages: list[Message]) -> list[dict[str, A
     return out
 
 
-def tools_to_openai(tools: list[ToolSpec]) -> list[dict[str, Any]]:
+def tools_to_openai(tools: list[WireSpec]) -> list[dict[str, Any]]:
     return [
         {
             "type": "function",
@@ -157,7 +157,7 @@ class OpenAIProvider:
         self,
         system: str,
         messages: list[Message],
-        tools: list[ToolSpec],
+        tools: list[WireSpec],
     ) -> Turn:
         kwargs: dict[str, Any] = {
             "model": self.model,

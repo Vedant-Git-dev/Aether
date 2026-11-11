@@ -134,7 +134,7 @@ class Message:
 
 
 @dataclass
-class ToolSpec:
+class WireSpec:
     """A tool exposed to the model: name, description, JSON Schema."""
 
     name: str

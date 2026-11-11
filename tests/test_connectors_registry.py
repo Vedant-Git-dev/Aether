@@ -11,17 +11,19 @@ from aether.config import AppContacts, ContactRule, ContactsConfig
 from aether.connectors.base import UnknownToolError
 from aether.connectors.mail_allowlist import MailAllowlist
 from aether.connectors.registry import RegisteredTool, ToolRegistry
-from aether.llm.types import ToolSpec
+from aether.llm.types import WireSpec
+from aether.tools.grants import BackendHealth, CapabilityGrants
+from aether.tools.model import ToolSpec
 
 
 class FakeHost:
     """MCPHost double: canned specs, recorded calls."""
 
-    def __init__(self, specs: list[ToolSpec]) -> None:
+    def __init__(self, specs: list[WireSpec]) -> None:
         self.specs_list = specs
         self.calls: list[tuple[str, dict]] = []
 
-    def tool_specs(self) -> list[ToolSpec]:
+    def tool_specs(self) -> list[WireSpec]:
         return self.specs_list
 
     async def call(self, name: str, args: dict) -> str:
@@ -29,8 +31,8 @@ class FakeHost:
         return f"mcp:{name}"
 
 
-def _native(name: str, source: str = "native") -> ToolSpec:
-    return ToolSpec(name=name, description=f"native {name}", source=source)
+def _native(name: str, source: str = "native") -> WireSpec:
+    return WireSpec(name=name, description=f"native {name}", source=source)
 
 
 async def _echo_handler(params: dict) -> dict:
@@ -64,7 +66,7 @@ async def test_duplicate_native_registration_is_rejected() -> None:
 
 async def test_mcp_tools_sync_into_the_namespace() -> None:
     registry = ToolRegistry()
-    host = FakeHost([ToolSpec(name="mail__list_unread", description="unread mail", source="mail")])
+    host = FakeHost([WireSpec(name="mail__list_unread", description="unread mail", source="mail")])
     registry.attach_mcp(host)
     assert registry.sync_mcp_tools() == 1
     assert registry.sync_mcp_tools() == 0  # idempotent
@@ -80,7 +82,7 @@ async def test_mcp_tools_sync_into_the_namespace() -> None:
 async def test_native_tools_shadow_same_named_mcp_tools() -> None:
     registry = ToolRegistry()
     registry.add_native(_native("mail__list_unread"), _echo_handler)
-    host = FakeHost([ToolSpec(name="mail__list_unread", description="mcp one", source="mail")])
+    host = FakeHost([WireSpec(name="mail__list_unread", description="mcp one", source="mail")])
     registry.attach_mcp(host)
     registry.sync_mcp_tools()
 
@@ -102,7 +104,7 @@ class GmailHost(FakeHost):
 
     def __init__(self, batch: str) -> None:
         super().__init__(
-            [ToolSpec(name="gmail__list_messages", description="mail", source="gmail")]
+            [WireSpec(name="gmail__list_messages", description="mail", source="gmail")]
         )
         self.batch = batch
 
@@ -159,16 +161,22 @@ async def test_mcp_tool_without_host_is_an_error() -> None:
     # must fail loudly, not silently do nothing
     registry = ToolRegistry()
     registry.add_native(_native("t"), _echo_handler)
-    registry._tools["srv__x"] = RegisteredTool(
-        ToolSpec(name="srv__x", description="", source="srv"), "mcp"
+    spec = ToolSpec(
+        id="srv.x",
+        capability="srv",
+        intent="x",
+        summary="An MCP tool with no host",
+        description="",
     )
+    registry._tools[spec.id] = RegisteredTool(spec, "mcp")
+    registry._index_aliases(spec)
     with pytest.raises(UnknownToolError):
         await registry.execute("srv__x", {})
 
 
 async def test_non_gmail_mcp_tools_are_untouched() -> None:
     registry = ToolRegistry()
-    host = FakeHost([ToolSpec(name="mail__send_message", description="send", source="mail")])
+    host = FakeHost([WireSpec(name="mail__send_message", description="send", source="mail")])
     registry.attach_mcp(host)
     registry.sync_mcp_tools()
     await registry.execute("mail__send_message", {"body": "hi\nthere"})
@@ -182,9 +190,9 @@ async def test_drop_server_removes_only_that_servers_tools() -> None:
     registry.add_native(_native("memory_search"), _echo_handler)
     host = FakeHost(
         [
-            ToolSpec(name="mail__list_unread", description="a", source="mail"),
-            ToolSpec(name="mail__send_email", description="b", source="mail"),
-            ToolSpec(name="calendar__get_events", description="c", source="calendar"),
+            WireSpec(name="mail__list_unread", description="a", source="mail"),
+            WireSpec(name="mail__send_email", description="b", source="mail"),
+            WireSpec(name="calendar__get_events", description="c", source="calendar"),
         ]
     )
     registry.attach_mcp(host)
@@ -207,17 +215,17 @@ async def test_drop_server_removes_only_that_servers_tools() -> None:
     assert registry.drop_server("mail") == 0
 
 
-def _gated_registry() -> ToolRegistry:
+def _registry() -> ToolRegistry:
     registry = ToolRegistry()
     registry.add_native(_native("memory_search"), _echo_handler)
     host = FakeHost(
         [
-            ToolSpec(
+            WireSpec(
                 name="hub__GMAIL_SEND_EMAIL",
                 description="Send an email to a recipient",
                 source="hub",
             ),
-            ToolSpec(
+            WireSpec(
                 name="hub__CALENDAR_LIST_EVENTS",
                 description="List events from your calendar",
                 source="hub",
@@ -229,31 +237,79 @@ def _gated_registry() -> ToolRegistry:
     return registry
 
 
-def test_gate_ignores_stopwords_from_message_prefixes() -> None:
-    registry = _gated_registry()
-    # "[message from X via Y]" hands the gate from/via/you for free — those
-    # must not match the same filler words in every prose description
-    offered = {
-        s.name
-        for s in registry.gated_specs("[message from sam via telegram]\ncan you check this for me")
-    }
-    assert offered == {"memory_search"}  # natives only
+def test_core_specs_are_always_offered_and_mcp_is_not() -> None:
+    registry = _registry()
+    assert [spec.name for spec in registry.core_specs()] == ["native__memory_search"]
+    # the prompt index still names everything reachable
+    assert "hub__CALENDAR_LIST_EVENTS" in registry.index()
+    assert "hub__GMAIL_SEND_EMAIL" in registry.index()
 
 
-def test_gate_matches_real_keywords_and_unlocked_names() -> None:
-    registry = _gated_registry()
-    offered = {s.name for s in registry.gated_specs("what's on my calendar today")}
-    assert "hub__CALENDAR_LIST_EVENTS" in offered
-    assert "hub__GMAIL_SEND_EMAIL" not in offered
-    # explicit unlock (search_tools matches) wins regardless of text
-    offered = {s.name for s in registry.gated_specs("", unlocked={"hub__GMAIL_SEND_EMAIL"})}
-    assert "hub__GMAIL_SEND_EMAIL" in offered
+def test_loading_is_capped_and_reports_every_refusal() -> None:
+    registry = _registry()
+    registry.max_loaded = 1
+    loaded: set[str] = set()
+    accepted, text = registry.load(["hub__CALENDAR_LIST_EVENTS", "hub__GMAIL_SEND_EMAIL"], loaded)
+    assert accepted == ["hub.CALENDAR_LIST_EVENTS"]
+    assert "Loaded:" in text
+    assert "Not available this turn:" in text
+    # loading the same id again is a no-op, not a refusal
+    loaded.update(accepted)
+    accepted, text = registry.load(["hub__CALENDAR_LIST_EVENTS"], loaded)
+    assert accepted == []
+    assert "Already loaded: hub__CALENDAR_LIST_EVENTS" in text
+    # a core tool is already schematized and never spends a slot
+    accepted, text = registry.load(["memory_search"], loaded)
+    assert accepted == []
+    assert "Already loaded: native__memory_search" in text
+    # the loaded schema is the provider-safe name
+    assert [spec.name for spec in registry.schemas(loaded)] == ["hub__CALENDAR_LIST_EVENTS"]
+
+
+def test_visibility_hides_ungranted_and_unhealthy_tools() -> None:
+    ungranted = ToolRegistry(grants=CapabilityGrants(lambda capability: capability != "hub"))
+    ungranted.attach_mcp(FakeHost([WireSpec(name="hub__list", description="", source="hub")]))
+    ungranted.sync_mcp_tools()
+    assert ungranted.visible() == []
+
+    unhealthy = ToolRegistry(health=BackendHealth(lambda backend: backend != "hub"))
+    unhealthy.attach_mcp(FakeHost([WireSpec(name="hub__list", description="", source="hub")]))
+    unhealthy.sync_mcp_tools()
+    assert unhealthy.visible() == []
+
+
+def test_a_duplicate_intent_names_the_tool_that_owns_it() -> None:
+    registry = ToolRegistry()
+    first = ToolSpec(
+        id="mail.list",
+        capability="mail",
+        intent="list",
+        summary="List the mail.",
+        description="",
+    )
+    registry.add_native(first, _echo_handler)
+    second = ToolSpec(
+        id="mail.list_all",
+        capability="mail",
+        intent="list",
+        summary="List all the mail.",
+        description="",
+    )
+    with pytest.raises(ValueError, match="mail.list"):
+        registry.add_native(second, _echo_handler)
+
+
+def test_a_duplicate_id_is_rejected_even_for_a_native() -> None:
+    registry = ToolRegistry()
+    registry.add_native(_native("t"), _echo_handler)
+    with pytest.raises(ValueError, match="native.t"):
+        registry.add_native(_native("t"), _echo_handler)
 
 
 def test_search_scores_token_overlap_not_substrings() -> None:
-    registry = _gated_registry()
+    registry = _registry()
     assert registry.search("a") == []  # one-char junk matches nothing
     assert registry.search("the a") == []  # stopword-only query matches nothing
-    found = [s.name for s in registry.search("calendar events")]
+    found = [s.wire_name for s in registry.search("calendar events")]
     assert found[0] == "hub__CALENDAR_LIST_EVENTS"  # both tokens hit
     assert "hub__GMAIL_SEND_EMAIL" not in found

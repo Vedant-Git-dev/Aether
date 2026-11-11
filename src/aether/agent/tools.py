@@ -22,8 +22,9 @@ from typing import Any, NamedTuple
 from ..authz.audit import verification_text
 from ..connectors.base import Attachment
 from ..connectors.registry import ToolRegistry
-from ..llm.types import ImageBlock, Message, ToolSpec, with_plain_param
+from ..llm.types import ImageBlock, Message, WireSpec, with_plain_param
 from ..memory.watches import WatchSpec, has_criteria
+from ..tools.model import ToolSpec
 from ..workspace import SecretRejected, WorkspaceWriteError
 
 log = logging.getLogger("aether.agent.tools")
@@ -32,8 +33,8 @@ log = logging.getLogger("aether.agent.tools")
 NativeHandler = Callable[[dict[str, Any]], Awaitable[str]]
 
 
-def _spec(name: str, description: str, properties: dict[str, Any], required: list[str]) -> ToolSpec:
-    return ToolSpec(
+def _spec(name: str, description: str, properties: dict[str, Any], required: list[str]) -> WireSpec:
+    return WireSpec(
         name=name,
         description=description,
         input_schema=with_plain_param(
@@ -44,6 +45,102 @@ def _spec(name: str, description: str, properties: dict[str, Any], required: lis
             }
         ),
     )
+
+
+# The registry identity for each native tool: capability, intent, one-line
+# summary, declared risk, and whether it is always schematized. The legacy
+# name stays as an alias, so stored approvals, schedules and routines keep
+# resolving without a data migration.
+_NATIVE_META: dict[str, tuple[str, str, str, str, bool]] = {
+    "search_tools": ("tools", "search", "Find tools by app or action.", "read", True),
+    "load_tools": ("tools", "load", "Load the full schemas for tool names.", "read", True),
+    "memory_search": ("memory", "search", "Search Aether's cross-app memory.", "read", True),
+    "note_entity": ("memory", "note", "Keep a relationship note about a person.", "write", False),
+    "get_pending_approvals": (
+        "approvals",
+        "list",
+        "List tool calls waiting for approval.",
+        "read",
+        False,
+    ),
+    "schedule_action": ("schedule", "create", "Run a tool call at a future time.", "write", False),
+    "request_screen_capture": (
+        "screen",
+        "capture",
+        "Ask for a fresh screenshot.",
+        "external",
+        False,
+    ),
+    "find_media": ("media", "find", "List stored files, newest first.", "read", False),
+    "look_at_media": ("media", "view", "Look again at a stored image.", "external", False),
+    "share_media": ("media", "share", "Send a stored file to the user's chat.", "external", False),
+    "generate_image": ("media", "generate", "Generate and store one image.", "external", False),
+    "edit_video": (
+        "media",
+        "edit",
+        "Edit a stored video with one fixed operation.",
+        "external",
+        False,
+    ),
+    "send_chat_message": (
+        "message",
+        "note",
+        "Send a mid-turn note to the user's chat.",
+        "external",
+        True,
+    ),
+    "create_routine": ("routines", "create", "Arm a standing reaction.", "write", False),
+    "list_routines": ("routines", "list", "List armed routines.", "read", False),
+    "set_routine_enabled": ("routines", "enable", "Pause or re-arm a routine.", "write", False),
+    "delete_routine": ("routines", "delete", "Delete a routine.", "write", False),
+    "create_watch": ("watches", "create", "Arm a standing watch.", "write", False),
+    "list_watches": ("watches", "list", "List armed watches.", "read", False),
+    "set_watch_enabled": ("watches", "enable", "Pause or re-arm a watch.", "write", False),
+    "delete_watch": ("watches", "delete", "Delete a watch.", "write", False),
+    "explain_decision": ("traces", "explain", "Replay why an action happened.", "read", False),
+    "verify_integrity": (
+        "audit",
+        "verify",
+        "Verify the decision record's hash chain.",
+        "read",
+        False,
+    ),
+    "get_config": ("config", "get", "Read the current configuration.", "read", False),
+    "set_config": ("config", "set", "Change one configuration setting.", "write", False),
+    "workspace_read": ("workspace", "read", "Read one workspace file.", "read", False),
+    "workspace_search": ("workspace", "search", "Search the workspace.", "read", False),
+    "workspace_remember": (
+        "workspace",
+        "remember",
+        "Write a durable workspace note.",
+        "write",
+        False,
+    ),
+    "workspace_rewrite": (
+        "workspace",
+        "rewrite",
+        "Replace IDENTITY.md or SOUL.md.",
+        "write",
+        False,
+    ),
+    "workspace_promote": (
+        "workspace",
+        "promote",
+        "Promote a daily note into MEMORY.md.",
+        "write",
+        False,
+    ),
+    "workspace_finish_bootstrap": (
+        "workspace",
+        "finish_setup",
+        "Mark first-run setup complete.",
+        "write",
+        False,
+    ),
+    "memory_forget": ("memory", "forget", "Forget one remembered item.", "write", False),
+    "web_fetch": ("web", "fetch", "Read one web page as plain text.", "external", False),
+    "web_search": ("web", "search", "Search the web for current information.", "external", False),
+}
 
 
 def _clip(text: str, limit: int = 300) -> str:
@@ -168,6 +265,7 @@ class ActionWords(NamedTuple):
 
 _ACTION_WORDS: dict[str, ActionWords] = {
     "mail": ActionWords("Send the email", "sending an email", "sent the email"),
+    "email": ActionWords("Send the email", "sending an email", "sent the email"),
     "gmail": ActionWords("Send the email", "sending an email", "sent the email"),
     "telegram": ActionWords("Send the message", "sending a message", "sent the message"),
     "discord": ActionWords("Send the message", "sending a message", "sent the message"),
@@ -372,9 +470,24 @@ _NATIVE_WORDS: dict[str, ActionWords] = {
     "search_tools": ActionWords(
         "Look for the right tool", "looking for the right tool", "looked for the right tool"
     ),
+    "load_tools": ActionWords(
+        "Load the tools it needs", "loading the tools it needs", "loaded the tools it needed"
+    ),
     "web_fetch": ActionWords("Read the web page", "reading a web page", "read a web page"),
     "web_search": ActionWords("Search the web", "searching the web", "searched the web"),
 }
+
+# The model calls the provider-safe wire name (``memory__search``); old
+# traces, approvals and skills carry the original native name. Both read
+# the same in the activity log.
+_NATIVE_ALIASES = {f"{meta[0]}__{meta[1]}": legacy for legacy, meta in _NATIVE_META.items()}
+_NATIVE_ALIASES.update(
+    {
+        "message__reply": "reply_user",
+        "message__notify": "notify_user",
+        "message__ask": "ask_user",
+    }
+)
 
 # the few parameters worth putting in front of the user, keyed to the
 # label they read under — everything else stays in the decision record.
@@ -410,6 +523,7 @@ _BODY_PREVIEW_CHARS = 77
 
 def _action_words(name: str) -> ActionWords:
     """(ask, doing, done) for one tool call, the way the user would say it."""
+    name = _NATIVE_ALIASES.get(name, name)
     server, sep, tool = name.partition("__")
     if sep:
         lowered = tool.lower()
@@ -425,7 +539,9 @@ def _action_words(name: str) -> ActionWords:
             account = f"the connected {app} account"
             return ActionWords(f"Check {account}", f"checking {account}", f"checked {account}")
         if server != "composio":
-            provider_words = _PROVIDER_ACTION_WORDS.get((app, action))
+            provider_words = _PROVIDER_ACTION_WORDS.get(
+                ("gmail" if app == "email" else app, action)
+            )
             if provider_words is not None:
                 return provider_words
         # a read-like tool must never read as a send — "I went ahead with
@@ -1643,20 +1759,26 @@ def register_native_tools(
     async def search_tools(params: dict[str, Any]) -> str:
         query = str(params.get("query", "")).strip()
         if not query:
-            return "search_tools needs a query — e.g. an app or action like 'calendar' or 'create issue'."
+            return "tools__search needs a query — e.g. an app or action like 'calendar' or 'create issue'."
         found = registry.search(query)
         if not found:
             return f"No tools match {query!r}. The app may not be connected — try the apps page."
-        lines = [f"{s.name} — {_clip(s.description, 120)}" for s in found]
-        return "Matching tools (now available to call directly this turn):\n" + "\n".join(lines)
+        lines = [f"{s.wire_name} — {s.summary}" for s in found]
+        return "Matching tools (load one with tools__load):\n" + "\n".join(lines)
 
-    natives: list[tuple[ToolSpec, NativeHandler]] = [
+    async def load_tools(params: dict[str, Any]) -> str:
+        ids = params.get("ids")
+        if not isinstance(ids, list) or not ids:
+            return "tools__load needs a list of tool names."
+        return "The turn's tool loader handles this call."
+
+    natives: list[tuple[WireSpec, NativeHandler]] = [
         (
             _spec(
                 "search_tools",
-                "Find tools for an app or action that isn't in your current "
-                "tool list — e.g. 'calendar', 'send message', 'create issue'. "
-                "Matches become callable immediately after this returns.",
+                "Find tools for an app or action that isn't in the loaded tool "
+                "list — e.g. 'calendar', 'send message', 'create issue'. The "
+                "matches are names; load one with tools__load before calling it.",
                 {
                     "query": {
                         "type": "string",
@@ -1666,6 +1788,24 @@ def register_native_tools(
                 ["query"],
             ),
             search_tools,
+        ),
+        (
+            _spec(
+                "load_tools",
+                "Load the full schemas for tool names from the tool index or "
+                "tools__search. At most eight new tools load in one turn; a "
+                "tool that is not granted, not healthy, or already loaded is "
+                "refused in plain words.",
+                {
+                    "ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "tool names to load, e.g. ['email__send_email']",
+                    },
+                },
+                ["ids"],
+            ),
+            load_tools,
         ),
         (
             _spec(
@@ -2439,6 +2579,21 @@ def register_native_tools(
                 ),
             ]
         )
-    for spec, handler in natives:
+    for wire, handler in natives:
+        meta = _NATIVE_META.get(wire.name)
+        if meta is None:
+            raise ValueError(f"native tool {wire.name!r} has no registry identity")
+        capability, intent, summary, risk, core = meta
+        spec = ToolSpec(
+            id=f"{capability}.{intent}",
+            capability=capability,
+            intent=intent,
+            summary=summary,
+            description=wire.description,
+            risk=risk,
+            raw_schema=wire.input_schema,
+            aliases=(wire.name,),
+            core=core,
+        )
         registry.add_native(spec, handler)
     return len(natives)

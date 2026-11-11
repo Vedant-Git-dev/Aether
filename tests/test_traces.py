@@ -22,7 +22,7 @@ from aether.agent.traces import Traces
 from aether.authz.approvals import APPROVED
 from aether.authz.policy import Policy
 from aether.config import AuthzRule
-from aether.llm.types import ToolCall, ToolSpec, Turn
+from aether.llm.types import ToolCall, Turn, WireSpec
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.scheduler.jobs import ScheduledAction
 
@@ -286,7 +286,7 @@ async def test_a_failed_carry_out_is_traced_as_an_error() -> None:
     async def boom(params: dict) -> str:
         raise ValueError("mail down")
 
-    kit.tools.add_native(ToolSpec(name="mail__send_message", description="test"), boom)
+    kit.tools.add_native(WireSpec(name="mail__send_message", description="test"), boom)
     await kit.loop._execute(ToolCall(id="t1", name="mail__send_message", arguments={"to": "a@b.c"}))
     approval = kit.approvals.created[0]
     approval.status = APPROVED
@@ -326,11 +326,11 @@ async def test_a_poisoned_trace_store_never_breaks_the_act() -> None:
 
 async def test_eight_native_tools_register_when_traces_are_wired() -> None:
     kit = NativeKit(traces=FakeTraces())
-    assert kit.count == 8
-    assert len(kit.registry) == 8
+    assert kit.count == 9
+    assert len(kit.registry) == 9
     both = NativeKit(routines=FakeRoutines(), traces=FakeTraces())
-    assert both.count == 12
-    assert len(both.registry) == 12
+    assert both.count == 13
+    assert len(both.registry) == 13
 
 
 def _seed_turn(kit: NativeKit, *, approval_id: int | None = None) -> None:

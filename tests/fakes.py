@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 from aether.agent.traces import Trace
 from aether.authz.approvals import PENDING, Approval
-from aether.llm.types import Message, ToolCall, ToolResult, ToolSpec, Turn
+from aether.llm.types import Message, ToolCall, ToolResult, Turn, WireSpec
 from aether.media.store import MediaRecord, MediaRef, MediaStoreFull, MediaSummary, sniff_media_type
 from aether.memory.context import AgentContext
 from aether.memory.entities import Entity, PersonRef
@@ -36,13 +36,13 @@ class FakeProvider:
     def __init__(self, turns: list[Turn], model: str = "fake-model") -> None:
         self.turns = list(turns)
         self.model = model
-        self.calls: list[tuple[str, list[Message], list[ToolSpec]]] = []
+        self.calls: list[tuple[str, list[Message], list[WireSpec]]] = []
 
     async def complete(
         self,
         system: str,
         messages: list[Message],
-        tools: list[ToolSpec],
+        tools: list[WireSpec],
     ) -> Turn:
         self.calls.append((system, list(messages), list(tools)))
         if not self.turns:

@@ -57,8 +57,10 @@ class MailAllowlist:
 
     async def filter_result(self, name: str, result: str) -> str:
         """One choke point for every execution path. Non-gmail calls and
-        results we can't read pass through untouched."""
-        if not name.startswith("gmail__"):
+        results we can't read pass through untouched. The email capability
+        is the same allowlist wherever the mail comes from: the provider
+        backend is gmail today, and the model-facing capability is email."""
+        if not name.startswith(("gmail__", "email__")):
             return result
         try:
             envelope = json.loads(result)

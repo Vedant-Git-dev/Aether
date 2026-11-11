@@ -21,7 +21,7 @@ from aether.authz.policy import Policy
 from aether.config import AppConfig, AuthzRule, ContactRule, MCPServerConfig, Settings
 from aether.config_store import ConfigError, ConfigManager
 from aether.connectors.registry import ToolRegistry
-from aether.llm.types import ToolSpec
+from aether.llm.types import WireSpec
 from aether.secret_env import EnvResolver
 
 
@@ -69,21 +69,21 @@ class FakeHost:
     def __init__(self, diff: dict) -> None:
         self.diff = diff
         self.applied: list[list[str]] = []
-        self.specs: list[ToolSpec] = []
+        self.specs: list[WireSpec] = []
 
     async def apply_servers(self, servers: list) -> dict:
         self.applied.append([s.name for s in servers])
         self.specs = [
-            ToolSpec(name=f"{s.name}__act", description=f"{s.name} action", source=s.name)
+            WireSpec(name=f"{s.name}__act", description=f"{s.name} action", source=s.name)
             for s in servers
         ]
         return self.diff
 
-    def tool_specs(self) -> list[ToolSpec]:
+    def tool_specs(self) -> list[WireSpec]:
         return self.specs
 
 
-async def _registry_with(host: FakeHost, host_specs: list[ToolSpec]) -> ToolRegistry:
+async def _registry_with(host: FakeHost, host_specs: list[WireSpec]) -> ToolRegistry:
     """A registry holding a native neighbor plus whatever the host serves."""
 
     async def noop(params: dict) -> str:
@@ -91,7 +91,7 @@ async def _registry_with(host: FakeHost, host_specs: list[ToolSpec]) -> ToolRegi
 
     registry = ToolRegistry()
     registry.add_native(
-        ToolSpec(name="memory_search", description="native neighbor", source="native"), noop
+        WireSpec(name="memory_search", description="native neighbor", source="native"), noop
     )
     host.specs = host_specs
     registry.attach_mcp(host)
@@ -742,7 +742,7 @@ async def test_mcp_removal_drops_the_apps_actions_from_the_namespace() -> None:
     manager, _, _ = _manager(live=live)
     host = FakeHost(diff={"started": [], "stopped": ["mail"]})
     registry = await _registry_with(
-        host, [ToolSpec(name="mail__act", description="mail action", source="mail")]
+        host, [WireSpec(name="mail__act", description="mail action", source="mail")]
     )
     loop = FakeLoop()
     manager.wire(loop=loop, tools=registry, host=host)
@@ -764,7 +764,7 @@ async def test_mcp_addition_starts_the_app_and_publishes_its_actions() -> None:
     manager, _, _ = _manager(live=live)
     host = FakeHost(diff={"started": [SimpleNamespace(name="calendar", ready=True)], "stopped": []})
     registry = await _registry_with(
-        host, [ToolSpec(name="mail__act", description="mail action", source="mail")]
+        host, [WireSpec(name="mail__act", description="mail action", source="mail")]
     )
     loop = FakeLoop()
     manager.wire(loop=loop, tools=registry, host=host)
@@ -789,7 +789,7 @@ async def test_mcp_addition_of_a_silent_server_makes_the_promise() -> None:
         diff={"started": [SimpleNamespace(name="calendar", ready=False)], "stopped": []}
     )
     registry = await _registry_with(
-        host, [ToolSpec(name="mail__act", description="mail action", source="mail")]
+        host, [WireSpec(name="mail__act", description="mail action", source="mail")]
     )
     loop = FakeLoop()
     manager.wire(loop=loop, tools=registry, host=host)
@@ -811,7 +811,7 @@ async def test_mcp_restart_gets_the_connected_note_not_a_stopped_one() -> None:
         diff={"started": [SimpleNamespace(name="mail", ready=True)], "stopped": ["mail"]}
     )
     registry = await _registry_with(
-        host, [ToolSpec(name="mail__act", description="mail action", source="mail")]
+        host, [WireSpec(name="mail__act", description="mail action", source="mail")]
     )
     loop = FakeLoop()
     manager.wire(loop=loop, tools=registry, host=host)

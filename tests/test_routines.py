@@ -18,7 +18,7 @@ from test_agent_loop import LoopKit
 from test_native_tools import NativeKit
 
 from aether.authz.audit import AuditLog
-from aether.llm.types import ToolSpec
+from aether.llm.types import WireSpec
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.events import Event
 from aether.routines import Routines, trigger_matches
@@ -202,7 +202,7 @@ async def test_a_failing_routine_does_not_stop_the_others() -> None:
 
     # read-only name, so the gate lets it through and the handler raises —
     # the kind of failure _fire_routine has to survive
-    kit.tools.add_native(ToolSpec(name="mail__get_boom", description="test"), boom)
+    kit.tools.add_native(WireSpec(name="mail__get_boom", description="test"), boom)
     kit.add_tool("note_entity")
     kit.routines.add(
         label="broken",
@@ -233,8 +233,8 @@ async def test_a_failing_routine_does_not_stop_the_others() -> None:
 
 async def test_eleven_native_tools_register_when_routines_are_wired() -> None:
     kit = NativeKit(routines=FakeRoutines())
-    assert kit.count == 11
-    assert len(kit.registry) == 11
+    assert kit.count == 12
+    assert len(kit.registry) == 12
 
 
 async def test_create_routine_validates_its_inputs() -> None:

@@ -74,11 +74,17 @@ ApprovalCarrier = Callable[[int, str], Awaitable[Any]]
 READ_TOOLS = frozenset(
     {
         "memory_search",
+        "memory__search",
         "workspace_read",
+        "workspace__read",
         "workspace_search",
+        "workspace__search",
         "web_fetch",
+        "web__fetch",
         "web_search",
+        "web__search",
         "look_at_media",
+        "media__view",
     }
 )
 

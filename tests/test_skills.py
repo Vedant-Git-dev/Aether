@@ -136,11 +136,17 @@ async def test_read_only_refuses_writes_before_the_executor_is_asked() -> None:
 def test_the_read_vocabulary_is_the_research_and_memory_pair() -> None:
     assert {
         "memory_search",
+        "memory__search",
         "workspace_read",
+        "workspace__read",
         "workspace_search",
+        "workspace__search",
         "web_fetch",
+        "web__fetch",
         "web_search",
+        "web__search",
         "look_at_media",
+        "media__view",
     } == READ_TOOLS
 
 
