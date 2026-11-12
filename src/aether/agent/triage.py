@@ -5,10 +5,9 @@ outcome tool, or it writes free text. Free text is internal by definition —
 but sometimes it is a complete message the person should read. This stage
 asks one typed question about the candidate note: send it, or keep it
 internal? The answer is model judgment with a schema, not a phrase list, and
-the note itself is never rewritten, only classified.
-
-Only a note the notification policy already allows can be triaged; when the
-policy says no, the note stays internal and no model call is made.
+the note itself is never rewritten, only classified. A note triaged for
+delivery still passes quiet hours: during the window it is held and batched,
+never dropped.
 """
 
 from __future__ import annotations

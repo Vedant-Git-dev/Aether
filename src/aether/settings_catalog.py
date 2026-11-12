@@ -190,31 +190,6 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
         ),
     ),
     GroupSpec(
-        key="notifications",
-        title="Notifications",
-        note="Code checks these before an unprompted message is offered to Aether.",
-        fields=(
-            FieldSpec(
-                path="notifications.enabled",
-                label="Send unprompted notes",
-                hint="Whether Aether may send a note you did not ask for. "
-                "Replies to your messages are never affected.",
-            ),
-            FieldSpec(
-                path="notifications.min_urgency",
-                label="Minimum urgency",
-                hint="How urgent (0-10) something must be before Aether may "
-                "interrupt you about it.",
-            ),
-            FieldSpec(
-                path="notifications.repeat_window_minutes",
-                label="Repeat window",
-                hint="How long Aether remembers that it already told you about "
-                "an event or action, so it does not repeat itself.",
-            ),
-        ),
-    ),
-    GroupSpec(
         key="salience",
         title="Attention",
         fields=(

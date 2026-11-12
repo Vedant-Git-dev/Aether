@@ -1620,19 +1620,34 @@ def _quiet_kit(provider: FakeProvider | None) -> LoopKit:
     )
 
 
-async def test_quiet_hours_hold_unprompted_commentary() -> None:
-    provider = FakeProvider([Turn(text="saw the mail")])
+async def test_quiet_hours_hold_a_proactive_send_and_batch_it_later() -> None:
+    provider = FakeProvider(
+        [
+            Turn(
+                tool_calls=[
+                    ToolCall(
+                        id="n1",
+                        name="notify_user",
+                        arguments={"content": "saw the mail"},
+                    )
+                ]
+            )
+        ]
+    )
     kit = _quiet_kit(provider)
     kit.events.events[1] = _event(1)  # salience 0 — routine feed noise
     await kit.loop._tick()
 
+    # the send was offered; quiet hours hold the words instead of blocking
     assert kit.connector.sent == []
+    assert kit.loop._held == ["saw the mail"]
+
+    kit.loop._config.agent.quiet_hours = None
+    kit.loop.reparse_quiet_hours()
+    await kit.loop._tick()  # nothing new — the held batch ships
+
+    assert kit.connector.sent == ["While it was quiet:\n\nsaw the mail"]
     assert kit.loop._held == []
-    # quiet hours: the notify action was never offered, so the model's free
-    # text stayed internal and nothing interrupted the user
-    payload = kit.traces.created[-1]["payload"]
-    assert payload["internal"] == "saw the mail"
-    assert payload["notification_policy"] == {"allowed": False, "reason": "quiet hours"}
 
 
 async def test_urgent_events_still_interrupt_quiet_hours() -> None:
@@ -2074,15 +2089,27 @@ async def test_a_replied_turn_records_where_the_words_landed() -> None:
 
 
 async def test_a_held_note_records_no_chat_refs() -> None:
-    provider = FakeProvider([Turn(text="saw the mail")])
+    provider = FakeProvider(
+        [
+            Turn(
+                tool_calls=[
+                    ToolCall(
+                        id="n1",
+                        name="notify_user",
+                        arguments={"content": "saw the mail"},
+                    )
+                ]
+            )
+        ]
+    )
     kit = _quiet_kit(provider)
     kit.events.events[1] = _event(1)
     await kit.loop._tick()
 
     payload = kit.traces.created[-1]["payload"]
-    assert payload["internal"] == "saw the mail"
-    assert "chat_refs" not in payload  # nothing landed anywhere
-    assert payload["notification_policy"]["allowed"] is False
+    assert payload["outcome"] == "notify"
+    assert "chat_refs" not in payload  # held, nothing landed anywhere
+    assert kit.loop._held == ["saw the mail"]
 
 
 async def test_a_why_reply_is_answered_from_the_record() -> None:

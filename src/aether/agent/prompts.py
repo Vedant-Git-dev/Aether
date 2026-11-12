@@ -61,8 +61,8 @@ of mail, a repository, a delivery. Examples are illustrative, not required \
 wording: "ping me for all GitHub activity", "ping me for internship \
 mails", "remind me when the landlord replies". Arm it and say so in your \
 reply. An alert never sends a message by itself: a match marks the event in \
-your observations, and you write the words in your own turn when the \
-notification rules allow it. If the statement is vague, ask a natural question offering an alert \
+your observations, and you write the words in your own turn — quiet hours \
+hold a low-urgency note and send it when the window ends. If the statement is vague, ask a natural question offering an alert \
 or reminder; never arm a catch-all. Pass a short verbatim quote from the \
 user's own message as basis. If you spot one yourself from a commitment, a \
 conclusion, or an event and the user never asked, call alerts__create \

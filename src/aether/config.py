@@ -172,18 +172,6 @@ class SalienceConfig(BaseModel):
     rate_cap_per_hour: int = 20
 
 
-class NotificationConfig(BaseModel):
-    """The user's notification preferences, evaluated in code before any
-    proactive turn. These are stored settings, editable in Settings, and a
-    change applies to the next turn without a restart."""
-
-    enabled: bool = True
-    # 0-10, the same scale the salience judge and quiet-hours break use
-    min_urgency: float = 0.0
-    # how long a report counts as "already reported" for its event/action
-    repeat_window_minutes: int = 360
-
-
 class EvaluationConfig(BaseModel):
     """Internal structural gates. Not part of the product surface."""
 
@@ -475,7 +463,6 @@ class AppConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     salience: SalienceConfig = Field(default_factory=SalienceConfig)
-    notifications: NotificationConfig = Field(default_factory=NotificationConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
     messaging: MessagingConfig = Field(default_factory=MessagingConfig)

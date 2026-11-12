@@ -252,9 +252,10 @@ three shipped skills: **follow-ups**, **research**, and **media**.
 
 The same package carries the proactive path. `path.py` matches the user's alerts on
 every ingest and tags the event with the watch label as observation context; it sends
-nothing itself, and the agent writes any message in its own words under the normal
-notification policy. Commitment reminders work the same way: the path reports which
-urgency-scaled lead is due, and the agent writes the reminder.
+nothing itself, and the agent writes any message in its own words; quiet hours hold a
+low-urgency note and batch it when the window ends. Commitment reminders work the same
+way: the path reports which urgency-scaled lead is due, and the agent writes the
+reminder.
 
 > [!IMPORTANT]
 > Only the user's own words can set an alert. An email can never create one.

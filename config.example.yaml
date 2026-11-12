@@ -89,17 +89,6 @@ workspace:
   # optional (default: true, retained for older files)
   encrypted: true
 
-notifications:
-  # optional (default: true) may Aether send a note you did not ask for?
-  # replies to your messages are never affected
-  enabled: true
-  # optional (default: 0.0, range 0-10) how urgent something must be before
-  # it may interrupt you
-  min_urgency: 0.0
-  # optional (default: 360) how long an event or action counts as already
-  # reported, so Aether does not repeat itself
-  repeat_window_minutes: 360
-
 proactive:
   # optional (default: false)
   enabled: false
