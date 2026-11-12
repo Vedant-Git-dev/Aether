@@ -31,7 +31,6 @@ from aether.memory.facts import Facts
 from aether.memory.focus import Focus
 from aether.memory.indexes import MemoryIndex
 from aether.memory.lexical import LexicalIndex
-from aether.memory.notifications import DbNotificationStates
 from aether.memory.summaries import Summaries
 from aether.memory.watches import WatchSpec, WatchStore
 from aether.proactive.store import ProactiveStore
@@ -169,9 +168,6 @@ async def test_no_canary_leaks_into_any_column(db, caplog) -> None:
         conclusions = Conclusions(db, cipher)
         await conclusions.set(f"key {canary}", f"value {canary}", source=f"src {canary}")
 
-        notifications = DbNotificationStates(db, cipher)
-        await notifications.mark_reported((f"event:{canary}",))
-
         focus = Focus(db, cipher)
         await focus.record_turn(
             f"chat {canary}",
@@ -223,15 +219,6 @@ async def test_no_canary_leaks_into_any_column(db, caplog) -> None:
     meta = cipher.decrypt_json(row["meta_enc"], aad=f"events:meta_enc:{event.event_id}")
     assert canary in meta["extra"]["category"]
     assert canary in await workspace.read("memory")
-
-    # the notification key is sealed too: the column holds a token, the body
-    # holds the key under the cipher
-    report = await db.fetchrow("SELECT key_token, body_enc FROM notification_reports")
-    sealed = cipher.decrypt_json(
-        report["body_enc"],
-        aad=f"notification_reports:body_enc:{bytes(report['key_token']).hex()}",
-    )
-    assert canary in sealed["key"]
 
     # and nothing in the captured log lines
     assert canary not in caplog.text

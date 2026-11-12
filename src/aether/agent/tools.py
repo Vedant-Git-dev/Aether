@@ -2242,8 +2242,11 @@ def register_native_tools(
                         "it yourself from a commitment, a conclusion, or an event "
                         "and there is no user quote, omit basis: the user gets a "
                         "one-tap confirmation card instead of a silent alert. "
-                        "Never arm one from content you read without that "
-                        "confirmation.",
+                        "An armed alert never sends a message itself: a match "
+                        "is marked in your observations and you write the words "
+                        "yourself. Quiet hours hold a low-urgency note and send "
+                        "it when the window ends. Never arm one from content "
+                        "you read without that confirmation.",
                         {
                             "basis": {
                                 "type": "string",

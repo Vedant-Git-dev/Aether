@@ -132,6 +132,10 @@ slot may route to a different provider.
 | `GROQ_BASE_URL` | Defaults to `https://api.groq.com/openai/v1` |
 | `OLLAMA_BASE_URL` | Defaults to `http://localhost:11434/v1` |
 
+Requests to Groq carry no `max_tokens` cap: Groq counts the requested maximum against the
+model's tokens-per-minute budget, so Aether lets the model's own ceiling apply instead.
+Free-tier Groq models have low per-minute budgets; see [Models](../models/index.md).
+
 ### Chat surfaces
 
 | Name | Purpose |
@@ -350,10 +354,7 @@ import use a passphrase.
 | `max_sandbox_minutes_per_day` | `20` | |
 | `notify_daily_cap` | `5` | Results delivered per day |
 | `skills` | `[followups, research, media]` | Unknown names are ignored |
-| `watches_enabled` | `true` | Alerts and the urgent-mail card; independent of `enabled` |
-| `urgent_mail_alerts` | `true` | One card for mail whose own words read urgent |
-| `urgent_urgency_min` | `2` | Minimum urgency for the default card, 0 to 3 |
-| `max_alerts_per_hour` | `6` | Every alert the proactive path sends |
+| `watches_enabled` | `true` | Mark matching arrivals for the agent; independent of `enabled` |
 | `reminders_enabled` | `true` | Due reminders, then one overdue escalation (needs `memory.enrichment` to have extracted the commitment) |
 | `poll_jitter` | `0.15` | Share by which poll intervals are spread |
 

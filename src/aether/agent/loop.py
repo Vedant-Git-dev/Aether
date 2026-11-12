@@ -67,7 +67,6 @@ from ..memory.events import Event, EventStore
 from ..memory.focus import Focus
 from ..memory.inbound import MemoryInboundStates
 from ..memory.mail import MAIL_KIND, MAIL_SOURCE, render_mail_event, split_mail
-from ..memory.notifications import MemoryNotificationStates
 from ..memory.pipeline import QueryPipeline
 from ..memory.salience import Salience
 from ..memory.timewindow import in_quiet_window as _in_quiet_window
@@ -98,12 +97,10 @@ from .outcomes import (
     Notify,
     Reply,
     canonical_tool,
-    evaluate_notification_policy,
     is_terminal_tool,
-    notification_keys,
     outcome_from_calls,
     outcome_specs,
-    record_notification,
+    record_outcome,
     render_ask,
 )
 from .prompts import SYSTEM_PROMPT
@@ -408,9 +405,9 @@ class SurfaceFanout:
         is for the retry path, which already owns a delivery row and must not
         mint a new one for the same words; `outcomes`, when given, receives
         each surface's true result so a caller can tell "landed on the web
-        but nowhere else" from "landed nowhere". `only`, when given, is the
-        channel a watch named — the words go to those surfaces and no
-        others. `reply_to`, when given, is the platform message id a chat
+        but nowhere else" from "landed nowhere". `only`, when given, is one
+        surface to narrow the words to — no other surface receives them.
+        `reply_to`, when given, is the platform message id a chat
         surface should quote — None means a plain message. The hub has no
         id; a dying surface never takes the loop down. Media rides to the
         chat connectors only — the hub and the transcript stay text-only;
@@ -710,7 +707,6 @@ class AgentLoop:
         conclusions: Conclusions | None = None,
         deliveries: Deliveries | None = None,
         inbound_states: Any = None,
-        notification_states: Any = None,
         query_pipeline: QueryPipeline | None = None,
         proactive_path: Any = None,
         summary_job: Any = None,
@@ -769,9 +765,9 @@ class AgentLoop:
         # packing). Behind memory.query_pipeline; without it the old vector
         # recall above still serves each turn.
         self._query_pipeline = query_pipeline
-        # the proactive path: watches, urgent-mail cards and reminders.
-        # Late-wired like the enrichment pieces, because the path delivers
-        # through this loop's own interruption budget.
+        # the proactive path: watch matching and reminders. Late-wired like
+        # the enrichment pieces, because a reminder delivers through this
+        # loop's own interruption budget.
         self._proactive_path = proactive_path
         # the summary generator: one due thread/daily/weekly summary per tick,
         # a model call behind memory.summaries
@@ -787,10 +783,6 @@ class AgentLoop:
         # turn. The in-memory ledger is the default; the boot wires the
         # sealed database one.
         self._inbound_states = inbound_states or MemoryInboundStates()
-        # what has already been reported to the user, per event or action —
-        # the notification policy reads it before a proactive turn offers
-        # the notify action at all
-        self._notification_states = notification_states or MemoryNotificationStates()
         # the code-only re-delivery lines for the turn ahead (never a model
         # observation) — collected by the tick, read by the turn
         self._delivery_lines: list[str] = []
@@ -919,43 +911,6 @@ class AgentLoop:
         here)."""
         self._quiet = _parse_quiet_hours(self._config.agent.quiet_hours)
 
-    async def _notification_decision(self, observations: list[Event]) -> Any:
-        """Whether this unprompted turn may offer the notify action.
-
-        The inputs are all data: the stored preferences in the
-        `notifications` section, the quiet window, the loudest observation's
-        urgency, and the sealed report state filtered by the configured
-        window. Model text is not part of the decision.
-        """
-        keys = notification_keys(observations)
-        urgency = max((event.salience_score for event in observations), default=0.0)
-        window = timedelta(minutes=self._config.notifications.repeat_window_minutes)
-        reported: set[str] = set()
-        if keys:
-            try:
-                reported = await self._notification_states.recently_reported(
-                    keys, window, now=datetime.now(UTC)
-                )
-            except Exception:
-                log.warning("could not read the notification state — treating all as new")
-        return evaluate_notification_policy(
-            self._config,
-            quiet=self._quiet,
-            now=datetime.now(),
-            urgency=urgency,
-            keys=keys,
-            reported=reported,
-        )
-
-    async def _mark_reported(self, keys: tuple[str, ...]) -> None:
-        """Record that the user was actually told about these events/actions."""
-        if not keys:
-            return
-        try:
-            await self._notification_states.mark_reported(keys)
-        except Exception:
-            log.warning("could not record the notification state — continuing")
-
     async def _triage_unprompted(
         self,
         provider: Provider,
@@ -988,8 +943,8 @@ class AgentLoop:
         quiet hours it waits (batched, shipped when the window ends) unless
         it is urgent enough on the 0-10 salience scale. Solicited words —
         replies to the user, approvals, scheduled deliveries — never come
-        through here. `channel`, when given, is the one surface a watch
-        named; empty means every surface. Returns where the words landed,
+        through here. `channel`, when given, narrows the words to that one
+        surface; empty means every surface. Returns where the words landed,
         or None when they are being held (or empty) — held words haven't
         reached a surface, so there is nothing to link yet."""
         if not is_deliverable(text):
@@ -1010,7 +965,7 @@ class AgentLoop:
         background worker's plain notifications ride the same
         interruption budget (quiet hours, holding, batching) as the
         loop's own words, so they can never nag around the user's night.
-        `channel` narrows a watch alert to the surface it named."""
+        `channel` narrows the words to one surface when a caller names it."""
         return await self._notify(text, urgent=urgent, channel=channel)
 
     def attach_proactive_path(self, path: Any) -> None:
@@ -1097,14 +1052,44 @@ class AgentLoop:
         return wait
 
     async def _run_proactive_tick(self) -> None:
-        """Flush held alerts and fire due reminders. Never lets a broken
-        proactive path cost the tick: the words already sent stand."""
+        """Turn due commitment reminders into an unprompted turn.
+
+        The path decides which lead is due and records it; it sends nothing.
+        The agent sees the due facts as an observation and writes the words
+        itself, under the same interruption budget (quiet hours) as any other
+        unprompted turn. A broken path costs a log line, never the tick.
+        """
         if self._proactive_path is None:
             return
         try:
-            await self._proactive_path.tick()
+            due = await self._proactive_path.tick()
         except Exception:
             log.warning("proactive path tick failed — continuing", exc_info=True)
+            return
+        if not due:
+            return
+        observations = [self._reminder_event(item) for item in due]
+        try:
+            await self._turn([], observations)
+        except Exception:
+            log.exception("reminder turn failed")
+
+    @staticmethod
+    def _reminder_event(item: Any) -> Event:
+        """One due reminder as an observation for the agent — facts only."""
+        payload = dict(getattr(item, "payload", {}) or {})
+        return Event(
+            id=0,
+            source="proactive",
+            kind="commitment_due",
+            occurred_at=datetime.now(UTC),
+            payload=payload,
+            salience_score=float(getattr(item, "salience", 0.0) or 0.0),
+            memorable=False,
+            meta={},
+            urgency=int(getattr(item, "urgency", 0) or 0),
+            summary=str(payload.get("text") or ""),
+        )
 
     async def _run_due_resumes(self) -> None:
         """Try every pending turn whose wait is over, oldest first. Each
@@ -2320,14 +2305,10 @@ class AgentLoop:
             force_quote = True  # a resumed answer is late by definition
         records = list(records or [])
 
-        # the notification decision is made in code before the turn: a
-        # proactive turn is offered the notify action only when the stored
-        # preferences, quiet window, urgency and report state all allow it
-        notification = None if messages else await self._notification_decision(observations)
-        outcome_tools = outcome_specs(
-            solicited=bool(messages),
-            notify_allowed=bool(notification and notification.allowed),
-        )
+        # the terminal tools are always offered; whether a send is a reply
+        # or a proactive note is the turn type's decision, and quiet hours
+        # hold a low-urgency note rather than blocking the offer
+        outcome_tools = outcome_specs(solicited=bool(messages))
         offered_outcomes = {spec.name for spec in outcome_tools}
 
         recalled: list[dict[str, Any]] = []
@@ -2485,11 +2466,7 @@ class AgentLoop:
             },
             "calls": calls,
         }
-        if notification is not None:
-            trace["notification_policy"] = {
-                "allowed": notification.allowed,
-                "reason": notification.reason,
-            }
+        if not messages:
             # exactly which outcome tools went to the model this turn: the
             # difference between "it was never offered" and "it did not call"
             trace["outcome_tools"] = sorted(offered_outcomes)
@@ -2554,7 +2531,7 @@ class AgentLoop:
         async def _execute_unlocking(call: ToolCall) -> ToolResult:
             if is_terminal_tool(call.name):
                 accepted = canonical_tool(call.name) in offered_outcomes
-                record_notification(
+                record_outcome(
                     calls,
                     call,
                     accepted=accepted,
@@ -2653,7 +2630,7 @@ class AgentLoop:
             triaged = False
             if outcome is None and not messages:
                 candidate = clean_outbound(final.text)
-                if candidate and notification is not None and notification.allowed:
+                if candidate:
                     decision = await self._triage_unprompted(provider, observations, candidate)
                     trace["triage"] = {
                         "delivered": decision.deliver,
@@ -2762,43 +2739,34 @@ class AgentLoop:
                     await self._settle_inbound(records, answered=True)
             elif not delivered:
                 # an unprompted turn reaches the user only through notify or
-                # ask. Anything else the model wrote is internal.
-                if isinstance(outcome, Notify) and notification is not None:
-                    if notification.allowed and await self._proactive_reply_allowed(
-                        outcome.content
-                    ):
+                # ask. Anything else the model wrote is internal. The only
+                # brake left is quiet hours, which holds a low-urgency note
+                # in _notify and batches it when the window ends.
+                if isinstance(outcome, Notify):
+                    if await self._proactive_reply_allowed(outcome.content):
                         refs = await self._notify(
                             outcome.content,
                             urgent=max((e.salience_score for e in observations), default=0.0),
                         )
                         if refs:
                             trace["chat_refs"] = refs
-                            await self._mark_reported(notification.keys)
                     else:
                         trace["reply_blocked"] = True
-                        log.info(
-                            "proactive notify blocked (turn %s, policy=%s)",
-                            turn_ref,
-                            notification.reason or "stale replay",
-                        )
+                        log.info("proactive notify blocked (turn %s, stale replay)", turn_ref)
                 elif isinstance(outcome, Ask):
+                    # a question rides the same budget as a note, so quiet
+                    # hours hold it and batch it rather than waking the user
                     question = render_ask(outcome, locale=self._config.agent.locale)
-                    if (
-                        notification is not None
-                        and notification.allowed
-                        and await self._proactive_reply_allowed(question)
-                    ):
-                        outcomes: dict[str, bool] = {}
-                        refs = await self._surfaces.send_to_user(question, outcomes=outcomes)
+                    if await self._proactive_reply_allowed(question):
+                        refs = await self._notify(
+                            question,
+                            urgent=max((e.salience_score for e in observations), default=0.0),
+                        )
                         if refs:
                             trace["chat_refs"] = refs
-                        if (refs or any(outcomes.values())) and notification is not None:
-                            await self._mark_reported(notification.keys)
                     else:
                         trace["reply_blocked"] = True
-                        log.info(
-                            "proactive ask blocked by the notification policy (turn %s)", turn_ref
-                        )
+                        log.info("proactive ask blocked (turn %s, stale replay)", turn_ref)
         except TimeoutError:
             # the ceiling bit: a handled outcome, not a crash — the trace
             # keeps the fact, the user gets plain words, and the tick
@@ -3396,9 +3364,10 @@ class AgentLoop:
         that loses who said what. Everything else keeps the payload preview
         the salience judge has always scored.
         """
+        line = ""
         if event.kind == MAIL_KIND:
             try:
-                return render_mail_event(
+                line = render_mail_event(
                     event.payload,
                     occurred_at=event.occurred_at,
                     salience=event.salience_score,
@@ -3406,11 +3375,24 @@ class AgentLoop:
                 )
             except Exception:  # a malformed payload falls back to the dump
                 log.warning("mail rendering failed for event %s — using the raw line", event.id)
-        text = json.dumps(event.payload, ensure_ascii=False, default=str)
-        return (
-            f"{event.occurred_at:%Y-%m-%d %H:%M} {event.source}/{event.kind}"
-            f" (salience {event.salience_score:.0f}): {text[:400]}"
-        )
+        if not line:
+            text = json.dumps(event.payload, ensure_ascii=False, default=str)
+            line = (
+                f"{event.occurred_at:%Y-%m-%d %H:%M} {event.source}/{event.kind}"
+                f" (salience {event.salience_score:.0f}): {text[:400]}"
+            )
+        labels = event.meta.get("watch_labels") if isinstance(event.meta, dict) else None
+        if isinstance(labels, list):
+            names = ", ".join(
+                f'"{str(label).replace(chr(10), " ").strip()[:80]}"'
+                for label in labels[:3]
+                if label
+            )
+            if names:
+                # context for the model, not a message: the agent decides in
+                # its own words whether this is worth saying
+                line += f" — the user asked to be told about this ({names})"
+        return line
 
     async def _refresh_owner_addresses(self) -> None:
         """Cache the owner's own addresses for this turn's mail rendering."""

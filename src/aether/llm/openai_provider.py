@@ -135,8 +135,10 @@ class OpenAIProvider:
         max_tokens: int = 16000,
         supports_vision: bool = True,
         # Current OpenAI models take max_completion_tokens; Ollama's
-        # compatible endpoint expects the older max_tokens spelling.
-        max_tokens_param: str = "max_completion_tokens",
+        # compatible endpoint expects the older max_tokens spelling. None
+        # sends no token cap at all — the provider's own ceiling applies
+        # (the Groq adapter's choice, see groq_provider).
+        max_tokens_param: str | None = "max_completion_tokens",
     ) -> None:
         self.client = client
         self.model = model
@@ -162,8 +164,9 @@ class OpenAIProvider:
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages_to_openai(system, messages),
-            self.max_tokens_param: self.max_tokens,
         }
+        if self.max_tokens_param:
+            kwargs[self.max_tokens_param] = self.max_tokens
         if tools:
             kwargs["tools"] = tools_to_openai(tools)
         try:

@@ -1,14 +1,14 @@
-"""Watches: deterministic matching, honest rendering, sealed at rest.
+"""Watches: deterministic matching and sealed storage.
 
 The matcher is pure code over one event, which is the whole point — no
-model decides whether a watch fires. These run without a database except
-the store tests, which prove the spec is ciphertext and that only the
-owner's origin can arm one.
+model decides whether a watch matches. A match is observation context, not
+a message. These run without a database except the store tests, which prove
+the spec is ciphertext and that only the owner's origin can arm one.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 
@@ -22,7 +22,6 @@ from aether.memory.watches import (
     WatchSpec,
     WatchStore,
     has_criteria,
-    render_alert,
     watch_matches,
 )
 
@@ -156,69 +155,8 @@ def test_an_empty_watch_is_not_armed_by_the_tool() -> None:
 
 
 # ---------------------------------------------------------------------------
-# rendering
+# spec shape
 # ---------------------------------------------------------------------------
-
-
-def test_an_alert_names_the_sender_raw_and_marks_the_owner_second_address() -> None:
-    event = _mail(
-        urgency=3,
-        summary="production is down — fix it now",
-        payload={"sender": "Vedant <vedant@other.example>"},
-        deadline_at=NOW + timedelta(hours=1),
-    )
-    watch = Watch(
-        id=3,
-        spec=WatchSpec(label="urgent mail"),
-        status=ACTIVE,
-        last_event_id=0,
-        last_run_at=None,
-        last_notified_at=None,
-        created_at=NOW,
-    )
-
-    text = render_alert(
-        event,
-        watch=watch,
-        owners={"vedant@other.example"},
-        timezone="Asia/Kolkata",
-        now=NOW,
-    )
-
-    assert "Vedant <vedant@other.example>" in text
-    assert "(your other address)" in text
-    assert "production is down" in text
-    assert "Due 2026-11-03 12:46 IST" in text
-    assert 'matched your alert "urgent mail"' in text
-    assert "reply, forward it, or remind you later" in text
-    # a card is plain words, never a JSON or an internal id
-    assert "{" not in text and "E1" not in text
-
-
-def test_an_alert_marks_an_overdue_deadline() -> None:
-    event = _mail(urgency=2, deadline_at=NOW - timedelta(hours=2))
-
-    text = render_alert(event, timezone="UTC", now=NOW)
-
-    assert "Overdue since" in text
-
-
-def test_a_reminder_card_uses_reminder_wording() -> None:
-    event = _mail(urgency=2, summary="the landlord replied")
-    watch = Watch(
-        id=4,
-        spec=WatchSpec(label="landlord", form="reminder"),
-        status=ACTIVE,
-        last_event_id=0,
-        last_run_at=None,
-        last_notified_at=None,
-        created_at=NOW,
-    )
-
-    text = render_alert(event, watch=watch, timezone="UTC", now=NOW)
-
-    assert 'matched your reminder "landlord"' in text
-    assert "matched your alert" not in text
 
 
 def test_an_old_spec_without_a_form_reads_as_an_alert() -> None:
@@ -239,16 +177,6 @@ def test_a_reminder_form_is_not_a_different_condition() -> None:
     same = WatchSpec(label="x", scope="mail", urgency_min=2, form="reminder")
 
     assert watch.equivalent(same) is True
-
-
-def test_a_default_urgent_alert_has_no_alert_label() -> None:
-    event = _mail(urgency=2, summary="the server is down")
-
-    text = render_alert(event, timezone="UTC", now=NOW)
-
-    assert "Urgent mail from" in text
-    assert "matched your alert" not in text
-    assert "the server is down" in text
 
 
 # ---------------------------------------------------------------------------

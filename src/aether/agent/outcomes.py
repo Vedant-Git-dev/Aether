@@ -1,18 +1,19 @@
-"""Typed turn outcomes and the notification policy.
+"""Typed turn outcomes.
 
 Every turn ends in one of four values:
 
 - ``Reply(text, internal_notes)`` — an answer to a user message. Only
   ``text`` is delivered; ``internal_notes`` is sealed in the trace.
-- ``Notify(content)`` — an unprompted note. Offered only when code says the
-  user may be notified now.
+- ``Notify(content)`` — an unprompted note. Always offered on an unprompted
+  turn; quiet hours hold a low-urgency note and batch it, they never block
+  the offer.
 - ``Ask(question, options)`` — a question to the user.
 - ``NoneOutcome()`` — nothing leaves the agent.
 
 The model sees one ``message__send`` tool and one ``message__ask`` tool. The
 turn type decides whether a send becomes a Reply or a Notify; the model never
 chooses the delivery mode, so there is no second delivery tool to bypass the
-policy.
+one door.
 
 The decision is structural: the model can only reach the user through a
 terminal tool whose input schema is one of these shapes. Free text on an
@@ -22,15 +23,10 @@ that explains why no message was sent.
 
 from __future__ import annotations
 
-import hashlib
-import json
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
 from typing import Any
 
-from ..config import AppConfig
 from ..llm.types import ToolCall, WireSpec, with_plain_param
-from ..memory.timewindow import in_quiet_window
 from ..message_catalog import render
 
 SEND_TOOL = "message__send"
@@ -85,15 +81,6 @@ class NoneOutcome:
 
 
 Outcome = Reply | Notify | Ask | NoneOutcome
-
-
-@dataclass(frozen=True)
-class NotificationDecision:
-    """Whether a proactive notify may be offered, and why."""
-
-    allowed: bool
-    reason: str = ""
-    keys: tuple[str, ...] = field(default_factory=tuple)
 
 
 def _schema(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
@@ -155,17 +142,16 @@ def ask_spec() -> WireSpec:
     )
 
 
-def outcome_specs(*, solicited: bool, notify_allowed: bool) -> list[WireSpec]:
+def outcome_specs(*, solicited: bool) -> list[WireSpec]:
     """The terminal tools this turn offers.
 
-    The model always sees the same two tools: one send and one ask. Whether a
-    send is delivered as a reply or as a proactive note is decided by the turn
-    type in code. An unprompted turn gets neither when the notification policy
-    says the person may not be interrupted now.
+    The model always sees the same two tools: one send and one ask, on a
+    solicited and an unprompted turn alike. Whether a send is delivered as a
+    reply or as a proactive note is decided by the turn type in code. Quiet
+    hours are the only brake on a proactive note, and they hold and batch it
+    rather than blocking the offer.
     """
-    if solicited or notify_allowed:
-        return [send_spec(), ask_spec()]
-    return []
+    return [send_spec(), ask_spec()]
 
 
 def is_terminal_tool(name: str) -> bool:
@@ -226,74 +212,7 @@ def render_ask(outcome: Ask, *, locale: str = "en") -> str:
     )
 
 
-def _action_digest(tool: str, params: Any) -> str:
-    payload = json.dumps(
-        {"tool": tool, "params": params},
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
-
-
-def notification_keys(observations: list[Any]) -> tuple[str, ...]:
-    """The event and action identities one proactive turn is about.
-
-    A later turn that sees the same action (the same approval, or the same
-    tool and parameters) carries the same action key, so "already reported"
-    survives a retry or a re-ingested event.
-    """
-    keys: list[str] = []
-    for event in observations:
-        event_id = getattr(event, "id", None)
-        source = getattr(event, "source", "")
-        payload = getattr(event, "payload", None)
-        action_keys: list[str] = []
-        if source == "agent" and isinstance(payload, dict):
-            approval_id = payload.get("approval_id")
-            if isinstance(approval_id, int) and not isinstance(approval_id, bool):
-                action_keys.append(f"action:{approval_id}")
-            tool = payload.get("tool")
-            if isinstance(tool, str) and tool:
-                action_keys.append(f"action:{_action_digest(tool, payload.get('params'))}")
-        if action_keys:
-            # the action is the identity: a retry that mints a new event row
-            # for the same failure is still the same thing to report
-            keys.extend(action_keys)
-        elif isinstance(event_id, int) and event_id > 0:
-            keys.append(f"event:{event_id}")
-    return tuple(dict.fromkeys(keys))
-
-
-def evaluate_notification_policy(
-    config: AppConfig,
-    *,
-    quiet: tuple[int, int] | None,
-    now: datetime,
-    urgency: float,
-    keys: tuple[str, ...],
-    reported: set[str],
-) -> NotificationDecision:
-    """Code decides whether a proactive notify may be offered.
-
-    The user's stored preferences are the `notifications` section; quiet
-    hours come from `agent.quiet_hours` and its urgency break; "already
-    reported" is the sealed report state filtered by the configured window.
-    No model text participates in this decision.
-    """
-    rules = config.notifications
-    if not rules.enabled:
-        return NotificationDecision(False, "notifications are off", keys)
-    if urgency < rules.min_urgency:
-        return NotificationDecision(False, "below the notification urgency", keys)
-    if in_quiet_window(quiet, now) and urgency < config.agent.quiet_urgent_salience:
-        return NotificationDecision(False, "quiet hours", keys)
-    if keys and set(keys).issubset(reported):
-        return NotificationDecision(False, "already reported", keys)
-    return NotificationDecision(True, "", keys)
-
-
-def record_notification(
+def record_outcome(
     calls: list[dict[str, Any]],
     call: ToolCall,
     *,
@@ -309,10 +228,10 @@ def record_notification(
             "params": dict(call.arguments),
             "decision": "allow" if accepted else "error",
             "matched_rule": "builtin:outcome",
-            "reason": "" if accepted else "not offered by policy",
+            "reason": "" if accepted else "not offered this turn",
             "audit_seq": None,
             "approval_id": None,
-            "result": "outcome accepted" if accepted else "not offered by policy",
+            "result": "outcome accepted" if accepted else "not offered this turn",
             "is_error": not accepted,
             "terminal": accepted,
         }

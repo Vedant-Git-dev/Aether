@@ -1,18 +1,19 @@
-"""The proactive path: watches firing on arrivals, and commitment reminders.
+"""The proactive path: watch matching on arrivals, and commitment reminders.
 
 Two deterministic jobs share one object so the loop has one seam to call:
 
 - ``evaluate_event`` runs once per ingested event (from the event store's
   tracked enrichment task). Each active watch keeps an id watermark, so an
-  event is considered once per watch even across a restart. A matching
-  event sends one plain card; the default urgent-mail policy covers the
-  same duty when no watch is armed. Every alert is rate-limited, honours
-  the watch's quiet window, and never quotes raw JSON or a tool name.
+  event is considered once per watch even across a restart. A match writes
+  the watch label onto the event as context; it sends nothing. The agent
+  reads that label with its ordinary observations and writes any message
+  itself, under the same notification policy as every other unprompted turn.
 
-- ``tick`` runs on the loop's cadence: it flushes alerts that were held by
-  a quiet window and fires commitment reminders whose lead has arrived.
-  Leads scale with the source event's urgency, and each lead fires once;
-  after the due time there is one overdue escalation and no more.
+- ``tick`` runs on the loop's cadence and reports commitments whose reminder
+  lead has arrived. Leads scale with the source event's urgency, and each
+  lead fires once; after the due time there is one overdue escalation and
+  no more. A due reminder is returned as facts, never as a sentence; the
+  loop feeds it to the agent, which writes the words itself.
 
 The model is nowhere in either decision. A watch is code matching a sealed
 spec, and a reminder is a comparison against an absolute due time.
@@ -22,9 +23,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import deque
-from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import replace
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -32,9 +32,8 @@ import asyncpg
 
 from ..config import AppConfig
 from ..memory.commitments import OPEN, Commitment, Commitments
-from ..memory.mail import MAIL_KIND
-from ..memory.timewindow import in_quiet_window, local_stamp, parse_quiet_hours
-from ..memory.watches import Watch, WatchSpec, WatchStore, render_alert, watch_matches
+from ..memory.timewindow import local_stamp
+from ..memory.watches import Watch, WatchSpec, WatchStore, watch_matches
 
 log = logging.getLogger("aether.proactive")
 
@@ -48,17 +47,6 @@ _LEADS_BY_URGENCY: dict[int, tuple[int, ...]] = {
 }
 
 OVERDUE = -1
-
-# the hourly cap counts every alert the path sends, watches and the default
-# urgent policy together
-_RATE_WINDOW = timedelta(hours=1)
-
-# a small bounded memory of the events already announced, so a second call
-# for the same event in one boot never double-sends
-_ANNOUNCED_CAP = 5_000
-# alerts the hourly cap could not deliver wait here, oldest first, and ship
-# when the window clears — dropped only if this overflows
-_DEFERRED_CAP = 50
 
 
 def leads_for(urgency: int) -> tuple[int, ...]:
@@ -100,32 +88,37 @@ def reminder_due(
     return current if current not in already else None
 
 
-def render_reminder(commitment: Commitment, lead: int, *, timezone: str = "Asia/Kolkata") -> str:
-    """One plain reminder line, with the due time absolute in the user's
-    timezone and no internal vocabulary."""
+@dataclass(frozen=True)
+class DueReminder:
+    """One commitment whose reminder lead arrived, as facts for the agent.
+
+    ``payload`` carries the commitment, its due time in the user's zone,
+    and whether the lead is the overdue escalation. Nothing here is a
+    sentence: the loop hands this to the agent, which writes the words.
+    """
+
+    payload: dict[str, Any]
+    urgency: int
+    salience: float
+
+
+def reminder_payload(
+    commitment: Commitment, lead: int, *, timezone: str = "Asia/Kolkata"
+) -> dict[str, Any]:
+    """The facts of one due reminder — no wording, no instructions."""
     due = commitment.due_at
-    if due is None:  # defensive: reminder_due never returns one for this
-        return f"Reminder: {commitment.text}"
-    stamp = local_stamp(due, timezone)
-    if lead == OVERDUE:
-        head = f"Overdue: {commitment.text} — it was due {stamp}."
-    else:
-        when = _lead_words(lead)
-        head = f"Reminder: {commitment.text} — due {stamp}" + (f" (in {when})." if when else ".")
-    return f"{head}\nYou can tell me it's done or move the deadline."
-
-
-def _lead_words(lead: int) -> str:
-    if lead >= 1440:
-        return f"{lead // 1440} day" + ("s" if lead // 1440 != 1 else "")
-    if lead >= 120:
-        return f"{lead // 60} hours"
-    return f"{lead} minutes"
+    return {
+        "commitment_id": commitment.id,
+        "text": commitment.text,
+        "due_local": local_stamp(due, timezone) if due is not None else "",
+        "overdue": lead == OVERDUE,
+        "lead_minutes": lead,
+    }
 
 
 def _alert_salience(urgency: int) -> float:
     """Urgency on the 0-10 scale the interruption budget already reads, so
-    a level-2 alert clears the default quiet-hours threshold of 8."""
+    a level-2 reminder clears the default quiet-hours threshold of 8."""
     return {0: 2.0, 1: 4.0, 2: 8.0, 3: 10.0}.get(max(0, min(3, int(urgency))), 2.0)
 
 
@@ -154,12 +147,8 @@ class CommitmentReminders:
         )
 
 
-Notify = Callable[..., Awaitable[Any]]
-Owners = Callable[[], Awaitable[set[str]]]
-
-
 class ProactivePath:
-    """Watches, the default urgent-mail policy and commitment reminders."""
+    """Watch matching and commitment reminders."""
 
     def __init__(
         self,
@@ -168,8 +157,6 @@ class ProactivePath:
         watches: WatchStore | None = None,
         commitments: Commitments | None = None,
         reminders: CommitmentReminders | None = None,
-        notify: Notify | None = None,
-        owners: Owners | None = None,
         channels: Callable[[], set[str]] | None = None,
         timezone: str = "Asia/Kolkata",
         clock: Callable[[], datetime] | None = None,
@@ -178,8 +165,6 @@ class ProactivePath:
         self._watches = watches
         self._commitments = commitments
         self._reminders = reminders
-        self._notify = notify
-        self._owners = owners
         # the surfaces a watch may name right now — read live, because a
         # connector can be switched on or off without a restart
         self._channels = channels
@@ -188,11 +173,6 @@ class ProactivePath:
         self._active: list[Watch] = []
         self._loaded = False
         self._load_lock = asyncio.Lock()
-        self._recent: deque[datetime] = deque()
-        self._held: list[tuple[str, str, str, float]] = []
-        self._deferred: list[tuple[str, str, int, str]] = []
-        self._announced: set[int] = set()
-        self._announced_order: deque[int] = deque()
         self._reminded: dict[int, set[int]] = {}
 
     # -- lifecycle -----------------------------------------------------------
@@ -218,9 +198,9 @@ class ProactivePath:
         """Arm a watch through the owner gate and make it live immediately.
 
         A channel the user named but that is not connected right now is
-        dropped to "every surface" rather than stored: a watch pinned to a
-        dead surface would silently never alert. The confirmation reads the
-        normalized spec back, so the user sees where it will actually go.
+        dropped to "every surface" rather than stored, so the saved spec
+        never points at a connector that is switched off. The confirmation
+        reads the normalized spec back.
         """
         if self._watches is None:
             return None
@@ -266,69 +246,28 @@ class ProactivePath:
             return []
         return await self._watches.list(limit)
 
-    async def evaluate_event(self, event: Any) -> str | None:
-        """Consider one ingested event. Returns the card text when one was
-        sent (or held for quiet hours), otherwise None."""
+    async def evaluate_event(self, event: Any) -> list[str]:
+        """Match one ingested event against the active watches.
+
+        Returns the labels of the watches it matched, so the event store can
+        record them on the event as context. Nothing is sent from here: the
+        agent sees the match in its ordinary observations and writes any
+        message itself, under the same notification policy as every other
+        unprompted turn. The watermark still moves for every event, so an
+        event is considered once per watch even across a restart.
+        """
         if not self._config.proactive.watches_enabled:
-            return None
+            return []
         if getattr(event, "noise", False):
-            return None
+            return []
         await self._ensure_loaded()
-        if event.id in self._announced:
-            return None
-        now = self._clock()
         matched = [
             watch
             for watch in self._active
             if event.id > watch.last_event_id and watch_matches(watch.spec, event)
         ]
-        default = (
-            not matched
-            and self._config.proactive.urgent_mail_alerts
-            and event.kind == MAIL_KIND
-            and int(getattr(event, "urgency", 0)) >= self._config.proactive.urgent_urgency_min
-        )
-        if not matched and not default:
-            await self._advance(event.id)
-            return None
-        watch = matched[0] if matched else None
-        owners = await self._owner_set()
-        channel = watch.channel if watch is not None else ""
-        urgency = int(getattr(event, "urgency", 0))
-        quiet_hours = watch.spec.quiet_hours if watch is not None else ""
-        text = render_alert(
-            event,
-            watch=watch,
-            owners=owners,
-            timezone=self._timezone,
-            now=now,
-        )
-        if not self._rate_room(now):
-            # the cap is spent: hold the card and ship it when the hour
-            # clears, rather than dropping an alert the user asked for
-            self._defer(text, channel, urgency, quiet_hours)
-            log.info("alert rate cap reached — event %s was deferred", event.id)
-            await self._advance(event.id)
-            return None
-        sent = await self._send(
-            text,
-            channel=channel,
-            urgency=urgency,
-            quiet_hours=quiet_hours,
-            now=now,
-        )
-        if sent:
-            self._remember(event.id)
-            self._recent.append(now)
         await self._advance(event.id)
-        if matched and self._watches is not None and sent:
-            for item in matched:
-                await self._watches.mark_notified(item.id, now)
-            for item in matched:
-                item.last_notified_at = now
-        for item in matched:
-            item.last_event_id = max(item.last_event_id, event.id)
-        return text if sent else None
+        return [watch.spec.label for watch in matched if watch.spec.label]
 
     async def _advance(self, event_id: int) -> None:
         """Move every watch's watermark past this event, once, in one
@@ -345,99 +284,39 @@ class ProactivePath:
 
     # -- reminders -----------------------------------------------------------
 
-    async def tick(self, now: datetime | None = None) -> int:
-        """Flush held alerts and fire due reminders. Returns how many
-        reminders went out (held alerts are counted by their own path)."""
+    async def tick(self, now: datetime | None = None) -> list[DueReminder]:
+        """Report commitments whose reminder lead has arrived. Each lead is
+        recorded here so a restart never repeats it; the entries are facts
+        for the agent, never ready-made words."""
         now = now or self._clock()
         await self._ensure_loaded()
-        await self._flush_held(now)
-        await self._flush_deferred(now)
         if not self._config.proactive.reminders_enabled or self._commitments is None:
-            return 0
-        fired = 0
+            return []
         try:
             open_items = await self._commitments.list_open(limit=200)
         except Exception:
             log.warning("could not read open commitments for reminders", exc_info=True)
-            return 0
+            return []
+        due: list[DueReminder] = []
         for commitment in open_items:
             sent = self._reminded.get(commitment.id, set())
             lead = reminder_due(commitment, now, sent)
             if lead is None:
                 continue
-            text = render_reminder(commitment, lead, timezone=self._timezone)
-            await self._send(
-                text,
-                channel="",
-                urgency=commitment.urgency,
-                quiet_hours="",
-                now=now,
-            )
             self._reminded.setdefault(commitment.id, set()).add(lead)
             if self._reminders is not None:
                 try:
                     await self._reminders.mark(commitment.id, lead)
                 except Exception:
                     log.warning("could not record reminder for commitment %s", commitment.id)
-            fired += 1
-        return fired
-
-    # -- delivery ------------------------------------------------------------
-
-    async def _send(
-        self,
-        text: str,
-        *,
-        channel: str,
-        urgency: int,
-        quiet_hours: str,
-        now: datetime,
-    ) -> bool:
-        """Send one alert, or hold it for the watch's own quiet window.
-        A level-3 alert is urgent enough to break that window; everything
-        lower waits for the window to end and then ships whole. A channel
-        that is no longer connected falls back to every surface instead of
-        landing nowhere."""
-        channel = self._normalized_channel(channel)
-        if (
-            quiet_hours
-            and urgency < 3
-            and in_quiet_window(parse_quiet_hours(quiet_hours), now.astimezone())
-        ):
-            self._held.append((quiet_hours, text, channel, _alert_salience(urgency)))
-            return True
-        if self._notify is None:
-            return True
-        try:
-            await self._notify(text, urgent=_alert_salience(urgency), channel=channel)
-        except Exception:
-            log.warning("could not deliver a proactive alert", exc_info=True)
-            return False
-        return True
-
-    def _defer(self, text: str, channel: str, urgency: int, quiet_hours: str) -> None:
-        self._deferred.append((text, channel, urgency, quiet_hours))
-        while len(self._deferred) > _DEFERRED_CAP:
-            self._deferred.pop(0)
-
-    async def _flush_deferred(self, now: datetime) -> None:
-        """Ship alerts the rate cap held back, oldest first, while there is
-        room. A delivery that fails stays queued for the next tick."""
-        if not self._deferred:
-            return
-        waiting: list[tuple[str, str, int, str]] = []
-        for text, channel, urgency, quiet_hours in self._deferred:
-            if not self._rate_room(now):
-                waiting.append((text, channel, urgency, quiet_hours))
-                continue
-            delivered = await self._send(
-                text, channel=channel, urgency=urgency, quiet_hours=quiet_hours, now=now
+            due.append(
+                DueReminder(
+                    payload=reminder_payload(commitment, lead, timezone=self._timezone),
+                    urgency=commitment.urgency,
+                    salience=_alert_salience(commitment.urgency),
+                )
             )
-            if delivered:
-                self._recent.append(now)
-            else:
-                waiting.append((text, channel, urgency, quiet_hours))
-        self._deferred = waiting
+        return due
 
     def _available_channels(self) -> set[str] | None:
         """The surfaces a watch may name right now, or None when the caller
@@ -451,53 +330,13 @@ class ProactivePath:
             return None
 
     def _normalized_channel(self, channel: str) -> str:
-        """A named surface that is not connected becomes "every surface":
-        a watch pinned to a dead channel would otherwise never alert."""
+        """A named surface that is not connected becomes "every surface",
+        so the stored watch never points at a connector that is switched off."""
         clean = (channel or "").strip()
         if not clean:
             return ""
         available = self._available_channels()
         if available is None or clean in available:
             return clean
-        log.info("watch channel %r is not connected — alerting all surfaces", clean)
+        log.info("watch channel %r is not connected — storing all surfaces", clean)
         return ""
-
-    async def _flush_held(self, now: datetime | None = None) -> None:
-        if not self._held:
-            return
-        now = now or self._clock()
-        local = now.astimezone()
-        waiting: list[tuple[str, str, str, float]] = []
-        for quiet_hours, text, channel, salience in self._held:
-            if in_quiet_window(parse_quiet_hours(quiet_hours), local):
-                waiting.append((quiet_hours, text, channel, salience))
-                continue
-            if self._notify is None:
-                continue
-            try:
-                await self._notify(text, urgent=salience, channel=self._normalized_channel(channel))
-            except Exception:
-                log.warning("could not deliver a held alert", exc_info=True)
-        self._held = waiting
-
-    def _rate_room(self, now: datetime) -> bool:
-        while self._recent and now - self._recent[0] > _RATE_WINDOW:
-            self._recent.popleft()
-        return len(self._recent) < self._config.proactive.max_alerts_per_hour
-
-    def _remember(self, event_id: int) -> None:
-        if event_id in self._announced:
-            return
-        self._announced.add(event_id)
-        self._announced_order.append(event_id)
-        while len(self._announced_order) > _ANNOUNCED_CAP:
-            self._announced.discard(self._announced_order.popleft())
-
-    async def _owner_set(self) -> set[str]:
-        if self._owners is None:
-            return set()
-        try:
-            return await self._owners()
-        except Exception:
-            log.warning("could not read the owner addresses for an alert", exc_info=True)
-            return set()

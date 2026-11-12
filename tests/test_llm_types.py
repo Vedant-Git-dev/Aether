@@ -20,7 +20,9 @@ from aether.llm.gemini_provider import (
     tools_to_gemini,
     turn_from_gemini,
 )
+from aether.llm.groq_provider import GroqProvider
 from aether.llm.openai_provider import (
+    OpenAIProvider,
     messages_to_openai,
     tools_to_openai,
     turn_from_openai,
@@ -445,3 +447,48 @@ def test_gemini_turn_max_tokens_and_no_candidates() -> None:
 
     with pytest.raises(ProviderError):
         turn_from_gemini(SimpleNamespace(candidates=[]))
+
+
+# ---------------------------------------------------------------------------
+# The Groq request body: no token cap on the wire
+# ---------------------------------------------------------------------------
+
+
+class _StubOpenAIClient:
+    """The one shape the adapter reaches for: chat.completions.create."""
+
+    def __init__(self) -> None:
+        self.kwargs: dict | None = None
+
+    @property
+    def chat(self) -> "_StubOpenAIClient":
+        return self
+
+    @property
+    def completions(self) -> "_StubOpenAIClient":
+        return self
+
+    async def create(self, **kwargs: object) -> SimpleNamespace:
+        self.kwargs = kwargs
+        message = SimpleNamespace(content="ok", tool_calls=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
+
+
+async def test_groq_sends_no_token_cap() -> None:
+    # Groq counts the requested maximum against the tokens-per-minute
+    # budget, so the adapter caps nothing and lets the model's own
+    # ceiling apply
+    client = _StubOpenAIClient()
+    provider = GroqProvider(client, "llama-3.3-70b-versatile")
+    await provider.complete("sys", [Message.user("hi")], [])
+    assert client.kwargs is not None
+    assert "max_tokens" not in client.kwargs
+    assert "max_completion_tokens" not in client.kwargs
+
+
+async def test_openai_still_sends_its_token_cap() -> None:
+    client = _StubOpenAIClient()
+    provider = OpenAIProvider(client, "gpt-5.6", 16000)
+    await provider.complete("sys", [Message.user("hi")], [])
+    assert client.kwargs is not None
+    assert client.kwargs["max_completion_tokens"] == 16000

@@ -1,8 +1,10 @@
-"""The proactive path: one alert per matching event, reminders on schedule.
+"""The proactive path: watch matches become observation context, reminders
+on schedule.
 
 The path is exercised over small in-memory doubles so the decisions are
-visible: which event alerted, on which channel, how many times. The store
-and cipher are covered by test_watches.py and the integration suite.
+visible: which event matched which watch, when a reminder fired, how many
+times. The store and cipher are covered by test_watches.py and the
+integration suite.
 """
 
 from __future__ import annotations
@@ -24,7 +26,6 @@ class FakeWatches:
 
     def __init__(self) -> None:
         self.rows: list[Watch] = []
-        self.notified: list[tuple[int, datetime]] = []
         self.runs: list[tuple[list[int], int]] = []
         self._next = 1
 
@@ -72,9 +73,6 @@ class FakeWatches:
             if watch.id in watch_ids:
                 watch.last_event_id = max(watch.last_event_id, last_event_id)
 
-    async def mark_notified(self, watch_id: int, when: datetime | None = None) -> None:
-        self.notified.append((watch_id, when or NOW))
-
 
 class FakeCommitments:
     def __init__(self, items: list[Commitment]) -> None:
@@ -84,15 +82,6 @@ class FakeCommitments:
     async def list_open(self, limit: int = 50) -> list[Commitment]:
         self.reads += 1
         return list(self.items)
-
-
-class Recorder:
-    def __init__(self) -> None:
-        self.sent: list[dict] = []
-
-    async def __call__(self, text: str, *, urgent: float = 0.0, channel: str = "") -> dict:
-        self.sent.append({"text": text, "urgent": urgent, "channel": channel})
-        return {"web": "m1"}
 
 
 def _mail(
@@ -120,7 +109,7 @@ def _mail(
 
 
 def _config(**overrides) -> AppConfig:
-    defaults = {"watches_enabled": True, "urgent_mail_alerts": True, "max_alerts_per_hour": 6}
+    defaults = {"watches_enabled": True}
     defaults.update(overrides)
     return AppConfig(proactive=ProactiveConfig(**defaults))
 
@@ -145,7 +134,6 @@ async def _path(
     *,
     watches: FakeWatches | None = None,
     commitments: FakeCommitments | None = None,
-    notify: Recorder | None = None,
     config: AppConfig | None = None,
     clock=None,
     channels=None,
@@ -154,7 +142,6 @@ async def _path(
         config=config or _config(),
         watches=watches,
         commitments=commitments,
-        notify=notify,
         channels=channels,
         timezone="UTC",
         clock=clock or (lambda: NOW),
@@ -164,132 +151,65 @@ async def _path(
 
 
 # ---------------------------------------------------------------------------
-# arrival alerts
+# watch matches
 # ---------------------------------------------------------------------------
 
 
-async def test_an_urgent_mail_alerts_exactly_once() -> None:
-    recorder = Recorder()
-    path = await _path(notify=recorder)
+async def test_an_urgent_mail_is_an_observation_not_a_card() -> None:
+    path = await _path()
 
-    first = await path.evaluate_event(_mail())
-    second = await path.evaluate_event(_mail())
-
-    assert first is not None and "rahul@example.com" in first
-    assert second is None
-    assert len(recorder.sent) == 1
-    assert recorder.sent[0]["urgent"] == 10.0
+    assert await path.evaluate_event(_mail()) == []
 
 
-async def test_a_watch_match_names_the_watch_and_its_channel() -> None:
+async def test_a_watch_match_returns_its_label_without_sending() -> None:
     watches = FakeWatches()
     await watches.create(
         spec=WatchSpec(label="urgent mail", scope="mail", urgency_min=2, channel="telegram"),
         origin="owner",
     )
-    recorder = Recorder()
-    path = await _path(watches=watches, notify=recorder)
+    path = await _path(watches=watches)
 
-    text = await path.evaluate_event(_mail(urgency=2, sender="Vedant <vedant@other.example>"))
+    labels = await path.evaluate_event(_mail(urgency=2, sender="Vedant <vedant@other.example>"))
 
-    assert text is not None
-    assert 'matched your alert "urgent mail"' in text
-    assert "vedant@other.example" in text
-    assert recorder.sent[0]["channel"] == "telegram"
+    assert labels == ["urgent mail"]
+    # the watermark moved, so the same event is not matched a second time
+    assert watches.rows[0].last_event_id == 1
+    assert await path.evaluate_event(_mail(urgency=2)) == []
 
 
-async def test_a_second_matching_mail_alerts_again() -> None:
+async def test_a_second_matching_mail_returns_its_label_again() -> None:
     watches = FakeWatches()
     await watches.create(spec=WatchSpec(label="any mail", scope="mail"), origin="owner")
-    recorder = Recorder()
-    path = await _path(watches=watches, notify=recorder)
+    path = await _path(watches=watches)
 
-    await path.evaluate_event(_mail(1))
-    await path.evaluate_event(_mail(2))
-
-    assert len(recorder.sent) == 2
-    assert watches.notified[0][0] == 1
+    assert await path.evaluate_event(_mail(1)) == ["any mail"]
+    assert await path.evaluate_event(_mail(2)) == ["any mail"]
 
 
-async def test_a_non_urgent_mail_is_quiet() -> None:
-    recorder = Recorder()
-    path = await _path(notify=recorder)
+async def test_a_non_urgent_mail_matches_nothing_and_stays_quiet() -> None:
+    path = await _path()
 
-    assert await path.evaluate_event(_mail(urgency=1)) is None
-    assert recorder.sent == []
+    assert await path.evaluate_event(_mail(urgency=1)) == []
 
 
-async def test_a_noise_event_never_alerts_even_with_a_watch() -> None:
+async def test_a_noise_event_never_matches_even_with_a_watch() -> None:
     watches = FakeWatches()
     await watches.create(spec=WatchSpec(label="x", scope="mail"), origin="owner")
-    recorder = Recorder()
-    path = await _path(watches=watches, notify=recorder)
+    path = await _path(watches=watches)
 
-    assert await path.evaluate_event(_mail(urgency=3, noise=True)) is None
-    assert recorder.sent == []
+    assert await path.evaluate_event(_mail(urgency=3, noise=True)) == []
 
 
-async def test_the_rate_cap_defers_further_alerts_until_there_is_room() -> None:
-    recorder = Recorder()
-    clock = [NOW]
-    path = await _path(
-        notify=recorder, config=_config(max_alerts_per_hour=1), clock=lambda: clock[0]
-    )
-
-    await path.evaluate_event(_mail(1))
-    await path.evaluate_event(_mail(2))
-
-    assert len(recorder.sent) == 1  # the second is held, not lost
-
-    clock[0] = NOW + timedelta(hours=2)
-    await path.tick()
-
-    assert len(recorder.sent) == 2
-
-
-async def test_a_channel_that_is_not_connected_falls_back_to_all_surfaces() -> None:
+async def test_a_watch_on_a_disconnected_surface_stores_every_surface() -> None:
     watches = FakeWatches()
-    await watches.create(
-        spec=WatchSpec(label="mail", scope="mail", channel="telegram"), origin="owner"
+    path = await _path(watches=watches, channels=lambda: {"web"})
+
+    watch = await path.create_watch(
+        WatchSpec(label="mail", scope="mail", channel="telegram"), origin="owner"
     )
-    recorder = Recorder()
-    path = await _path(watches=watches, notify=recorder, channels=lambda: {"web"})
 
-    await path.evaluate_event(_mail(urgency=3))
-
-    assert len(recorder.sent) == 1
-    assert recorder.sent[0]["channel"] == ""
-
-
-async def test_a_connected_channel_is_kept() -> None:
-    watches = FakeWatches()
-    await watches.create(
-        spec=WatchSpec(label="mail", scope="mail", channel="telegram"), origin="owner"
-    )
-    recorder = Recorder()
-    path = await _path(watches=watches, notify=recorder, channels=lambda: {"web", "telegram"})
-
-    await path.evaluate_event(_mail(urgency=3))
-
-    assert recorder.sent[0]["channel"] == "telegram"
-
-
-async def test_a_watch_quiet_window_holds_then_flushes() -> None:
-    watches = FakeWatches()
-    await watches.create(
-        spec=WatchSpec(label="quiet", scope="mail", quiet_hours="22:00-07:00"), origin="owner"
-    )
-    recorder = Recorder()
-    clock = [datetime(2026, 11, 3, 23, 0, tzinfo=UTC).astimezone()]
-    path = await _path(watches=watches, notify=recorder, clock=lambda: clock[0])
-
-    await path.evaluate_event(_mail(urgency=2))
-    assert recorder.sent == []  # held for the window
-
-    clock[0] = datetime(2026, 11, 4, 8, 0, tzinfo=UTC).astimezone()
-    await path.tick()
-
-    assert len(recorder.sent) == 1
+    assert watch is not None
+    assert watch.channel == ""
 
 
 # ---------------------------------------------------------------------------
@@ -300,27 +220,25 @@ async def test_a_watch_quiet_window_holds_then_flushes() -> None:
 async def test_a_reminder_fires_once_then_the_overdue_escalation_fires_once() -> None:
     item = _commitment(NOW + timedelta(minutes=10))
     commitments = FakeCommitments([item])
-    recorder = Recorder()
     clock = [NOW]
-    path = await _path(commitments=commitments, notify=recorder, clock=lambda: clock[0])
+    path = await _path(commitments=commitments, clock=lambda: clock[0])
 
-    assert await path.tick() == 1
-    assert await path.tick() == 0  # the same lead never repeats
-    assert len(recorder.sent) == 1
+    first = await path.tick()
+    assert len(first) == 1
+    assert first[0].payload["text"] == "send the invoice"
+    assert first[0].payload["overdue"] is False
+    assert await path.tick() == []  # the same lead never repeats
 
     commitments.items[0] = replace(item, due_at=NOW - timedelta(minutes=1))
     clock[0] = NOW + timedelta(hours=1)
-    assert await path.tick() == 1
-    assert "Overdue" in recorder.sent[1]["text"]
-    assert await path.tick() == 0
+    overdue = await path.tick()
+    assert len(overdue) == 1
+    assert overdue[0].payload["overdue"] is True
+    assert await path.tick() == []
 
 
 async def test_reminders_can_be_switched_off() -> None:
     commitments = FakeCommitments([_commitment(NOW + timedelta(minutes=5))])
-    recorder = Recorder()
-    path = await _path(
-        commitments=commitments, notify=recorder, config=_config(reminders_enabled=False)
-    )
+    path = await _path(commitments=commitments, config=_config(reminders_enabled=False))
 
-    assert await path.tick() == 0
-    assert recorder.sent == []
+    assert await path.tick() == []

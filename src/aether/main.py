@@ -67,7 +67,6 @@ from .memory.focus import Focus
 from .memory.inbound import DbInboundStates
 from .memory.indexes import MemoryIndex
 from .memory.lexical import LexicalIndex
-from .memory.notifications import DbNotificationStates
 from .memory.pipeline import QueryPipeline, retrieval_config_from
 from .memory.salience import LLMJudge, Salience
 from .memory.seal_migrate import seal_for_cutover
@@ -581,13 +580,11 @@ def create_app(
         conclusions = Conclusions(pool, cipher, ttl_seconds=config.memory.conclusion_ttl_seconds)
         deliveries = Deliveries(pool, cipher, audit)
         inbound_states = DbInboundStates(pool, cipher)
-        notification_states = DbNotificationStates(pool, cipher)
         app.state.views = views
         app.state.focus = focus
         app.state.conclusions = conclusions
         app.state.deliveries = deliveries
         app.state.inbound_states = inbound_states
-        app.state.notification_states = notification_states
         context = ContextBuilder(events, entities, approvals, config.agent, facts=facts)
         scheduler = Scheduler(pool, cipher, audit)
         app.state.entities = entities
@@ -717,14 +714,13 @@ def create_app(
             conclusions=conclusions,
             deliveries=deliveries,
             inbound_states=inbound_states,
-            notification_states=notification_states,
             query_pipeline=query_pipeline,
             summary_job=summary_job,
         )
         app.state.agent = agent
 
-        # --- the proactive path: watches, urgent mail, reminders -----------
-        # Built after the loop because an alert is delivered through the
+        # --- the proactive path: watch matches, reminders -------------------
+        # Built after the loop because a reminder is delivered through the
         # loop's own interruption budget (quiet hours, holding, batching).
         # The store is attached to the event store, so every ingest path —
         # chat, mail poll, attachment — is evaluated once, on the tracked
@@ -734,8 +730,6 @@ def create_app(
             watches=watches,
             commitments=commitments,
             reminders=commitment_reminders,
-            notify=agent.note_to_user,
-            owners=entities.owner_addresses,
             channels=lambda: _watch_channels(surfaces),
             timezone=config.memory.default_timezone,
         )

@@ -172,18 +172,6 @@ class SalienceConfig(BaseModel):
     rate_cap_per_hour: int = 20
 
 
-class NotificationConfig(BaseModel):
-    """The user's notification preferences, evaluated in code before any
-    proactive turn. These are stored settings, editable in Settings, and a
-    change applies to the next turn without a restart."""
-
-    enabled: bool = True
-    # 0-10, the same scale the salience judge and quiet-hours break use
-    min_urgency: float = 0.0
-    # how long a report counts as "already reported" for its event/action
-    repeat_window_minutes: int = 360
-
-
 class EvaluationConfig(BaseModel):
     """Internal structural gates. Not part of the product surface."""
 
@@ -408,15 +396,9 @@ class ProactiveConfig(BaseModel):
     # which skills the worker may run; names not in the registry are ignored
     skills: list[str] = Field(default_factory=lambda: ["followups", "research", "media"])
     # -- the proactive path (plan.md section 6) --
-    # watches the user asked for, plus the default urgent-mail card. Both
-    # run independently of the worker switch above.
+    # watches the user asked for. A match tags the event for the agent; it
+    # never sends a message itself. Runs independently of the worker above.
     watches_enabled: bool = True
-    urgent_mail_alerts: bool = True
-    # urgency 2 is "act soon"; the floor already raises a message whose own
-    # words say urgent, so this fires even when enrichment is off
-    urgent_urgency_min: int = Field(default=2, ge=0, le=3)
-    # every alert the path sends, watches and the default policy together
-    max_alerts_per_hour: int = 6
     # due reminders (24h/2h/15m scaled by urgency, then one overdue)
     reminders_enabled: bool = True
     # polling spreads its checks by this share of the interval, so several
@@ -481,7 +463,6 @@ class AppConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     salience: SalienceConfig = Field(default_factory=SalienceConfig)
-    notifications: NotificationConfig = Field(default_factory=NotificationConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
     messaging: MessagingConfig = Field(default_factory=MessagingConfig)

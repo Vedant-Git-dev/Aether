@@ -63,6 +63,7 @@ from aether.llm.types import ImageBlock, ToolCall, ToolResult, Turn, WireSpec
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.events import Event, IngestResult
 from aether.memory.vectors import MemoryHit
+from aether.proactive.path import DueReminder
 from aether.providers.types import ConnectResult, PollResult
 from aether.scheduler.jobs import ScheduledAction
 from aether.secret_env import EnvResolver
@@ -1459,6 +1460,57 @@ async def test_new_events_become_scored_observations() -> None:
     assert any("[new event]" in m.text and "poll:unread" in m.text for m in messages)
 
 
+async def test_a_watch_match_rides_the_observation_as_plain_context() -> None:
+    kit = LoopKit(None)
+    event = _event(1)
+    event.meta["watch_labels"] = ["urgent mail"]
+
+    line = kit.loop._event_line(event)
+
+    assert 'the user asked to be told about this ("urgent mail")' in line
+    assert "watch_labels" not in line
+
+
+async def test_a_due_reminder_becomes_an_agent_written_message() -> None:
+    provider = FakeProvider(
+        [
+            Turn(
+                tool_calls=[
+                    ToolCall(
+                        id="s1",
+                        name="message__send",
+                        arguments={"text": "the invoice is due in 15 minutes"},
+                    )
+                ]
+            )
+        ]
+    )
+    kit = LoopKit(provider)
+
+    class FakeReminderPath:
+        async def tick(self) -> list[DueReminder]:
+            return [
+                DueReminder(
+                    payload={
+                        "commitment_id": 3,
+                        "text": "send the invoice",
+                        "due_local": "2026-11-03 11:56 IST",
+                        "overdue": False,
+                        "lead_minutes": 15,
+                    },
+                    urgency=2,
+                    salience=8.0,
+                )
+            ]
+
+    kit.loop.attach_proactive_path(FakeReminderPath())
+    await kit.loop._run_proactive_tick()
+
+    assert kit.connector.sent == ["the invoice is due in 15 minutes"]
+    # the due facts rode the turn as an observation, not as ready words
+    assert any("send the invoice" in m.text for m in provider.calls[0][1])
+
+
 async def test_a_quiet_tick_calls_no_llm() -> None:
     provider = FakeProvider([])  # would AssertionError if called
     kit = LoopKit(provider)
@@ -1568,19 +1620,34 @@ def _quiet_kit(provider: FakeProvider | None) -> LoopKit:
     )
 
 
-async def test_quiet_hours_hold_unprompted_commentary() -> None:
-    provider = FakeProvider([Turn(text="saw the mail")])
+async def test_quiet_hours_hold_a_proactive_send_and_batch_it_later() -> None:
+    provider = FakeProvider(
+        [
+            Turn(
+                tool_calls=[
+                    ToolCall(
+                        id="n1",
+                        name="notify_user",
+                        arguments={"content": "saw the mail"},
+                    )
+                ]
+            )
+        ]
+    )
     kit = _quiet_kit(provider)
     kit.events.events[1] = _event(1)  # salience 0 — routine feed noise
     await kit.loop._tick()
 
+    # the send was offered; quiet hours hold the words instead of blocking
     assert kit.connector.sent == []
+    assert kit.loop._held == ["saw the mail"]
+
+    kit.loop._config.agent.quiet_hours = None
+    kit.loop.reparse_quiet_hours()
+    await kit.loop._tick()  # nothing new — the held batch ships
+
+    assert kit.connector.sent == ["While it was quiet:\n\nsaw the mail"]
     assert kit.loop._held == []
-    # quiet hours: the notify action was never offered, so the model's free
-    # text stayed internal and nothing interrupted the user
-    payload = kit.traces.created[-1]["payload"]
-    assert payload["internal"] == "saw the mail"
-    assert payload["notification_policy"] == {"allowed": False, "reason": "quiet hours"}
 
 
 async def test_urgent_events_still_interrupt_quiet_hours() -> None:
@@ -2022,15 +2089,27 @@ async def test_a_replied_turn_records_where_the_words_landed() -> None:
 
 
 async def test_a_held_note_records_no_chat_refs() -> None:
-    provider = FakeProvider([Turn(text="saw the mail")])
+    provider = FakeProvider(
+        [
+            Turn(
+                tool_calls=[
+                    ToolCall(
+                        id="n1",
+                        name="notify_user",
+                        arguments={"content": "saw the mail"},
+                    )
+                ]
+            )
+        ]
+    )
     kit = _quiet_kit(provider)
     kit.events.events[1] = _event(1)
     await kit.loop._tick()
 
     payload = kit.traces.created[-1]["payload"]
-    assert payload["internal"] == "saw the mail"
-    assert "chat_refs" not in payload  # nothing landed anywhere
-    assert payload["notification_policy"]["allowed"] is False
+    assert payload["outcome"] == "notify"
+    assert "chat_refs" not in payload  # held, nothing landed anywhere
+    assert kit.loop._held == ["saw the mail"]
 
 
 async def test_a_why_reply_is_answered_from_the_record() -> None:

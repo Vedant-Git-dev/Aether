@@ -190,31 +190,6 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
         ),
     ),
     GroupSpec(
-        key="notifications",
-        title="Notifications",
-        note="Code checks these before an unprompted message is offered to Aether.",
-        fields=(
-            FieldSpec(
-                path="notifications.enabled",
-                label="Send unprompted notes",
-                hint="Whether Aether may send a note you did not ask for. "
-                "Replies to your messages are never affected.",
-            ),
-            FieldSpec(
-                path="notifications.min_urgency",
-                label="Minimum urgency",
-                hint="How urgent (0-10) something must be before Aether may "
-                "interrupt you about it.",
-            ),
-            FieldSpec(
-                path="notifications.repeat_window_minutes",
-                label="Repeat window",
-                hint="How long Aether remembers that it already told you about "
-                "an event or action, so it does not repeat itself.",
-            ),
-        ),
-    ),
-    GroupSpec(
         key="salience",
         title="Attention",
         fields=(
@@ -305,21 +280,8 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
             ),
             FieldSpec(
                 path="proactive.watches_enabled",
-                label="Watches and urgent mail",
-                hint="Whether Aether tells you when something you asked to watch "
-                "arrives, and when urgent mail lands.",
-            ),
-            FieldSpec(
-                path="proactive.urgent_mail_alerts",
-                label="Urgent mail alerts",
-                hint="Send one card when mail arrives that reads as urgent, even "
-                "if no watch is set.",
-            ),
-            FieldSpec(
-                path="proactive.max_alerts_per_hour",
-                label="Hourly alert cap",
-                hint="The most alerts one hour may carry, so a busy inbox cannot "
-                "become a stream of interruptions.",
+                label="Watches",
+                hint="Whether the things you asked to watch are marked for Aether as they arrive.",
             ),
             FieldSpec(
                 path="proactive.reminders_enabled",
