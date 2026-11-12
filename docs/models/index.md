@@ -64,6 +64,19 @@ llm:
   model: meta-llama/llama-4-scout-17b-16e-instruct
 ```
 
+Groq ids whose first segment is itself a provider name (`openai/gpt-oss-120b`) are the
+one exception: a bare id like that reads as that provider. Prefix it with `groq/` — the
+form the model dropdown saves — to keep it on Groq.
+
+### Groq and per-minute token limits
+
+Groq admits a request against the model's tokens-per-minute budget using the prompt plus
+the requested maximum output, so a large `max_tokens` can be refused before a single
+word is generated. Aether's Groq adapter sends no token cap at all, letting the model's
+own ceiling apply. Free-tier Groq models still have low per-minute budgets, so a very
+long conversation can be refused; the reply says so plainly and retries when the refusal
+looks temporary. A Developer-tier key raises the ceiling.
+
 The three sentinel words are meanings, never model ids: `off`, `default`, and the
 legacy spelling `base`.
 
