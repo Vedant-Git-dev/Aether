@@ -225,9 +225,6 @@ PLAINTEXT_ALLOWLIST: dict[str, frozenset[str]] = {
             "key_version",
         }
     ),
-    # what has already been reported, per event or action: the key is a
-    # keyed token and its text is sealed in body_enc
-    "notification_reports": frozenset({"id", "key_token", "reported_at", "key_version"}),
 }
 
 # Columns that must be ciphertext. The boot audit also checks their SQL
@@ -274,7 +271,6 @@ SEALED_COLUMNS: dict[str, frozenset[str]] = {
     "deliveries": frozenset({"body_enc", "message_id_enc", "error_enc"}),
     "workspace_files": frozenset({"name_enc", "content_enc"}),
     "inbound_messages": frozenset({"reason_enc", "outcome_enc"}),
-    "notification_reports": frozenset({"body_enc"}),
 }
 
 # The migration ledger is now empty: `018_sealed_cutover.sql` dropped every
