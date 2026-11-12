@@ -64,7 +64,7 @@ class FakeSkill:
         self.plan_calls.append(opportunity)
         return {"step": "go"}
 
-    async def run(self, task, workbench, executor) -> RunOutcome:
+    async def run(self, task, workbench, executor, notify=None) -> RunOutcome:
         self.run_calls.append(task)
         return self.outcome
 
@@ -266,7 +266,7 @@ async def test_pending_rows_run_before_new_detection() -> None:
             order.append("detect")
             return [Opportunity(key="new", skill="followups", label="fresh", score=9.0)]
 
-        async def run(self, task, workbench, executor):
+        async def run(self, task, workbench, executor, notify=None):
             order.append(f"run:{task.opportunity_key}")
             return self.outcome
 
@@ -316,7 +316,7 @@ async def test_planning_runs_read_only_and_run_gets_the_full_executor() -> None:
             seen["plan"] = await executor(write)
             return {"step": "go"}
 
-        async def run(self, task, workbench, executor):
+        async def run(self, task, workbench, executor, notify=None):
             assert executor is not None
             seen["run"] = await executor(write)
             return self.outcome

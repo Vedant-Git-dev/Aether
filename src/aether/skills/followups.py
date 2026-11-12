@@ -19,7 +19,7 @@ from ..llm.types import ToolCall
 from ..proactive.store import Opportunity, ProactiveTask
 from ..proactive.worker import RunOutcome
 from ..workbench.base import SENSITIVE
-from .base import DENIED, HELD, EventReader, Executor, ProfileSource, Runner, held_approval
+from .base import DENIED, HELD, EventReader, Executor, Notify, ProfileSource, Runner, held_approval
 
 _MARKERS = ("i'll", "i will", "remind", "follow up", "get back")
 # the one send this example knows by name — the codebase's own
@@ -88,15 +88,19 @@ class FollowupsSkill:
         }
 
     async def run(
-        self, task: ProactiveTask, workbench: Runner | None, executor: Executor | None
+        self,
+        task: ProactiveTask,
+        workbench: Runner | None,
+        executor: Executor | None,
+        notify: Notify | None = None,
     ) -> RunOutcome:
-        if executor is None:
-            raise RuntimeError("the worker isn't wired to tools, so nothing could be sent")
         detail = task.opportunity
         text = str(detail.get("text", ""))
         draft = f"Following up on what you mentioned — {text[:200]}"
         tool = _REPLY_TOOLS.get(str(detail.get("source", "")))
         if tool is not None and detail.get("address"):
+            if executor is None:
+                raise RuntimeError("the worker isn't wired to tools, so nothing could be sent")
             call = ToolCall(
                 id=f"task-{task.id}",
                 name=tool,
@@ -107,24 +111,25 @@ class FollowupsSkill:
                 },
                 plain="send the follow-up reply",
             )
+            reply = await executor(call)
+            if reply.startswith(DENIED):
+                return RunOutcome(summary=reply, refused=True)
+            if reply.startswith(HELD):
+                # the staged action's id rides back so the task's own
+                # Approve button carries exactly this one out (after
+                # revalidation)
+                return RunOutcome(
+                    summary="I drafted the follow-up reply and it's waiting for your OK",
+                    tokens=0,
+                    approval_id=held_approval(reply),
+                )
         else:
-            call = ToolCall(
-                id=f"task-{task.id}",
-                name="send_chat_message",
-                arguments={"text": f"You said you'd get back to this: {draft}"},
-                plain="send you the reminder",
-            )
-        reply = await executor(call)
-        if reply.startswith(DENIED):
-            return RunOutcome(summary=reply, refused=True)
-        if reply.startswith(HELD):
-            # the staged action's id rides back so the task's own Approve
-            # button carries exactly this one out (after revalidation)
-            return RunOutcome(
-                summary="I drafted the follow-up reply and it's waiting for your OK",
-                tokens=0,
-                approval_id=held_approval(reply),
-            )
+            # no known send tool for this surface: the reminder goes through
+            # the worker's notify seam, the same interruption budget every
+            # proactive note rides — never a direct send around the policy
+            if notify is None:
+                return RunOutcome(summary="the reminder couldn't be sent", failed=True)
+            await notify(f"You said you'd get back to this: {draft}")
         return RunOutcome(summary="the reminder is in your chat", tokens=0)
 
     async def revalidate(

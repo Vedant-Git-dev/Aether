@@ -83,13 +83,6 @@ _NATIVE_META: dict[str, tuple[str, str, str, str, bool]] = {
         "external",
         False,
     ),
-    "send_chat_message": (
-        "message",
-        "note",
-        "Send a mid-turn note to the user's chat.",
-        "external",
-        True,
-    ),
     "create_routine": ("routines", "create", "Arm a standing reaction.", "write", False),
     "list_routines": ("routines", "list", "List armed routines.", "read", False),
     "set_routine_enabled": ("routines", "enable", "Pause or re-arm a routine.", "write", False),
@@ -1166,7 +1159,7 @@ def register_native_tools(
 
     async def share_media(params: dict[str, Any]) -> str:
         """The owner's own file, back to the owner's own chats — the same
-        trust line send_chat_message rides. A blob that's gone is said
+        trust line a chat reply rides. A blob that's gone is said
         plainly, never claimed as sent; anywhere further out (an email,
         another person) is a different call that parks for approval."""
         media_id = _strict_media_id(params)
@@ -1398,13 +1391,6 @@ def register_native_tools(
             "picks the request up and uploads a screenshot; it will show up "
             "as a screen_capture memory as soon as it lands."
         )
-
-    async def send_chat_message(params: dict[str, Any]) -> str:
-        text = str(params.get("text", "")).strip()
-        if not text:
-            return "send_chat_message needs text."
-        await surfaces.send_to_user(text)
-        return "Sent to the user's chat surfaces."
 
     async def verify_integrity(params: dict[str, Any]) -> str:
         verification = await audit.verify_chain()
@@ -2160,18 +2146,6 @@ def register_native_tools(
             ]
             if editor is not None
             else []
-        ),
-        (
-            _spec(
-                "send_chat_message",
-                "Push a message to the user's chat surfaces mid-turn "
-                "(Telegram, Discord, web chat — whichever are enabled). "
-                "Your end-of-turn reply is delivered automatically — never "
-                "use this to answer or to repeat it.",
-                {"text": {"type": "string", "description": "the message"}},
-                ["text"],
-            ),
-            send_chat_message,
         ),
     ]
     if routines is not None:

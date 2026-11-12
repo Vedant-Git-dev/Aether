@@ -233,8 +233,8 @@ async def test_a_failing_routine_does_not_stop_the_others() -> None:
 
 async def test_eleven_native_tools_register_when_routines_are_wired() -> None:
     kit = NativeKit(routines=FakeRoutines())
-    assert kit.count == 12
-    assert len(kit.registry) == 12
+    assert kit.count == 11
+    assert len(kit.registry) == 11
 
 
 async def test_create_routine_validates_its_inputs() -> None:

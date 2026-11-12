@@ -35,6 +35,9 @@ from ..workbench.base import JobResult, JobSpec
 Executor = Callable[[ToolCall], Awaitable[str]]
 # one job spec in, one result out — the routing ladder already walked
 Runner = Callable[[JobSpec], Awaitable[JobResult]]
+# one plain note out through the worker's interruption budget — the only
+# send a skill may use, so it can never bypass quiet hours or the policy
+Notify = Callable[[str], Awaitable[Any]]
 
 # how a skill reads the replies the loop's executor gives it. The
 # wording lives in agent/loop.py; the skills match the prefixes so a
@@ -97,7 +100,11 @@ class Skill(Protocol):
     ) -> dict[str, Any]: ...
 
     async def run(
-        self, task: ProactiveTask, workbench: Runner | None, executor: Executor | None
+        self,
+        task: ProactiveTask,
+        workbench: Runner | None,
+        executor: Executor | None,
+        notify: Notify | None = None,
     ) -> RunOutcome: ...
 
     async def revalidate(

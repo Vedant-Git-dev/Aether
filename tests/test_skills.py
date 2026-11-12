@@ -90,6 +90,16 @@ class ScriptedExecutor:
         return self.replies.get(call.name, self.default)
 
 
+class RecordingNotifier:
+    """The notify-seam double: records every note a skill sends."""
+
+    def __init__(self) -> None:
+        self.notes: list[str] = []
+
+    async def __call__(self, text: str) -> None:
+        self.notes.append(text)
+
+
 class FakeProfile:
     """The workspace slice the skills read: confirmed entries by text."""
 
@@ -183,13 +193,14 @@ async def test_followups_skips_plain_and_unmemorable_events() -> None:
 
 async def test_followups_run_sends_the_reminder_to_chat_when_no_send_is_known() -> None:
     executor = ScriptedExecutor()
+    notify = RecordingNotifier()
     task = _task({"event_id": 7, "text": "I'll send the deck", "source": "telegram", "address": ""})
-    outcome = await FollowupsSkill().run(task, None, executor)
+    outcome = await FollowupsSkill().run(task, None, executor, notify)
     assert outcome.summary == "the reminder is in your chat"
     assert outcome.refused is False
-    (call,) = executor.calls
-    assert call.name == "send_chat_message"
-    assert "I'll send the deck" in call.arguments["text"]
+    assert executor.calls == []  # no tool is used for an in-chat reminder
+    (note,) = notify.notes
+    assert "I'll send the deck" in note
 
 
 async def test_followups_run_parks_an_external_reply_for_approval() -> None:
@@ -221,14 +232,28 @@ def test_held_approval_reads_the_parked_id_from_a_reply() -> None:
 
 async def test_followups_run_reports_a_denial_as_refused() -> None:
     executor = ScriptedExecutor(default="denied by policy: that action is turned off")
-    task = _task({"event_id": 7, "text": "I'll send the deck", "source": "telegram", "address": ""})
+    task = _task(
+        {
+            "event_id": 7,
+            "text": "I'll send the deck",
+            "source": "gmail",
+            "address": "mike@example.com",
+        }
+    )
     outcome = await FollowupsSkill().run(task, None, executor)
     assert outcome.refused is True
     assert outcome.summary.startswith("denied by policy")
 
 
 async def test_followups_run_without_an_executor_fails_honestly() -> None:
-    task = _task({"event_id": 7, "text": "I'll send the deck"})
+    task = _task(
+        {
+            "event_id": 7,
+            "text": "I'll send the deck",
+            "source": "gmail",
+            "address": "mike@example.com",
+        }
+    )
     with pytest.raises(RuntimeError):
         await FollowupsSkill().run(task, None, None)
 

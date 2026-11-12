@@ -200,6 +200,7 @@ const NATIVE_TOOLS = {
   "media__share": "Sharing a stored file",
   "media__generate": "Making an image",
   "media__edit": "Editing a stored video",
+  "message__send": "Messaging you",
   "message__note": "Messaging you",
   "message__reply": "Answering you",
   "message__notify": "Telling you",

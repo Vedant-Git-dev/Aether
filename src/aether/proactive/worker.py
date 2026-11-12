@@ -311,7 +311,7 @@ class ProactiveWorker:
         try:
             plan = await skill.plan(opportunity, self._workspace, self._read_executor)
             await self._store.set_plan(task.id, plan)
-            outcome = await skill.run(task, self._workbench, self._executor)
+            outcome = await skill.run(task, self._workbench, self._executor, self._notify)
         except Exception as exc:
             log.exception("proactive task %d failed", task.id)
             await self._store.fail(task.id, str(exc)[:200])

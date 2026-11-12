@@ -27,7 +27,7 @@ from ..workbench.base import (
     TASK_ID,
     JobSpec,
 )
-from .base import EventReader, Executor, ProfileSource, Runner
+from .base import EventReader, Executor, Notify, ProfileSource, Runner
 
 # the whole job: read the document, print a one-line description. The
 # point is the seam, not the linguistics — a real caption job would do
@@ -84,7 +84,11 @@ class MediaSkill:
         return {"step": "run the description job", "script": "describe.py", "filename": filename}
 
     async def run(
-        self, task: ProactiveTask, workbench: Runner | None, executor: Executor | None
+        self,
+        task: ProactiveTask,
+        workbench: Runner | None,
+        executor: Executor | None,
+        notify: Notify | None = None,
     ) -> RunOutcome:
         if workbench is None:
             raise RuntimeError("no cloud workbench is connected, so the file job couldn't run")
