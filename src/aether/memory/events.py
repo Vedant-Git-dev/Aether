@@ -164,8 +164,8 @@ class EventStore:
         self._enricher = enricher
         self._facts = facts
         self._enrichment = enrichment
-        # the proactive path (watches + reminders) joins here after the
-        # agent exists, because an alert is delivered through the loop
+        # the proactive path (watch matching + reminders) joins here after
+        # the agent exists, because a reminder is delivered through the loop
         self._proactive: Any = None
         # background enrichment in flight, by event id — tracked so a turn
         # can wait for the events it is about to read without waiting for
@@ -182,8 +182,8 @@ class EventStore:
 
         Cancelling this wait never cancels the work: the tasks are
         independent and keep running, so a caller that stops waiting loses
-        only the wait, not the enrichment. A watcher evaluation rides the
-        same task, so waiting here also waits out the alert an event owes.
+        only the wait, not the enrichment. A watch evaluation rides the
+        same task, so waiting here also waits out the label an event earns.
         """
         while self._enriching:
             tasks = list(self._enriching.values())
@@ -217,11 +217,11 @@ class EventStore:
         return {event_id for event_id, task in tasks.items() if task in pending}
 
     def attach_proactive(self, proactive: Any) -> None:
-        """Join the proactive path (watches, urgent alerts) to the store.
+        """Join the proactive path (watch matching, reminders) to the store.
 
         The store is the one place every channel funnels an event through,
         so the evaluator lives on the same task that already links
-        addresses and classifies: an alert never delays ingest, and
+        addresses and classifies: a match never delays ingest, and
         ``wait_idle`` covers it."""
         self._proactive = proactive
 
@@ -469,12 +469,15 @@ class EventStore:
         if extra:
             await self.merge_meta(event_id, extra)
         if self._proactive is not None:
-            # the alert rides this same tracked task, so it never sits in
-            # front of a reply and `wait_idle` can wait it out
+            # matching rides this same tracked task, so it never sits in
+            # front of a reply and `wait_idle` can wait it out. A match only
+            # tags the event; the agent writes any message itself.
             try:
                 event = await self.get(event_id)
                 if event is not None:
-                    await self._proactive.evaluate_event(event)
+                    labels = await self._proactive.evaluate_event(event)
+                    if labels:
+                        await self.merge_meta(event_id, {"watch_labels": labels})
             except Exception:
                 log.warning("proactive evaluation failed for event %s", event_id, exc_info=True)
 

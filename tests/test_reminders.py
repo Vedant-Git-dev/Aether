@@ -17,7 +17,7 @@ from aether.proactive.path import (
     CommitmentReminders,
     leads_for,
     reminder_due,
-    render_reminder,
+    reminder_payload,
 )
 
 NOW = datetime(2026, 11, 3, 6, 16, tzinfo=UTC)
@@ -98,17 +98,27 @@ def test_overdue_fires_exactly_once() -> None:
     assert reminder_due(overdue, NOW, {OVERDUE}) is None
 
 
-def test_a_reminder_names_the_due_time_in_the_users_zone() -> None:
-    text = render_reminder(
+def test_a_reminder_is_facts_for_the_agent_not_a_sentence() -> None:
+    payload = reminder_payload(
         _commitment(due_at=NOW + timedelta(minutes=10), text="file the taxes"),
         lead=15,
         timezone="Asia/Kolkata",
     )
 
-    assert "file the taxes" in text
-    assert "2026-11-03 11:56 IST" in text
-    assert "in 15 minutes" in text
-    assert "{" not in text
+    assert payload["text"] == "file the taxes"
+    assert payload["due_local"] == "2026-11-03 11:56 IST"
+    assert payload["lead_minutes"] == 15
+    assert payload["overdue"] is False
+    assert set(payload) == {"commitment_id", "text", "due_local", "overdue", "lead_minutes"}
+
+
+def test_an_overdue_reminder_is_marked_overdue() -> None:
+    payload = reminder_payload(
+        _commitment(due_at=NOW - timedelta(hours=1)), lead=OVERDUE, timezone="UTC"
+    )
+
+    assert payload["overdue"] is True
+    assert payload["lead_minutes"] == OVERDUE
 
 
 @pytest.mark.integration

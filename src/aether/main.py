@@ -723,8 +723,8 @@ def create_app(
         )
         app.state.agent = agent
 
-        # --- the proactive path: watches, urgent mail, reminders -----------
-        # Built after the loop because an alert is delivered through the
+        # --- the proactive path: watch matches, reminders -------------------
+        # Built after the loop because a reminder is delivered through the
         # loop's own interruption budget (quiet hours, holding, batching).
         # The store is attached to the event store, so every ingest path —
         # chat, mail poll, attachment — is evaluated once, on the tracked
@@ -734,8 +734,6 @@ def create_app(
             watches=watches,
             commitments=commitments,
             reminders=commitment_reminders,
-            notify=agent.note_to_user,
-            owners=entities.owner_addresses,
             channels=lambda: _watch_channels(surfaces),
             timezone=config.memory.default_timezone,
         )

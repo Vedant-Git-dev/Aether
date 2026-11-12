@@ -3,7 +3,9 @@
 A watch is a small, deterministic spec — scope, kind, sender, text, a
 minimum urgency, a channel and a quiet window — stored sealed and evaluated
 against every event as it is ingested. Matching is pure code; the model is
-nowhere in the decision of whether a watch fires.
+nowhere in the decision of whether a watch matches. A match sends nothing:
+it tags the event as context, and the agent decides in its own words
+whether to speak.
 
 Provenance is the load-bearing rule: only the user's own words may create,
 pause or delete a watch. The store refuses any write whose `origin` is not
@@ -22,7 +24,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 import asyncpg
@@ -31,7 +33,7 @@ from ..authz.audit import AuditLog
 from .crypto import Cipher
 from .enrich import enrichment_text
 from .entities import normalize_handle
-from .mail import MAIL_KIND, format_address, parse_addresses
+from .mail import MAIL_KIND, parse_addresses
 
 log = logging.getLogger("aether.memory.watches")
 
@@ -446,13 +448,6 @@ class WatchStore:
             last_event_id,
         )
 
-    async def mark_notified(self, watch_id: int, when: datetime | None = None) -> None:
-        await self._pool.execute(
-            "UPDATE watches SET last_notified_at = $1 WHERE id = $2",
-            when or datetime.now(UTC),
-            watch_id,
-        )
-
     def _to_watch(self, row: asyncpg.Record) -> Watch:
         spec = WatchSpec()
         try:
@@ -470,86 +465,3 @@ class WatchStore:
             last_notified_at=row["last_notified_at"],
             created_at=row["created_at"],
         )
-
-
-# -- rendering ---------------------------------------------------------------
-
-
-def _source_word(event: Any) -> str:
-    if event.kind == MAIL_KIND:
-        return "mail"
-    if event.kind == "chat_message":
-        return "message"
-    source = str(getattr(event, "source", "") or "").strip()
-    return f"{source} update" if source else "update"
-
-
-def _sender_line(event: Any, owners: set[str]) -> str:
-    payload = event.payload if isinstance(event.payload, dict) else {}
-    if event.kind == MAIL_KIND:
-        addresses = parse_addresses(payload.get("sender"))
-        if addresses:
-            first = addresses[0]
-            return format_address(first.address, first.name, owners)
-        return ""
-    sender = payload.get(_SENDER_KEY)
-    if isinstance(sender, dict):
-        handle = str(sender.get("handle") or "").strip()
-        platform = str(sender.get("platform") or "").strip()
-        if handle:
-            return f"@{handle} on {platform}" if platform else f"@{handle}"
-    return ""
-
-
-def _summary_line(event: Any) -> str:
-    summary = str(getattr(event, "summary", "") or "").strip()
-    if summary:
-        return summary
-    payload = event.payload if isinstance(event.payload, dict) else {}
-    for key in ("subject", "snippet", "text", "caption", "description"):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()[:200]
-    body = payload.get("body")
-    if isinstance(body, str) and body.strip():
-        return body.strip().splitlines()[0][:200]
-    return ""
-
-
-def render_alert(
-    event: Any,
-    *,
-    watch: Watch | None = None,
-    owners: set[str] | None = None,
-    timezone: str = "Asia/Kolkata",
-    now: datetime | None = None,
-) -> str:
-    """One plain card: who, what, the absolute deadline, and what the user
-    can ask for next. No JSON, no tool names and no emoji."""
-    from .timewindow import local_stamp
-
-    owners = owners or set()
-    now = now or datetime.now(UTC)
-    word = _source_word(event)
-    sender = _sender_line(event, owners)
-    summary = _summary_line(event)
-    urgent = int(getattr(event, "urgency", 0)) >= 2
-    head = "Urgent " if urgent else ""
-    if watch is not None and watch.label:
-        title = f"{head}{word} from {sender}" if sender else f"{head}{word}"
-        noun = "reminder" if _form(watch.spec.form) == "reminder" else "alert"
-        line = f'{title} — matched your {noun} "{watch.label}"'
-    else:
-        line = f"{head}{word} from {sender}" if sender else f"{head}{word}"
-    if summary:
-        line += f": {summary}"
-    lines = [line]
-    deadline = getattr(event, "deadline_at", None)
-    if deadline is not None:
-        stamp = local_stamp(deadline, timezone)
-        lines.append(f"Overdue since {stamp}." if deadline < now else f"Due {stamp}.")
-    if word == "mail":
-        lines.append("You can tell me to reply, forward it, or remind you later.")
-    else:
-        lines.append("You can tell me to look at it or remind you later.")
-    return "\n".join(lines)

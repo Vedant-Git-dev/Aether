@@ -250,9 +250,11 @@ editing, frame extraction, and Groq transcription.
 time, runs skills, stores results, and records verdicts. `src/aether/skills/` holds the
 three shipped skills: **follow-ups**, **research**, and **media**.
 
-The same package carries the proactive path. `path.py` evaluates the user's alerts on
-every ingest, sends one deduplicated, rate-limited alert per match (with a default
-urgent-mail policy), and fires commitment reminders on their urgency-scaled leads.
+The same package carries the proactive path. `path.py` matches the user's alerts on
+every ingest and tags the event with the watch label as observation context; it sends
+nothing itself, and the agent writes any message in its own words under the normal
+notification policy. Commitment reminders work the same way: the path reports which
+urgency-scaled lead is due, and the agent writes the reminder.
 
 > [!IMPORTANT]
 > Only the user's own words can set an alert. An email can never create one.

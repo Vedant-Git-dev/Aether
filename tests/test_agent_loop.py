@@ -63,6 +63,7 @@ from aether.llm.types import ImageBlock, ToolCall, ToolResult, Turn, WireSpec
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.events import Event, IngestResult
 from aether.memory.vectors import MemoryHit
+from aether.proactive.path import DueReminder
 from aether.providers.types import ConnectResult, PollResult
 from aether.scheduler.jobs import ScheduledAction
 from aether.secret_env import EnvResolver
@@ -1457,6 +1458,57 @@ async def test_new_events_become_scored_observations() -> None:
     assert kit.salience.scored == [1]
     messages = provider.calls[0][1]
     assert any("[new event]" in m.text and "poll:unread" in m.text for m in messages)
+
+
+async def test_a_watch_match_rides_the_observation_as_plain_context() -> None:
+    kit = LoopKit(None)
+    event = _event(1)
+    event.meta["watch_labels"] = ["urgent mail"]
+
+    line = kit.loop._event_line(event)
+
+    assert 'the user asked to be told about this ("urgent mail")' in line
+    assert "watch_labels" not in line
+
+
+async def test_a_due_reminder_becomes_an_agent_written_message() -> None:
+    provider = FakeProvider(
+        [
+            Turn(
+                tool_calls=[
+                    ToolCall(
+                        id="s1",
+                        name="message__send",
+                        arguments={"text": "the invoice is due in 15 minutes"},
+                    )
+                ]
+            )
+        ]
+    )
+    kit = LoopKit(provider)
+
+    class FakeReminderPath:
+        async def tick(self) -> list[DueReminder]:
+            return [
+                DueReminder(
+                    payload={
+                        "commitment_id": 3,
+                        "text": "send the invoice",
+                        "due_local": "2026-11-03 11:56 IST",
+                        "overdue": False,
+                        "lead_minutes": 15,
+                    },
+                    urgency=2,
+                    salience=8.0,
+                )
+            ]
+
+    kit.loop.attach_proactive_path(FakeReminderPath())
+    await kit.loop._run_proactive_tick()
+
+    assert kit.connector.sent == ["the invoice is due in 15 minutes"]
+    # the due facts rode the turn as an observation, not as ready words
+    assert any("send the invoice" in m.text for m in provider.calls[0][1])
 
 
 async def test_a_quiet_tick_calls_no_llm() -> None:

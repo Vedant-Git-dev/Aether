@@ -408,9 +408,9 @@ class SurfaceFanout:
         is for the retry path, which already owns a delivery row and must not
         mint a new one for the same words; `outcomes`, when given, receives
         each surface's true result so a caller can tell "landed on the web
-        but nowhere else" from "landed nowhere". `only`, when given, is the
-        channel a watch named — the words go to those surfaces and no
-        others. `reply_to`, when given, is the platform message id a chat
+        but nowhere else" from "landed nowhere". `only`, when given, is one
+        surface to narrow the words to — no other surface receives them.
+        `reply_to`, when given, is the platform message id a chat
         surface should quote — None means a plain message. The hub has no
         id; a dying surface never takes the loop down. Media rides to the
         chat connectors only — the hub and the transcript stay text-only;
@@ -769,9 +769,9 @@ class AgentLoop:
         # packing). Behind memory.query_pipeline; without it the old vector
         # recall above still serves each turn.
         self._query_pipeline = query_pipeline
-        # the proactive path: watches, urgent-mail cards and reminders.
-        # Late-wired like the enrichment pieces, because the path delivers
-        # through this loop's own interruption budget.
+        # the proactive path: watch matching and reminders. Late-wired like
+        # the enrichment pieces, because a reminder delivers through this
+        # loop's own interruption budget.
         self._proactive_path = proactive_path
         # the summary generator: one due thread/daily/weekly summary per tick,
         # a model call behind memory.summaries
@@ -988,8 +988,8 @@ class AgentLoop:
         quiet hours it waits (batched, shipped when the window ends) unless
         it is urgent enough on the 0-10 salience scale. Solicited words —
         replies to the user, approvals, scheduled deliveries — never come
-        through here. `channel`, when given, is the one surface a watch
-        named; empty means every surface. Returns where the words landed,
+        through here. `channel`, when given, narrows the words to that one
+        surface; empty means every surface. Returns where the words landed,
         or None when they are being held (or empty) — held words haven't
         reached a surface, so there is nothing to link yet."""
         if not is_deliverable(text):
@@ -1010,7 +1010,7 @@ class AgentLoop:
         background worker's plain notifications ride the same
         interruption budget (quiet hours, holding, batching) as the
         loop's own words, so they can never nag around the user's night.
-        `channel` narrows a watch alert to the surface it named."""
+        `channel` narrows the words to one surface when a caller names it."""
         return await self._notify(text, urgent=urgent, channel=channel)
 
     def attach_proactive_path(self, path: Any) -> None:
@@ -1097,14 +1097,44 @@ class AgentLoop:
         return wait
 
     async def _run_proactive_tick(self) -> None:
-        """Flush held alerts and fire due reminders. Never lets a broken
-        proactive path cost the tick: the words already sent stand."""
+        """Turn due commitment reminders into an unprompted turn.
+
+        The path decides which lead is due and records it; it sends nothing.
+        The agent sees the due facts as an observation and writes the words
+        itself, under the same notification policy as any other unprompted
+        turn. A broken path costs a log line, never the tick.
+        """
         if self._proactive_path is None:
             return
         try:
-            await self._proactive_path.tick()
+            due = await self._proactive_path.tick()
         except Exception:
             log.warning("proactive path tick failed — continuing", exc_info=True)
+            return
+        if not due:
+            return
+        observations = [self._reminder_event(item) for item in due]
+        try:
+            await self._turn([], observations)
+        except Exception:
+            log.exception("reminder turn failed")
+
+    @staticmethod
+    def _reminder_event(item: Any) -> Event:
+        """One due reminder as an observation for the agent — facts only."""
+        payload = dict(getattr(item, "payload", {}) or {})
+        return Event(
+            id=0,
+            source="proactive",
+            kind="commitment_due",
+            occurred_at=datetime.now(UTC),
+            payload=payload,
+            salience_score=float(getattr(item, "salience", 0.0) or 0.0),
+            memorable=False,
+            meta={},
+            urgency=int(getattr(item, "urgency", 0) or 0),
+            summary=str(payload.get("text") or ""),
+        )
 
     async def _run_due_resumes(self) -> None:
         """Try every pending turn whose wait is over, oldest first. Each
@@ -3396,9 +3426,10 @@ class AgentLoop:
         that loses who said what. Everything else keeps the payload preview
         the salience judge has always scored.
         """
+        line = ""
         if event.kind == MAIL_KIND:
             try:
-                return render_mail_event(
+                line = render_mail_event(
                     event.payload,
                     occurred_at=event.occurred_at,
                     salience=event.salience_score,
@@ -3406,11 +3437,24 @@ class AgentLoop:
                 )
             except Exception:  # a malformed payload falls back to the dump
                 log.warning("mail rendering failed for event %s — using the raw line", event.id)
-        text = json.dumps(event.payload, ensure_ascii=False, default=str)
-        return (
-            f"{event.occurred_at:%Y-%m-%d %H:%M} {event.source}/{event.kind}"
-            f" (salience {event.salience_score:.0f}): {text[:400]}"
-        )
+        if not line:
+            text = json.dumps(event.payload, ensure_ascii=False, default=str)
+            line = (
+                f"{event.occurred_at:%Y-%m-%d %H:%M} {event.source}/{event.kind}"
+                f" (salience {event.salience_score:.0f}): {text[:400]}"
+            )
+        labels = event.meta.get("watch_labels") if isinstance(event.meta, dict) else None
+        if isinstance(labels, list):
+            names = ", ".join(
+                f'"{str(label).replace(chr(10), " ").strip()[:80]}"'
+                for label in labels[:3]
+                if label
+            )
+            if names:
+                # context for the model, not a message: the agent decides in
+                # its own words whether this is worth saying
+                line += f" — the user asked to be told about this ({names})"
+        return line
 
     async def _refresh_owner_addresses(self) -> None:
         """Cache the owner's own addresses for this turn's mail rendering."""

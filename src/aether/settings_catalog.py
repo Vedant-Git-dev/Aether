@@ -305,21 +305,8 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
             ),
             FieldSpec(
                 path="proactive.watches_enabled",
-                label="Watches and urgent mail",
-                hint="Whether Aether tells you when something you asked to watch "
-                "arrives, and when urgent mail lands.",
-            ),
-            FieldSpec(
-                path="proactive.urgent_mail_alerts",
-                label="Urgent mail alerts",
-                hint="Send one card when mail arrives that reads as urgent, even "
-                "if no watch is set.",
-            ),
-            FieldSpec(
-                path="proactive.max_alerts_per_hour",
-                label="Hourly alert cap",
-                hint="The most alerts one hour may carry, so a busy inbox cannot "
-                "become a stream of interruptions.",
+                label="Watches",
+                hint="Whether the things you asked to watch are marked for Aether as they arrive.",
             ),
             FieldSpec(
                 path="proactive.reminders_enabled",

@@ -408,15 +408,9 @@ class ProactiveConfig(BaseModel):
     # which skills the worker may run; names not in the registry are ignored
     skills: list[str] = Field(default_factory=lambda: ["followups", "research", "media"])
     # -- the proactive path (plan.md section 6) --
-    # watches the user asked for, plus the default urgent-mail card. Both
-    # run independently of the worker switch above.
+    # watches the user asked for. A match tags the event for the agent; it
+    # never sends a message itself. Runs independently of the worker above.
     watches_enabled: bool = True
-    urgent_mail_alerts: bool = True
-    # urgency 2 is "act soon"; the floor already raises a message whose own
-    # words say urgent, so this fires even when enrichment is off
-    urgent_urgency_min: int = Field(default=2, ge=0, le=3)
-    # every alert the path sends, watches and the default policy together
-    max_alerts_per_hour: int = 6
     # due reminders (24h/2h/15m scaled by urgency, then one overdue)
     reminders_enabled: bool = True
     # polling spreads its checks by this share of the interval, so several
