@@ -73,7 +73,7 @@ async def test_a_deferred_tool_is_named_but_not_offered_until_loaded() -> None:
     await kit.loop._tick()
 
     first = {tool.name for tool in provider.calls[0][2]}
-    assert "message__reply" in first  # a terminal outcome is always ready
+    assert "message__send" in first  # a terminal outcome is always ready
     assert "tools__load" in first
     assert "mail__read" not in first  # named in the index, not schematized
     assert "mail__read" in provider.calls[0][0]

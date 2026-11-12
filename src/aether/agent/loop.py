@@ -570,8 +570,10 @@ _DELIVERY_NOTE = "Sent to the user's chat surfaces."
 
 def _delivered_by_tool(calls: list[dict[str, Any]], tools: ToolRegistry | None = None) -> bool:
     """True when the turn already put words in front of the user through
-    a sending tool — message__note or media__share — a send that actually
-    delivered, not one that was denied, parked, or refused."""
+    a sending tool — a media share, or a manually registered send helper —
+    a send that actually delivered, not one that was denied, parked, or
+    refused. A terminal ``message__send`` is not counted here: its outcome
+    is parsed separately and delivered by the loop's own path."""
     for call in calls:
         name = call.get("name")
         if not isinstance(name, str):
@@ -2641,7 +2643,7 @@ class AgentLoop:
             # uses reply/ask; an unprompted turn uses notify/ask. Free text on
             # an unprompted turn is internal — unless a typed triage call
             # recognises it as a complete message for the person.
-            outcome = outcome_from_calls(calls)
+            outcome = outcome_from_calls(calls, solicited=bool(messages))
             # a solicited turn that ends in free text still reaches the person
             # (the retry/fallback below owns the empty case), but the miss is
             # recorded: the typed outcome is the contract, and the trace is

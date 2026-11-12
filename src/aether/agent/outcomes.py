@@ -9,6 +9,11 @@ Every turn ends in one of four values:
 - ``Ask(question, options)`` — a question to the user.
 - ``NoneOutcome()`` — nothing leaves the agent.
 
+The model sees one ``message__send`` tool and one ``message__ask`` tool. The
+turn type decides whether a send becomes a Reply or a Notify; the model never
+chooses the delivery mode, so there is no second delivery tool to bypass the
+policy.
+
 The decision is structural: the model can only reach the user through a
 terminal tool whose input schema is one of these shapes. Free text on an
 unprompted turn is internal by definition, so it can never become a message
@@ -28,26 +33,27 @@ from ..llm.types import ToolCall, WireSpec, with_plain_param
 from ..memory.timewindow import in_quiet_window
 from ..message_catalog import render
 
-REPLY_TOOL = "message__reply"
-NOTIFY_TOOL = "message__notify"
+SEND_TOOL = "message__send"
 ASK_TOOL = "message__ask"
 
-# Old traces, stored approvals and scripted turns still carry the first names;
-# they resolve to the same outcome, so nothing has to be migrated.
+# Old traces, stored approvals and scripted turns still carry the first names.
+# They all resolve to the one send outcome; whether that send is a reply or a
+# proactive note is decided by the turn type in code, never by the model.
 LEGACY_TERMINAL = {
-    "reply_user": REPLY_TOOL,
-    "notify_user": NOTIFY_TOOL,
-    "ask_user": ASK_TOOL,
-    "message.reply": REPLY_TOOL,
-    "message.notify": NOTIFY_TOOL,
+    "message__reply": SEND_TOOL,
+    "message__notify": SEND_TOOL,
+    "message.reply": SEND_TOOL,
+    "message.notify": SEND_TOOL,
+    "reply_user": SEND_TOOL,
+    "notify_user": SEND_TOOL,
     "message.ask": ASK_TOOL,
+    "ask_user": ASK_TOOL,
 }
-TERMINAL_TOOLS = frozenset({REPLY_TOOL, NOTIFY_TOOL, ASK_TOOL, *LEGACY_TERMINAL})
+TERMINAL_TOOLS = frozenset({SEND_TOOL, ASK_TOOL, *LEGACY_TERMINAL})
 
 # one line each for the prompt index — the same shape every other tool has
 OUTCOME_SUMMARIES = {
-    REPLY_TOOL: "Send the user the answer they asked for.",
-    NOTIFY_TOOL: "Tell the user something they need to know now.",
+    SEND_TOOL: "Send the user the words they should read.",
     ASK_TOOL: "Ask the user one question and wait for their answer.",
 }
 
@@ -94,50 +100,32 @@ def _schema(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
     return with_plain_param({"type": "object", "properties": properties, "required": required})
 
 
-def reply_spec() -> WireSpec:
+def send_spec() -> WireSpec:
     return WireSpec(
-        name=REPLY_TOOL,
+        name=SEND_TOOL,
         description=(
-            "Deliver your answer to the user. Put the words they should read in "
-            "`reply`. Put every decision, reason, caveat, source id, finding id or "
-            "verification detail in `internal_notes` — it is stored sealed and is "
+            "Deliver the words the user reads. On a turn where they spoke first "
+            "this is your answer; on an unprompted turn it is a proactive note. "
+            "The turn type decides which — there is no separate reply or notify "
+            "tool. Put every decision, reason, caveat, source id, finding id or "
+            "verification detail in `internal_notes`: it is stored sealed and is "
             "never shown to the user or placed in later conversation memory."
         ),
         input_schema=_schema(
             {
-                "reply": {
+                "text": {
                     "type": "string",
-                    "description": "The complete answer the user reads.",
+                    "description": "The complete message the user reads.",
                 },
                 "internal_notes": {
                     "type": "string",
                     "description": (
-                        "Why you answered this way, what you decided, and anything "
-                        "you could not verify. Never delivered."
+                        "Why you sent this, what you decided, and anything you "
+                        "could not verify. Never delivered."
                     ),
                 },
             },
-            ["reply"],
-        ),
-    )
-
-
-def notify_spec() -> WireSpec:
-    return WireSpec(
-        name=NOTIFY_TOOL,
-        description=(
-            "Send one unprompted note to the user. Use it only when there is "
-            "something they need to know now. If there is nothing worth saying, "
-            "do not call this and do not explain the silence."
-        ),
-        input_schema=_schema(
-            {
-                "content": {
-                    "type": "string",
-                    "description": "The note the user reads.",
-                },
-            },
-            ["content"],
+            ["text"],
         ),
     )
 
@@ -170,37 +158,37 @@ def ask_spec() -> WireSpec:
 def outcome_specs(*, solicited: bool, notify_allowed: bool) -> list[WireSpec]:
     """The terminal tools this turn offers.
 
-    A solicited turn always gets ``message__reply`` and ``message__ask``.
-    An unprompted turn gets ``message__ask``, and gets ``message__notify``
-    only when the policy says the user may be notified now — when it says
-    no, the action does not exist for the model to call.
+    The model always sees the same two tools: one send and one ask. Whether a
+    send is delivered as a reply or as a proactive note is decided by the turn
+    type in code. An unprompted turn gets neither when the notification policy
+    says the person may not be interrupted now.
     """
-    specs: list[WireSpec] = []
-    if solicited:
-        specs.append(reply_spec())
-        specs.append(ask_spec())
-    elif notify_allowed:
-        # an unprompted turn may reach the person only when code says the
-        # moment is right: both the note and the question are interruptions
-        specs.append(notify_spec())
-        specs.append(ask_spec())
-    return specs
+    if solicited or notify_allowed:
+        return [send_spec(), ask_spec()]
+    return []
 
 
 def is_terminal_tool(name: str) -> bool:
-    return canonical_tool(name) in (REPLY_TOOL, NOTIFY_TOOL, ASK_TOOL)
+    return canonical_tool(name) in (SEND_TOOL, ASK_TOOL)
 
 
-def outcome_from_params(name: str, params: dict[str, Any]) -> Outcome | None:
-    """Parse one terminal call's arguments into a typed outcome."""
+def outcome_from_params(
+    name: str, params: dict[str, Any], *, solicited: bool = True
+) -> Outcome | None:
+    """Parse one terminal call's arguments into a typed outcome.
+
+    A send is a Reply when the user spoke first and a Notify on an unprompted
+    turn. The model never chooses the delivery mode.
+    """
     name = canonical_tool(name)
-    if name == REPLY_TOOL:
-        text = str(params.get("reply") or "").strip()
+    if name == SEND_TOOL:
+        # `text` is the wire field; `content` and `reply` keep old scripted
+        # turns, stored calls and tests resolving without a migration
+        text = str(params.get("text") or params.get("content") or params.get("reply") or "").strip()
         notes = str(params.get("internal_notes") or "").strip()
-        return Reply(text=text, internal_notes=notes)
-    if name == NOTIFY_TOOL:
-        content = str(params.get("content") or "").strip()
-        return Notify(content=content)
+        if solicited:
+            return Reply(text=text, internal_notes=notes)
+        return Notify(content=text)
     if name == ASK_TOOL:
         question = str(params.get("question") or "").strip()
         raw = params.get("options")
@@ -211,7 +199,7 @@ def outcome_from_params(name: str, params: dict[str, Any]) -> Outcome | None:
     return None
 
 
-def outcome_from_calls(calls: list[dict[str, Any]]) -> Outcome | None:
+def outcome_from_calls(calls: list[dict[str, Any]], *, solicited: bool = True) -> Outcome | None:
     """The last accepted terminal call in a turn's recorded calls."""
     for entry in reversed(calls):
         if not entry.get("terminal"):
@@ -220,7 +208,7 @@ def outcome_from_calls(calls: list[dict[str, Any]]) -> Outcome | None:
         params = entry.get("params")
         if not isinstance(params, dict):
             continue
-        parsed = outcome_from_params(name, params)
+        parsed = outcome_from_params(name, params, solicited=solicited)
         if parsed is not None:
             return parsed
     return None

@@ -326,11 +326,11 @@ async def test_a_poisoned_trace_store_never_breaks_the_act() -> None:
 
 async def test_eight_native_tools_register_when_traces_are_wired() -> None:
     kit = NativeKit(traces=FakeTraces())
-    assert kit.count == 9
-    assert len(kit.registry) == 9
+    assert kit.count == 8
+    assert len(kit.registry) == 8
     both = NativeKit(routines=FakeRoutines(), traces=FakeTraces())
-    assert both.count == 13
-    assert len(both.registry) == 13
+    assert both.count == 12
+    assert len(both.registry) == 12
 
 
 def _seed_turn(kit: NativeKit, *, approval_id: int | None = None) -> None:

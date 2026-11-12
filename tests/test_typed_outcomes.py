@@ -88,7 +88,7 @@ async def test_a_disabled_preference_never_offers_notify_and_delivers_nothing() 
 
     await kit.loop._tick()
 
-    assert "message__notify" not in _offered(provider)
+    assert "message__send" not in _offered(provider)
     assert kit.connector.sent == []
     payload = kit.traces.created[-1]["payload"]
     assert payload["notification_policy"] == {
@@ -105,7 +105,7 @@ async def test_quiet_hours_never_offer_notify_and_deliver_nothing() -> None:
 
     await kit.loop._tick()
 
-    assert "message__notify" not in _offered(provider)
+    assert "message__send" not in _offered(provider)
     assert kit.connector.sent == []
     assert kit.traces.created[-1]["payload"]["notification_policy"]["reason"] == "quiet hours"
 
@@ -122,7 +122,7 @@ async def test_an_already_reported_action_never_offers_notify() -> None:
 
     await kit.loop._tick()
 
-    assert "message__notify" not in _offered(provider)
+    assert "message__send" not in _offered(provider)
     assert kit.connector.sent == []
     assert kit.traces.created[-1]["payload"]["notification_policy"]["reason"] == "already reported"
 
@@ -176,7 +176,7 @@ async def test_a_useful_free_text_message_is_delivered_after_triage() -> None:
     assert payload["outcome"] == "notify"
     assert payload["triage"]["delivered"] is True
     # the trace records that the model actually had the tool this turn
-    assert payload["outcome_tools"] == ["message__ask", "message__notify"]
+    assert payload["outcome_tools"] == ["message__ask", "message__send"]
     # the delivered words are not repeated under Internal
     assert "internal" not in payload
 
@@ -265,7 +265,83 @@ async def test_an_answer_turn_delivers_only_reply_and_keeps_notes_internal() -> 
 
 
 # ---------------------------------------------------------------------------
-# 4. an action already reported is not reported again inside the window
+# 4. one send tool: the turn type chooses reply or notify
+# ---------------------------------------------------------------------------
+
+
+async def test_one_send_is_a_reply_when_the_user_spoke_first() -> None:
+    provider = FakeProvider(
+        [
+            Turn(
+                tool_calls=[
+                    ToolCall(
+                        id="s1",
+                        name="message__send",
+                        arguments={
+                            "text": "Here is the answer.",
+                            "internal_notes": "SECRET-INTERNAL-NOTE",
+                        },
+                    )
+                ]
+            ),
+        ]
+    )
+    kit = LoopKit(provider)
+
+    kit.loop.submit_message(_msg("first question"))
+    await kit.loop._tick()
+
+    assert kit.connector.sent == ["Here is the answer."]
+    payload = kit.traces.created[-1]["payload"]
+    assert payload["outcome"] == "reply"
+    assert payload["internal_notes"] == "SECRET-INTERNAL-NOTE"
+
+
+async def test_one_send_is_a_proactive_note_when_unprompted() -> None:
+    provider = FakeProvider(
+        [
+            Turn(
+                tool_calls=[
+                    ToolCall(
+                        id="s1",
+                        name="message__send",
+                        arguments={"text": "the invoice is due tomorrow"},
+                    )
+                ]
+            )
+        ]
+    )
+    kit = LoopKit(provider)
+    kit.events.events[1] = _event(1)
+
+    await kit.loop._tick()
+
+    assert kit.connector.sent == ["the invoice is due tomorrow"]
+    assert kit.traces.created[-1]["payload"]["outcome"] == "notify"
+
+
+async def test_the_old_mid_turn_note_tool_is_never_offered() -> None:
+    # the consolidation deleted message__note/send_chat_message: a send is
+    # the only door, so no unguarded side channel can exist on either turn
+    solicited = FakeProvider([Turn(text="ok")])
+    kit = LoopKit(solicited)
+    kit.loop.submit_message(_msg("hello"))
+    await kit.loop._tick()
+    assert "message__note" not in _offered(solicited)
+    assert "send_chat_message" not in _offered(solicited)
+    assert "message__send" in _offered(solicited)
+
+    unprompted = FakeProvider([Turn(text="ok"), _triage("internal")])
+    kit = LoopKit(unprompted)
+    kit.events.events[1] = _event(1)
+    await kit.loop._tick()
+    assert "message__note" not in _offered(unprompted)
+    assert "send_chat_message" not in _offered(unprompted)
+    assert "message__send" in _offered(unprompted)
+
+
+# ---------------------------------------------------------------------------
+# 5. an action already reported is not reported again inside the window
 # ---------------------------------------------------------------------------
 
 
@@ -292,7 +368,7 @@ async def test_a_reported_failure_is_not_repeated_inside_the_window_and_returns_
     await kit.loop._tick()
 
     assert kit.connector.sent == ["the write failed"]  # not repeated
-    assert "message__notify" not in _offered(provider, 1)
+    assert "message__send" not in _offered(provider, 1)
 
     # outside the window the same action may be reported again
     keys = notification_keys([first])
@@ -324,7 +400,7 @@ async def test_changing_the_preference_changes_the_offer() -> None:
     kit.events.events[2] = _event(2)
     await kit.loop._tick()
 
-    assert "message__notify" in _offered(provider, 1)
+    assert "message__send" in _offered(provider, 1)
     assert kit.connector.sent == ["second"]
 
 
@@ -340,7 +416,7 @@ async def test_changing_quiet_hours_changes_the_offer() -> None:
     kit.events.events[2] = _event(2, salience=0.0)
     await kit.loop._tick()
 
-    assert "message__notify" in _offered(provider, 1)
+    assert "message__send" in _offered(provider, 1)
     assert kit.connector.sent == ["second"]
 
 
@@ -359,5 +435,5 @@ async def test_changing_the_repeat_window_changes_the_offer() -> None:
 
     await kit.loop._tick()
 
-    assert "message__notify" in _offered(provider)
+    assert "message__send" in _offered(provider)
     assert kit.connector.sent == ["reported again"]

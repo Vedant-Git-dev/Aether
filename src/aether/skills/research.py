@@ -19,7 +19,7 @@ from ..proactive.store import Opportunity, ProactiveTask
 from ..proactive.worker import RunOutcome
 from ..web import NOT_CONNECTED
 from ..workbench.base import ORDINARY
-from .base import EventReader, Executor, ProfileSource, Runner
+from .base import EventReader, Executor, Notify, ProfileSource, Runner
 
 # the search's own plain sentences for "this did not run" — a look that
 # didn't happen must never be saved as though it did
@@ -77,7 +77,11 @@ class ResearchSkill:
         return {"step": "search the web and keep the digest", "query": topic}
 
     async def run(
-        self, task: ProactiveTask, workbench: Runner | None, executor: Executor | None
+        self,
+        task: ProactiveTask,
+        workbench: Runner | None,
+        executor: Executor | None,
+        notify: Notify | None = None,
     ) -> RunOutcome:
         if executor is None:
             raise RuntimeError("the worker isn't wired to tools, so nothing could be looked up")

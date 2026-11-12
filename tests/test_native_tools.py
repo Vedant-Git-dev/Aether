@@ -91,8 +91,8 @@ class NativeKit:
 
 async def test_core_native_tools_register() -> None:
     kit = NativeKit()
-    assert kit.count == 8
-    assert len(kit.registry) == 8
+    assert kit.count == 7
+    assert len(kit.registry) == 7
     names = {
         t.spec.wire_name
         for t in (
@@ -103,7 +103,6 @@ async def test_core_native_tools_register() -> None:
                 "get_pending_approvals",
                 "schedule_action",
                 "request_screen_capture",
-                "send_chat_message",
                 "search_tools",
                 "load_tools",
             )
@@ -116,7 +115,6 @@ async def test_core_native_tools_register() -> None:
         "approvals__list",
         "schedule__create",
         "screen__capture",
-        "message__note",
         "tools__search",
         "tools__load",
     }
@@ -325,14 +323,6 @@ async def test_request_screen_capture_round_trips_the_box() -> None:
     assert "companion" in out
     assert kit.box.take() == "check the deploy"
     assert kit.box.take() is None  # one capture per ask
-
-
-async def test_send_chat_message_fans_out() -> None:
-    kit = NativeKit()
-    out = await kit.run("send_chat_message", {"text": "the deploy finished"})
-    assert out == "Sent to the user's chat surfaces."
-    assert kit.connector.sent == ["the deploy finished"]
-    assert await kit.run("send_chat_message", {"text": "  "}) == "send_chat_message needs text."
 
 
 # ---------------------------------------------------------------------------
@@ -559,7 +549,7 @@ async def test_audit_wiring_adds_the_integrity_tool() -> None:
     audit = FakeAudit()
     await audit.append(actor="agent", tool_name="mail__list_unread", decision="allow")
     kit = NativeKit(audit=audit)
-    assert kit.count == 9
+    assert kit.count == 8
 
     out = await kit.run("verify_integrity", {})
     assert "decision record" in out
@@ -780,11 +770,11 @@ def test_plain_replay_of_routine_and_scheduled_fires() -> None:
 
 
 async def test_config_tools_register_only_when_wired() -> None:
-    """14 with the manager wired, 12 without — the count is the contract
+    """15 with the manager wired, 13 without — the count is the contract
     main.py logs at boot (the workspace tools are counted separately,
     below)."""
     bare = NativeKit(routines=FakeRoutines(), traces=FakeTraces(), audit=FakeAudit())
-    assert bare.count == 14
+    assert bare.count == 13
     assert bare.registry.get("get_config") is None
     assert bare.registry.get("set_config") is None
 
@@ -794,7 +784,7 @@ async def test_config_tools_register_only_when_wired() -> None:
         audit=FakeAudit(),
         config_manager=FakeConfigManager(),
     )
-    assert wired.count == 16
+    assert wired.count == 15
     assert wired.registry.get("get_config") is not None
     assert wired.registry.get("set_config") is not None
 
@@ -858,11 +848,11 @@ async def _workspace(db) -> Workspace:
 @pytest.mark.integration
 async def test_workspace_tools_register_only_when_wired(db) -> None:
     bare = NativeKit()
-    assert bare.count == 8
+    assert bare.count == 7
     assert bare.registry.get("workspace_read") is None
 
     wired = NativeKit(workspace=await _workspace(db))
-    assert wired.count == 14
+    assert wired.count == 13
     for name in (
         "workspace_read",
         "workspace_search",
