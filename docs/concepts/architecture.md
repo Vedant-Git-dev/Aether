@@ -75,6 +75,11 @@ its own manifest under `src/aether/tools/manifests/` (risk, allow or ask, owner-
 provenance, whether its schema always rides the prompt, and its index line). The handler,
 schema and description stay in code, and the boot audit refuses an unmanifested tool.
 
+Tool results are typed (`src/aether/tools/result.py`): `ok`, `empty`, `refused`,
+`pending`, `unavailable` or `error`, plus the plain sentence the model reads. Code
+branches on the status; the model never sees a token, and the trace records it beside
+the ruling.
+
 Native tools live in `src/aether/agent/tools.py`:
 
 - memory search and entity notes

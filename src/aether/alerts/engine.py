@@ -30,6 +30,7 @@ from ..memory.timewindow import (
 from ..message_catalog import catalog
 from ..origin import TurnOrigin
 from ..outbound import is_deliverable
+from ..tools.result import ToolOutcome
 from .notifications import FAILED, HELD, QUEUED, AlertNotifications, Notification
 from .sources import manifest, nearest_alternative
 from .spec import (
@@ -517,7 +518,7 @@ class AlertEngine:
 
     # -- mutations -----------------------------------------------------------
 
-    def prepare(self, spec: AlertSpec) -> AlertSpec | str:
+    def prepare(self, spec: AlertSpec) -> AlertSpec | ToolOutcome:
         """Validate a spec against the manifest and the clock.
 
         Returns the normalized spec, or the catalog sentence explaining why
@@ -530,63 +531,65 @@ class AlertEngine:
             spec = replace(spec, scope="", event="", sender="", contains="", description="")
             moment = self._coerce_moment(spec.remind_at)
             if moment is None:
-                return self.refusal("alerts.reminder_needs_time")
+                return ToolOutcome.refused(self.refusal("alerts.reminder_needs_time"))
             spec = replace(spec, remind_at=moment.isoformat())
             return spec
         if spec.scope:
             scope = manifest().by_key(spec.scope)
             if scope is None:
-                return self.refusal("alerts.scope_unknown", scope=spec.scope)
+                return ToolOutcome.refused(self.refusal("alerts.scope_unknown", scope=spec.scope))
             if not scope.supports_events:
                 text = self.refusal("alerts.scope_unsupported", label=scope.label)
                 alternative = nearest_alternative(spec.scope)
                 if alternative is not None:
-                    return text + self.refusal("alerts.scope_alternative", label=alternative.label)
-                return text + self.refusal("alerts.scope_no_alternative", label=scope.label)
+                    text += self.refusal("alerts.scope_alternative", label=alternative.label)
+                else:
+                    text += self.refusal("alerts.scope_no_alternative", label=scope.label)
+                return ToolOutcome.refused(text)
         if not has_criteria(spec):
-            return self.refusal("alerts.needs_condition")
+            return ToolOutcome.refused(self.refusal("alerts.needs_condition"))
         return spec
 
-    async def create(self, spec: AlertSpec, origin: TurnOrigin) -> str:
+    async def create(self, spec: AlertSpec, origin: TurnOrigin) -> ToolOutcome:
         ready = self.prepare(spec)
-        if isinstance(ready, str):
+        if isinstance(ready, ToolOutcome):
             return ready
         made = await self._store.create(spec=ready, origin=origin)
         if made is None:
-            return self.refusal("alerts.refused")
+            return ToolOutcome.refused(self.refusal("alerts.refused"))
         await self.refresh()
-        return self.confirmation("created", made)
+        return ToolOutcome.ok(self.confirmation("created", made))
 
-    async def update(self, alert_id: int, spec: AlertSpec, origin: TurnOrigin) -> str:
+    async def update(self, alert_id: int, spec: AlertSpec, origin: TurnOrigin) -> ToolOutcome:
         if await self._store.get(alert_id) is None:
-            return self.refusal("alerts.not_found")
+            return ToolOutcome.refused(self.refusal("alerts.not_found"))
         ready = self.prepare(spec)
-        if isinstance(ready, str):
+        if isinstance(ready, ToolOutcome):
             return ready
         updated = await self._store.update(alert_id, spec=ready, origin=origin)
         if updated is None:
-            return self.refusal("alerts.refused")
+            return ToolOutcome.refused(self.refusal("alerts.refused"))
         await self.refresh()
-        return self.confirmation("updated", updated)
+        return ToolOutcome.ok(self.confirmation("updated", updated))
 
-    async def set_enabled(self, alert_id: int, enabled: bool, origin: TurnOrigin) -> str:
+    async def set_enabled(self, alert_id: int, enabled: bool, origin: TurnOrigin) -> ToolOutcome:
         if await self._store.get(alert_id) is None:
-            return self.refusal("alerts.not_found")
+            return ToolOutcome.refused(self.refusal("alerts.not_found"))
         changed = await self._store.set_enabled(alert_id, enabled, origin=origin)
         if changed is None:
-            return self.refusal("alerts.refused")
+            return ToolOutcome.refused(self.refusal("alerts.refused"))
         await self.refresh()
-        return self.confirmation("resumed" if enabled else "paused", changed)
+        return ToolOutcome.ok(self.confirmation("resumed" if enabled else "paused", changed))
 
-    async def remove(self, alert_id: int, origin: TurnOrigin) -> str:
+    async def remove(self, alert_id: int, origin: TurnOrigin) -> ToolOutcome:
         existing = await self._store.get(alert_id)
         if existing is None:
-            return self.refusal("alerts.not_found")
+            return ToolOutcome.refused(self.refusal("alerts.not_found"))
         removed = await self._store.delete(alert_id, origin=origin)
         if not removed:
-            return self.refusal("alerts.refused")
+            return ToolOutcome.refused(self.refusal("alerts.refused"))
         await self.refresh()
-        return self.confirmation("removed", existing)
+        return ToolOutcome.ok(self.confirmation("removed", existing))
 
     # -- clock helpers -------------------------------------------------------
 

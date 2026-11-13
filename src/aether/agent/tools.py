@@ -30,6 +30,7 @@ from ..llm.types import ImageBlock, Message, WireSpec, with_plain_param
 from ..origin import current_origin
 from ..tools.manifest import manifest_for, manifests
 from ..tools.model import MAX_SUMMARY, ToolSpec
+from ..tools.result import ToolOutcome
 from ..workspace import SecretRejected, WorkspaceWriteError
 
 log = logging.getLogger("aether.agent.tools")
@@ -1142,7 +1143,7 @@ def register_native_tools(
             )
         return "\n".join(lines)
 
-    async def memory_forget(params: dict[str, Any]) -> str:
+    async def memory_forget(params: dict[str, Any]) -> ToolOutcome:
         """Forget one remembered item, on the owner's explicit words.
 
         The provenance check is the same boundary an alert rides: a turn whose
@@ -1151,9 +1152,9 @@ def register_native_tools(
         item, and more than one asks which instead of guessing.
         """
         if memory_control is None:
-            return "Forgetting isn't available on this instance."
+            return ToolOutcome.unavailable("Forgetting isn't available on this instance.")
         if not current_origin().may_mutate:
-            return (
+            return ToolOutcome.refused(
                 "Only you can ask me to forget something — I won't delete "
                 "anything from a message I read or a feed I polled."
             )
@@ -1166,34 +1167,44 @@ def register_native_tools(
                 continue
             item_id = _parse_int_param(params, field, 1, minimum=1)
             if item_id is None:
-                return f"memory_forget needs {field} to be a number."
+                return ToolOutcome.refused(f"memory_forget needs {field} to be a number.")
             report = await forget(item_id)
-            return report.note if report.found else f"No stored memory with id {item_id}."
+            return (
+                ToolOutcome.ok(report.note)
+                if report.found
+                else ToolOutcome.empty(f"No stored memory with id {item_id}.")
+            )
 
         raw_event = str(params.get("event_id", "")).strip()
         if raw_event:
             event_id = _parse_int_param(params, "event_id", 1, minimum=1)
             if event_id is None:
-                return "memory_forget needs event_id to be a number."
+                return ToolOutcome.refused("memory_forget needs event_id to be a number.")
             report = await memory_control.forget_event(event_id)
-            return report.note if report.found else f"No stored memory with id {event_id}."
+            return (
+                ToolOutcome.ok(report.note)
+                if report.found
+                else ToolOutcome.empty(f"No stored memory with id {event_id}.")
+            )
 
         query = str(params.get("query") or "").strip()
         if not query:
-            return "memory_forget needs a query or an event_id."
+            return ToolOutcome.refused("memory_forget needs a query or an event_id.")
         if pipeline is None:
-            return "I can't search memory on this instance, so I can't tell which item you mean."
+            return ToolOutcome.unavailable(
+                "I can't search memory on this instance, so I can't tell which item you mean."
+            )
         try:
             result = await pipeline.run(query)
         except Exception:
             log.warning("memory_forget search failed", exc_info=True)
-            return FAILURE_REPLY
+            return ToolOutcome.error(FAILURE_REPLY)
         found = _trace_items(result.packed.trace)
         if not found:
-            return "I couldn't find that in memory."
+            return ToolOutcome.empty("I couldn't find that in memory.")
         if len(found) > 1:
             lines = "\n".join(f"- {line}" for _, line in found[:3])
-            return (
+            return ToolOutcome.refused(
                 "More than one thing matches. Which should I forget?\n"
                 f"{lines}\n"
                 "Ask them to pick one, then call memory_forget again with "
@@ -1201,7 +1212,11 @@ def register_native_tools(
             )
         event_id, _ = found[0]
         report = await memory_control.forget_event(event_id)
-        return report.note if report.found else "That item is already gone."
+        return (
+            ToolOutcome.ok(report.note)
+            if report.found
+            else ToolOutcome.empty("That item is already gone.")
+        )
 
     async def note_entity(params: dict[str, Any]) -> str:
         handle = str(params.get("handle", "")).strip()
@@ -1232,20 +1247,22 @@ def register_native_tools(
             for a in pending
         )
 
-    async def schedule_action(params: dict[str, Any]) -> str:
+    async def schedule_action(params: dict[str, Any]) -> ToolOutcome:
         label = str(params.get("label", "")).strip()
         tool_name = str(params.get("tool_name", "")).strip()
         if not label or not tool_name:
-            return "schedule_action needs a label and a tool_name."
+            return ToolOutcome.refused("schedule_action needs a label and a tool_name.")
         raw_when = str(params.get("run_at", "")).strip()
         try:
             run_at = datetime.fromisoformat(raw_when)
         except ValueError:
-            return f"run_at {raw_when!r} is not an ISO datetime (e.g. 2026-09-25T18:30:00+05:30)."
+            return ToolOutcome.refused(
+                f"run_at {raw_when!r} is not an ISO datetime (e.g. 2026-09-25T18:30:00+05:30)."
+            )
         if run_at.tzinfo is None:
             run_at = run_at.replace(tzinfo=UTC)
         if run_at <= datetime.now(UTC) + timedelta(seconds=5):
-            return "run_at must be in the future."
+            return ToolOutcome.refused("run_at must be in the future.")
         action = await scheduler.create(
             label=label,
             run_at=run_at,
@@ -1255,7 +1272,7 @@ def register_native_tools(
                 "params": dict(params.get("params") or {}),
             },
         )
-        return (
+        return ToolOutcome.ok(
             f"Scheduled as action {action.id} for {run_at.isoformat()}. It will "
             "still pass the authorization gate when it fires — a risky tool "
             "will ask the user then."

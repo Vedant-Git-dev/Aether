@@ -90,6 +90,7 @@ async def test_a_turn_leaves_a_trace_with_calls_rulings_and_reply() -> None:
     assert call["approval_id"] is None
     assert call["result"] == "2 unread: alice, bob"
     assert call["is_error"] is False
+    assert call["status"] == "ok"
     assert payload["reasoning"] == ["checking mail"]  # words between calls
     assert payload["reply"] == "2 unread"  # and the reply is its own field
     assert "error" not in payload
@@ -141,6 +142,7 @@ async def test_a_parked_call_records_its_approval_id() -> None:
     assert call["decision"] == "require_approval"
     assert call["approval_id"] == 1  # the trace points at the held approval
     assert call["audit_seq"] is None  # parking is not an audit decision row
+    assert call["status"] == "pending"
     assert kit.approvals.created[0].id == 1
 
 
@@ -155,6 +157,7 @@ async def test_a_denied_call_is_traced_with_its_reason() -> None:
     assert call["decision"] == "deny"
     assert call["matched_rule"] == "user:mail__send_message"  # the user rule won
     assert call["is_error"] is True
+    assert call["status"] == "refused"
     assert "denied by policy" in call["result"]
 
 

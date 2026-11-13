@@ -1005,6 +1005,7 @@ class AgentLoop:
                     name=call.name,
                     content=f"alert action failed: {exc}",
                     is_error=True,
+                    status="error",
                 )
                 self._note_call(calls, call, result)
         seq = await self._audit.append(
@@ -2519,6 +2520,7 @@ class AgentLoop:
                         "outcome accepted" if accepted else "that action is not offered this turn"
                     ),
                     is_error=not accepted,
+                    status="ok" if accepted else "refused",
                 )
             tool = self._tools.resolve(call.name)
             if tool is not None and tool.spec.id == "tools.load":
@@ -2526,7 +2528,11 @@ class AgentLoop:
                 if not isinstance(raw, list) or not raw:
                     content = "tools__load needs a list of tool names."
                     result = ToolResult(
-                        tool_call_id=call.id, name=call.name, content=content, is_error=True
+                        tool_call_id=call.id,
+                        name=call.name,
+                        content=content,
+                        is_error=True,
+                        status="refused",
                     )
                     self._note_call(calls, call, result)
                     return result
@@ -2552,6 +2558,7 @@ class AgentLoop:
                         "tools__search and load it with tools__load first"
                     ),
                     is_error=True,
+                    status="refused",
                 )
                 self._note_call(calls, call, result)
                 return result
@@ -3681,6 +3688,7 @@ class AgentLoop:
                 "approval_id": approval_id,
                 "result": result.content,
                 "is_error": result.is_error,
+                "status": result.status,
             }
         )
 
@@ -3766,6 +3774,7 @@ class AgentLoop:
                         "this turn — answer from the memory already in front of you."
                     ),
                     is_error=True,
+                    status="refused",
                 )
                 self._note_call(trace, call, result)
                 return result
@@ -3784,6 +3793,7 @@ class AgentLoop:
                 name=call.name,
                 content=f"denied by policy: {ruling.reason}",
                 is_error=True,
+                status="refused",
             )
             self._note_call(trace, call, result, ruling=ruling, audit_seq=seq)
             return result
@@ -3810,6 +3820,7 @@ class AgentLoop:
                 name=call.name,
                 content=render_message("tools.owner_only", locale=self._config.agent.locale),
                 is_error=True,
+                status="refused",
             )
             self._note_call(trace, call, result, ruling=ruling, audit_seq=seq)
             return result
@@ -3833,17 +3844,19 @@ class AgentLoop:
                             tool_call_id=call.id,
                             name=call.name,
                             content=str(entry.get("result", "")),
+                            status=str(entry.get("status") or "ok"),
                         )
                         self._note_call(trace, call, result, ruling=ruling)
                         return result
             try:
-                content = await self._tools.execute(call.name, call.arguments)
+                outcome = await self._tools.execute_outcome(call.name, call.arguments)
             except UnknownToolError:
                 result = ToolResult(
                     tool_call_id=call.id,
                     name=call.name,
                     content=self._plain_unavailable(call.name),
                     is_error=True,
+                    status="unavailable",
                 )
                 self._note_call(trace, call, result, ruling=ruling)
                 return result
@@ -3853,6 +3866,7 @@ class AgentLoop:
                     name=call.name,
                     content=self._plain_unresponsive(call.name),
                     is_error=True,
+                    status="unavailable",
                 )
                 self._note_call(trace, call, result, ruling=ruling)
                 return result
@@ -3870,6 +3884,7 @@ class AgentLoop:
                     name=call.name,
                     content=exc.plain,
                     is_error=True,
+                    status="error",
                 )
                 self._note_call(trace, call, result, ruling=ruling, audit_seq=seq)
                 return result
@@ -3881,7 +3896,13 @@ class AgentLoop:
                 params=call.arguments,
                 outcome=ruling.reason,
             )
-            result = ToolResult(tool_call_id=call.id, name=call.name, content=content)
+            result = ToolResult(
+                tool_call_id=call.id,
+                name=call.name,
+                content=outcome.message,
+                is_error=outcome.is_error,
+                status=outcome.status,
+            )
             self._note_call(trace, call, result, ruling=ruling, audit_seq=seq)
             return result
 
@@ -3895,6 +3916,7 @@ class AgentLoop:
                 name=call.name,
                 content=self._plain_unavailable(call.name),
                 is_error=True,
+                status="unavailable",
             )
             self._note_call(trace, call, result, ruling=ruling)
             return result
@@ -3912,6 +3934,7 @@ class AgentLoop:
                     tool_call_id=call.id,
                     name=call.name,
                     content=(f"already settled — {settled[key]}. Do not propose it again."),
+                    status="ok",
                 )
                 self._note_call(trace, call, result, ruling=ruling)
                 return result
@@ -3930,6 +3953,7 @@ class AgentLoop:
                         tool_call_id=call.id,
                         name=call.name,
                         content=str(entry.get("result", "")),
+                        status="pending",
                     )
                     self._note_call(trace, call, result, ruling=ruling)
                     return result
@@ -3947,6 +3971,7 @@ class AgentLoop:
                     "request is in front of them with one-tap buttons. Do not "
                     "propose it again."
                 ),
+                status="pending",
             )
             self._note_call(trace, call, result, ruling=ruling, approval_id=existing.id)
             return result
@@ -3979,7 +4004,7 @@ class AgentLoop:
                     "wants the action, propose the call again without media_id "
                     "and say plainly that the file will stay behind."
                 )
-            result = ToolResult(tool_call_id=call.id, name=call.name, content=why)
+            result = ToolResult(tool_call_id=call.id, name=call.name, content=why, status="refused")
             self._note_call(trace, call, result, ruling=ruling)
             return result
         approval = await self._approvals.create(
@@ -4003,6 +4028,7 @@ class AgentLoop:
                 "in front of the user with one-tap buttons — do not announce or "
                 "narrate the wait in your reply."
             ),
+            status="pending",
         )
         self._note_call(trace, call, result, ruling=ruling, approval_id=approval.id)
         return result

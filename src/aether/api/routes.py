@@ -1075,8 +1075,8 @@ async def update_alert_feed(
     engine = getattr(request.app.state, "alerts", None)
     if engine is None:
         raise HTTPException(status_code=503, detail="alerts are not wired")
-    message = await engine.set_enabled(alert_id, body.enabled, panel_action())
-    return {"message": message}
+    outcome = await engine.set_enabled(alert_id, body.enabled, panel_action())
+    return {"message": outcome.message}
 
 
 @router.delete("/api/alerts/{alert_id}")
@@ -1087,8 +1087,8 @@ async def delete_alert_feed(alert_id: int, request: Request, token: str | None =
     engine = getattr(request.app.state, "alerts", None)
     if engine is None:
         raise HTTPException(status_code=503, detail="alerts are not wired")
-    message = await engine.remove(alert_id, panel_action())
-    return {"message": message}
+    outcome = await engine.remove(alert_id, panel_action())
+    return {"message": outcome.message}
 
 
 _WORKSPACE_FILES = ("identity", "soul", "agents", "user", "memory")

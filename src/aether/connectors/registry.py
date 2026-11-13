@@ -10,7 +10,6 @@ demand and capped.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -26,6 +25,7 @@ from ..tools.grants import (
     CapabilityGrants,
 )
 from ..tools.model import MAX_SUMMARY, ToolSpec
+from ..tools.result import ToolOutcome
 from .base import UnknownToolError
 from .mail_allowlist import MailAllowlist
 from .mcp_host import MCPHost
@@ -549,6 +549,11 @@ class ToolRegistry:
     # -- use ------------------------------------------------------------------
 
     async def execute(self, name: str, params: dict[str, Any]) -> str:
+        """The plain sentence for one call — the shape the model reads."""
+        return (await self.execute_outcome(name, params)).message
+
+    async def execute_outcome(self, name: str, params: dict[str, Any]) -> ToolOutcome:
+        """The same call, typed: status plus the plain sentence."""
         tool = self.resolve(name)
         if tool is None:
             raise UnknownToolError(f"unknown tool: {name}")
@@ -560,17 +565,14 @@ class ToolRegistry:
         wire_name = tool.spec.wire_name
         if tool.kind in ("native", "provider"):
             assert tool.handler is not None
-            result = _stringify(await tool.handler(params or {}))
+            outcome = ToolOutcome.coerce(await tool.handler(params or {}))
         else:
             if self._mcp_host is None:
                 raise UnknownToolError(f"mcp tool {name} has no host to route through")
-            result = await self._mcp_host.call(wire_name, params or {})
+            text = await self._mcp_host.call(wire_name, params or {})
+            outcome = ToolOutcome.ok(text)
         if self._mail_filter is not None and tool.kind in ("provider", "mcp"):
-            result = await self._mail_filter.filter_result(wire_name, result)
-        return result
-
-
-def _stringify(result: Any) -> str:
-    if isinstance(result, str):
-        return result
-    return json.dumps(result, ensure_ascii=False, default=str)
+            filtered = await self._mail_filter.filter_result(wire_name, outcome.message)
+            if filtered != outcome.message:
+                outcome = ToolOutcome(outcome.status, filtered, dict(outcome.data))
+        return outcome

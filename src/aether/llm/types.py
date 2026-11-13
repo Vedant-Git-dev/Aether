@@ -71,6 +71,10 @@ class ToolResult:
     name: str
     content: str
     is_error: bool = False
+    # One word for code: ok | empty | refused | pending | unavailable | error.
+    # The model never sees it; the trace records it and callers branch on it
+    # instead of matching prefixes of `content`.
+    status: str = "ok"
 
 
 Block = TextBlock | ImageBlock | VideoBlock | AudioBlock | ToolCall | ToolResult

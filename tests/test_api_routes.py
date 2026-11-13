@@ -1216,12 +1216,16 @@ class FakeAlertEngine:
         return "2026-11-20 09:00 UTC"
 
     async def set_enabled(self, alert_id, enabled, origin):
+        from aether.tools.result import ToolOutcome
+
         self.toggled.append((alert_id, enabled))
-        return "Paused: Landlord."
+        return ToolOutcome.ok("Paused: Landlord.")
 
     async def remove(self, alert_id, origin):
+        from aether.tools.result import ToolOutcome
+
         self.removed.append(alert_id)
-        return "Removed: Landlord."
+        return ToolOutcome.ok("Removed: Landlord.")
 
 
 async def test_alerts_feed_is_token_guarded() -> None:

@@ -819,8 +819,10 @@ async def test_a_direct_alert_create_on_an_unprompted_turn_is_refused() -> None:
         alerts=FakeAlerts(),
     )
 
+    trace: list[dict] = []
     result = await kit.loop._execute(
-        ToolCall(id="t1", name="alerts__create", arguments={"title": "x", "scope": "mail"})
+        ToolCall(id="t1", name="alerts__create", arguments={"title": "x", "scope": "mail"}),
+        trace=trace,
     )
 
     # the manifest's owner provenance refuses before the handler runs
@@ -828,6 +830,8 @@ async def test_a_direct_alert_create_on_an_unprompted_turn_is_refused() -> None:
         "Only you can do that — I won't do it from a message I read or a feed I polled."
     )
     assert result.is_error is True
+    assert result.status == "refused"
+    assert trace[0]["status"] == "refused"
     assert calls == []
     assert kit.approvals.created == []
 

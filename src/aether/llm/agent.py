@@ -111,6 +111,7 @@ async def run_tool_loop(
                     name=call.name,
                     content="internal error: the tool raised during execution",
                     is_error=True,
+                    status="error",
                 )
 
         batch = await asyncio.gather(*(_guarded(turn.tool_calls[p]) for p in distinct))

@@ -613,12 +613,13 @@ async def test_an_unsupported_scope_is_refused_with_the_nearest_alternative() ->
     notifications = FakeNotifications()
     engine, _ = _engine(store, notifications)
 
-    message = await engine.create(
+    outcome = await engine.create(
         AlertSpec(title="CI", scope="github"), owner_message({"message_ids": ["m-1"]})
     )
 
-    assert "GitHub can't notify me yet" in message
-    assert "Mail" in message
+    assert outcome.status == "refused"
+    assert "GitHub can't notify me yet" in outcome.message
+    assert "Mail" in outcome.message
     assert store.rows == []
 
 
@@ -627,9 +628,10 @@ async def test_an_alert_with_no_condition_is_refused() -> None:
     notifications = FakeNotifications()
     engine, _ = _engine(store, notifications)
 
-    message = await engine.create(AlertSpec(title="anything"), owner_message())
+    outcome = await engine.create(AlertSpec(title="anything"), owner_message())
 
-    assert "needs something to match" in message
+    assert outcome.status == "refused"
+    assert "needs something to match" in outcome.message
 
 
 class FakeWording:
@@ -788,11 +790,12 @@ async def test_a_confirmation_is_rendered_from_the_stored_record() -> None:
 
     store.create = create  # type: ignore[attr-defined]
 
-    message = await engine.create(
+    outcome = await engine.create(
         AlertSpec(title="Landlord", scope="mail", contains="rent"), owner_message()
     )
 
-    assert message == 'Alert set: Landlord — Mail, mentioning "rent".'
+    assert outcome.status == "ok"
+    assert outcome.message == 'Alert set: Landlord — Mail, mentioning "rent".'
 
 
 # ---------------------------------------------------------------------------
