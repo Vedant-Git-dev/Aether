@@ -47,9 +47,13 @@ BEGIN
         RAISE EXCEPTION 'sealed cutover refused: % scheduled action(s) are not sealed', pending;
     END IF;
 
-    SELECT COUNT(*) INTO pending FROM routines WHERE label_enc IS NULL;
-    IF pending > 0 THEN
-        RAISE EXCEPTION 'sealed cutover refused: % routine(s) are not sealed', pending;
+    -- a later migration renames routines to routines_legacy; re-applying
+    -- this one after that must not fail on a table that is already gone
+    IF to_regclass('public.routines') IS NOT NULL THEN
+        SELECT COUNT(*) INTO pending FROM routines WHERE label_enc IS NULL;
+        IF pending > 0 THEN
+            RAISE EXCEPTION 'sealed cutover refused: % routine(s) are not sealed', pending;
+        END IF;
     END IF;
 
     SELECT COUNT(*) INTO pending FROM decision_traces WHERE label_enc IS NULL;
@@ -125,8 +129,12 @@ ALTER TABLE scheduled_actions
     DROP COLUMN IF EXISTS label,
     DROP COLUMN IF EXISTS run_at;
 
-ALTER TABLE routines
-    DROP COLUMN IF EXISTS label;
+DO $$
+BEGIN
+    IF to_regclass('public.routines') IS NOT NULL THEN
+        ALTER TABLE routines DROP COLUMN IF EXISTS label;
+    END IF;
+END $$;
 
 ALTER TABLE decision_traces
     DROP COLUMN IF EXISTS label;

@@ -35,6 +35,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ..alerts.engine import AlertEngine
 from ..authz.approvals import APPROVED, DENIED, Approval, Approvals
 from ..authz.audit import AuditLog, verification_text
 from ..authz.policy import Decision, Policy, Ruling, params_blob
@@ -76,11 +77,20 @@ from ..memory.vectors import MemoryHit, VectorMemory
 from ..memory.verify import find_findings, unsupported
 from ..memory.views import Views, wants_attention
 from ..message_catalog import render as render_message
+from ..origin import (
+    alert_action,
+    approved_call,
+    owner_message,
+    reset_origin,
+    scheduled,
+    set_origin,
+    unprompted,
+    use_origin,
+)
 from ..outbound import clean_outbound, is_deliverable
 from ..providers.runtime import ProviderRuntime
 from ..providers.types import ConnectResult, ProviderError, ProviderNotConfigured
 from ..restart import pending as restart_pending
-from ..routines import Routines, trigger_matches
 from ..scheduler.jobs import ScheduledAction, Scheduler
 from ..secret_env import EnvResolver
 from ..secret_store import SecretStore
@@ -116,21 +126,12 @@ from .tools import (
     plain_outcome,
     plain_replay,
 )
-from .traces import CARRY_OUT, ROUTINE, SCHEDULED, TURN, Traces
+from .traces import ALERT, CARRY_OUT, SCHEDULED, TURN, Traces
 from .triage import TriageDecision, triage_unprompted
 
 log = logging.getLogger("aether.agent")
 
 _MAX_OBSERVATIONS = 20
-
-# Only a message matching one of these makes `forget_origin()` return "owner".
-# The same boundary as a watch: memory is deleted on the user's own words,
-# never on an instruction read out of an email or a polled feed.
-_FORGET_INTENT = re.compile(
-    r"\b(forget|delete\s+(that|this|it)|remove\s+(that|this|it)\s+from\s+"
-    r"(your\s+)?memory|wipe\s+(that|this|it)|stop\s+remembering)\b",
-    re.IGNORECASE,
-)
 
 # A solicited turn waits this long for write-time enrichment still in
 # flight before it answers from the deterministic floor. The classifier is
@@ -687,7 +688,6 @@ class AgentLoop:
         capture_box: CaptureRequestBox,
         config: AppConfig,
         host: MCPHost | None = None,
-        routines: Routines | None = None,
         traces: Traces | None = None,
         agent_settings: AgentSettings | None = None,
         config_manager: ConfigManager | None = None,
@@ -727,7 +727,6 @@ class AgentLoop:
         self._capture_box = capture_box
         self._config = config
         self._host = host
-        self._routines = routines
         self._traces = traces
         self._agent_settings = agent_settings
         self._config_manager = config_manager
@@ -765,16 +764,17 @@ class AgentLoop:
         # packing). Behind memory.query_pipeline; without it the old vector
         # recall above still serves each turn.
         self._query_pipeline = query_pipeline
-        # the proactive path: watch matching and reminders. Late-wired like
-        # the enrichment pieces, because a reminder delivers through this
-        # loop's own interruption budget.
+        # commitment reminders: due leads the path reports and the model
+        # words. Late-wired like the enrichment pieces, because a reminder
+        # delivers through this loop's own interruption budget.
         self._proactive_path = proactive_path
+        # alerts: deterministic matching and delivery. Late-wired for the
+        # same reason — a notification rides the surfaces, and a folded
+        # routine action runs through this loop's gate.
+        self._alerts: AlertEngine | None = None
         # the summary generator: one due thread/daily/weekly summary per tick,
         # a model call behind memory.summaries
         self._summary_job = summary_job
-        # the messages the current turn answers — empty for an unprompted
-        # tick, which is what keeps mail content from arming a watch
-        self._turn_messages: list[InboundMessage] = []
         # the outbound-send record: a failed or empty send is a fact, not a
         # log line, and the next turn is told about it
         self._deliveries = deliveries
@@ -969,30 +969,65 @@ class AgentLoop:
         return await self._notify(text, urgent=urgent, channel=channel)
 
     def attach_proactive_path(self, path: Any) -> None:
-        """Join the proactive path after boot builds it — the same
-        late-wire shape as the enrichment pieces, because the path
-        delivers through this loop's interruption budget."""
+        """Join the commitment-reminder path after boot builds it — the same
+        late-wire shape as the enrichment pieces, because the path delivers
+        through this loop's interruption budget."""
         self._proactive_path = path
 
-    def alert_basis(self) -> list[str]:
-        """The user's own messages this turn, for the alert tools' basis check.
+    def attach_alerts(self, alerts: AlertEngine) -> None:
+        """Join the alert engine: it delivers through the surfaces and runs a
+        folded routine action through this loop's authorization gate."""
+        self._alerts = alerts
+        alerts.attach_notify(self._notify)
+        alerts.attach_action_runner(self._run_alert_action)
 
-        An unprompted tick, a routine or the background worker has no user
-        messages, so an instruction inside an email or a feed can never arm,
-        change or list an alert.
-        """
-        return [message.text or "" for message in self._turn_messages]
+    async def _run_alert_action(self, alert: Any, event: Event) -> None:
+        """Run one alert's optional action through the ordinary gate.
 
-    def forget_origin(self) -> str:
-        """`owner` only when the user's own message asked to forget something.
-
-        The same boundary the alert tools ride: an email or a polled feed can
-        describe the world, but only the person can delete what Aether keeps.
-        """
-        for message in self._turn_messages:
-            if _FORGET_INTENT.search(message.text or ""):
-                return "owner"
-        return "context"
+        A folded routine is still a tool call: it is classified, parked and
+        audited exactly as the model's own proposal, under a provenance that
+        says an alert triggered it."""
+        action = alert.spec.action or {}
+        call = ToolCall(
+            id=f"alert-{alert.id}-{event.id}",
+            name=str(action.get("tool", "")),
+            arguments=dict(action.get("params") or {}),
+        )
+        calls: list[dict[str, Any]] = []
+        with use_origin(alert_action(alert.id, event.id)):
+            try:
+                result = await self._execute(call, trace=calls)
+            except Exception as exc:
+                log.exception("alert %s action failed", alert.id)
+                result = ToolResult(
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=f"alert action failed: {exc}",
+                    is_error=True,
+                )
+                self._note_call(calls, call, result)
+        seq = await self._audit.append(
+            actor="alert",
+            tool_name=call.name,
+            decision="info",
+            params={"event_id": event.id, "event": f"{event.source}/{event.kind}"},
+            outcome="alert action fired",
+        )
+        await self._save_trace(
+            kind=ALERT,
+            label=alert.title,
+            payload={
+                "alert": {"id": alert.id, "title": alert.title},
+                "event": {
+                    "id": event.id,
+                    "source": event.source,
+                    "kind": event.kind,
+                    "line": self._event_line(event),
+                },
+                "calls": calls,
+                "audit_seq": seq,
+            },
+        )
 
     async def present_result(
         self,
@@ -1073,6 +1108,17 @@ class AgentLoop:
             await self._turn([], observations)
         except Exception:
             log.exception("reminder turn failed")
+
+    async def _run_alert_tick(self) -> None:
+        """Deliver alert candidates that are due: a reminder moment, a held
+        digest, or a failed send whose retry time arrived. Code decides and
+        code sends — no unprompted turn is required for a notification."""
+        if self._alerts is None:
+            return
+        try:
+            await self._alerts.tick()
+        except Exception:
+            log.exception("alert delivery pass failed — continuing")
 
     @staticmethod
     def _reminder_event(item: Any) -> Event:
@@ -1394,8 +1440,6 @@ class AgentLoop:
 
         # (c2) standing triggers the user taught — deterministic matching
         # over the same observations, before any LLM is involved
-        if observations and self._routines is not None:
-            await self._run_routines(observations)
 
         # held unprompted notes from the quiet window ship as one batched
         # message the moment the window ends — the budget pays out, in one
@@ -1413,6 +1457,7 @@ class AgentLoop:
             # a retry that came due while the queue was busy still runs
             await self._run_due_resumes()
             await self._run_proactive_tick()
+            await self._run_alert_tick()
             self._spawn_summary_tick()
             return
 
@@ -1447,6 +1492,7 @@ class AgentLoop:
         # reminders and alerts held by a quiet window — never in front of
         # the words someone is waiting on
         await self._run_proactive_tick()
+        await self._run_alert_tick()
         self._spawn_summary_tick()
 
         # a tick that never suspended (a provider-less turn, say) still
@@ -2134,89 +2180,6 @@ class AgentLoop:
                 word = "action" if gained == 1 else "actions"
                 await self._surfaces.send_to_user(f"{name} — {gained} new {word} in my vocabulary")
 
-    # -- routines ---------------------------------------------------------------
-
-    async def _run_routines(self, observations: list[Event]) -> None:
-        """Evaluate the user's standing triggers against this tick's new
-        events. Matching is pure code — no LLM in the decision of *whether*
-        to react — and each fire goes through `_execute`, so the gate
-        applies at fire time, every time."""
-        routines = await self._routines.list_enabled()
-        if not routines:
-            return
-        now = datetime.now(UTC)
-        for routine in routines:
-            if (
-                routine.last_fired_at is not None
-                and routine.cooldown_seconds > 0
-                and now < routine.last_fired_at + timedelta(seconds=routine.cooldown_seconds)
-            ):
-                continue  # inside its cooldown window — a burst of similar events fires it once
-            event = next(
-                (e for e in observations if trigger_matches(routine.trigger, e)),
-                None,
-            )
-            if event is None:
-                continue
-            try:
-                await self._fire_routine(routine, event)
-            except Exception:
-                log.exception("routine %d failed — continuing", routine.id)
-
-    async def _fire_routine(self, routine: Any, event: Event) -> None:
-        action = routine.action or {}
-        call = ToolCall(
-            id=f"routine-{routine.id}-{event.id}",
-            name=str(action.get("tool", "")),
-            arguments=dict(action.get("params") or {}),
-        )
-        calls: list[dict[str, Any]] = []
-        try:
-            result = await self._execute(call, trace=calls)
-        except Exception as exc:
-            log.exception("routine %d fire failed", routine.id)
-            result = ToolResult(
-                tool_call_id=call.id,
-                name=call.name,
-                content=f"routine fire failed: {exc}",
-                is_error=True,
-            )
-            self._note_call(calls, call, result)  # decision "error": no ruling
-        # fired counts even on failure: the cooldown should gate a broken
-        # action's retries, not let it hammer every tick
-        await self._routines.mark_fired(routine.id)
-        seq = await self._audit.append(
-            actor="routine",
-            tool_name=call.name,
-            decision="info",
-            rules_matched=f"routine:{routine.id}",
-            params={"event_id": event.id, "event": f"{event.source}/{event.kind}"},
-            outcome="routine fired",
-        )
-        refs = await self._notify(
-            # the exact call stays in the audit row and the trace; the chat
-            # note speaks plainly, never in internal tool names
-            f"routine '{routine.label}' fired: {result.content[:220]}"
-        )
-        payload = {
-            "routine": {
-                "id": routine.id,
-                "label": routine.label,
-                "trigger": routine.trigger,
-            },
-            "event": {
-                "id": event.id,
-                "source": event.source,
-                "kind": event.kind,
-                "line": self._event_line(event),
-            },
-            "calls": calls,
-            "audit_seq": seq,
-        }
-        if refs:  # the ping only links back if it actually landed somewhere
-            payload["chat_refs"] = refs
-        await self._save_trace(kind=ROUTINE, label=routine.label, payload=payload)
-
     # -- the LLM turn ---------------------------------------------------------------
 
     async def _system_prompt(self) -> str:
@@ -2594,9 +2557,20 @@ class AgentLoop:
         # can resume from the exact step that died instead of starting over
         loop_history: list[Message] = []
         attempt = 1 if resume is None else resume.attempts + 1
-        # what this turn answers, for the alert tools' basis check — an
-        # unprompted tick leaves it empty, so an email cannot arm an alert
-        self._turn_messages = list(messages)
+        # where this turn came from. The harness decides; the model cannot
+        # produce an owner origin from content it read. A solicited turn
+        # carries the message ids it answers, sealed on any alert it writes;
+        # an unprompted tick carries nothing, so it cannot mutate.
+        origin_token = set_origin(
+            owner_message(
+                {
+                    "chat_refs": sorted({m.chat_ref for m in messages if m.chat_ref}),
+                    "message_ids": sorted({m.message_id for m in messages if m.message_id}),
+                }
+            )
+            if messages
+            else unprompted()
+        )
         system = await self._system_prompt()
         system = f"{system}\n\n{self._tool_index(outcome_tools)}"
         try:
@@ -2813,9 +2787,9 @@ class AgentLoop:
             await self._settle_inbound(records, answered=False, reason="turn failed")
             raise
         finally:
-            # the turn is over; a later routine or worker call must read as
-            # context, never as the user's own instruction
-            self._turn_messages = []
+            # the turn is over; a later worker call must read as context,
+            # never as the user's own instruction
+            reset_origin(origin_token)
             # the pulse dies with the turn, whatever ended it — awaited so
             # the cancelled task never outlives the turn as a dangling
             # pending warning at loop close
@@ -3381,7 +3355,7 @@ class AgentLoop:
                 f"{event.occurred_at:%Y-%m-%d %H:%M} {event.source}/{event.kind}"
                 f" (salience {event.salience_score:.0f}): {text[:400]}"
             )
-        labels = event.meta.get("watch_labels") if isinstance(event.meta, dict) else None
+        labels = event.meta.get("alert_matches") if isinstance(event.meta, dict) else None
         if isinstance(labels, list):
             names = ", ".join(
                 f'"{str(label).replace(chr(10), " ").strip()[:80]}"'
@@ -3391,7 +3365,7 @@ class AgentLoop:
             if names:
                 # context for the model, not a message: the agent decides in
                 # its own words whether this is worth saying
-                line += f" — the user asked to be told about this ({names})"
+                line += f" — an alert matched this ({names})"
         return line
 
     async def _refresh_owner_addresses(self) -> None:
@@ -4036,12 +4010,8 @@ class AgentLoop:
         }
         try:
             run_params = dict(approval.params)
-            tool = self._tools.get(approval.tool_name)
-            if tool is not None and tool.spec.id == "alerts.create":
-                # the tap is the user's decision; the tool arms what the
-                # card described instead of asking for a chat quote again
-                run_params["_approved"] = True
-            result = await self._tools.execute(approval.tool_name, run_params)
+            with use_origin(approved_call(approval.id)):
+                result = await self._tools.execute(approval.tool_name, run_params)
         except UnknownToolError as exc:
             # rows parked before the up-front check — or an app unlinked
             # while one sat pending — still land here. The user hears plain
@@ -4221,7 +4191,8 @@ class AgentLoop:
             arguments=dict(payload.get("params") or {}),
         )
         calls: list[dict[str, Any]] = []
-        result = await self._execute(call, trace=calls)
+        with use_origin(scheduled(action.id)):
+            result = await self._execute(call, trace=calls)
         # recorded before any raise, so a failed fire still has its trace
         await self._save_trace(
             kind=SCHEDULED,

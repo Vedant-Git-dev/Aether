@@ -20,6 +20,7 @@ pytestmark = pytest.mark.e2e
 PAGES = [
     "activity",
     "tasks",
+    "alerts",
     "memory",
     "audit",
     "traces",

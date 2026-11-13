@@ -25,7 +25,6 @@ from fakes import (
     FakeEventStore,
     FakeProvider,
     FakeRegistry,
-    FakeRoutines,
     FakeSalience,
     FakeScheduler,
     FakeSurfaceConnector,
@@ -177,7 +176,6 @@ class LoopKit:
         self.salience = FakeSalience()
         self.context = FakeContextBuilder()
         self.scheduler = FakeScheduler()
-        self.routines = FakeRoutines()
         self.traces = FakeTraces()
         self.connector = FakeSurfaceConnector()
         self.capture_box = CaptureRequestBox()
@@ -196,7 +194,6 @@ class LoopKit:
             capture_box=self.capture_box,
             config=config or AppConfig(),
             host=None,
-            routines=self.routines,
             traces=self.traces,
             agent_settings=agent_settings,
             config_manager=config_manager,
@@ -738,32 +735,37 @@ async def test_the_web_panel_decide_path_carries_out_a_fresh_approval() -> None:
     assert any("Sent the email" in s for s in kit.connector.sent)
 
 
-async def test_an_unquoted_alert_create_parks_and_arms_only_on_approval() -> None:
-    class FakeAlertPath:
+async def test_an_alert_offer_parks_and_arms_only_on_approval() -> None:
+    class FakeAlerts:
         def __init__(self) -> None:
             self.created: list = []
 
-        async def create_watch(self, spec, *, origin: str):
+        async def create(self, spec, origin):
+            if not origin.may_mutate:
+                return "Only you can change your alerts."
             self.created.append(spec)
-            return SimpleNamespace(id=1, spec=spec, label=spec.label, status="active")
+            return f"Alert set: {spec.title}."
 
-        async def list_watches(self, limit: int = 50):
-            return []
+        async def sections(self, limit: int = 30) -> str:
+            return "Nothing is set."
 
-        async def get_watch(self, watch_id: int):
+        async def get(self, alert_id: int):
             return None
 
-        async def update_watch(self, watch_id: int, spec, *, origin: str):
-            return None
+        def refusal(self, key: str, **params) -> str:
+            return key
 
-        async def set_watch_enabled(self, watch_id: int, enabled: bool, *, origin: str):
-            return None
+        async def set_enabled(self, alert_id: int, enabled: bool, origin):
+            return ""
 
-        async def delete_watch(self, watch_id: int, *, origin: str) -> bool:
-            return False
+        async def update(self, alert_id: int, spec, origin):
+            return ""
+
+        async def remove(self, alert_id: int, origin):
+            return ""
 
     kit = LoopKit(None)
-    path = FakeAlertPath()
+    path = FakeAlerts()
     register_native_tools(
         registry=kit.tools,
         events=kit.events,
@@ -772,29 +774,55 @@ async def test_an_unquoted_alert_create_parks_and_arms_only_on_approval() -> Non
         scheduler=kit.scheduler,
         surfaces=kit.loop._surfaces,
         capture_box=kit.capture_box,
-        proactive_path=path,
-        alert_basis=kit.loop.alert_basis,
+        alerts=path,
     )
 
     result = await kit.loop._execute(
         ToolCall(
             id="t1",
-            name="alerts__create",
-            arguments={"scope": "mail", "description": "offer letter"},
+            name="alerts__offer",
+            arguments={"title": "Offer letter", "scope": "mail", "contains": "offer letter"},
         )
     )
 
     assert result.content.startswith("held for approval")
     approval = kit.approvals.created[0]
-    assert approval.tool_name == "alerts__create"
+    assert approval.tool_name == "alerts__offer"
 
     approval.status = APPROVED
     kit.approvals.result = approval
     await kit.loop.decide(approval.id, "approve")
 
     assert len(path.created) == 1
-    assert path.created[0].description == "offer letter"
+    assert path.created[0].contains == "offer letter"
     assert kit.approvals.executed == [approval.id]
+
+
+async def test_a_direct_alert_create_on_an_unprompted_turn_is_refused() -> None:
+    class FakeAlerts:
+        async def create(self, spec, origin):
+            if not origin.may_mutate:
+                return "Only you can change your alerts."
+            return "should not run"
+
+    kit = LoopKit(None)
+    register_native_tools(
+        registry=kit.tools,
+        events=kit.events,
+        entities=None,
+        approvals=kit.approvals,
+        scheduler=kit.scheduler,
+        surfaces=kit.loop._surfaces,
+        capture_box=kit.capture_box,
+        alerts=FakeAlerts(),
+    )
+
+    result = await kit.loop._execute(
+        ToolCall(id="t1", name="alerts__create", arguments={"title": "x", "scope": "mail"})
+    )
+
+    assert result.content == "Only you can change your alerts."
+    assert kit.approvals.created == []
 
 
 async def test_a_stale_web_decide_touches_nothing() -> None:
@@ -1460,15 +1488,15 @@ async def test_new_events_become_scored_observations() -> None:
     assert any("[new event]" in m.text and "poll:unread" in m.text for m in messages)
 
 
-async def test_a_watch_match_rides_the_observation_as_plain_context() -> None:
+async def test_an_alert_match_rides_the_observation_as_plain_context() -> None:
     kit = LoopKit(None)
     event = _event(1)
-    event.meta["watch_labels"] = ["urgent mail"]
+    event.meta["alert_matches"] = ["urgent mail"]
 
     line = kit.loop._event_line(event)
 
-    assert 'the user asked to be told about this ("urgent mail")' in line
-    assert "watch_labels" not in line
+    assert 'an alert matched this ("urgent mail")' in line
+    assert "alert_matches" not in line
 
 
 async def test_a_due_reminder_becomes_an_agent_written_message() -> None:
@@ -1697,22 +1725,21 @@ async def test_held_notes_ship_as_one_message_when_the_window_ends() -> None:
     assert kit.loop._held == []
 
 
-async def test_a_routine_acts_at_night_but_its_note_waits() -> None:
-    # a taught routine is solicited by the teaching — its action still runs
-    # during quiet hours; only the meta-commentary about the fire waits
-    kit = _quiet_kit(None)
+async def test_an_alert_action_runs_through_the_gate_and_records_a_trace() -> None:
+    kit = LoopKit(None)
     kit.add_tool("note_entity", result="noted")
-    kit.routines.add(
-        label="billing",
-        trigger={"source": "mail"},
-        action={"type": "tool", "tool": "note_entity", "params": {"note": "invoice"}},
+    alert = SimpleNamespace(
+        id=3,
+        title="billing",
+        spec=SimpleNamespace(action={"tool": "note_entity", "params": {"note": "invoice"}}),
     )
-    kit.events.events[1] = _event(1)
-    await kit.loop._tick()
+
+    await kit.loop._run_alert_action(alert, _event(1))
 
     assert kit.executed == [("note_entity", {"note": "invoice"})]
-    assert kit.connector.sent == []
-    assert any("routine" in h and "billing" in h for h in kit.loop._held)
+    payload = kit.traces.created[-1]["payload"]
+    assert payload["alert"] == {"id": 3, "title": "billing"}
+    assert "calls" in payload
 
 
 # ---------------------------------------------------------------------------
@@ -2168,19 +2195,23 @@ async def test_a_carried_out_approval_speaks_after_the_record_is_complete() -> N
     assert kit.connector.sent[-1].startswith("Sent the email (to a@b.c")
 
 
-async def test_a_routine_fire_records_where_its_ping_landed() -> None:
-    kit = LoopKit(None)  # routines fire before any LLM turn
-    kit.add_tool("note_entity", result="noted")
-    kit.routines.add(
-        label="billing",
-        trigger={"source": "mail"},
-        action={"type": "tool", "tool": "note_entity", "params": {"note": "invoice"}},
+async def test_an_alert_action_that_parks_records_the_approval() -> None:
+    kit = LoopKit(None)
+    kit.add_tool("mail__send_message", result="sent")
+    alert = SimpleNamespace(
+        id=4,
+        title="forward it",
+        spec=SimpleNamespace(
+            action={"tool": "mail__send_message", "params": {"to": "a@b.c", "body": "hi"}}
+        ),
     )
-    kit.events.events[1] = _event(1)
-    await kit.loop._tick()
 
+    await kit.loop._run_alert_action(alert, _event(1))
+
+    # a folded action is a call like any other: it parked, and the trace says so
+    assert kit.approvals.created[0].tool_name == "mail__send_message"
     payload = kit.traces.created[-1]["payload"]
-    assert payload["chat_refs"] == {"fake": "m1"}
+    assert payload["calls"][0]["approval_id"] == kit.approvals.created[0].id
 
 
 # ---------------------------------------------------------------------------

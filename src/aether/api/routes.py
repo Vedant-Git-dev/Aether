@@ -26,6 +26,7 @@ from ..apps_catalog import CATALOG, recipe_for
 from ..config import is_legacy_composio_server
 from ..connectors.base import Attachment, InboundMessage, classify_attachment
 from ..memory.crypto import CryptoError
+from ..origin import panel_action
 from ..proactive import DONE
 from ..providers.types import ProviderError
 from ..settings_catalog import ALL_FIELD_PATHS, credential_for, settings_feed
@@ -1025,6 +1026,69 @@ async def tasks_feed(request: Request, limit: int = 50, token: str | None = None
             for a in actions
         ]
     }
+
+
+@router.get("/api/alerts")
+async def alerts_feed(request: Request, token: str | None = None) -> dict:
+    """Alerts and reminders, newest first, with the plain condition and
+    time the backend already authored. The status word is vocabulary, not
+    free text; nothing internal is rendered here."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    engine = getattr(request.app.state, "alerts", None)
+    store = getattr(request.app.state, "alerts_store", None)
+    if engine is None or store is None:
+        raise HTTPException(status_code=503, detail="alerts are not wired")
+    rows = await store.list(limit=200)
+    return {
+        "alerts": [
+            {
+                "id": row.id,
+                "title": row.spec.title,
+                "kind": row.spec.kind,
+                "condition": engine.describe(row.spec),
+                "when": engine.when(row.spec) if row.spec.is_reminder else "",
+                "style": row.spec.style,
+                "status": row.status,
+                "last_notified_at": (
+                    row.last_notified_at.isoformat() if row.last_notified_at else ""
+                ),
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in rows
+        ]
+    }
+
+
+class AlertToggleBody(BaseModel):
+    enabled: bool
+
+
+@router.patch("/api/alerts/{alert_id}")
+async def update_alert_feed(
+    alert_id: int, body: AlertToggleBody, request: Request, token: str | None = None
+) -> dict:
+    """Pause or resume one alert from the panel. The click is the owner's
+    own act, so it carries the same provenance a chat message does."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    engine = getattr(request.app.state, "alerts", None)
+    if engine is None:
+        raise HTTPException(status_code=503, detail="alerts are not wired")
+    message = await engine.set_enabled(alert_id, body.enabled, panel_action())
+    return {"message": message}
+
+
+@router.delete("/api/alerts/{alert_id}")
+async def delete_alert_feed(alert_id: int, request: Request, token: str | None = None) -> dict:
+    """Remove one alert from the panel."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    engine = getattr(request.app.state, "alerts", None)
+    if engine is None:
+        raise HTTPException(status_code=503, detail="alerts are not wired")
+    message = await engine.remove(alert_id, panel_action())
+    return {"message": message}
 
 
 _WORKSPACE_FILES = ("identity", "soul", "agents", "user", "memory")

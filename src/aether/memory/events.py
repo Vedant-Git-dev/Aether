@@ -164,8 +164,8 @@ class EventStore:
         self._enricher = enricher
         self._facts = facts
         self._enrichment = enrichment
-        # the proactive path (watch matching + reminders) joins here after
-        # the agent exists, because a reminder is delivered through the loop
+        # the alert engine joins here after it exists, because matching on
+        # ingest is where a notification candidate is born
         self._proactive: Any = None
         # background enrichment in flight, by event id — tracked so a turn
         # can wait for the events it is about to read without waiting for
@@ -182,8 +182,8 @@ class EventStore:
 
         Cancelling this wait never cancels the work: the tasks are
         independent and keep running, so a caller that stops waiting loses
-        only the wait, not the enrichment. A watch evaluation rides the
-        same task, so waiting here also waits out the label an event earns.
+        only the wait, not the enrichment. Alert matching rides the same
+        task, so waiting here also waits out the candidate an event earns.
         """
         while self._enriching:
             tasks = list(self._enriching.values())
@@ -217,7 +217,7 @@ class EventStore:
         return {event_id for event_id, task in tasks.items() if task in pending}
 
     def attach_proactive(self, proactive: Any) -> None:
-        """Join the proactive path (watch matching, reminders) to the store.
+        """Join the alert engine to the store.
 
         The store is the one place every channel funnels an event through,
         so the evaluator lives on the same task that already links
@@ -470,14 +470,15 @@ class EventStore:
             await self.merge_meta(event_id, extra)
         if self._proactive is not None:
             # matching rides this same tracked task, so it never sits in
-            # front of a reply and `wait_idle` can wait it out. A match only
-            # tags the event; the agent writes any message itself.
+            # front of a reply and `wait_idle` can wait it out. A match
+            # queues a sealed notification candidate; delivery is the
+            # engine's own pass, not a model turn.
             try:
                 event = await self.get(event_id)
                 if event is not None:
                     labels = await self._proactive.evaluate_event(event)
                     if labels:
-                        await self.merge_meta(event_id, {"watch_labels": labels})
+                        await self.merge_meta(event_id, {"alert_matches": labels})
             except Exception:
                 log.warning("proactive evaluation failed for event %s", event_id, exc_info=True)
 
@@ -518,7 +519,7 @@ class EventStore:
 
         A mail from anyone else is untrusted content: it may be recalled,
         but it cannot establish a reserved fact (identity, contacts,
-        policy, watches) on its own.
+        policy, alerts) on its own.
         """
         assert self._entities is not None
         addresses = parse_addresses(payload.get("sender"))

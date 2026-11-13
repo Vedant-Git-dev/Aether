@@ -18,7 +18,7 @@ seal an existing history.
 AES-256-GCM, a random nonce per value, and additional authenticated data that
 binds each ciphertext to its table, column, row id and key version. Message
 and mail text, subjects, addresses, names, filenames, media, captions,
-summaries, facts, notes, watches, commitments, embeddings, salience and
+summaries, facts, notes, alerts, commitments, embeddings, salience and
 urgency labels, timestamps of events, sources, delivery status text, tool
 arguments and results, traces and error text that quotes content are all
 sealed. The write-time enrichment labels also get the same treatment
@@ -161,7 +161,7 @@ content.
   and source event are plaintext vocabulary and ids; the text, due time,
   original phrase, urgency and the artifact links (thread, document name,
   media id) are sealed.
-- `watches` — the standing alerts and reminders the user asked for. The scope is a
+- `alerts` — the standing alerts and reminders the user asked for. The scope is a
   keyed blind token, the channel and status are plaintext vocabulary, and the
   id watermark and timestamps are bookkeeping; the label and every criterion
   are sealed and bound to the row.
@@ -192,7 +192,7 @@ behaviour.
 
 `tests/test_canary.py` is the end-to-end check. One unique string is pushed
 through every write path — event text and subject, sender address, note,
-approval, schedule, routine, trace, proactive task, media filename, chat line,
+approval, schedule, alert, trace, proactive task, media filename, chat line,
 sync cursor and audit outcome — and then every column of every table is swept
 for it. Outside the migration window the sweep must be empty. While the legacy
 plaintext columns still exist, the canary may appear only in the columns listed

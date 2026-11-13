@@ -54,10 +54,17 @@ __all__ = [
 
 
 async def schema_violations(pool: asyncpg.Pool) -> list[str]:
+    # base tables only: a view is a projection of storage that already
+    # exists (the `watches` compatibility view over `alerts`), not a column
+    # of its own to classify
     rows = await pool.fetch(
         "SELECT table_name, column_name, data_type"
         " FROM information_schema.columns"
         " WHERE table_schema = 'public'"
+        " AND table_name IN ("
+        "   SELECT table_name FROM information_schema.tables"
+        "   WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
+        " )"
         " ORDER BY table_name, ordinal_position"
     )
     return audit_columns(rows)

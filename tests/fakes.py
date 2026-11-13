@@ -16,7 +16,6 @@ from aether.memory.events import Event, IngestResult
 from aether.memory.vectors import MemoryHit
 from aether.proactive.store import DONE, FAILED, RUNNING, ProactiveTask
 from aether.proactive.store import PENDING as TASK_PENDING
-from aether.routines import Routine
 from aether.scheduler.jobs import PENDING as JOB_PENDING
 from aether.scheduler.jobs import ScheduledAction
 
@@ -337,96 +336,6 @@ class FakeScheduler:
             payload=dict(payload),
             created_at=datetime.now(UTC),
         )
-
-
-class FakeRoutines:
-    """Routines double: `add` arms rows the loop's matcher sees; create/
-    set_enabled/delete/mark_fired record what the tools and the loop did."""
-
-    def __init__(self) -> None:
-        self.routines: list[Routine] = []
-        self.created: list[dict] = []
-        self.fired: list[int] = []
-        self.toggles: list[tuple[int, bool]] = []
-        self.deleted: list[int] = []
-
-    def add(
-        self,
-        *,
-        label: str = "routine",
-        trigger: dict | None = None,
-        action: dict | None = None,
-        cooldown_seconds: int = 0,
-        last_fired_at: datetime | None = None,
-        enabled: bool = True,
-    ) -> Routine:
-        routine = Routine(
-            id=len(self.routines) + 1,
-            label=label,
-            trigger=dict(trigger or {}),
-            action=dict(action or {"type": "tool", "tool": "note_entity", "params": {}}),
-            enabled=enabled,
-            cooldown_seconds=cooldown_seconds,
-            fire_count=0,
-            last_fired_at=last_fired_at,
-            created_at=datetime.now(UTC),
-        )
-        self.routines.append(routine)
-        return routine
-
-    async def create(
-        self,
-        *,
-        label: str,
-        trigger: dict,
-        action: dict,
-        cooldown_seconds: int = 300,
-        actor: str = "agent",
-    ) -> Routine:
-        self.created.append(
-            {
-                "label": label,
-                "trigger": dict(trigger),
-                "action": dict(action),
-                "cooldown_seconds": cooldown_seconds,
-                "actor": actor,
-            }
-        )
-        return self.add(
-            label=label, trigger=trigger, action=action, cooldown_seconds=cooldown_seconds
-        )
-
-    async def get(self, routine_id: int) -> Routine | None:
-        return next((r for r in self.routines if r.id == routine_id), None)
-
-    async def list(self, limit: int = 50) -> list[Routine]:
-        return list(reversed(self.routines))[:limit]
-
-    async def list_enabled(self) -> list[Routine]:
-        return [r for r in self.routines if r.enabled]
-
-    async def mark_fired(self, routine_id: int) -> None:
-        self.fired.append(routine_id)
-        for r in self.routines:
-            if r.id == routine_id:
-                r.fire_count += 1
-                r.last_fired_at = datetime.now(UTC)
-
-    async def set_enabled(self, routine_id: int, enabled: bool) -> Routine | None:
-        self.toggles.append((routine_id, enabled))
-        routine = await self.get(routine_id)
-        if routine is None:
-            return None
-        routine.enabled = enabled
-        return routine
-
-    async def delete(self, routine_id: int) -> bool:
-        self.deleted.append(routine_id)
-        routine = await self.get(routine_id)
-        if routine is None:
-            return False
-        self.routines.remove(routine)
-        return True
 
 
 class FakeTraces:

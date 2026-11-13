@@ -1,0 +1,64 @@
+# The alert vocabulary, as data.
+#
+# Every scope Aether can be asked to watch lives here once: the key the tool
+# schema offers, the words the panel shows, whether the source can actually
+# produce events today, the event kinds it emits, its default notification
+# style, and the nearest scope that does work when this one cannot.
+#
+# `supports_events` is the single switch that decides whether an alert may be
+# armed on a scope. Turning a source on later (a poll, a webhook) is an edit
+# to this file plus the poll adapter — never a branch in the tool code.
+#
+# `alternative` names the scope offered instead when `supports_events` is
+# false. Empty means there is no working substitute and the refusal says so.
+
+version: 1
+
+scopes:
+  - key: mail
+    label: Mail
+    supports_events: true
+    event_kinds: [mail]
+    default_style: immediate
+  - key: chat
+    label: Chat messages
+    supports_events: true
+    event_kinds: [chat_message]
+    default_style: immediate
+  - key: github
+    label: GitHub
+    supports_events: false
+    event_kinds: [github_notification]
+    default_style: digest
+    alternative: mail
+  - key: calendar
+    label: Google Calendar
+    supports_events: false
+    event_kinds: [calendar_event]
+    default_style: digest
+    alternative: mail
+  - key: drive
+    label: Google Drive
+    supports_events: false
+    event_kinds: [drive_change]
+    default_style: digest
+    alternative: mail
+  - key: docs
+    label: Google Docs
+    supports_events: false
+    event_kinds: [docs_change]
+    default_style: digest
+    alternative: mail
+  - key: linkedin
+    label: LinkedIn
+    supports_events: false
+    event_kinds: []
+    default_style: immediate
+    alternative: ""
+
+# Two or three short phrasings, used in the tool description so the model has
+# examples without a paragraph per scope. Illustrative only: never matched.
+examples:
+  - "Tell me when the landlord emails"
+  - "Ping me about internship mail"
+  - "Remind me on Friday at 9 to send the invoice"

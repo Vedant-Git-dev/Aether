@@ -21,7 +21,7 @@ export function personName(platform, handle) {
 
 export const ACTOR_LABELS = {
   agent: "Aether", scheduler: "Scheduled check", system: "Aether (automatic)", user: "You",
-  owner: "You", routine: "Routine", worker: "Background worker",
+  owner: "You", routine: "Alert", worker: "Background worker",
 };
 
 // last-resort rendering for any internal token with no explicit label —
@@ -63,16 +63,20 @@ export const OUTCOME_LABELS = {
   "task done": "Finished a piece of background work",
   "task failed": "A piece of background work failed",
   "task feedback recorded": "Noted your verdict on background work",
-  // the proactive path: an alert or reminder the user asked for
-  "watch armed": "Alert set",
-  "watch removed": "Alert stopped",
+  // the alert path: an alert or reminder the user asked for
   "alert armed": "Alert set",
+  "alert paused": "Alert paused",
+  "alert resumed": "Alert resumed",
+  "alert updated": "Alert updated",
   "alert removed": "Alert stopped",
+  "reminder delivered": "Reminder delivered",
+  "alert action fired": "Alert action ran",
 };
 
 export const TRACE_KINDS = {
   turn: "Conversation",
-  routine: "Routine",
+  alert: "Alert",
+  routine: "Alert",
   scheduled: "Scheduled",
   carry_out: "Approved action",
 };
@@ -98,7 +102,6 @@ export function describeRule(rule) {
     const text = describeToolPattern(rule.slice(5));
     return `Your rule: ${text[0].toLowerCase()}${text.slice(1)}`;
   }
-  if (rule.startsWith("routine:")) return "One of your routines";
   return "";
 }
 
@@ -117,12 +120,6 @@ export function describeOutcome(outcome) {
   if (userRule) {
     const text = describeToolPattern(userRule[1]);
     return `Your rule: ${text[0].toLowerCase()}${text.slice(1)}`;
-  }
-  // loop.py's audit outcome when one of your routines fires
-  const routineFired = /^routine '(.+)' fired on ([^/]+)\/(.+)$/.exec(outcome);
-  if (routineFired) {
-    const { title } = describeEvent({ source: routineFired[2], kind: routineFired[3], payload: {} });
-    return `Routine "${routineFired[1]}" fired — ${title[0].toLowerCase()}${title.slice(1)}`;
   }
   if (outcome.startsWith("handle linked")) return "Linked an account to someone you know";
   return outcome[0].toUpperCase() + outcome.slice(1);
@@ -169,16 +166,19 @@ const NATIVE_TOOLS = {
   set_config: "Changing its configuration",
   explain_decision: "Explaining a past decision",
   verify_integrity: "Verifying the audit chain",
-  create_routine: "Creating a routine",
-  list_routines: "Listing routines",
-  set_routine_enabled: "Enabling or disabling a routine",
-  delete_routine: "Deleting a routine",
+  // legacy names still resolve to plain words, never their old vocabulary
+  create_routine: "Setting an alert",
+  list_routines: "Listing alerts",
+  set_routine_enabled: "Pausing or resuming an alert",
+  delete_routine: "Removing an alert",
   create_watch: "Setting an alert",
   list_watches: "Listing alerts",
-  set_watch_enabled: "Enabling or pausing an alert",
+  set_watch_enabled: "Pausing or resuming an alert",
   delete_watch: "Removing an alert",
   watch: "An alert you asked for",
+  list_alerts: "Listing alerts",
   create_alert: "Setting an alert",
+  offer_alert: "Offering an alert",
   update_alert: "Updating an alert",
   delete_alert: "Removing an alert",
   alert: "An alert you asked for",
@@ -205,15 +205,17 @@ const NATIVE_TOOLS = {
   "message__reply": "Answering you",
   "message__notify": "Telling you",
   "message__ask": "Asking you",
-  "routines__create": "Creating a routine",
-  "routines__list": "Listing routines",
-  "routines__enable": "Enabling or disabling a routine",
-  "routines__delete": "Deleting a routine",
+  "routines__create": "Setting an alert",
+  "routines__list": "Listing alerts",
+  "routines__enable": "Pausing or resuming an alert",
+  "routines__delete": "Removing an alert",
   "watches__create": "Setting an alert",
   "watches__list": "Listing alerts",
-  "watches__enable": "Enabling or pausing an alert",
+  "watches__enable": "Pausing or resuming an alert",
   "watches__delete": "Removing an alert",
+  "alerts__list": "Listing alerts",
   "alerts__create": "Setting an alert",
+  "alerts__offer": "Offering an alert",
   "alerts__update": "Updating an alert",
   "alerts__delete": "Removing an alert",
   "traces__explain": "Explaining a past decision",
@@ -580,7 +582,18 @@ export function describeClaimKind(kind) {
   return CLAIM_KIND_LABELS[kind] || humanize(kind);
 }
 
-// A routine's trigger is a condition dict ({source, kind, from, contains}) —
+// How an alert speaks: right away, or collected into a digest. The stored
+// token never renders; an unknown one falls back to plain words.
+const ALERT_STYLES = {
+  immediate: "Right away",
+  digest: "Batched",
+};
+
+export function describeAlertStyle(style) {
+  return ALERT_STYLES[style] || humanize(style);
+}
+
+// A legacy trigger is a condition dict ({source, kind, from, contains}) —
 // render it as a plain when-clause, never the raw dict or kind token.
 export function describeTrigger(trigger) {
   if (!trigger) return "";

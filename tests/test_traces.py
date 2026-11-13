@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fakes import FakeProvider, FakeRoutines, FakeTraces
+from fakes import FakeProvider, FakeTraces
 from test_agent_loop import LoopKit, _event, _msg
 from test_native_tools import NativeKit
 
@@ -182,27 +182,28 @@ async def test_a_quiet_tick_leaves_no_trace() -> None:
 
 
 # ---------------------------------------------------------------------------
-# unit: routines, schedules, and carried-out approvals leave traces
+# unit: alert actions, schedules, and carried-out approvals leave traces
 # ---------------------------------------------------------------------------
 
 
-async def test_a_routine_fire_is_traced() -> None:
-    kit = LoopKit(None)  # routines fire before any LLM is involved
-    kit.add_tool("note_entity")
-    kit.routines.add(
-        label="billing",
-        trigger={"source": "mail"},
-        action={"type": "tool", "tool": "note_entity", "params": {"note": "invoice"}},
-    )
-    kit.events.events[1] = _event(1)
+async def test_an_alert_action_is_traced() -> None:
+    from types import SimpleNamespace
 
-    await kit.loop._tick()
+    kit = LoopKit(None)
+    kit.add_tool("note_entity")
+    alert = SimpleNamespace(
+        id=1,
+        title="billing",
+        spec=SimpleNamespace(action={"tool": "note_entity", "params": {"note": "invoice"}}),
+    )
+
+    await kit.loop._run_alert_action(alert, _event(1))
 
     created = kit.traces.created[0]
-    assert created["kind"] == "routine"
+    assert created["kind"] == "alert"
     assert created["label"] == "billing"
     payload = created["payload"]
-    assert payload["routine"] == {"id": 1, "label": "billing", "trigger": {"source": "mail"}}
+    assert payload["alert"] == {"id": 1, "title": "billing"}
     assert payload["event"]["id"] == 1
     assert payload["event"]["source"] == "mail"
     call = payload["calls"][0]
@@ -324,13 +325,11 @@ async def test_a_poisoned_trace_store_never_breaks_the_act() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_eight_native_tools_register_when_traces_are_wired() -> None:
+async def test_tracing_tools_register_only_when_wired() -> None:
     kit = NativeKit(traces=FakeTraces())
-    assert kit.count == 8
-    assert len(kit.registry) == 8
-    both = NativeKit(routines=FakeRoutines(), traces=FakeTraces())
-    assert both.count == 12
-    assert len(both.registry) == 12
+    assert len(kit.registry) == kit.count
+    both = NativeKit(traces=FakeTraces(), audit=kit.audit)
+    assert len(both.registry) == both.count
 
 
 def _seed_turn(kit: NativeKit, *, approval_id: int | None = None) -> None:
@@ -410,12 +409,12 @@ async def test_explain_by_approval_id_finds_the_origin_and_the_carry_out() -> No
 
 async def test_explain_by_topic_searches_recent_traces() -> None:
     kit = NativeKit(traces=FakeTraces())
-    kit.traces.add(kind="routine", label="billing", payload={"routine": {"label": "billing"}})
+    kit.traces.add(kind="alert", label="billing", payload={"alert": {"title": "billing"}})
     kit.traces.add(kind="turn", label="unread check", payload={"reply": "2 unread"})
 
     out = await kit.run("explain_decision", {"about": "billing"})
 
-    assert "Trace #1 (routine) — billing" in out
+    assert "Trace #1 (alert) — billing" in out
     assert "Trace #2" not in out  # limit defaults to 3, but only matches show
     assert "No recorded trace mentioning 'zzz'." in await kit.run(
         "explain_decision", {"about": "zzz"}

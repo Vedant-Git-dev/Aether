@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -90,7 +91,7 @@ class FakeMemoryControl:
             "indexed_chunks": 3,
             "active_facts": 1,
             "open_commitments": 0,
-            "active_watches": 2,
+            "active_alerts": 2,
             "semantic_search": {"on": True, "model": "fake-embedding", "note": ""},
             "flags": {"enrichment": False, "query_pipeline": True, "summaries": False},
         }
@@ -173,6 +174,8 @@ def _app(
     proactive_worker=None,
     media_store=None,
     memory_control=None,
+    alerts=None,
+    alerts_store=None,
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(router)
@@ -214,6 +217,10 @@ def _app(
         app.state.media_store = media_store
     if memory_control is not None:
         app.state.memory_control = memory_control
+    if alerts is not None:
+        app.state.alerts = alerts
+    if alerts_store is not None:
+        app.state.alerts_store = alerts_store
     return app
 
 
@@ -1173,6 +1180,98 @@ class FakeSchedulerStore:
 
     async def list(self, limit: int = 50) -> list[ScheduledAction]:
         return self.actions[:limit]
+
+
+class FakeAlertRow:
+    def __init__(self, alert_id: int = 1, *, kind: str = "alert") -> None:
+        self.id = alert_id
+        self.status = "active"
+        self.last_notified_at = None
+        self.created_at = datetime(2026, 11, 13, 6, tzinfo=UTC)
+        self.spec = SimpleNamespace(
+            title="Landlord",
+            kind=kind,
+            style="immediate",
+            is_reminder=kind == "reminder",
+        )
+
+
+class FakeAlertStore:
+    def __init__(self, rows: list[FakeAlertRow] | None = None) -> None:
+        self.rows = rows or [FakeAlertRow()]
+
+    async def list(self, limit: int = 50):
+        return self.rows[:limit]
+
+
+class FakeAlertEngine:
+    def __init__(self) -> None:
+        self.toggled: list[tuple[int, bool]] = []
+        self.removed: list[int] = []
+
+    def describe(self, spec) -> str:
+        return "Mail"
+
+    def when(self, spec) -> str:
+        return "2026-11-20 09:00 UTC"
+
+    async def set_enabled(self, alert_id, enabled, origin):
+        self.toggled.append((alert_id, enabled))
+        return "Paused: Landlord."
+
+    async def remove(self, alert_id, origin):
+        self.removed.append(alert_id)
+        return "Removed: Landlord."
+
+
+async def test_alerts_feed_is_token_guarded() -> None:
+    async with _client(
+        _app(None, alerts=FakeAlertEngine(), alerts_store=FakeAlertStore())
+    ) as client:
+        assert (await client.get("/api/alerts")).status_code == 401
+
+
+async def test_alerts_feed_is_503_without_the_engine() -> None:
+    async with _client(_app(None)) as client:
+        response = await client.get("/api/alerts", params={"token": "secret"})
+    assert response.status_code == 503
+
+
+async def test_alerts_feed_renders_plain_condition_and_no_internal_ids() -> None:
+    engine = FakeAlertEngine()
+    store = FakeAlertStore([FakeAlertRow(3), FakeAlertRow(4, kind="reminder")])
+    async with _client(_app(None, alerts=engine, alerts_store=store)) as client:
+        response = await client.get("/api/alerts", params={"token": "secret"})
+
+    rows = response.json()["alerts"]
+    assert rows[0] == {
+        "id": 3,
+        "title": "Landlord",
+        "kind": "alert",
+        "condition": "Mail",
+        "when": "",
+        "style": "immediate",
+        "status": "active",
+        "last_notified_at": "",
+        "created_at": "2026-11-13T06:00:00+00:00",
+    }
+    assert rows[1]["when"] == "2026-11-20 09:00 UTC"
+
+
+async def test_the_panel_can_pause_and_remove_an_alert() -> None:
+    engine = FakeAlertEngine()
+    async with _client(_app(None, alerts=engine, alerts_store=FakeAlertStore())) as client:
+        paused = await client.patch(
+            "/api/alerts/3",
+            params={"token": "secret"},
+            json={"enabled": False},
+        )
+        removed = await client.delete("/api/alerts/3", params={"token": "secret"})
+
+    assert paused.json()["message"] == "Paused: Landlord."
+    assert removed.json()["message"] == "Removed: Landlord."
+    assert engine.toggled == [(3, False)]
+    assert engine.removed == [3]
 
 
 async def test_tasks_feed_is_token_guarded() -> None:

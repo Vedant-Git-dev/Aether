@@ -124,7 +124,7 @@ class MemoryControl:
         facts: Facts | None = None,
         commitments: Any = None,
         summaries: Summaries | None = None,
-        watches: Any = None,
+        alerts: Any = None,
         memory: Any = None,
         embedding_model: str = "",
     ) -> None:
@@ -138,7 +138,7 @@ class MemoryControl:
         self._facts = facts
         self._commitments = commitments
         self._summaries = summaries
-        self._watches = watches
+        self._alerts = alerts
         self._memory = memory
         self._embedding_model = embedding_model
 
@@ -218,19 +218,19 @@ class MemoryControl:
                 commitments = len(await self._commitments.list_open(limit=200))
             except Exception:
                 commitments = 0
-        watches = 0
-        if self._watches is not None:
+        alerts = 0
+        if self._alerts is not None:
             try:
-                watches = len(await self._watches.list_active())
+                alerts = await self._alerts.active_count()
             except Exception:
-                watches = 0
+                alerts = 0
         semantic = bool(getattr(self._vectors, "enabled", False))
         return {
             "resident_events": len(self._index),
             "indexed_chunks": int(chunks or 0),
             "active_facts": facts,
             "open_commitments": commitments,
-            "active_watches": watches,
+            "active_alerts": alerts,
             "semantic_search": {
                 "on": semantic,
                 "model": self._embedding_model if semantic else "",

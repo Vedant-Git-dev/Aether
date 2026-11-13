@@ -56,7 +56,7 @@ LEGACY_COLUMNS: dict[str, frozenset[str]] = {
     "chat_messages": frozenset({"surface"}),
     "pending_approvals": frozenset({"rules_matched", "note"}),
     "scheduled_actions": frozenset({"label", "run_at"}),
-    "routines": frozenset({"label"}),
+    "routines_legacy": frozenset({"label"}),
     "decision_traces": frozenset({"label"}),
     "memory_chunks": frozenset(
         {
@@ -227,8 +227,8 @@ async def _seal_scheduled(conn: asyncpg.Connection, cipher: Cipher, row: asyncpg
 
 async def _seal_routine(conn: asyncpg.Connection, cipher: Cipher, row: asyncpg.Record) -> bool:
     await conn.execute(
-        f"UPDATE routines SET label_enc = $1, {KEY_VERSION} = $2 WHERE id = $3",
-        _seal_text(cipher, row["label"], "routines", "label_enc", row["id"]),
+        f"UPDATE routines_legacy SET label_enc = $1, {KEY_VERSION} = $2 WHERE id = $3",
+        _seal_text(cipher, row["label"], "routines_legacy", "label_enc", row["id"]),
         cipher.key_id,
         row["id"],
     )
@@ -419,7 +419,7 @@ JOBS: tuple[Job, ...] = (
         "meta_enc IS NULL",
         apply=_seal_scheduled,
     ),
-    Job("routines", "id, label", "label_enc IS NULL", apply=_seal_routine),
+    Job("routines_legacy", "id, label", "label_enc IS NULL", apply=_seal_routine),
     Job("decision_traces", "id, label", "label_enc IS NULL", apply=_seal_trace),
     Job(
         "memory_chunks",

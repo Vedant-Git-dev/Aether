@@ -61,7 +61,7 @@ pool. There is no queue broker, no separate worker service, and no cache tier.
 | [Memory](#memory) | `src/aether/memory/`, `src/aether/workspace/` | Events, entities, retrieval, workspace |
 | [Media](#media) | `src/aether/media/` | Media store, generation, transcription |
 | [Background work](#background-work) | `src/aether/proactive/`, `src/aether/skills/`, `src/aether/workbench/` | Opportunities, skills, sandboxes |
-| [Scheduling](#scheduling) | `src/aether/scheduler/`, `src/aether/routines/` | Scheduled actions and routines |
+| [Alerts and scheduling](#alerts-and-scheduling) | `src/aether/alerts/`, `src/aether/scheduler/` | Event alerts, reminders, scheduled actions |
 
 ### Agent loop
 
@@ -73,7 +73,7 @@ answered before any model call.
 Native tools live in `src/aether/agent/tools.py`:
 
 - memory search and entity notes
-- scheduling and routines
+- alerts, reminders and scheduling
 - screen-capture requests
 - media lookup and sharing
 - image generation and video edits
@@ -250,24 +250,36 @@ editing, frame extraction, and Groq transcription.
 time, runs skills, stores results, and records verdicts. `src/aether/skills/` holds the
 three shipped skills: **follow-ups**, **research**, and **media**.
 
-The same package carries the proactive path. `path.py` matches the user's alerts on
-every ingest and tags the event with the watch label as observation context; it sends
-nothing itself, and the agent writes any message in its own words; quiet hours hold a
-low-urgency note and batch it when the window ends. Commitment reminders work the same
-way: the path reports which urgency-scaled lead is due, and the agent writes the
-reminder.
-
-> [!IMPORTANT]
-> Only the user's own words can set an alert. An email can never create one.
+The same package carries commitment reminders. `path.py` reports which
+urgency-scaled lead is due, and the agent writes the reminder in its own words.
+Event alerts live in `src/aether/alerts/`; see
+[Alerts and scheduling](#alerts-and-scheduling).
 
 `src/aether/workbench/` routes sandbox jobs across Modal, Vercel, and a GitHub Actions
 batch queue. Routing is code; the model is not consulted.
 
-### Scheduling
+### Alerts and scheduling
 
-`src/aether/scheduler/` persists scheduled actions and re-arms them at boot.
-`src/aether/routines/` stores event-triggered instructions that fire when a matching
-event arrives.
+`src/aether/alerts/` is one model with two shapes: an **Alert** matches an inbound
+event (a source, a sender, some words, an optional folded action) and a **Reminder**
+fires at a time. Matching is pure code over a sealed spec; nothing in the decision is a
+model call.
+
+Delivery is deterministic. A match enqueues a sealed candidate in
+`alert_notifications`, and code decides whether it is sent now, batched into a digest,
+held through quiet hours, suppressed as already told or over the daily cap, or retried
+after a surface failure — then the outbox records the outcome. No unprompted model turn
+is needed for a notification to land. Wording is rendered from the candidate's
+structured fields through the message catalog, never from the event's raw text.
+
+Provenance is structural: the harness stamps each turn with a `TurnOrigin`
+(`src/aether/origin.py`), and only the owner's own message or an approved card may
+create, change or remove an alert or forget a memory. The message reference is sealed on
+the row. An email can therefore never arm one, however it is worded.
+
+`src/aether/scheduler/` persists scheduled actions and re-arms them at boot. The
+`alerts` page and `/api/alerts` expose the same records for pause and removal; the old
+`watches` table is a read-only compatibility view until `alerts.compat_until`.
 
 ---
 
@@ -312,9 +324,9 @@ records each version in `schema_migrations`.
 | Table group | Tables |
 | --- | --- |
 | Memory | `events`, `identities`, `identity_handles`, `entity_notes`, `memory_chunks`, `chat_messages` |
-| Structured memory | `commitments`, `watches`, `commitment_reminders`, `facts`, `summaries`, `focus`, `conclusions`, `deliveries` |
+| Structured memory | `commitments`, `alerts`, `alert_notifications`, `commitment_reminders`, `facts`, `summaries`, `focus`, `conclusions`, `deliveries` |
 | Trust | `audit_log`, `pending_approvals`, `decision_traces` |
-| Automation | `scheduled_actions`, `routines`, `proactive_tasks`, `daily_counters` |
+| Automation | `scheduled_actions`, `routines_legacy`, `proactive_tasks`, `daily_counters` |
 | Configuration | `config_overrides`, `app_secrets` |
 | Providers | `provider_connections`, `oauth_tokens`, `provider_oauth_states`, `provider_sync_state` |
 | Media and workbench | `media_blobs`, `workbench_transfers`, `workbench_minutes` |

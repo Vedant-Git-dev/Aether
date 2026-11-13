@@ -1,6 +1,6 @@
 """Aether's native tools — reading its own memory, keeping entity notes,
 scheduling, requesting screen captures, talking to the user, managing
-the user's routines, replaying why it acted, and proving the record
+alerts and reminders, replaying why it acted, and proving the record
 intact.
 
 These are internal by construction: they touch only Aether's own state
@@ -20,11 +20,14 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple
 
+from ..alerts.engine import AlertEngine
+from ..alerts.sources import manifest
+from ..alerts.spec import ALERT, REMINDER, STYLES, AlertSpec
 from ..authz.audit import verification_text
 from ..connectors.base import Attachment
 from ..connectors.registry import ToolRegistry
 from ..llm.types import ImageBlock, Message, WireSpec, with_plain_param
-from ..memory.watches import WatchSpec, has_criteria
+from ..origin import current_origin
 from ..tools.model import ToolSpec
 from ..workspace import SecretRejected, WorkspaceWriteError
 
@@ -50,8 +53,7 @@ def _spec(name: str, description: str, properties: dict[str, Any], required: lis
 
 # The registry identity for each native tool: capability, intent, one-line
 # summary, declared risk, and whether it is always schematized. The legacy
-# name stays as an alias, so stored approvals, schedules and routines keep
-# resolving without a data migration.
+# name stays as an alias, so stored approvals and schedules keep resolving.
 _NATIVE_META: dict[str, tuple[str, str, str, str, bool]] = {
     "search_tools": ("tools", "search", "Find tools by app or action.", "read", True),
     "load_tools": ("tools", "load", "Load the full schemas for tool names.", "read", True),
@@ -83,13 +85,17 @@ _NATIVE_META: dict[str, tuple[str, str, str, str, bool]] = {
         "external",
         False,
     ),
-    "create_routine": ("routines", "create", "Arm a standing reaction.", "write", False),
-    "list_routines": ("routines", "list", "List armed routines.", "read", False),
-    "set_routine_enabled": ("routines", "enable", "Pause or re-arm a routine.", "write", False),
-    "delete_routine": ("routines", "delete", "Delete a routine.", "write", False),
-    "create_alert": ("alerts", "create", "Set an alert or reminder.", "write", False),
-    "update_alert": ("alerts", "update", "Change one alert or reminder.", "write", False),
-    "delete_alert": ("alerts", "delete", "Delete an alert.", "write", False),
+    "list_alerts": (
+        "alerts",
+        "list",
+        "List alerts, reminders and scheduled actions.",
+        "read",
+        True,
+    ),
+    "create_alert": ("alerts", "create", "Set an alert or reminder.", "write", True),
+    "offer_alert": ("alerts", "offer", "Offer to set an alert, for one tap.", "write", True),
+    "update_alert": ("alerts", "update", "Change one alert or reminder.", "write", True),
+    "delete_alert": ("alerts", "delete", "Delete an alert.", "write", True),
     "explain_decision": ("traces", "explain", "Replay why an action happened.", "read", False),
     "verify_integrity": (
         "audit",
@@ -135,19 +141,10 @@ _NATIVE_META: dict[str, tuple[str, str, str, str, bool]] = {
     "web_search": ("web", "search", "Search the web for current information.", "external", False),
 }
 
-# Names that used to be the whole identity of an alert tool. They stay on the
-# same spec as aliases, so old traces, user rules and model habits keep
-# resolving without a second registration.
-_NATIVE_EXTRA_ALIASES: dict[str, tuple[str, ...]] = {
-    "create_alert": ("create_watch", "watches__create"),
-    "update_alert": (
-        "set_watch_enabled",
-        "watches__enable",
-        "list_watches",
-        "watches__list",
-    ),
-    "delete_alert": ("delete_watch", "watches__delete"),
-}
+# Nothing to alias: the alert tools are new names and the old vocabulary is
+# deliberately gone, so a stored model habit cannot resurrect a name the
+# user never sees.
+_NATIVE_EXTRA_ALIASES: dict[str, tuple[str, ...]] = {}
 
 
 def _clip(text: str, limit: int = 300) -> str:
@@ -424,27 +421,13 @@ _NATIVE_WORDS: dict[str, ActionWords] = {
         "Edit the video", "editing the stored video", "edited the stored video"
     ),
     "generate_image": ActionWords("Make the image", "making an image", "made an image"),
-    "create_routine": ActionWords("Arm the routine", "arming a routine", "armed the routine"),
-    "list_routines": ActionWords("List the routines", "listing routines", "listed the routines"),
-    "set_routine_enabled": ActionWords(
-        "Arm or pause the routine",
-        "pausing or re-arming a routine",
-        "changed the routine's armed state",
-    ),
-    "delete_routine": ActionWords(
-        "Delete the routine", "deleting a routine", "deleted the routine"
-    ),
+    "list_alerts": ActionWords("Check the alerts", "checking your alerts", "checked the alerts"),
     "create_alert": ActionWords("Set the alert", "setting an alert", "set the alert"),
+    "offer_alert": ActionWords(
+        "Offer the alert", "offering to set an alert", "offered to set the alert"
+    ),
     "update_alert": ActionWords("Update the alert", "updating an alert", "updated the alert"),
     "delete_alert": ActionWords("Delete the alert", "deleting an alert", "deleted the alert"),
-    "create_watch": ActionWords("Set the alert", "setting an alert", "set the alert"),
-    "list_watches": ActionWords("List the alerts", "listing alerts", "listed the alerts"),
-    "set_watch_enabled": ActionWords(
-        "Pause or re-arm the alert",
-        "pausing or re-arming an alert",
-        "changed the alert's state",
-    ),
-    "delete_watch": ActionWords("Delete the alert", "deleting an alert", "deleted the alert"),
     "explain_decision": ActionWords(
         "Replay the decision", "replaying a decision", "replayed the decision"
     ),
@@ -496,10 +479,6 @@ _NATIVE_ALIASES.update(
         "message__reply": "reply_user",
         "message__notify": "notify_user",
         "message__ask": "ask_user",
-        "watches__create": "create_watch",
-        "watches__list": "list_watches",
-        "watches__enable": "set_watch_enabled",
-        "watches__delete": "delete_watch",
     }
 )
 
@@ -802,15 +781,7 @@ def _compose_ask(name: str, params: Any, *, complete: bool) -> str:
     question previews long text so the chat stays short, the full text
     carries everything, so the "read the full text" tap never switches to
     a different view of what was decided on."""
-    question = ""
-    if isinstance(params, dict) and name in (
-        "create_alert",
-        "alerts__create",
-        "create_watch",
-        "watches__create",
-    ):
-        question = str(params.get("question") or "").strip()
-    lines = [question or f"{_action_words(name).ask}?"]
+    lines = [f"{_action_words(name).ask}?"]
     if isinstance(params, dict):
         entries = [(k, v) for k, v in params.items() if not k.startswith("_") and k != "question"]
     else:
@@ -902,12 +873,9 @@ def format_trace(t: Any) -> str:
         lines.append(f"  kept in mind: {len(recalled)} related memory(ies)")
         for r in recalled:
             lines.append(f"    [{r.get('source')}/{r.get('kind')}] {r.get('line', '')}")
-    routine = p.get("routine")
-    if routine:
-        lines.append(
-            f"  routine: #{routine.get('id')} '{routine.get('label')}' "
-            f"when {json.dumps(routine.get('trigger') or {}, ensure_ascii=False)}"
-        )
+    alert = p.get("alert") or p.get("routine")
+    if alert:
+        lines.append(f"  alert: #{alert.get('id')} '{alert.get('title') or alert.get('label')}'")
     event = p.get("event")
     if event:
         lines.append(
@@ -965,8 +933,9 @@ def plain_replay(trace: Any) -> str:
         first = _clip(str(messages[0].get("text", "")), 200)
         more = f" (+{len(messages) - 1} more)" if len(messages) > 1 else ""
         lines.append(f'You asked: "{first}"{more}')
-    elif p.get("routine"):
-        lines.append(f"Your routine '{p['routine'].get('label')}' fired.")
+    elif p.get("alert") or p.get("routine"):
+        found = p.get("alert") or p.get("routine")
+        lines.append(f"Your alert '{found.get('title') or found.get('label')}' matched.")
     elif p.get("action"):
         lines.append(f"The scheduled action '{p['action'].get('label')}' came due.")
     elif p.get("approval_id") is not None:
@@ -1023,7 +992,6 @@ def register_native_tools(
     scheduler: Any,
     surfaces: Any,
     capture_box: Any,
-    routines: Any = None,
     traces: Any = None,
     audit: Any = None,
     config_manager: Any = None,
@@ -1035,32 +1003,27 @@ def register_native_tools(
     providers: Any = None,
     editor: Any = None,
     generator: Any = None,
-    proactive_path: Any = None,
-    alert_basis: Callable[[], list[str]] | None = None,
-    forget_origin: Callable[[], str] | None = None,
+    alerts: AlertEngine | None = None,
     memory_control: Any = None,
 ) -> int:
     """Add Aether's own tools to the flat namespace. Returns how many.
 
-    `routines` wires the standing-trigger tools, `traces` the
-    decision-replay tool, `audit` the integrity check, `config_manager` the
-    configuration tools, `workspace` the Markdown workspace tools, and
-    `web` the hardened fetch and search tools; without the store behind
-    one it is not offered at all (same shape as a loop without an MCP
-    host: no feature, no dead tool spec). `media` wires find_media (the
-    stored-file resolver) and share_media; `media` + `providers` together
-    wire look_at_media — stored bytes plus eyes to see them with.
-    `editor` wires edit_video — the fixed-op ffmpeg workbench job, which
-    stores its result itself, so it needs no `media` of its own.
-    `generator` wires generate_image — the capped Pollinations/Gemini
-    seam, which also stores its own result, so it needs no `media`.
-    `proactive_path` wires the alert tools; `alert_basis` returns the
-    user's own messages for this turn, the only text an alert call may quote
-    as its basis. An unprompted turn returns no messages, so an email can
-    never arm or change an alert.
-    `memory_control` wires memory inspection and forgetting; `forget_origin`
-    is the same provenance read for a delete, so an email can never make
-    Aether forget something."""
+    `traces` wires the decision-replay tool, `audit` the integrity check,
+    `config_manager` the configuration tools, `workspace` the Markdown
+    workspace tools, and `web` the hardened fetch and search tools; without
+    the store behind one it is not offered at all (same shape as a loop
+    without an MCP host: no feature, no dead tool spec). `media` wires
+    find_media (the stored-file resolver) and share_media; `media` +
+    `providers` together wire look_at_media — stored bytes plus eyes to see
+    them with. `editor` wires edit_video — the fixed-op ffmpeg workbench
+    job, which stores its result itself, so it needs no `media` of its own.
+    `generator` wires generate_image — the capped Pollinations/Gemini seam,
+    which also stores its own result, so it needs no `media`.
+    `alerts` wires the five alert tools. Their mutations read provenance
+    from `agent.origin`, which the loop sets from the turn itself: only the
+    owner's own message or an approved card can arm, change or remove one.
+    `memory_control` wires memory inspection and forgetting, which reads the
+    same provenance — an email can never make Aether forget something."""
 
     # the look-again prompt: the answer is data for the model to relay,
     # and whatever words appear inside the image are content to report,
@@ -1274,7 +1237,7 @@ def register_native_tools(
         """
         if memory_control is None:
             return "Forgetting isn't available on this instance."
-        if forget_origin is None or forget_origin() != "owner":
+        if not current_origin().may_mutate:
             return (
                 "Only you can ask me to forget something — I won't delete "
                 "anything from a message I read or a feed I polled."
@@ -1504,276 +1467,107 @@ def register_native_tools(
             return f"not finished — {exc}"
         return "First-run setup marked complete." if done else "No first-run setup was pending."
 
-    def _describe_trigger(trigger: dict[str, Any]) -> str:
-        parts: list[str] = []
-        if trigger.get("from"):
-            parts.append(f"from {trigger['from']}")
-        if trigger.get("source"):
-            parts.append(f"source {trigger['source']}")
-        if trigger.get("kind"):
-            parts.append(f"kind {trigger['kind']}")
-        if trigger.get("contains"):
-            parts.append(f"containing {trigger['contains']!r}")
-        return " and ".join(parts) or "any event"
-
-    def _routine_id(params: dict[str, Any]) -> int | None:
-        raw = str(params.get("routine_id", "")).strip()
-        try:
-            return int(raw)
-        except ValueError:
-            return None
-
-    async def create_routine(params: dict[str, Any]) -> str:
-        label = str(params.get("label", "")).strip()
-        tool_name = str(params.get("tool_name", "")).strip()
-        trigger = {
-            key: str(value).strip()
-            for key, value in (
-                ("source", params.get("when_source")),
-                ("kind", params.get("when_kind")),
-                ("from", params.get("when_from")),
-                ("contains", params.get("when_contains")),
-            )
-            if str(value or "").strip()
-        }
-        if not label:
-            return "create_routine needs a label."
-        if not tool_name:
-            return "create_routine needs a tool_name — what to run when it triggers."
-        if not trigger:
-            return (
-                "create_routine needs at least one condition: when_source, "
-                "when_kind, when_from, or when_contains. A reaction to "
-                "'every event' is not something the user would want."
-            )
-        cooldown = _parse_int_param(params, "cooldown_seconds", 300)
-        if cooldown is None:
-            return "cooldown_seconds must be an integer (seconds between fires)."
-        routine = await routines.create(
-            label=label,
-            trigger=trigger,
-            action={
-                "type": "tool",
-                "tool": tool_name,
-                "params": dict(params.get("params") or {}),
-            },
-            cooldown_seconds=cooldown,
-        )
-        return (
-            f"Routine {routine.id} '{label}' armed: when {_describe_trigger(trigger)}, "
-            f"run {tool_name}. It still passes the authorization gate every "
-            "time it fires — a risky tool will ask the user then."
-        )
-
-    async def list_routines(params: dict[str, Any]) -> str:
-        rows = await routines.list()
-        if not rows:
-            return "No routines armed."
-        lines = []
-        for r in rows:
-            fired = (
-                f"fired {r.fire_count}x"
-                + (f", last {r.last_fired_at:%Y-%m-%d %H:%M}" if r.last_fired_at else "")
-                if r.fire_count
-                else "never fired"
-            )
-            state = "paused" if not r.enabled else fired
-            lines.append(
-                f"#{r.id} '{r.label}' — when {_describe_trigger(r.trigger)} → "
-                f"run {r.action.get('tool', '?')} ({state})"
-            )
-        return "\n".join(lines)
-
-    async def set_routine_enabled(params: dict[str, Any]) -> str:
-        routine_id = _routine_id(params)
-        if routine_id is None:
-            return "set_routine_enabled needs a routine_id."
-        enabled = bool(params.get("enabled", True))
-        routine = await routines.set_enabled(routine_id, enabled)
-        if routine is None:
-            return f"No routine {routine_id}."
-        verb = "re-armed" if enabled else "paused"
-        return f"Routine {routine_id} '{routine.label}' {verb}."
-
-    async def delete_routine(params: dict[str, Any]) -> str:
-        routine_id = _routine_id(params)
-        if routine_id is None:
-            return "delete_routine needs a routine_id."
-        if await routines.delete(routine_id):
-            return f"Routine {routine_id} deleted."
-        return f"No routine {routine_id}."
-
     def _alert_id(params: dict[str, Any]) -> int | None:
-        raw = str(params.get("watch_id", "")).strip()
+        raw = str(params.get("alert_id", "")).strip()
+        if not raw:
+            return None
         try:
             return int(raw)
         except ValueError:
             return None
 
-    def _normalize_basis(text: Any) -> str:
-        return " ".join(str(text or "").split()).casefold()
-
-    def _basis_ok(params: dict[str, Any]) -> bool:
-        """Only the user's own words may arm, change or list an alert.
-
-        The model quotes the phrase that justifies the call; the quote must
-        appear in a message the user sent this turn. An unprompted turn has
-        no messages, so an email or a feed can never supply one.
-        """
-        basis = _normalize_basis(params.get("basis"))
-        if not basis:
-            return False
-        try:
-            messages = alert_basis() if alert_basis is not None else []
-        except Exception:
-            log.warning("could not read the alert basis — refusing the call", exc_info=True)
-            return False
-        return any(basis in _normalize_basis(message) for message in messages)
-
-    def _describe_alert(spec: WatchSpec) -> str:
-        parts: list[str] = []
-        scope = (spec.scope or "*").lower()
-        if scope == "mail":
-            parts.append("mail")
-        elif scope == "chat":
-            parts.append("messages")
-        elif scope in ("", "*", "any"):
-            parts.append("anything")
-        else:
-            parts.append(scope)
-        if spec.sender:
-            parts.append(f"from {spec.sender}")
-        if spec.kind:
-            parts.append(f"of kind {spec.kind}")
-        if spec.contains:
-            parts.append(f'mentioning "{spec.contains}"')
-        elif spec.description:
-            parts.append(f'about "{spec.description}"')
-        if spec.needs_reply:
-            parts.append("that needs a reply")
-        if spec.urgency_min >= 3:
-            parts.append("at critical urgency")
-        elif spec.urgency_min >= 2:
-            parts.append("when urgent")
-        elif spec.urgency_min >= 1:
-            parts.append("when worth noticing")
-        if spec.quiet_hours:
-            parts.append(f"quiet from {spec.quiet_hours.replace('-', ' to ')}")
-        if spec.channel:
-            parts.append(f"on {spec.channel}")
-        return " ".join(parts) or "anything"
-
-    def _form(spec: WatchSpec) -> str:
-        return "reminder" if spec.form == "reminder" else "alert"
-
-    def _alert_line(watch: Any) -> str:
-        state = "armed" if watch.status == "active" else "paused"
-        label = watch.label or "untitled"
-        return (
-            f"#{watch.id} {label} — {state} — {_form(watch.spec)} — {_describe_alert(watch.spec)}"
-        )
-
-    async def _alert_lines() -> str:
-        rows = await proactive_path.list_watches()
-        if not rows:
-            return "no alerts set"
-        return "alerts:\n" + "\n".join(_alert_line(watch) for watch in rows)
-
-    def _merged_spec(existing: WatchSpec, params: dict[str, Any]) -> WatchSpec:
-        fields: dict[str, Any] = {}
-        for key in (
-            "label",
-            "scope",
-            "kind",
-            "sender",
-            "contains",
-            "description",
-            "channel",
-            "quiet_hours",
-        ):
-            if key in params and params[key] is not None:
-                fields[key] = str(params[key]).strip()
-        if "form" in params and params["form"] is not None:
-            form = str(params["form"]).strip().lower()
-            fields["form"] = form if form in ("alert", "reminder") else "alert"
-        if "urgency_min" in params:
-            urgency = _parse_int_param(params, "urgency_min", existing.urgency_min, minimum=0)
-            fields["urgency_min"] = existing.urgency_min if urgency is None else urgency
-        if "needs_reply" in params:
-            fields["needs_reply"] = bool(params["needs_reply"])
-        return replace(existing, **fields)
-
-    async def create_alert(params: dict[str, Any]) -> str:
-        if proactive_path is None:
-            return "alerts unavailable"
-        # an approved offer is the user's decision; a direct call needs the
-        # user's own words. The policy turns an unquoted call into the card.
-        if params.get("_approved") is not True and not _basis_ok(params):
-            return "no alert set: the call needs a quote from the user's message"
-        form = str(params.get("form") or "alert").strip().lower()
-        if form not in ("alert", "reminder"):
-            form = "alert"
-        spec = WatchSpec(
-            label=str(params.get("label") or "").strip(),
-            scope=str(params.get("scope") or "*").strip(),
-            kind=str(params.get("kind") or "").strip(),
+    def _new_spec(params: dict[str, Any]) -> AlertSpec:
+        scope = str(params.get("scope") or "").strip().lower()
+        # a stated time is a reminder even when `kind` was left out; the
+        # schema offers both fields, and the data decides the shape
+        kind = str(params.get("kind") or "").strip().lower()
+        if not kind:
+            kind = REMINDER if str(params.get("remind_at") or "").strip() else ALERT
+        return AlertSpec(
+            title=str(params.get("title") or "").strip(),
+            kind=kind,
+            scope=scope,
+            event=str(params.get("event") or "").strip(),
             sender=str(params.get("sender") or "").strip(),
             contains=str(params.get("contains") or "").strip(),
-            description=str(params.get("description") or "").strip(),
-            urgency_min=_parse_int_param(params, "urgency_min", 0, minimum=0) or 0,
-            needs_reply=bool(params.get("needs_reply", False)),
-            channel=str(params.get("channel") or "").strip(),
-            quiet_hours=str(params.get("quiet_hours") or "").strip(),
-            form=form,
+            style=str(params.get("style") or manifest().style_for(scope)).strip().lower(),
+            remind_at=str(params.get("remind_at") or "").strip(),
+            action=params.get("action") if isinstance(params.get("action"), dict) else None,
         )
-        if not has_criteria(spec):
-            return "no alert set: the request needs a condition such as a sender or description"
-        watch = await proactive_path.create_watch(spec, origin="owner")
-        if watch is None:
-            return "no alert set: the store refused it"
-        return f"armed {_form(watch.spec)} #{watch.id}: {_describe_alert(watch.spec)}"
+
+    def _merged_spec(existing: AlertSpec, params: dict[str, Any]) -> AlertSpec:
+        fields: dict[str, Any] = {}
+        for key in ("title", "scope", "event", "sender", "contains", "style", "remind_at"):
+            if key in params and params[key] is not None:
+                fields[key] = str(params[key]).strip()
+        if "kind" in params and params["kind"] is not None:
+            kind = str(params["kind"]).strip().lower()
+            if kind in ("alert", "reminder"):
+                fields["kind"] = kind
+        if "action" in params:
+            fields["action"] = params["action"] if isinstance(params["action"], dict) else None
+        if "contains" in params and str(params["contains"] or "").strip():
+            # a legacy loose description must not keep matching words the
+            # user just replaced
+            fields["description"] = ""
+        if "scope" in params:
+            fields["scope"] = str(params["scope"] or "").strip().lower()
+        return replace(existing, **fields)
+
+    async def list_alerts(params: dict[str, Any]) -> str:
+        if alerts is None:
+            return "alerts unavailable"
+        return await alerts.sections()
+
+    async def create_alert(params: dict[str, Any]) -> str:
+        if alerts is None:
+            return "alerts unavailable"
+        return await alerts.create(_new_spec(params), current_origin())
+
+    async def offer_alert(params: dict[str, Any]) -> str:
+        """The same record, reached through a card.
+
+        The gate parks this call; the tap is the provenance, so the handler
+        arms exactly what the card described."""
+        if alerts is None:
+            return "alerts unavailable"
+        return await alerts.create(_new_spec(params), current_origin())
 
     async def update_alert(params: dict[str, Any]) -> str:
-        if proactive_path is None:
+        if alerts is None:
             return "alerts unavailable"
-        if not _basis_ok(params):
-            return "no alert changed: the call needs a quote from the user's message"
-        watch_id = _alert_id(params)
-        if watch_id is None:
-            return await _alert_lines()
-        existing = await proactive_path.get_watch(watch_id)
+        alert_id = _alert_id(params)
+        if alert_id is None:
+            return alerts.refusal("alerts.needs_id")
+        existing = await alerts.get(alert_id)
         if existing is None:
-            return f"no alert #{watch_id}"
-        changed = _merged_spec(existing.spec, params)
-        spec_changed = changed != existing.spec
-        if spec_changed:
-            updated = await proactive_path.update_watch(watch_id, changed, origin="owner")
-            if updated is None:
-                return f"no alert #{watch_id}"
-            existing = updated
+            return alerts.refusal("alerts.not_found")
+        origin = current_origin()
         if "enabled" in params:
-            watch = await proactive_path.set_watch_enabled(
-                watch_id, bool(params["enabled"]), origin="owner"
-            )
-            if watch is None:
-                return f"no alert #{watch_id}"
-            state = "armed" if watch.status == "active" else "paused"
-            return f"alert #{watch_id} {state}: {_describe_alert(watch.spec)}"
-        if spec_changed:
-            return f"updated {_form(existing.spec)} #{watch_id}: {_describe_alert(existing.spec)}"
-        return _alert_line(existing)
+            changed = await alerts.set_enabled(alert_id, bool(params["enabled"]), origin)
+            if not any(
+                key in params
+                for key in (
+                    "title",
+                    "scope",
+                    "event",
+                    "sender",
+                    "contains",
+                    "style",
+                    "remind_at",
+                    "kind",
+                )
+            ):
+                return changed
+        return await alerts.update(alert_id, _merged_spec(existing.spec, params), origin)
 
     async def delete_alert(params: dict[str, Any]) -> str:
-        if proactive_path is None:
+        if alerts is None:
             return "alerts unavailable"
-        if not _basis_ok(params):
-            return "no alert deleted: the call needs a quote from the user's message"
-        watch_id = _alert_id(params)
-        if watch_id is None:
-            return await _alert_lines()
-        if await proactive_path.delete_watch(watch_id, origin="owner"):
-            return f"deleted alert #{watch_id}"
-        return f"no alert #{watch_id}"
+        alert_id = _alert_id(params)
+        if alert_id is None:
+            return alerts.refusal("alerts.needs_id")
+        return await alerts.remove(alert_id, current_origin())
 
     async def explain_decision(params: dict[str, Any]) -> str:
         raw_trace = str(params.get("trace_id", "")).strip()
@@ -2148,242 +1942,121 @@ def register_native_tools(
             else []
         ),
     ]
-    if routines is not None:
+    if alerts is not None:
+        examples = " ".join(manifest().examples[:2])
+        props: dict[str, Any] = {
+            "title": {
+                "type": "string",
+                "description": "short label in the user's words",
+            },
+            "kind": {
+                "type": "string",
+                "enum": ["alert", "reminder"],
+                "description": "alert when something happens; reminder at a time",
+            },
+            "scope": {
+                "type": "string",
+                "enum": list(manifest().keys),
+                "description": "source to follow, e.g. mail",
+            },
+            "event": {
+                "type": "string",
+                "enum": list(manifest().event_kinds),
+                "description": "narrow to one kind of event",
+            },
+            "sender": {
+                "type": "string",
+                "description": "address or handle to match",
+            },
+            "contains": {
+                "type": "string",
+                "description": "words the event must contain",
+            },
+            "style": {
+                "type": "string",
+                "enum": list(STYLES),
+                "description": "immediate, or digest when it is high volume",
+            },
+            "remind_at": {
+                "type": "string",
+                "description": "for a reminder: when, ISO 8601 with timezone",
+            },
+            "action": {
+                "type": "object",
+                "description": "optionally run a tool call when it matches",
+                "properties": {
+                    "tool": {"type": "string", "description": "tool to run"},
+                    "params": {"type": "object", "description": "its arguments"},
+                },
+                "required": ["tool"],
+            },
+        }
+        message = (
+            "Set an alert (tell me when something happens) or a reminder "
+            "(tell me at a time). Use it whenever the user asks to be told "
+            "about something or asks to be reminded — a sender, some words, "
+            "a source. A reminder needs remind_at; an alert needs a scope, "
+            "sender or words. Unsupported sources are refused with a working "
+            f"alternative. {examples}".strip()
+        )
+        offer_message = (
+            "Offer an alert you spotted yourself — a commitment, a follow-up, "
+            "something the user would want to know. The user sees a one-tap "
+            "confirmation card and nothing is armed unless they accept it."
+        )
+        change_message = (
+            "Change one alert or reminder by its number. Fields given replace "
+            "the stored ones; omitted fields stay. enabled pauses or resumes it. "
+            "This never lists: use list_alerts for that."
+        )
         natives.extend(
             [
                 (
                     _spec(
-                        "create_routine",
-                        "Arm a standing reaction: 'when X happens, run Y'. "
-                        "Conditions (when_source, when_kind, when_from, "
-                        "when_contains) are AND-combined; at least one is "
-                        "required. Every fire passes the authorization gate.",
-                        {
-                            "label": {"type": "string", "description": "short human label"},
-                            "when_source": {
-                                "type": "string",
-                                "description": "event source to match, e.g. mail",
-                            },
-                            "when_kind": {
-                                "type": "string",
-                                "description": "event kind, e.g. chat_message",
-                            },
-                            "when_from": {
-                                "type": "string",
-                                "description": "sender handle to match",
-                            },
-                            "when_contains": {
-                                "type": "string",
-                                "description": "text the event must contain",
-                            },
-                            "tool_name": {
-                                "type": "string",
-                                "description": "tool to run on a match",
-                            },
-                            "params": {"type": "object", "description": "arguments for that tool"},
-                            "cooldown_seconds": {
-                                "type": "integer",
-                                "description": "minimum seconds between fires (default 300)",
-                            },
-                        },
-                        ["label", "tool_name"],
-                    ),
-                    create_routine,
-                ),
-                (
-                    _spec(
-                        "list_routines",
-                        "List the user's armed routines — trigger, action, "
-                        "and how often each has fired.",
+                        "list_alerts",
+                        "List the user's alerts, reminders and scheduled actions "
+                        "as three sections, with the number each one carries.",
                         {},
                         [],
                     ),
-                    list_routines,
+                    list_alerts,
                 ),
                 (
-                    _spec(
-                        "set_routine_enabled",
-                        "Pause or re-arm a routine without deleting it.",
-                        {
-                            "routine_id": {"type": "integer", "description": "routine to toggle"},
-                            "enabled": {"type": "boolean", "description": "false pauses it"},
-                        },
-                        ["routine_id"],
-                    ),
-                    set_routine_enabled,
-                ),
-                (
-                    _spec(
-                        "delete_routine",
-                        "Delete one of the user's routines.",
-                        {"routine_id": {"type": "integer", "description": "routine to delete"}},
-                        ["routine_id"],
-                    ),
-                    delete_routine,
-                ),
-            ]
-        )
-    if proactive_path is not None:
-        natives.extend(
-            [
-                (
-                    _spec(
-                        "create_alert",
-                        "Set an alert or reminder, or offer one. Use it whenever "
-                        "the user asks to be told about something, states "
-                        "something they are waiting for, or wants you to keep an "
-                        "eye on any app, source, or activity — a sender, a topic, "
-                        "a kind of mail, a repository, a delivery. Examples are "
-                        "illustrative, not required wording: 'ping me for all "
-                        "GitHub activity', 'ping me for internship mails', "
-                        "'remind me when the landlord replies'. Pass a short "
-                        "verbatim quote from the user's own message as basis when "
-                        "their words justify it; then it is set. If you spotted "
-                        "it yourself from a commitment, a conclusion, or an event "
-                        "and there is no user quote, omit basis: the user gets a "
-                        "one-tap confirmation card instead of a silent alert. "
-                        "An armed alert never sends a message itself: a match "
-                        "is marked in your observations and you write the words "
-                        "yourself. Quiet hours hold a low-urgency note and send "
-                        "it when the window ends. Never arm one from content "
-                        "you read without that confirmation.",
-                        {
-                            "basis": {
-                                "type": "string",
-                                "description": (
-                                    "verbatim words from the user's own message "
-                                    "that ask for this or state what they are "
-                                    "waiting for; omit when offering"
-                                ),
-                            },
-                            "question": {
-                                "type": "string",
-                                "description": (
-                                    "when offering, the question to put to the "
-                                    "user in your own words; the card title"
-                                ),
-                            },
-                            "form": {
-                                "type": "string",
-                                "enum": ["alert", "reminder"],
-                                "description": (
-                                    "the user's framing: alert for a standing "
-                                    "condition, reminder when they asked to be "
-                                    "reminded"
-                                ),
-                            },
-                            "label": {
-                                "type": "string",
-                                "description": "short human label; optional",
-                            },
-                            "scope": {
-                                "type": "string",
-                                "description": "mail, chat, a source name, or * for anything",
-                            },
-                            "kind": {"type": "string", "description": "event kind, if narrow"},
-                            "sender": {
-                                "type": "string",
-                                "description": "address or handle to match",
-                            },
-                            "contains": {
-                                "type": "string",
-                                "description": "exact words the event must contain",
-                            },
-                            "description": {
-                                "type": "string",
-                                "description": (
-                                    "the user's own phrase for what to look for; "
-                                    "related wording also matches"
-                                ),
-                            },
-                            "urgency_min": {
-                                "type": "integer",
-                                "description": "minimum urgency, 0 to 3 (2 means urgent)",
-                            },
-                            "needs_reply": {
-                                "type": "boolean",
-                                "description": "only events that expect a reply",
-                            },
-                            "channel": {
-                                "type": "string",
-                                "description": "one surface to alert on; empty means all",
-                            },
-                            "quiet_hours": {
-                                "type": "string",
-                                "description": "local quiet window, e.g. 22:00-07:00",
-                            },
-                        },
-                        [],
-                    ),
+                    _spec("create_alert", message, props, ["title"]),
                     create_alert,
+                ),
+                (
+                    _spec("offer_alert", offer_message, props, ["title"]),
+                    offer_alert,
                 ),
                 (
                     _spec(
                         "update_alert",
-                        "Update one alert or reminder, or list the current ones. "
-                        "With no watch_id, return the current alerts so you can "
-                        "choose. With watch_id, change only the fields supplied; "
-                        "enabled pauses or re-arms it. Pass a verbatim quote from "
-                        "the user's message as basis.",
+                        change_message,
                         {
-                            "basis": {
-                                "type": "string",
-                                "description": "verbatim words from the user's own message",
-                            },
-                            "watch_id": {
+                            "alert_id": {
                                 "type": "integer",
-                                "description": "alert to change; omit to list",
+                                "description": "alert number from list_alerts",
                             },
                             "enabled": {"type": "boolean", "description": "false pauses it"},
-                            "label": {"type": "string", "description": "new label"},
-                            "form": {
-                                "type": "string",
-                                "enum": ["alert", "reminder"],
-                                "description": "new wording",
-                            },
-                            "scope": {"type": "string", "description": "new scope"},
-                            "kind": {"type": "string", "description": "new event kind"},
-                            "sender": {"type": "string", "description": "new sender"},
-                            "contains": {"type": "string", "description": "new exact words"},
-                            "description": {
-                                "type": "string",
-                                "description": "new description to match",
-                            },
-                            "urgency_min": {
-                                "type": "integer",
-                                "description": "new minimum urgency, 0 to 3",
-                            },
-                            "needs_reply": {
-                                "type": "boolean",
-                                "description": "only events that expect a reply",
-                            },
-                            "channel": {"type": "string", "description": "new surface"},
-                            "quiet_hours": {
-                                "type": "string",
-                                "description": "new local quiet window",
-                            },
+                            **props,
                         },
-                        ["basis"],
+                        ["alert_id"],
                     ),
                     update_alert,
                 ),
                 (
                     _spec(
                         "delete_alert",
-                        "Delete one of the user's alerts or reminders. With no "
-                        "watch_id, return the current alerts so you can choose. "
-                        "Pass a verbatim quote from the user's message as basis.",
+                        "Remove one alert or reminder by its number. Nothing is "
+                        "removed unless the write succeeds, and this never lists.",
                         {
-                            "basis": {
-                                "type": "string",
-                                "description": "verbatim words from the user's own message",
-                            },
-                            "watch_id": {
+                            "alert_id": {
                                 "type": "integer",
-                                "description": "alert to delete; omit to list",
-                            },
+                                "description": "alert number from list_alerts",
+                            }
                         },
-                        ["basis"],
+                        ["alert_id"],
                     ),
                     delete_alert,
                 ),

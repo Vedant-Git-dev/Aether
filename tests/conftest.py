@@ -21,11 +21,12 @@ E2E_ENABLED = os.environ.get("AETHER_TEST_E2E", "") == "1"
 # Tables integration tests are allowed to wipe between tests.
 _TABLES = (
     "audit_log, pending_approvals, events, identities, identity_handles, "
-    "entity_notes, chat_messages, scheduled_actions, routines, decision_traces, "
+    "entity_notes, chat_messages, scheduled_actions, routines_legacy, decision_traces, "
     "config_overrides, oauth_tokens, app_secrets, memory_chunks, daily_counters, "
     "workbench_transfers, workbench_minutes, proactive_tasks, media_blobs, "
     "processed_updates, provider_connections, provider_oauth_states, "
-    "provider_sync_state, facts, commitments, commitment_reminders, watches, summaries, "
+    "provider_sync_state, facts, commitments, commitment_reminders, alerts, "
+    "alert_notifications, summaries, "
     "focus, forgotten_events, "
     "conclusions, deliveries, workspace_files, inbound_messages"
 )

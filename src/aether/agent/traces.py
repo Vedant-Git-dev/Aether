@@ -11,8 +11,8 @@ One row per act, four kinds:
 - turn      — one LLM turn: the trigger (messages, observations), every
               gated call with its ruling, the model's own words between
               calls, and its reply
-- routine   — one routine fire: the taught trigger, the matching event,
-              the call it ran
+- alert     — one alert fire: the stored condition, the matching event,
+              the call it ran (the legacy kind `routine` still reads)
 - scheduled — one scheduled action firing: the label, the call, the result
 - carry_out — an approved call running: the approval, the result
 
@@ -36,7 +36,8 @@ log = logging.getLogger("aether.agent.traces")
 
 # what a trace row can be
 TURN = "turn"
-ROUTINE = "routine"
+ALERT = "alert"
+ROUTINE = "routine"  # legacy rows only; new fires use ALERT
 SCHEDULED = "scheduled"
 CARRY_OUT = "carry_out"
 

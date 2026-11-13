@@ -38,7 +38,7 @@ First match wins.
 4. **Internal tools.** Tools that touch only Aether's own state are allowed:
    `memory_*`, `note_entity`, `schedule_action`, `request_screen_capture`,
    `look_at_media`, `share_media`, `edit_video`, `get_pending_approvals`,
-   `send_chat_message`, the routine tools, `explain_decision`, `verify_integrity`,
+   `send_chat_message`, the alert tools, `explain_decision`, `verify_integrity`,
    `get_config`, and `workspace_*`.
 5. **Web research.** `web_fetch` and `web_search` are allowed. They only read.
 6. **Image generation.** `generate_image` is allowed. The prompt reaches the image

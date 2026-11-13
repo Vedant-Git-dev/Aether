@@ -63,11 +63,13 @@ export default function TraceDetail({ t }) {
         </>
       )}
 
-      {t.kind === "routine" && p.routine && (
+      {(t.kind === "alert" || t.kind === "routine") && (p.alert || p.routine) && (
         <>
           <div data-testid="trace-line" className="text-sm text-ink-2">
-            Routine "{p.routine.label}" fired
-            {p.routine.trigger ? <span className="text-ink-3"> — {describeTrigger(p.routine.trigger)}</span> : null}
+            Alert "{p.alert?.title || p.routine?.label}" matched
+            {p.routine?.trigger ? (
+              <span className="text-ink-3"> — {describeTrigger(p.routine.trigger)}</span>
+            ) : null}
           </div>
           {p.event && (
             <div data-testid="trace-line" className="mt-1 text-xs text-ink-3">

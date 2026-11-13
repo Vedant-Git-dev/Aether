@@ -52,7 +52,7 @@ function StatusLine({ overview }) {
     [`${overview.indexed_chunks}`, "searchable pieces"],
     [`${overview.active_facts}`, "things it knows"],
     [`${overview.open_commitments}`, "open promises"],
-    [`${overview.active_watches}`, "active alerts"],
+    [`${overview.active_alerts}`, "active alerts"],
   ];
   return (
     <div className="mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-ink-3">

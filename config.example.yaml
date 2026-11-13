@@ -97,11 +97,27 @@ proactive:
     - research
     - media
   # optional (default: true)
-  watches_enabled: true
-  # optional (default: true)
   reminders_enabled: true
   # optional (default: 0.15)
   poll_jitter: 0.15
+
+alerts:
+  # optional (default: true)
+  enabled: true
+  # optional (default: 2) hours to fold a repeat note into the next batch
+  tell_window_hours: 2
+  # optional (default: 30) minutes a digest-style alert collects matches
+  digest_minutes: 30
+  # optional (default: 12) alert notifications per local day, all alerts
+  daily_cap: 12
+  # optional (default: 5) minutes between retries of a failed send
+  retry_minutes: 5
+  # optional (default: 3) tries one notification gets before it is dropped
+  max_attempts: 3
+  # optional (default: 300) seconds between folded-action fires
+  action_cooldown_seconds: 300
+  # optional (default: 2027-02-11) when the `watches` view is dropped
+  compat_until: "2027-02-11"
 
 workbench:
   # optional (default: modal) modal | vercel | github_actions | none
