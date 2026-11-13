@@ -147,6 +147,12 @@ class ProviderAppView:
     # plain words about the app's own polling, authored by the backend
     poll_note: str = ""
     poll_failing: bool = False
+    # the scope audit: what the app asks for, what the grant holds, and the
+    # plain sentence when the grant is narrower than the request
+    requested_scopes: tuple[str, ...] = ()
+    granted_scopes: tuple[str, ...] = ()
+    missing_scopes: tuple[str, ...] = ()
+    scope_note: str = ""
 
 
 @dataclass(frozen=True)

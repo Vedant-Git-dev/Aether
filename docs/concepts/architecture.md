@@ -293,6 +293,10 @@ the row. An email can therefore never arm one, however it is worded.
 `alerts` page and `/api/alerts` expose the same records for pause and removal; the old
 `watches` table is a read-only compatibility view until `alerts.compat_until`.
 
+Provider connections audit their own grants: the app card compares the scopes the app
+asks for with the scopes the connection holds, names any gap in plain words, and offers
+the reconnect that requests the rest. No scope URL reaches the panel.
+
 Provider polling is at-least-once. A poll stages its cursor instead of writing it, and
 the loop commits it only after the payload is durably ingested; a crash re-reads the
 window, and dedup by the provider's own id makes the repeat invisible. Gmail runs two

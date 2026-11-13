@@ -416,6 +416,12 @@ to the message catalog sentence. Off, every notification is the catalog sentence
 | `gmail.reconcile_minutes` | `60` | Minutes between the independent lookback sweep that fills any gap the history cursor missed |
 | `gmail.reconcile_lookback_hours` | `24` | How far back that sweep looks; wide enough to survive an outage |
 
+The app card also audits OAuth scopes: what the app asks for, what the grant
+actually holds, and — when the grant is narrower than the request — a plain sentence
+naming what is missing ("Aether still needs: read your mail") with an Add access button
+that reruns the sign-in for the full set. A token connection reports no scopes, so it is
+not flagged.
+
 A poll's cursor is committed only after its payload is durably ingested, so a crash re-reads the window; ingest dedups by the provider's own message id, so the repeat is invisible. Every poll records when it last ran, when it last succeeded and its consecutive failures, and the app card says plainly when a check is being retried.
 
 ---

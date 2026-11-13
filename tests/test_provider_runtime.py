@@ -12,6 +12,7 @@ from fakes import FakeAudit
 from aether.config import AppConfig
 from aether.connectors.registry import ToolRegistry
 from aether.providers.runtime import ProviderRuntime
+from aether.providers.scopes import describe, describe_many
 from aether.providers.types import (
     AppDefinition,
     PollDefinition,
@@ -523,6 +524,75 @@ def test_the_reconcile_sweep_has_its_own_interval() -> None:
 
     assert runtime._poll_interval(app, app.polls[0]) == 5.0
     assert runtime._poll_interval(app, app.polls[1]) == 60.0
+
+
+def test_scope_descriptions_are_plain_and_never_urls() -> None:
+    assert describe("https://www.googleapis.com/auth/gmail.readonly") == "read your mail"
+    assert describe("repo") == "your repositories, issues and pull requests"
+    unknown = describe("https://example.com/auth/strange")
+    assert "http" not in unknown
+    assert unknown == "an extra permission this app asks for"
+    assert describe_many(["repo", "repo", "notifications"]).startswith("your repositories")
+
+
+def test_a_narrower_grant_is_audited_as_missing() -> None:
+    provider, app = PROVIDER, APP
+    connection = ProviderConnection(
+        provider="demo",
+        auth_mode="oauth",
+        access_token="token",
+        scopes="read",
+        status="active",
+    )
+
+    requested, granted, missing = ProviderRuntime._scope_audit(provider, app, connection)
+
+    assert requested == ("read",)
+    assert granted == ("read",)
+    assert missing == ()
+
+
+async def test_a_missing_scope_is_named_in_plain_words_in_the_feed() -> None:
+    connection = ProviderConnection(
+        provider="demo",
+        auth_mode="oauth",
+        access_token="token",
+        scopes="read",
+        status="active",
+    )
+    store = FakeStore(connection)
+    gmail = replace(
+        APP,
+        scopes=("https://www.googleapis.com/auth/gmail.readonly",),
+    )
+    provider = replace(PROVIDER, apps=(gmail,))
+    runtime = _runtime(
+        store,
+        FakeOAuth(),
+        lambda request: httpx.Response(200),
+        definitions=[provider],
+    )
+
+    entry = (await runtime.feed())["apps"][0]
+    assert entry["missing_scopes"] == ("https://www.googleapis.com/auth/gmail.readonly",)
+    assert "read your mail" in entry["scope_note"]
+    assert "https://" not in entry["scope_note"]
+
+
+def test_a_token_connection_is_not_flagged_for_missing_scopes() -> None:
+    connection = ProviderConnection(
+        provider="demo",
+        auth_mode="token",
+        access_token="pat",
+        scopes="",
+        status="active",
+    )
+    provider, app = PROVIDER, APP
+
+    _, granted, missing = ProviderRuntime._scope_audit(provider, app, connection)
+
+    assert granted == ()
+    assert missing == ()
 
 
 class FakeSecrets:

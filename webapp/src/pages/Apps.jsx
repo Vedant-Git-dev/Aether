@@ -59,6 +59,8 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken,
   const connected = app.status === "active";
   const reauth = app.status === "reauth_required";
   const needsAccess = connected && app.actions === 0;
+  // a narrower grant hides some actions without breaking the connection
+  const scopeGap = connected && (app.missing_scopes || []).length > 0;
   const statusText = needsAccess
     ? "Access needed"
     : connected
@@ -68,7 +70,7 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken,
         : app.setup_required
           ? "Setup needed"
           : "Not connected";
-  const statusTone = needsAccess ? "warn" : connected ? "ok" : reauth || app.setup_required ? "warn" : "idle";
+  const statusTone = needsAccess || scopeGap ? "warn" : connected ? "ok" : reauth || app.setup_required ? "warn" : "idle";
   const canSwitchMode = (app.auth_modes || []).includes("oauth") && app.default_auth_mode === "token";
   const alternateMode = app.auth_mode === "oauth" ? "token" : "oauth";
   const alternateLabel = app.auth_mode === "oauth" ? "Use a token" : "Use browser sign-in";
@@ -223,6 +225,11 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken,
           {app.poll_note}
         </div>
       ) : null}
+      {app.scope_note ? (
+        <div className="text-xs text-warning" data-testid="scope-note">
+          {app.scope_note}
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="min-w-[9rem] flex-1 text-xs text-ink-3">
@@ -239,9 +246,21 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken,
             </Button>
           ) : null}
           {connected && !needsAccess ? (
-            <Button type="button" kind="neutral" onClick={() => onDisconnect(app)} disabled={busy}>
-              Disconnect
-            </Button>
+            <>
+              {scopeGap ? (
+                <Button
+                  type="button"
+                  kind="primary"
+                  onClick={() => connect(app.auth_mode)}
+                  disabled={busy}
+                >
+                  Add access
+                </Button>
+              ) : null}
+              <Button type="button" kind="neutral" onClick={() => onDisconnect(app)} disabled={busy}>
+                Disconnect
+              </Button>
+            </>
           ) : (
             <Button type="button" kind="primary" onClick={() => connect(app.auth_mode)} disabled={busy}>
               {needsAccess ? "Add access" : reauth ? "Reconnect" : app.setup_required ? "Set up" : "Connect"}

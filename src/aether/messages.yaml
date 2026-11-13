@@ -43,6 +43,7 @@ locales:
     alerts.reminder_note: "Reminder: {title}"
     alerts.no_surface: "I couldn't reach any of your surfaces just now."
     alerts.action_note: "Alert \"{title}\" ran its action."
+    providers.scope_missing: "Aether still needs: {scopes} — reconnect to grant it."
     providers.poll_ok: "Checking on its own."
     providers.poll_retrying: "The last check didn't go through — retrying on its own."
     providers.poll_waiting: "Waiting for its first check."

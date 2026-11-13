@@ -20,6 +20,7 @@ from ..message_catalog import render as render_message
 from ..secret_env import EnvResolver
 from ..secret_store import SecretStore
 from .oauth import OAuthEngine
+from .scopes import describe_many
 from .store import ProviderStore
 from .types import (
     AppDefinition,
@@ -222,6 +223,9 @@ class ProviderRuntime:
                 setup_required = not configured or (
                     provider.default_auth_mode == "oauth" and not client_configured
                 )
+                requested_scopes, granted_scopes, missing_scopes = self._scope_audit(
+                    provider, app, connection
+                )
                 apps.append(
                     ProviderAppView(
                         key=app.key,
@@ -267,6 +271,18 @@ class ProviderRuntime:
                             else ""
                         ),
                         poll_failing=await self._poll_failing(provider.key, app),
+                        requested_scopes=requested_scopes,
+                        granted_scopes=granted_scopes,
+                        missing_scopes=missing_scopes,
+                        scope_note=(
+                            render_message(
+                                "providers.scope_missing",
+                                locale=self._config.agent.locale,
+                                scopes=describe_many(missing_scopes),
+                            )
+                            if missing_scopes
+                            else ""
+                        ),
                     )
                 )
         return {
@@ -706,6 +722,25 @@ class ProviderRuntime:
             await self._store.set_sync(provider, app, f"poll:{key}:last_ok", now.isoformat())
         elif error:
             await self._store.set_sync(provider, app, f"poll:{key}:last_error", error)
+
+    @staticmethod
+    def _scope_audit(
+        provider: ProviderDefinition,
+        app: AppDefinition,
+        connection: ProviderConnection | None,
+    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+        """Requested vs granted, with the gap the app card explains.
+
+        A token connection reports no scopes at all, and an OAuth row
+        written before scopes were recorded is empty too; neither is a
+        missing grant, so both read as "unknown" and produce no warning.
+        """
+        requested = tuple(dict.fromkeys((*app.scopes, *provider.base_scopes)))
+        if connection is None or connection.auth_mode != "oauth" or not connection.scopes:
+            return requested, (), ()
+        granted = tuple(dict.fromkeys(connection.scopes.split()))
+        missing = tuple(scope for scope in requested if scope not in granted)
+        return requested, granted, missing
 
     async def _poll_failing(self, provider: str, app: AppDefinition) -> bool:
         if self._store is None or not app.polls:
