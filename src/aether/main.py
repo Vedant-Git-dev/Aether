@@ -23,6 +23,7 @@ from .alerts.engine import AlertEngine
 from .alerts.migrate import routines_to_alerts
 from .alerts.notifications import AlertNotifications
 from .alerts.store import AlertStore
+from .alerts.wording import AlertWording
 from .api import router as api_router
 from .authz.approvals import Approvals
 from .authz.audit import AuditLog
@@ -724,6 +725,12 @@ def create_app(
             timezone=config.memory.default_timezone,
             locale=config.agent.locale,
         )
+        if config.alerts.compose_wording and providers is not None:
+            # phrasing only: the provider writes the sentence from the facts
+            # the engine matched, and a failure falls back to the catalog
+            wording_provider = providers.for_role("reasoning")
+            if wording_provider is not None:
+                alert_engine.attach_wording(AlertWording(wording_provider))
         agent.attach_alerts(alert_engine)
         events.attach_proactive(alert_engine)
         try:

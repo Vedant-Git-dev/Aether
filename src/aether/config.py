@@ -429,6 +429,9 @@ class AlertsConfig(BaseModel):
     # a folded routine action runs once per this window, however many events
     # match in a burst
     action_cooldown_seconds: float = Field(default=300.0, ge=0.0)
+    # the decision to speak is code; this only lets the model phrase it from
+    # the matched facts. Off, every notification uses the catalog sentence.
+    compose_wording: bool = True
     # the day the `watches` compatibility view is dropped; a panel reminder,
     # never a silent migration
     compat_until: str = "2027-02-11"

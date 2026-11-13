@@ -632,6 +632,150 @@ async def test_an_alert_with_no_condition_is_refused() -> None:
     assert "needs something to match" in message
 
 
+class FakeWording:
+    def __init__(self, text: str | Exception | None = "Rahul wrote about the invoice.") -> None:
+        self.text = text
+        self.facts: list[dict] = []
+
+    async def compose(self, facts: dict):
+        self.facts.append(facts)
+        if isinstance(self.text, Exception):
+            raise self.text
+        return self.text
+
+
+async def test_the_model_phrases_the_notification_from_the_matched_facts() -> None:
+    store = FakeStore()
+    store.rows = [_alert(1, title="Landlord", scope="mail")]
+    notifications = FakeNotifications()
+    engine, sent = _engine(store, notifications)
+    wording = FakeWording("Rahul wrote about the quarterly invoice.")
+    engine.attach_wording(wording)
+    await engine.refresh()
+
+    await engine.evaluate_event(_mail())
+    assert await engine.tick(NOW) == 1
+
+    assert sent == ["Rahul wrote about the quarterly invoice."]
+    facts = wording.facts[0]
+    assert facts["kind"] == "alert"
+    assert facts["title"] == "Landlord"
+    assert facts["source"] == "Gmail"
+    assert facts["digest"] is False
+    # the fact sheet is recognition fields only, never the raw payload
+    assert facts["items"] == [
+        {
+            "sender": "Rahul Sharma",
+            "subject": "Quarterly invoice",
+            "summary": "",
+        }
+    ]
+
+
+async def test_a_failed_or_empty_phrasing_falls_back_to_the_catalog() -> None:
+    for outcome in (RuntimeError("provider down"), None, "   "):
+        store = FakeStore()
+        store.rows = [_alert(1, title="Landlord", scope="mail")]
+        notifications = FakeNotifications()
+        engine, sent = _engine(store, notifications)
+        engine.attach_wording(FakeWording(outcome))
+        await engine.refresh()
+
+        await engine.evaluate_event(_mail())
+        assert await engine.tick(NOW) == 1
+
+        assert sent and sent[0].startswith("Landlord — Gmail from Rahul Sharma:")
+        assert "Quarterly invoice" in sent[0]
+
+
+async def test_nothing_is_phrased_for_a_notification_that_is_only_held() -> None:
+    config = AppConfig(alerts=AlertsConfig(), proactive=ProactiveConfig())
+    config.agent.quiet_hours = "00:00-23:59"
+    store = FakeStore()
+    store.rows = [_alert(1, title="Landlord", scope="mail")]
+    notifications = FakeNotifications()
+    engine = AlertEngine(config=config, store=store, notifications=notifications, timezone="UTC")
+    wording = FakeWording()
+    engine.attach_wording(wording)
+
+    async def notify(text: str, *, urgent: float = 0.0, channel: str = ""):
+        return {"web": "1"}
+
+    engine.attach_notify(notify)
+    await engine.refresh()
+    await engine.evaluate_event(_mail())
+
+    assert await engine.tick(NOW) == 0
+    # the decision is still code: a held candidate costs no model call
+    assert wording.facts == []
+
+
+async def test_a_successful_action_pings_in_catalog_words() -> None:
+    store = FakeStore()
+    store.rows = [
+        _alert(
+            1,
+            title="Billing",
+            scope="mail",
+            action={"tool": "note_entity", "params": {"note": "invoice"}},
+        )
+    ]
+    notifications = FakeNotifications()
+    engine, sent = _engine(store, notifications)
+    ran: list[tuple[int, int]] = []
+
+    async def run(alert, event):
+        ran.append((alert.id, event.id))
+        return True
+
+    engine.attach_action_runner(run)
+    await engine.refresh()
+
+    await engine.evaluate_event(_mail())
+
+    assert ran == [(1, 1)]
+    assert sent == ['Alert "Billing" ran its action.']
+
+
+async def test_a_parked_action_says_nothing() -> None:
+    store = FakeStore()
+    store.rows = [
+        _alert(1, title="Forward it", scope="mail", action={"tool": "mail__send_message"})
+    ]
+    notifications = FakeNotifications()
+    engine, sent = _engine(store, notifications)
+
+    async def run(alert, event):
+        return False  # held for approval — the card is the notice
+
+    engine.attach_action_runner(run)
+    await engine.refresh()
+
+    await engine.evaluate_event(_mail())
+
+    assert sent == []
+
+
+async def test_a_condition_never_renders_a_raw_event_kind() -> None:
+    engine, _ = _engine(FakeStore(), FakeNotifications())
+
+    chat = engine.describe(AlertSpec(title="x", scope="chat", event="chat_message"))
+    mail = engine.describe(AlertSpec(title="x", scope="mail", event="mail"))
+
+    assert "chat_message" not in chat
+    assert "chat messages" in chat
+    assert mail == "Mail, only new mail"
+
+
+async def test_an_unsupported_scope_offers_a_follow_not_a_watch() -> None:
+    engine, _ = _engine(FakeStore(), FakeNotifications())
+
+    message = engine.refusal("alerts.scope_alternative", label="Mail")
+
+    assert "follow Mail" in message
+    assert "watch" not in message
+
+
 async def test_a_confirmation_is_rendered_from_the_stored_record() -> None:
     store = FakeStore()
     notifications = FakeNotifications()

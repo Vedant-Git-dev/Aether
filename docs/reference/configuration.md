@@ -368,11 +368,15 @@ import use a passphrase.
 | `retry_minutes` | `5` | Spacing between retries of a failed send |
 | `max_attempts` | `3` | Tries one notification gets before it is dropped |
 | `action_cooldown_seconds` | `300` | A folded alert action runs once per window, however many events match |
+| `compose_wording` | `true` | Let the model phrase a notification from the matched facts; off uses the catalog sentences |
 | `compat_until` | `2027-02-11` | The day the `watches` compatibility view is dropped |
 
 Every gate is read live: a change applies on the next evaluation without a restart. A
-match never waits for a model — code decides immediate, digest, quiet-hours hold,
-suppression, or retry, and the wording comes from the message catalog.
+match never waits for a model to decide: code chooses immediate, digest, quiet-hours
+hold, suppression or retry. Wording is a separate step — with `compose_wording` on, the
+model phrases one sentence from the matched facts (title, sender, subject, count, the
+reminder's local time, never the raw payload or a tool); a provider failure falls back
+to the message catalog sentence. Off, every notification is the catalog sentence.
 
 ### `workbench`
 

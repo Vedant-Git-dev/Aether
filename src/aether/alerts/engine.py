@@ -29,6 +29,7 @@ from ..memory.timewindow import (
 )
 from ..message_catalog import catalog
 from ..origin import TurnOrigin
+from ..outbound import is_deliverable
 from .notifications import FAILED, HELD, QUEUED, AlertNotifications, Notification
 from .sources import manifest, nearest_alternative
 from .spec import (
@@ -47,7 +48,7 @@ from .store import AlertStore, where_due
 log = logging.getLogger("aether.alerts")
 
 Notify = Callable[..., Awaitable[dict[str, str] | None]]
-ActionRunner = Callable[[Alert, Any], Awaitable[None]]
+ActionRunner = Callable[[Alert, Any], Awaitable[bool]]
 
 # urgency (0-3) on the 0-10 scale the interruption budget already reads
 _SALIENCE = {0: 2.0, 1: 4.0, 2: 8.0, 3: 10.0}
@@ -80,6 +81,7 @@ class AlertEngine:
         self._locale = locale
         self._notify: Notify | None = None
         self._run_action: ActionRunner | None = None
+        self._wording: Any = None
         self._active: list[Alert] = []
         self._loaded = False
 
@@ -92,6 +94,10 @@ class AlertEngine:
     def attach_action_runner(self, run: ActionRunner) -> None:
         """Join the loop's executor — a folded routine still passes the gate."""
         self._run_action = run
+
+    def attach_wording(self, wording: Any) -> None:
+        """Join the phrasing seam. Absent or failing, the catalog speaks."""
+        self._wording = wording
 
     async def refresh(self) -> None:
         self._active = await self._store.list_active()
@@ -155,9 +161,16 @@ class AlertEngine:
         await self._store.mark_action_fired(alert.id)
         alert.last_run_at = now
         try:
-            await self._run_action(alert, event)
+            ran = await self._run_action(alert, event)
         except Exception:
             log.exception("alert %s action failed — continuing", alert.id)
+            return
+        # the outcome ping is code-rendered, like every other alert sentence;
+        # a parked call already has its approval card, so nothing is said here
+        if ran and self._notify is not None:
+            await self._notify(
+                await self._words(self._action_facts(alert, event)) or self.action_note(alert)
+            )
 
     # -- delivery ------------------------------------------------------------
 
@@ -232,7 +245,9 @@ class AlertEngine:
                 continue
 
             digest = alert.spec.style == DIGEST or len(group) > 1
-            text = self._render(alert, group, digest=digest)
+            text = await self._words(self._facts(alert, group, digest=digest)) or self._render(
+                alert, group, digest=digest
+            )
             refs = await self._notify(text, urgent=salience, channel=alert.spec.channel)
             ids = [row.id for row in group]
             if refs:
@@ -272,30 +287,30 @@ class AlertEngine:
         return None
 
     def _render(self, alert: Alert, group: list[Notification], *, digest: bool) -> str:
+        book = catalog(self._locale)
         if alert.spec.is_reminder:
-            return catalog(self._locale).render(
-                "alerts.reminder_note", title=alert.title or "Reminder"
+            return book.render(
+                "alerts.reminder_note",
+                title=alert.title or book.render("alerts.fallback_reminder"),
             )
+        title = alert.title or book.render("alerts.fallback_alert")
         if digest:
             lines = [self._detail(row.event) for row in group[:20]]
             return (
-                catalog(self._locale).render(
-                    "alerts.digest",
-                    title=alert.title or "Alert",
-                    count=len(group),
-                )
+                book.render("alerts.digest", title=title, count=len(group))
                 + "\n"
                 + "\n".join(lines)
             )
-        return catalog(self._locale).render(
-            "alerts.note",
-            title=alert.title or "Alert",
-            detail=self._detail(group[0].event),
-        )
+        return book.render("alerts.note", title=title, detail=self._detail(group[0].event))
 
     def _detail(self, event: AlertEvent) -> str:
         source = self._source_label(event.source)
-        text = event.subject or event.summary or event.kind or "new activity"
+        text = (
+            event.subject
+            or event.summary
+            or event.kind
+            or catalog(self._locale).render("alerts.fallback_detail")
+        )
         if event.sender:
             return catalog(self._locale).render(
                 "alerts.detail_from", source=source, sender=event.sender, detail=text
@@ -307,6 +322,69 @@ class AlertEngine:
         if scope is not None:
             return scope.label
         return (source or "Aether").replace("_", " ").capitalize()
+
+    # -- wording -------------------------------------------------------------
+
+    async def _words(self, facts: dict[str, Any]) -> str | None:
+        """The model's phrasing, or None when it is absent or unusable.
+
+        Only the words ride this seam. The engine has already decided to
+        send; a failure here falls back to the catalog sentence and never
+        changes the decision.
+        """
+        if self._wording is None:
+            return None
+        try:
+            words = await self._wording.compose(facts)
+        except Exception:
+            log.warning("alert wording failed — using the catalog sentence", exc_info=True)
+            return None
+        # a blank or placeholder answer is not words a person can read; the
+        # catalog sentence takes over rather than sending nothing useful
+        return words.strip() if is_deliverable(words) else None
+
+    def _facts(self, alert: Alert, group: list[Notification], *, digest: bool) -> dict[str, Any]:
+        """The sealed-down ground truth a phrasing pass is allowed to see."""
+        book = catalog(self._locale)
+        facts: dict[str, Any] = {
+            "kind": "reminder" if alert.spec.is_reminder else "alert",
+            "title": alert.title
+            or book.render(
+                "alerts.fallback_reminder" if alert.spec.is_reminder else "alerts.fallback_alert"
+            ),
+            "digest": digest,
+            "count": len(group),
+        }
+        if alert.spec.is_reminder:
+            facts["when"] = self.when(alert.spec)
+            return facts
+        facts["source"] = self._source_label(group[0].event.source)
+        facts["items"] = [
+            {
+                "sender": row.event.sender,
+                "subject": row.event.subject,
+                "summary": row.event.summary,
+            }
+            for row in group[:20]
+        ]
+        return facts
+
+    def _action_facts(self, alert: Alert, event: Any) -> dict[str, Any]:
+        fields = event_fields(alert.id, event)
+        return {
+            "kind": "action",
+            "title": alert.title or catalog(self._locale).render("alerts.fallback_alert"),
+            "source": self._source_label(fields.source),
+            "items": [
+                {
+                    "sender": fields.sender,
+                    "subject": fields.subject,
+                    "summary": fields.summary,
+                }
+            ],
+            "count": 1,
+            "digest": False,
+        }
 
     # -- rendering for tools and the panel ------------------------------------
 
@@ -323,7 +401,12 @@ class AlertEngine:
                 )
             )
         if spec.event:
-            parts.append(book.render("alerts.condition_event", event=spec.event))
+            parts.append(
+                book.render(
+                    "alerts.condition_event",
+                    event=manifest().label_for_kind(spec.event),
+                )
+            )
         if spec.sender:
             parts.append(book.render("alerts.condition_sender", sender=spec.sender))
         if spec.contains:
@@ -331,7 +414,7 @@ class AlertEngine:
         elif spec.description:
             parts.append(book.render("alerts.condition_contains", words=spec.description))
         if not parts:
-            return book.render("alerts.condition_scope", label="anything")
+            return book.render("alerts.condition_scope", label=book.render("alerts.anything"))
         return ", ".join(parts)
 
     def when(self, spec: AlertSpec) -> str:
@@ -344,7 +427,11 @@ class AlertEngine:
         """The sentence the stored record earns — never a claim about a
         write that did not happen."""
         book = catalog(self._locale)
-        title = alert.title or "Alert"
+        title = alert.title or (
+            book.render("alerts.fallback_reminder")
+            if alert.spec.is_reminder
+            else book.render("alerts.fallback_alert")
+        )
         if action == "created":
             if alert.spec.is_reminder:
                 return book.render("alerts.set_reminder", title=title, when=self.when(alert.spec))
@@ -363,6 +450,14 @@ class AlertEngine:
 
     def refusal(self, key: str, **params: Any) -> str:
         return catalog(self._locale).render(key, **params)
+
+    def action_note(self, alert: Alert) -> str:
+        """The sentence a folded action's success earns — code, not model."""
+        book = catalog(self._locale)
+        return book.render(
+            "alerts.action_note",
+            title=alert.title or book.render("alerts.fallback_alert"),
+        )
 
     async def get(self, alert_id: int) -> Alert | None:
         return await self._store.get(alert_id)

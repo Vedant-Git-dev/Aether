@@ -269,8 +269,10 @@ Delivery is deterministic. A match enqueues a sealed candidate in
 `alert_notifications`, and code decides whether it is sent now, batched into a digest,
 held through quiet hours, suppressed as already told or over the daily cap, or retried
 after a surface failure — then the outbox records the outcome. No unprompted model turn
-is needed for a notification to land. Wording is rendered from the candidate's
-structured fields through the message catalog, never from the event's raw text.
+is needed for a notification to land. Wording is its own step: the model may phrase one
+sentence from the candidate's structured fields (never the raw payload, never a tool),
+and any failure falls back to the message catalog sentence. The decision to speak never
+depends on that call.
 
 Provenance is structural: the harness stamps each turn with a `TurnOrigin`
 (`src/aether/origin.py`), and only the owner's own message or an approved card may

@@ -116,6 +116,9 @@ alerts:
   max_attempts: 3
   # optional (default: 300) seconds between folded-action fires
   action_cooldown_seconds: 300
+  # optional (default: true) let the model phrase a notification from the
+  # facts it matched; off uses the fixed catalog sentences
+  compose_wording: true
   # optional (default: 2027-02-11) when the `watches` view is dropped
   compat_until: "2027-02-11"
 

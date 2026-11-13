@@ -35,6 +35,7 @@ class SourceScope:
 class SourceManifest:
     scopes: tuple[SourceScope, ...]
     examples: tuple[str, ...]
+    event_labels: dict[str, str]
 
     def by_key(self, key: str) -> SourceScope | None:
         wanted = (key or "").strip().lower()
@@ -57,6 +58,14 @@ class SourceManifest:
     def style_for(self, key: str) -> str:
         scope = self.by_key(key)
         return scope.default_style if scope is not None else "immediate"
+
+    def label_for_kind(self, kind: str) -> str:
+        """The event kind in plain words, never the raw token."""
+        clean = (kind or "").strip()
+        known = self.event_labels.get(clean)
+        if known:
+            return known
+        return clean.replace("_", " ")
 
 
 @lru_cache(maxsize=1)
@@ -99,7 +108,11 @@ def load_manifest(path: str | Path) -> SourceManifest:
         if scope.supports_events and not scope.event_kinds:
             raise ValueError(f"source scope {scope.key!r} supports events but names no event kind")
     examples = tuple(str(item) for item in data.get("examples") or ())
-    return SourceManifest(scopes=tuple(scopes), examples=examples)
+    raw_labels = data.get("event_labels") or {}
+    if not isinstance(raw_labels, dict):
+        raise ValueError("event_labels must be a mapping of kind to plain words")
+    event_labels = {str(key): str(value) for key, value in raw_labels.items()}
+    return SourceManifest(scopes=tuple(scopes), examples=examples, event_labels=event_labels)
 
 
 def supported_scopes() -> tuple[SourceScope, ...]:

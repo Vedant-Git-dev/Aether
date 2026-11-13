@@ -348,6 +348,12 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
                 label="Retry limit",
                 hint="How many tries one notification gets before it is dropped.",
             ),
+            FieldSpec(
+                path="alerts.compose_wording",
+                label="Natural wording",
+                hint="Let the model phrase a notification from the facts it "
+                "already matched. Off uses the fixed sentences instead.",
+            ),
         ),
     ),
     GroupSpec(

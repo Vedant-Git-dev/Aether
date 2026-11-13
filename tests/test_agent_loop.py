@@ -1734,8 +1734,9 @@ async def test_an_alert_action_runs_through_the_gate_and_records_a_trace() -> No
         spec=SimpleNamespace(action={"tool": "note_entity", "params": {"note": "invoice"}}),
     )
 
-    await kit.loop._run_alert_action(alert, _event(1))
+    ran = await kit.loop._run_alert_action(alert, _event(1))
 
+    assert ran is True
     assert kit.executed == [("note_entity", {"note": "invoice"})]
     payload = kit.traces.created[-1]["payload"]
     assert payload["alert"] == {"id": 3, "title": "billing"}
@@ -2206,9 +2207,10 @@ async def test_an_alert_action_that_parks_records_the_approval() -> None:
         ),
     )
 
-    await kit.loop._run_alert_action(alert, _event(1))
+    ran = await kit.loop._run_alert_action(alert, _event(1))
 
     # a folded action is a call like any other: it parked, and the trace says so
+    assert ran is False
     assert kit.approvals.created[0].tool_name == "mail__send_message"
     payload = kit.traces.created[-1]["payload"]
     assert payload["calls"][0]["approval_id"] == kit.approvals.created[0].id

@@ -1028,6 +1028,7 @@ class AgentLoop:
                 "audit_seq": seq,
             },
         )
+        return not result.is_error and not any(call.get("approval_id") for call in calls)
 
     async def present_result(
         self,

@@ -1,6 +1,6 @@
 # The alert vocabulary, as data.
 #
-# Every scope Aether can be asked to watch lives here once: the key the tool
+# Every scope Aether can be asked to follow lives here once: the key the tool
 # schema offers, the words the panel shows, whether the source can actually
 # produce events today, the event kinds it emits, its default notification
 # style, and the nearest scope that does work when this one cannot.
@@ -55,6 +55,17 @@ scopes:
     event_kinds: []
     default_style: immediate
     alternative: ""
+
+# Event kinds in the words a person reads. A condition is rendered from
+# these, never from the raw kind a poll emits. An unlisted kind falls back to
+# the kind with underscores turned into spaces.
+event_labels:
+  mail: new mail
+  chat_message: chat messages
+  github_notification: GitHub notifications
+  calendar_event: calendar events
+  drive_change: Drive changes
+  docs_change: Docs changes
 
 # Two or three short phrasings, used in the tool description so the model has
 # examples without a paragraph per scope. Illustrative only: never matched.
