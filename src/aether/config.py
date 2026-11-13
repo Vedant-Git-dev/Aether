@@ -492,6 +492,11 @@ class ProviderAppConfig(BaseModel):
     """One direct provider app's local settings."""
 
     poll_minutes: float = 5.0
+    # the independent lookback sweep that closes any gap the history cursor
+    # missed; relies on message-id dedup, so re-reading is harmless
+    reconcile_minutes: float = 60.0
+    # how far back that sweep looks; wide enough to survive an outage
+    reconcile_lookback_hours: int = 24
 
 
 class ProvidersConfig(BaseModel):

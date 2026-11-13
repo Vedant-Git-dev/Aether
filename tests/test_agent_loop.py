@@ -129,6 +129,7 @@ class FakeProviderRuntime:
         self.polls = list(polls or [])
         self.connect_calls: list[str] = []
         self.poll_calls = 0
+        self.committed: list[PollResult] = []
 
     async def feed(self) -> dict:
         return {"configured": True, "apps": list(self.apps), "providers": []}
@@ -145,6 +146,9 @@ class FakeProviderRuntime:
         results = list(self.polls)
         self.polls = []
         return results
+
+    async def commit_poll(self, result: PollResult) -> None:
+        self.committed.append(result)
 
 
 class LoopKit:
@@ -3082,19 +3086,19 @@ async def test_the_direct_provider_callback_asks_the_gates_question() -> None:
 
 async def test_provider_polls_are_filtered_audited_and_ingested() -> None:
     mail_filter = FakeMailFilter()
-    runtime = FakeProviderRuntime(
-        polls=[
-            PollResult(
-                app="gmail",
-                tool="gmail__new_mail",
-                payload={"successful": True, "data": {"messages": [{"id": "m1"}]}},
-            )
-        ]
+    poll = PollResult(
+        app="gmail",
+        tool="gmail__new_mail",
+        payload={"successful": True, "data": {"messages": [{"id": "m1"}]}},
+        poll_key="new_mail",
+        cursor={"history_id": "102"},
     )
+    runtime = FakeProviderRuntime(polls=[poll])
     kit = LoopKit(None, provider_runtime=runtime, mail_filter=mail_filter)
 
     await kit.loop._run_due_provider_polls()
 
+    assert runtime.committed == [poll]
     assert mail_filter.calls
     assert mail_filter.calls[0][0] == "gmail__new_mail"
     assert kit.audit.entries[-1]["tool_name"] == "gmail__new_mail"
@@ -3107,6 +3111,29 @@ async def test_provider_polls_are_filtered_audited_and_ingested() -> None:
             "sender": None,
         }
     ]
+
+
+async def test_a_failed_ingest_leaves_the_poll_cursor_alone() -> None:
+    poll = PollResult(
+        app="gmail",
+        tool="gmail__new_mail",
+        payload={"successful": True, "data": {"messages": [{"id": "m1"}]}},
+        poll_key="new_mail",
+        cursor={"history_id": "102"},
+    )
+    runtime = FakeProviderRuntime(polls=[poll])
+    kit = LoopKit(None, provider_runtime=runtime)
+
+    async def boom(result):
+        raise RuntimeError("the store is down")
+
+    kit.loop._consume_poll_result = boom  # type: ignore[method-assign]
+
+    await kit.loop._run_due_provider_polls()
+
+    # no commit: the next poll re-reads the same window, and message-id
+    # dedup makes the repeat harmless
+    assert runtime.committed == []
 
 
 async def test_the_status_names_a_connected_direct_provider() -> None:

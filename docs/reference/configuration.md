@@ -412,7 +412,11 @@ to the message catalog sentence. Off, every notification is the catalog sentence
 | Key | Default | Notes |
 | --- | --- | --- |
 | `enabled` | `true` | Direct app connections |
-| `gmail.poll_minutes` | `5` | Gmail polling interval |
+| `gmail.poll_minutes` | `5` | Minutes between Gmail history polls |
+| `gmail.reconcile_minutes` | `60` | Minutes between the independent lookback sweep that fills any gap the history cursor missed |
+| `gmail.reconcile_lookback_hours` | `24` | How far back that sweep looks; wide enough to survive an outage |
+
+A poll's cursor is committed only after its payload is durably ingested, so a crash re-reads the window; ingest dedups by the provider's own message id, so the repeat is invisible. Every poll records when it last ran, when it last succeeded and its consecutive failures, and the app card says plainly when a check is being retried.
 
 ---
 

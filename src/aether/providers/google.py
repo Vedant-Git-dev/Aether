@@ -302,7 +302,7 @@ async def poll_new_mail(ctx: Any) -> Any:
         if exc.status != 404:
             raise
         if history_id:
-            await ctx.set_sync("history_id", history_id)
+            ctx.stage_sync("history_id", history_id)
         recent = await ctx.json(
             "GET",
             "/gmail/v1/users/me/messages",
@@ -321,12 +321,61 @@ async def poll_new_mail(ctx: Any) -> Any:
                 ids.append(message_id)
     if not ids:
         if new_history:
-            await ctx.set_sync("history_id", new_history)
+            ctx.stage_sync("history_id", new_history)
         return None
     summaries = await _summaries(ctx, ids, full=True)
     if new_history:
-        await ctx.set_sync("history_id", new_history)
+        # staged, not written: the runtime commits it only after this
+        # payload is durably ingested, so a crash re-reads the window
+        ctx.stage_sync("history_id", new_history)
     return _ok({"messages": summaries}) if summaries else None
+
+
+async def poll_reconcile_mail(ctx: Any) -> Any:
+    """A lookback sweep independent of the history cursor.
+
+    The history API can miss a message when its cursor moves past a window
+    that was never read (an expired cursor, a provider hiccup). This sweep
+    asks for the recent inbox by date and skips ids it has already returned,
+    so a gap is filled on the next pass. The seen list is a staged cursor:
+    it moves only after the payload is ingested, and re-reading is harmless
+    because ingest dedups by message id.
+    """
+    settings = ctx.app_settings
+    hours = getattr(settings, "reconcile_lookback_hours", 24)
+    data = await ctx.json(
+        "GET",
+        "/gmail/v1/users/me/messages",
+        params={
+            "maxResults": 100,
+            "q": f"newer_than:{max(1, int(hours))}h",
+        },
+    )
+    ids: list[str] = []
+    for item in data.get("messages", []) or []:
+        message_id = str(item.get("id", ""))
+        if message_id and message_id not in ids:
+            ids.append(message_id)
+    seen = await _reconcile_seen(ctx)
+    fresh = [message_id for message_id in ids if message_id not in seen]
+    if not fresh:
+        return None
+    summaries = await _summaries(ctx, fresh, full=True)
+    if summaries:
+        merged = fresh + [message_id for message_id in seen if message_id not in fresh]
+        ctx.stage_sync("reconcile_ids", json.dumps(merged[:500]))
+    return _ok({"messages": summaries}) if summaries else None
+
+
+async def _reconcile_seen(ctx: Any) -> list[str]:
+    raw = await ctx.get_sync("reconcile_ids")
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return [str(item) for item in parsed] if isinstance(parsed, list) else []
 
 
 def _calendar_id(params: dict[str, Any]) -> str:
@@ -1083,7 +1132,14 @@ GMAIL_APP = AppDefinition(
         _TOOL_SEND_DRAFT,
         _TOOL_PROFILE,
     ),
-    poll=PollDefinition(key="new_mail", every_minutes=5.0, handler=poll_new_mail),
+    polls=(
+        PollDefinition(key="new_mail", every_minutes=5.0, handler=poll_new_mail),
+        PollDefinition(
+            key="reconcile_mail",
+            every_minutes=60.0,
+            handler=poll_reconcile_mail,
+        ),
+    ),
 )
 
 CALENDAR_APP = AppDefinition(

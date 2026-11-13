@@ -218,6 +218,11 @@ function ProviderCard({ app, onConnect, onDisconnect, onSaveClient, onSaveToken,
         </div>
       ) : null}
       {app.note ? <div className="text-xs text-ink-3">{app.note}</div> : null}
+      {app.poll_note ? (
+        <div className={`text-xs ${app.poll_failing ? "text-warning" : "text-ink-3"}`}>
+          {app.poll_note}
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="min-w-[9rem] flex-1 text-xs text-ink-3">

@@ -142,3 +142,10 @@ media:
 providers:
   # optional (default: true) needs AETHER_TOKEN_ENCRYPTION_KEY
   enabled: true
+  gmail:
+    # optional (default: 5) minutes between history polls
+    poll_minutes: 5
+    # optional (default: 60) minutes between the lookback reconcile sweep
+    reconcile_minutes: 60
+    # optional (default: 24) how far back that sweep looks
+    reconcile_lookback_hours: 24

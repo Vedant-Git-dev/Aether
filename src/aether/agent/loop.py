@@ -2077,27 +2077,39 @@ class AgentLoop:
             log.exception("provider polling failed — continuing")
             return
         for result in results:
-            text = json.dumps(result.payload, ensure_ascii=False, default=str)
-            if self._mail_filter is not None:
-                text = await self._mail_filter.filter_result(result.tool, text)
-            await self._audit.append(
-                actor="scheduler",
-                tool_name=result.tool,
-                decision="allow",
-                rules_matched="provider:poll",
-                params={},
-                outcome="provider poll",
-            )
-            if await self._ingest_mail(text, result):
+            try:
+                await self._consume_poll_result(result)
+            except Exception:
+                # the cursor stays put, so the next poll re-reads this window;
+                # ingest dedups by the provider's own id, so a repeat is
+                # invisible and a miss is not
+                log.exception("provider poll result failed — cursor not advanced")
                 continue
-            kind = result.tool.split("__", 1)[-1]
-            ingest = await self._events.ingest(
-                source=result.app,
-                kind=f"poll:{kind}",
-                payload={"result": text[:4000]},
-            )
-            if ingest.stored:
-                self.notify()
+            await self._provider_runtime.commit_poll(result)
+
+    async def _consume_poll_result(self, result: Any) -> None:
+        """Filter, audit and ingest one poll envelope, or raise."""
+        text = json.dumps(result.payload, ensure_ascii=False, default=str)
+        if self._mail_filter is not None:
+            text = await self._mail_filter.filter_result(result.tool, text)
+        await self._audit.append(
+            actor="scheduler",
+            tool_name=result.tool,
+            decision="allow",
+            rules_matched="provider:poll",
+            params={},
+            outcome="provider poll",
+        )
+        if await self._ingest_mail(text, result):
+            return
+        kind = result.tool.split("__", 1)[-1]
+        ingest = await self._events.ingest(
+            source=result.app,
+            kind=f"poll:{kind}",
+            payload={"result": text[:4000]},
+        )
+        if ingest.stored:
+            self.notify()
 
     async def _ingest_mail(self, text: str, result: Any) -> bool:
         """One event per mail in a filtered poll envelope.
