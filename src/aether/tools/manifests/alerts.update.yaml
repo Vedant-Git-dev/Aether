@@ -1,0 +1,8 @@
+# Change one alert or reminder.
+id: alerts.update
+legacy: update_alert
+risk: write
+decision: allow
+provenance: owner
+core: true
+summary: Change one alert or reminder.

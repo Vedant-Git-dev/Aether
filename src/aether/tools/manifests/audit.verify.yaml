@@ -1,0 +1,8 @@
+# Verify the decision record's hash chain.
+id: audit.verify
+legacy: verify_integrity
+risk: read
+decision: allow
+provenance: none
+core: false
+summary: Verify the decision record's hash chain.

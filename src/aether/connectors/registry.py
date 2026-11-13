@@ -311,6 +311,9 @@ class ToolRegistry:
             raw_schema=wire.input_schema,
             aliases=(wire.name,),
             core=True,
+            # a bare WireSpec is a test or small-caller registration, never
+            # the production path; it carries no declaration and follows the
+            # legacy classifier, exactly as before manifests existed
         )
 
     # -- visibility ------------------------------------------------------------
@@ -518,6 +521,10 @@ class ToolRegistry:
             self._intents.pop((tool.spec.capability, tool.spec.intent), None)
             self._drop_aliases(tool.spec)
         return len(ids)
+
+    def native_names(self) -> list[str]:
+        """Every registered native tool's wire name, in stable order."""
+        return sorted(tool.spec.wire_name for tool in self._tools.values() if tool.kind == "native")
 
     def provider_apps(self) -> list[str]:
         return sorted(

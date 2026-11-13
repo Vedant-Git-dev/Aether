@@ -1,0 +1,8 @@
+# Set an alert or reminder.
+id: alerts.create
+legacy: create_alert
+risk: write
+decision: allow
+provenance: owner
+core: true
+summary: Set an alert or reminder.

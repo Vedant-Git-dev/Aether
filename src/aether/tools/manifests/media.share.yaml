@@ -1,0 +1,8 @@
+# Send a stored file to the user's chat.
+id: media.share
+legacy: share_media
+risk: external
+decision: allow
+provenance: none
+core: false
+summary: Send a stored file to the user's chat.

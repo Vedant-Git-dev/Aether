@@ -1,0 +1,8 @@
+# Mark first-run setup complete.
+id: workspace.finish_setup
+legacy: workspace_finish_bootstrap
+risk: write
+decision: allow
+provenance: owner
+core: false
+summary: Mark first-run setup complete.

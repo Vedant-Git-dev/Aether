@@ -1,0 +1,8 @@
+# Search Aether's cross-app memory.
+id: memory.search
+legacy: memory_search
+risk: read
+decision: allow
+provenance: none
+core: true
+summary: Search Aether's cross-app memory.

@@ -89,6 +89,11 @@ workspace:
   # optional (default: true, retained for older files)
   encrypted: true
 
+tools:
+  # optional (default: enforce) off | warn | enforce — every native tool must
+  # have a manifest under src/aether/tools/manifests/ before booting
+  manifest_audit: enforce
+
 proactive:
   # optional (default: false)
   enabled: false

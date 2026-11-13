@@ -96,6 +96,7 @@ from .secret_env import EnvResolver
 from .secret_store import SecretStore
 from .skills import build_skills
 from .tools.grants import BackendHealth
+from .tools.manifest import audit_native_manifests
 from .web import WebTools, build_client
 from .workbench import Workbench, ordered
 from .workbench import run as run_workbench
@@ -779,6 +780,13 @@ def create_app(
             memory_control=memory_control,
         )
         log.info("native tools registered: %d", native)
+        violations = audit_native_manifests(tools.native_names())
+        if violations:
+            detail = "; ".join(violations[:8])
+            if config.tools.manifest_audit == "enforce":
+                raise StartupError(f"tool manifest audit failed: {detail}")
+            if config.tools.manifest_audit == "warn":
+                log.warning("tool manifest audit: %s", detail)
 
         # the background worker — off by default and self-gating on
         # proactive.enabled every cycle, so it always spins and /resume

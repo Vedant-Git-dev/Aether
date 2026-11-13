@@ -43,6 +43,7 @@ locales:
     alerts.reminder_note: "Reminder: {title}"
     alerts.no_surface: "I couldn't reach any of your surfaces just now."
     alerts.action_note: "Alert \"{title}\" ran its action."
+    tools.owner_only: "Only you can do that — I won't do it from a message I read or a feed I polled."
     alerts.fallback_alert: "Alert"
     alerts.fallback_reminder: "Reminder"
     alerts.fallback_detail: "new activity"

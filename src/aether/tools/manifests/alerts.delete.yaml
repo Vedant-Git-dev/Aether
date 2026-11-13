@@ -1,0 +1,8 @@
+# Delete an alert.
+id: alerts.delete
+legacy: delete_alert
+risk: write
+decision: allow
+provenance: owner
+core: true
+summary: Delete an alert.

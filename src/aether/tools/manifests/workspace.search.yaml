@@ -1,0 +1,8 @@
+# Search the workspace.
+id: workspace.search
+legacy: workspace_search
+risk: read
+decision: allow
+provenance: none
+core: false
+summary: Search the workspace.

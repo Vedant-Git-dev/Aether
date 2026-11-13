@@ -1,0 +1,8 @@
+# Find tools by app or action.
+id: tools.search
+legacy: search_tools
+risk: read
+decision: allow
+provenance: none
+core: true
+summary: Find tools by app or action.

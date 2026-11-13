@@ -190,6 +190,8 @@ class Policy:
         *,
         internal: bool = False,
         aliases: tuple[str, ...] = (),
+        native: bool = False,
+        declared: str | None = None,
     ) -> Ruling:
         params = params or {}
         names = (tool_name, *aliases)
@@ -207,6 +209,22 @@ class Policy:
             if connect is not None:
                 return connect
             return self._classify_set_config(params)
+        if native and declared is not None:
+            # a native tool's tier is its manifest's declaration, not a
+            # regex over its name. An unmanifested tool falls through to the
+            # legacy classifier, and the boot audit (on by default) refuses
+            # to start with one, so production never reaches that path.
+            if declared == "approval":
+                return Ruling(
+                    Decision.REQUIRE_APPROVAL,
+                    "builtin:manifest-approval",
+                    "this tool's declared rule always asks the user first",
+                )
+            return Ruling(
+                Decision.ALLOW,
+                "builtin:manifest",
+                "this tool's declared rule allows it",
+            )
         if effect == "read":
             return Ruling(
                 Decision.ALLOW,

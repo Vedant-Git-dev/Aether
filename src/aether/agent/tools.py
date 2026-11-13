@@ -28,7 +28,8 @@ from ..connectors.base import Attachment
 from ..connectors.registry import ToolRegistry
 from ..llm.types import ImageBlock, Message, WireSpec, with_plain_param
 from ..origin import current_origin
-from ..tools.model import ToolSpec
+from ..tools.manifest import manifest_for, manifests
+from ..tools.model import MAX_SUMMARY, ToolSpec
 from ..workspace import SecretRejected, WorkspaceWriteError
 
 log = logging.getLogger("aether.agent.tools")
@@ -50,96 +51,6 @@ def _spec(name: str, description: str, properties: dict[str, Any], required: lis
         ),
     )
 
-
-# The registry identity for each native tool: capability, intent, one-line
-# summary, declared risk, and whether it is always schematized. The legacy
-# name stays as an alias, so stored approvals and schedules keep resolving.
-_NATIVE_META: dict[str, tuple[str, str, str, str, bool]] = {
-    "search_tools": ("tools", "search", "Find tools by app or action.", "read", True),
-    "load_tools": ("tools", "load", "Load the full schemas for tool names.", "read", True),
-    "memory_search": ("memory", "search", "Search Aether's cross-app memory.", "read", True),
-    "note_entity": ("memory", "note", "Keep a relationship note about a person.", "write", False),
-    "get_pending_approvals": (
-        "approvals",
-        "list",
-        "List tool calls waiting for approval.",
-        "read",
-        False,
-    ),
-    "schedule_action": ("schedule", "create", "Run a tool call at a future time.", "write", False),
-    "request_screen_capture": (
-        "screen",
-        "capture",
-        "Ask for a fresh screenshot.",
-        "external",
-        False,
-    ),
-    "find_media": ("media", "find", "List stored files, newest first.", "read", False),
-    "look_at_media": ("media", "view", "Look again at a stored image.", "external", False),
-    "share_media": ("media", "share", "Send a stored file to the user's chat.", "external", False),
-    "generate_image": ("media", "generate", "Generate and store one image.", "external", False),
-    "edit_video": (
-        "media",
-        "edit",
-        "Edit a stored video with one fixed operation.",
-        "external",
-        False,
-    ),
-    "list_alerts": (
-        "alerts",
-        "list",
-        "List alerts, reminders and scheduled actions.",
-        "read",
-        True,
-    ),
-    "create_alert": ("alerts", "create", "Set an alert or reminder.", "write", True),
-    "offer_alert": ("alerts", "offer", "Offer to set an alert, for one tap.", "write", True),
-    "update_alert": ("alerts", "update", "Change one alert or reminder.", "write", True),
-    "delete_alert": ("alerts", "delete", "Delete an alert.", "write", True),
-    "explain_decision": ("traces", "explain", "Replay why an action happened.", "read", False),
-    "verify_integrity": (
-        "audit",
-        "verify",
-        "Verify the decision record's hash chain.",
-        "read",
-        False,
-    ),
-    "get_config": ("config", "get", "Read the current configuration.", "read", False),
-    "set_config": ("config", "set", "Change one configuration setting.", "write", False),
-    "workspace_read": ("workspace", "read", "Read one workspace file.", "read", False),
-    "workspace_search": ("workspace", "search", "Search the workspace.", "read", False),
-    "workspace_remember": (
-        "workspace",
-        "remember",
-        "Write a durable workspace note.",
-        "write",
-        False,
-    ),
-    "workspace_rewrite": (
-        "workspace",
-        "rewrite",
-        "Replace IDENTITY.md or SOUL.md.",
-        "write",
-        False,
-    ),
-    "workspace_promote": (
-        "workspace",
-        "promote",
-        "Promote a daily note into MEMORY.md.",
-        "write",
-        False,
-    ),
-    "workspace_finish_bootstrap": (
-        "workspace",
-        "finish_setup",
-        "Mark first-run setup complete.",
-        "write",
-        False,
-    ),
-    "memory_forget": ("memory", "forget", "Forget one remembered item.", "write", False),
-    "web_fetch": ("web", "fetch", "Read one web page as plain text.", "external", False),
-    "web_search": ("web", "search", "Search the web for current information.", "external", False),
-}
 
 # Nothing to alias: the alert tools are new names and the old vocabulary is
 # deliberately gone, so a stored model habit cannot resurrect a name the
@@ -473,7 +384,11 @@ _NATIVE_WORDS: dict[str, ActionWords] = {
 # The model calls the provider-safe wire name (``memory__search``); old
 # traces, approvals and skills carry the original native name. Both read
 # the same in the activity log.
-_NATIVE_ALIASES = {f"{meta[0]}__{meta[1]}": legacy for legacy, meta in _NATIVE_META.items()}
+# Old traces and stored rows call a native tool by its first name; the
+# manifest records that name beside the identity so rendering stays plain.
+_NATIVE_ALIASES = {
+    manifest.wire_name: manifest.legacy for manifest in manifests().values() if manifest.legacy
+}
 _NATIVE_ALIASES.update(
     {
         "message__reply": "reply_user",
@@ -2400,20 +2315,45 @@ def register_native_tools(
             ]
         )
     for wire, handler in natives:
-        meta = _NATIVE_META.get(wire.name)
-        if meta is None:
-            raise ValueError(f"native tool {wire.name!r} has no registry identity")
-        capability, intent, summary, risk, core = meta
-        spec = ToolSpec(
-            id=f"{capability}.{intent}",
-            capability=capability,
-            intent=intent,
-            summary=summary,
-            description=wire.description,
-            risk=risk,
-            raw_schema=wire.input_schema,
-            aliases=(wire.name, *_NATIVE_EXTRA_ALIASES.get(wire.name, ())),
-            core=core,
-        )
+        spec = _declared_spec(wire)
         registry.add_native(spec, handler)
     return len(natives)
+
+
+def _declared_spec(wire: WireSpec) -> ToolSpec:
+    """The registry spec for one native wire, with its manifest's policy.
+
+    The manifest owns the policy fields; the code owns the handler, schema and
+    description. A missing manifest still registers (with no declared
+    decision, which the classifier treats as approval) so the boot audit can
+    name the tool instead of crashing on a half-built namespace.
+    """
+    manifest = manifest_for(wire.name)
+    capability, sep, intent = wire.name.partition("__")
+    if not sep:
+        capability, intent = "native", wire.name
+    if manifest is not None:
+        tool_id, risk, decision, provenance = (
+            manifest.id,
+            manifest.risk,
+            manifest.decision,
+            manifest.provenance,
+        )
+        summary, core = manifest.summary, manifest.core
+    else:
+        tool_id = f"{capability}.{intent}"
+        risk, decision, provenance, core = "external", None, "none", False
+        summary = " ".join((wire.description or wire.name).split())[:MAX_SUMMARY]
+    return ToolSpec(
+        id=tool_id,
+        capability=capability,
+        intent=intent,
+        summary=summary,
+        description=wire.description,
+        risk=risk,
+        raw_schema=wire.input_schema,
+        aliases=(wire.name, *_NATIVE_EXTRA_ALIASES.get(wire.name, ())),
+        core=core,
+        decision=decision,
+        provenance=provenance,
+    )

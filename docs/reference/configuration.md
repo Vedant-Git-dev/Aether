@@ -357,6 +357,14 @@ import use a passphrase.
 | `reminders_enabled` | `true` | Due reminders, then one overdue escalation (needs `memory.enrichment` to have extracted the commitment) |
 | `poll_jitter` | `0.15` | Share by which poll intervals are spread |
 
+### `tools`
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `manifest_audit` | `enforce` | Every registered native tool must have a manifest under `src/aether/tools/manifests/`; `warn` logs and boots, `off` skips |
+
+A manifest declares the tool's risk, whether it may run without asking (`decision: allow` or `approval`), whether it needs the owner's own turn (`provenance: none` or `owner`), whether its schema always rides the prompt (`core`), and its prompt-index line. The handler, schema and description stay in code. Provider tools keep their declared effect, and MCP tools stay on the fail-safe ladder because their namespace is remote and dynamic.
+
 ### `alerts`
 
 | Key | Default | Notes |

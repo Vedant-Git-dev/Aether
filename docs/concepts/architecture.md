@@ -70,6 +70,11 @@ handles commands before ingest, calls the model, and executes proposed tools thr
 policy gate. A turn has a hard timeout (`agent.turn_timeout_seconds`). Chat commands are
 answered before any model call.
 
+Native tools live in `src/aether/agent/tools.py`; each one's policy is declared in
+its own manifest under `src/aether/tools/manifests/` (risk, allow or ask, owner-only
+provenance, whether its schema always rides the prompt, and its index line). The handler,
+schema and description stay in code, and the boot audit refuses an unmanifested tool.
+
 Native tools live in `src/aether/agent/tools.py`:
 
 - memory search and entity notes

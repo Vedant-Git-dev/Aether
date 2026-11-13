@@ -1,0 +1,8 @@
+# Write a durable workspace note.
+id: workspace.remember
+legacy: workspace_remember
+risk: write
+decision: allow
+provenance: none
+core: false
+summary: Write a durable workspace note.

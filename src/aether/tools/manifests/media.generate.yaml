@@ -1,0 +1,8 @@
+# Generate and store one image.
+id: media.generate
+legacy: generate_image
+risk: external
+decision: allow
+provenance: none
+core: false
+summary: Generate and store one image.

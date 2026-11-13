@@ -1,0 +1,8 @@
+# List tool calls waiting for approval.
+id: approvals.list
+legacy: get_pending_approvals
+risk: read
+decision: allow
+provenance: none
+core: false
+summary: List tool calls waiting for approval.

@@ -1,0 +1,8 @@
+# Promote a daily note into MEMORY.md.
+id: workspace.promote
+legacy: workspace_promote
+risk: write
+decision: allow
+provenance: none
+core: false
+summary: Promote a daily note into MEMORY.md.

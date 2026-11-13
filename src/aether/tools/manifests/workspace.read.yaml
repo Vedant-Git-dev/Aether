@@ -1,0 +1,8 @@
+# Read one workspace file.
+id: workspace.read
+legacy: workspace_read
+risk: read
+decision: allow
+provenance: none
+core: false
+summary: Read one workspace file.

@@ -1,0 +1,8 @@
+# Read one web page as plain text.
+id: web.fetch
+legacy: web_fetch
+risk: external
+decision: allow
+provenance: none
+core: false
+summary: Read one web page as plain text.

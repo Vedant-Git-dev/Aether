@@ -27,33 +27,50 @@ First match wins.
 2. **`set_config`.** A settings change made through chat or the agent.
    - A connect the user drove in the `/apps` walk (`origin: walk`) on `mcp_servers` or
      `messaging` is allowed, because the user's pick was the approval.
-   - Tuning roots `agent`, `salience`, `llm`, `proactive`, `workbench`, and `providers`
-     are allowed.
+   - Tuning roots `agent`, `salience`, `llm`, `proactive`, `alerts`, `workbench`, and
+     `providers` are allowed.
    - Security roots `contacts`, `authz`, `messaging`, and `mcp_servers`, plus any
      unknown or missing path, require approval. `contacts` and `authz` park even from a
      walk.
-3. **Provider effects.** Direct app tools declare `read`, `write`, or `destructive`.
+3. **Native tool manifests.** Every native tool declares its own tier in
+   `src/aether/tools/manifests/<capability>.<intent>.yaml`: `decision: allow` or
+   `approval`, `provenance: none` or `owner`, its risk, whether its schema always rides
+   the prompt (`core`), and its prompt-index line. A declared `allow` runs; a declared
+   `approval` parks; a tool with no manifest falls through to the legacy ladder below,
+   and the boot audit (`tools.manifest_audit`, default `enforce`) refuses to start with
+   one, so production never reaches that path.
+4. **Provider effects.** Direct app tools declare `read`, `write`, or `destructive`.
    Reads run. Writes and destructive actions park. A missing or unknown effect falls
    through to the fail-safe.
-4. **Internal tools.** Tools that touch only Aether's own state are allowed:
-   `memory_*`, `note_entity`, `schedule_action`, `request_screen_capture`,
+5. **Legacy internal names.** For a tool with no manifest — an MCP tool, or a stored
+   name from before the manifest migration — names that touch only Aether's own state
+   are allowed: `memory_*`, `note_entity`, `schedule_action`, `request_screen_capture`,
    `look_at_media`, `share_media`, `edit_video`, `get_pending_approvals`,
    `send_chat_message`, the alert tools, `explain_decision`, `verify_integrity`,
    `get_config`, and `workspace_*`.
-5. **Web research.** `web_fetch` and `web_search` are allowed. They only read.
-6. **Image generation.** `generate_image` is allowed. The prompt reaches the image
+6. **Web research.** `web_fetch` and `web_search` are allowed. They only read.
+7. **Image generation.** `generate_image` is allowed. The prompt reaches the image
    provider, and the result is a stored file. Sending it anywhere is a separate call
    that parks.
-7. **Risky verbs.** A name containing `send`, `reply`, `forward`, `post`, `publish`,
+8. **Risky verbs.** A name containing `send`, `reply`, `forward`, `post`, `publish`,
    `delete`, `remove`, `cancel`, `pay`, `transfer`, `invite`, `book`, or `create` parks.
    The verb must start a word inside the name, so `resend` and `facebook` do not match.
-8. **Read-only verbs.** A name starting a word with `list`, `search`, `get`, `read`,
+9. **Read-only verbs.** A name starting a word with `list`, `search`, `get`, `read`,
    `fetch`, `find`, or `query` is allowed. Risky verbs are checked first, so a compound
    name cannot sneak a write past a read.
-9. **Fail-safe.** Anything else requires approval.
+10. **Fail-safe.** Anything else requires approval.
 
 The fail-safe direction is deliberate: an unknown tool can never run silently. The
 worst case is an extra tap, never an unreviewed action.
+
+### Owner-only provenance
+
+A manifest may declare `provenance: owner`. The executor then refuses the call unless
+the turn came from your own message or a card you approved, with a plain sentence and a
+`builtin:owner-only` audit row. Alert changes, forgetting a memory, config changes and
+identity-file rewrites carry it. A typed chat command (`/config`, `/pause`, `/resume`, a
+pasted key) counts as your own words, so it still works; an unprompted tick, a schedule
+or a folded alert action does not.
 
 ## Rule grammar
 

@@ -1,0 +1,8 @@
+# List alerts, reminders and scheduled actions.
+id: alerts.list
+legacy: list_alerts
+risk: read
+decision: allow
+provenance: none
+core: true
+summary: List alerts, reminders and scheduled actions.

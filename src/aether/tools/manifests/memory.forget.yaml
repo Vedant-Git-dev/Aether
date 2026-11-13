@@ -1,0 +1,8 @@
+# Forget one remembered item.
+id: memory.forget
+legacy: memory_forget
+risk: write
+decision: allow
+provenance: owner
+core: false
+summary: Forget one remembered item.

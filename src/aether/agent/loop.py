@@ -80,6 +80,7 @@ from ..message_catalog import render as render_message
 from ..origin import (
     alert_action,
     approved_call,
+    current_origin,
     owner_message,
     reset_origin,
     scheduled,
@@ -1336,9 +1337,19 @@ class AgentLoop:
             # ingested or any model is woken: a /verify badge and a why?
             # replay cost no tokens and store no memory — they are reads,
             # answered from the record
-            if await self._try_chat_command(message):
-                continue
-            if await self._try_explain_reply(message):
+            # a typed command is the owner's own words: config changes,
+            # pauses and pastes it drives carry that provenance, exactly as
+            # the model's turn does
+            command_origin = owner_message(
+                {
+                    "chat_refs": [message.chat_ref] if message.chat_ref else [],
+                    "message_ids": [message.message_id] if message.message_id else [],
+                }
+            )
+            with use_origin(command_origin):
+                handled = await self._try_chat_command(message)
+                explained = False if handled else await self._try_explain_reply(message)
+            if handled or explained:
                 continue
             result = await self._events.ingest(
                 source=message.surface,
@@ -3725,23 +3736,21 @@ class AgentLoop:
         call = ToolCall(
             call.id, call.name, arguments, plain=str(plain) if plain is not None else ""
         )
+        tool = self._tools.get(call.name)
         ruling = self._policy.classify(
             call.name,
             call.arguments,
             origin=origin,
-            effect=(
-                self._tools.get(call.name).effect
-                if self._tools.get(call.name) is not None
-                else None
-            ),
+            effect=tool.effect if tool is not None else None,
             internal=self._tools.is_internal(call.name),
             aliases=self._tools.aliases_for(call.name),
+            native=tool is not None and tool.kind == "native",
+            declared=(tool.spec.decision if tool is not None and tool.kind == "native" else None),
         )
 
         # memory_search stays a model tool, capped per turn: the third round
         # is the last one, so a model that keeps rephrasing cannot loop the
         # same question through retrieval for the whole turn budget
-        tool = self._tools.get(call.name)
         if tool is not None and tool.spec.id == "memory.search" and trace is not None:
             used = 0
             for entry in trace:
@@ -3774,6 +3783,32 @@ class AgentLoop:
                 tool_call_id=call.id,
                 name=call.name,
                 content=f"denied by policy: {ruling.reason}",
+                is_error=True,
+            )
+            self._note_call(trace, call, result, ruling=ruling, audit_seq=seq)
+            return result
+
+        # a tool that declares it needs the owner's own turn refuses here,
+        # before any handler sees it. The handler checks stay as a second
+        # line, but this one cannot be forgotten by a new call site.
+        if (
+            ruling.decision is Decision.ALLOW
+            and tool is not None
+            and tool.spec.provenance == "owner"
+            and not current_origin().may_mutate
+        ):
+            seq = await self._audit.append(
+                actor="agent",
+                tool_name=call.name,
+                decision="deny",
+                rules_matched="builtin:owner-only",
+                params=call.arguments,
+                outcome="refused: not the owner's own turn",
+            )
+            result = ToolResult(
+                tool_call_id=call.id,
+                name=call.name,
+                content=render_message("tools.owner_only", locale=self._config.agent.locale),
                 is_error=True,
             )
             self._note_call(trace, call, result, ruling=ruling, audit_seq=seq)

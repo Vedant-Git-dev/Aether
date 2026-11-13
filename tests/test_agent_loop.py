@@ -62,6 +62,7 @@ from aether.llm.types import ImageBlock, ToolCall, ToolResult, Turn, WireSpec
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.events import Event, IngestResult
 from aether.memory.vectors import MemoryHit
+from aether.origin import owner_message, use_origin
 from aether.proactive.path import DueReminder
 from aether.providers.types import ConnectResult, PollResult
 from aether.scheduler.jobs import ScheduledAction
@@ -799,10 +800,11 @@ async def test_an_alert_offer_parks_and_arms_only_on_approval() -> None:
 
 
 async def test_a_direct_alert_create_on_an_unprompted_turn_is_refused() -> None:
+    calls: list = []
+
     class FakeAlerts:
         async def create(self, spec, origin):
-            if not origin.may_mutate:
-                return "Only you can change your alerts."
+            calls.append(spec)
             return "should not run"
 
     kit = LoopKit(None)
@@ -821,8 +823,21 @@ async def test_a_direct_alert_create_on_an_unprompted_turn_is_refused() -> None:
         ToolCall(id="t1", name="alerts__create", arguments={"title": "x", "scope": "mail"})
     )
 
-    assert result.content == "Only you can change your alerts."
+    # the manifest's owner provenance refuses before the handler runs
+    assert result.content == (
+        "Only you can do that — I won't do it from a message I read or a feed I polled."
+    )
+    assert result.is_error is True
+    assert calls == []
     assert kit.approvals.created == []
+
+    # the same call on the owner's own turn reaches the handler
+    with use_origin(owner_message({"message_ids": ["m-1"]})):
+        allowed = await kit.loop._execute(
+            ToolCall(id="t2", name="alerts__create", arguments={"title": "x", "scope": "mail"})
+        )
+    assert allowed.content == "should not run"
+    assert len(calls) == 1
 
 
 async def test_a_stale_web_decide_touches_nothing() -> None:

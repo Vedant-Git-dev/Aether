@@ -437,6 +437,18 @@ class AlertsConfig(BaseModel):
     compat_until: str = "2027-02-11"
 
 
+class ToolsConfig(BaseModel):
+    """The tool namespace's own guard.
+
+    Every native tool declares its policy in a manifest. `enforce` refuses
+    to boot when a registered native tool has none, so a new tool cannot
+    quietly inherit a weaker rule than the one somebody wrote down; `warn`
+    logs it and boots; `off` skips the check.
+    """
+
+    manifest_audit: Literal["off", "warn", "enforce"] = "enforce"
+
+
 class WorkbenchConfig(BaseModel):
     """Where background jobs run when they must not run on this machine.
     The provider is the configured default; the routing ladder falls
@@ -502,6 +514,7 @@ class AppConfig(BaseModel):
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     proactive: ProactiveConfig = Field(default_factory=ProactiveConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
+    tools: ToolsConfig = Field(default_factory=ToolsConfig)
     workbench: WorkbenchConfig = Field(default_factory=WorkbenchConfig)
     media: MediaConfig = Field(default_factory=MediaConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)

@@ -1,0 +1,8 @@
+# Edit a stored video with one fixed operation.
+id: media.edit
+legacy: edit_video
+risk: external
+decision: allow
+provenance: none
+core: false
+summary: Edit a stored video with one fixed operation.
