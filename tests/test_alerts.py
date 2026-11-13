@@ -419,6 +419,8 @@ class FakeNotifications:
     rows: list[dict] = field(default_factory=list)
     next_id: int = 1
     sent_windows: list[datetime] = field(default_factory=lambda: [NOW])
+    sent_at: dict[int, datetime] = field(default_factory=dict)
+    sent_total: int = 0
 
     async def enqueue(self, event: AlertEvent, *, style: str, key: str = "") -> int | None:
         key = key or f"{event.alert_id}:{event.event_id}"
@@ -443,15 +445,17 @@ class FakeNotifications:
         return [self._note(row) for row in self.rows if row["status"] in (QUEUED, "held", "failed")]
 
     async def last_sent(self, alert_id: int):
-        return None
+        return self.sent_at.get(alert_id)
 
     async def sent_between(self, start: datetime, end: datetime) -> int:
-        return 0
+        return self.sent_total
 
     async def mark_sent(self, ids):
         for row in self.rows:
             if row["id"] in ids:
                 row["status"] = SENT
+                self.sent_at[row["alert_id"]] = NOW
+                self.sent_total += 1
 
     async def mark_held(self, ids, until):
         for row in self.rows:
@@ -688,6 +692,88 @@ async def test_a_failed_or_empty_phrasing_falls_back_to_the_catalog() -> None:
 
         assert sent and sent[0].startswith("Landlord — Gmail from Rahul Sharma:")
         assert "Quarterly invoice" in sent[0]
+
+
+async def test_a_digest_waits_then_sends_its_items_together() -> None:
+    store = FakeStore()
+    store.rows = [_alert(1, title="Landlord", scope="mail", style="digest")]
+    notifications = FakeNotifications()
+    engine, sent = _engine(store, notifications)
+    await engine.refresh()
+
+    await engine.evaluate_event(_mail(event_id=1))
+    await engine.evaluate_event(_mail(event_id=2))
+    assert await engine.tick(NOW) == 0  # inside the digest window
+    assert notifications.rows[0]["status"] == "held"
+
+    later = NOW + timedelta(minutes=31)
+    assert await engine.tick(later) == 1
+    assert len(sent) == 1
+    assert "Landlord — 2 new" in sent[0]
+    assert sent[0].count("Quarterly invoice") == 2
+
+
+async def test_the_daily_cap_suppresses_the_next_alert() -> None:
+    config = AppConfig(alerts=AlertsConfig(daily_cap=1), proactive=ProactiveConfig())
+    store = FakeStore()
+    store.rows = [
+        _alert(1, title="Landlord", scope="mail"),
+        _alert(2, title="Billing", scope="mail"),
+    ]
+    notifications = FakeNotifications()
+    engine = AlertEngine(config=config, store=store, notifications=notifications, timezone="UTC")
+    sent: list[str] = []
+
+    async def notify(text: str, *, urgent: float = 0.0, channel: str = ""):
+        sent.append(text)
+        return {"web": "1"}
+
+    engine.attach_notify(notify)
+    await engine.refresh()
+    await engine.evaluate_event(_mail())
+
+    assert await engine.tick(NOW) == 1
+    suppressed = [row for row in notifications.rows if row["status"] == SUPPRESSED]
+    assert suppressed and suppressed[0]["reason"] == "daily_cap"
+    assert len(sent) == 1
+
+
+async def test_a_repeat_inside_the_tell_window_is_batched_not_sent_again() -> None:
+    store = FakeStore()
+    store.rows = [_alert(1, title="Landlord", scope="mail")]
+    notifications = FakeNotifications()
+    engine, sent = _engine(store, notifications)
+    await engine.refresh()
+
+    await engine.evaluate_event(_mail(event_id=1))
+    assert await engine.tick(NOW) == 1
+    await engine.evaluate_event(_mail(event_id=2))
+    assert await engine.tick(NOW + timedelta(minutes=5)) == 0
+
+    held = [row for row in notifications.rows if row["status"] == "held"]
+    assert held and held[0]["next_try_at"] == NOW + timedelta(hours=2)
+    assert len(sent) == 1
+
+
+async def test_a_failed_send_is_dropped_at_the_retry_limit() -> None:
+    config = AppConfig(alerts=AlertsConfig(max_attempts=2), proactive=ProactiveConfig())
+    store = FakeStore()
+    store.rows = [_alert(1, title="Landlord", scope="mail")]
+    notifications = FakeNotifications()
+    engine = AlertEngine(config=config, store=store, notifications=notifications, timezone="UTC")
+
+    async def broken(text: str, *, urgent: float = 0.0, channel: str = ""):
+        return None
+
+    engine.attach_notify(broken)
+    await engine.refresh()
+    await engine.evaluate_event(_mail())
+
+    assert await engine.tick(NOW) == 0
+    assert notifications.rows[0]["status"] == "failed"
+    assert await engine.tick(NOW + timedelta(minutes=10)) == 0
+    assert notifications.rows[0]["status"] == SUPPRESSED
+    assert notifications.rows[0]["reason"] == "no_surface"
 
 
 async def test_nothing_is_phrased_for_a_notification_that_is_only_held() -> None:

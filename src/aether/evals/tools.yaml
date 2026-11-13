@@ -1,0 +1,90 @@
+# Labelled tool-choice cases.
+#
+# Each case is one request and the call it should produce. The scorer looks
+# at the first call in a recorded transcript: the wire name must match and
+# every `expected_args` entry must be present with that value. A call from
+# `forbidden_tools` is a wrong-tool mistake even if the name also matches
+# nothing else.
+#
+# These cases are model-agnostic: record a run, point the scorer at the
+# transcripts, and the numbers are repeatable. Nothing here is judged by
+# reading prose.
+
+cases:
+  - id: alert-for-a-sender
+    message: "tell me when the landlord emails"
+    expected_tool: alerts__create
+    expected_args:
+      scope: mail
+      sender: landlord@example.com
+    forbidden_tools: [mail__send_email, mail__reply_to]
+
+  - id: alert-for-words
+    message: "ping me whenever an internship mail arrives"
+    expected_tool: alerts__create
+    expected_args:
+      scope: mail
+      contains: internship
+    forbidden_tools: [web_search]
+
+  - id: reminder-at-a-time
+    message: "remind me friday at 9 to send the invoice"
+    expected_tool: alerts__create
+    expected_args:
+      kind: reminder
+    forbidden_tools: [schedule__create]
+
+  - id: list-standing-instructions
+    message: "what alerts and reminders do I have set?"
+    expected_tool: alerts__list
+    expected_args: {}
+    forbidden_tools: [alerts__create]
+
+  - id: pause-one-alert
+    message: "pause the landlord alert"
+    expected_tool: alerts__update
+    expected_args:
+      enabled: false
+    forbidden_tools: [alerts__delete]
+
+  - id: remove-one-alert
+    message: "delete the internship alert"
+    expected_tool: alerts__delete
+    expected_args: {}
+    forbidden_tools: [alerts__update]
+
+  - id: remember-a-person
+    message: "note that Sam prefers a call, not email"
+    expected_tool: memory__note
+    expected_args: {}
+    forbidden_tools: [memory__forget]
+
+  - id: forget-one-item
+    message: "forget the invoice email"
+    expected_tool: memory__forget
+    expected_args: {}
+    forbidden_tools: [memory__note]
+
+  - id: schedule-a-later-call
+    message: "send the deck tomorrow at nine"
+    expected_tool: schedule__create
+    expected_args: {}
+    forbidden_tools: [mail__send_email]
+
+  - id: read-a-web-page
+    message: "read this page and summarise it: https://example.com/post"
+    expected_tool: web__fetch
+    expected_args: {}
+    forbidden_tools: [web__search]
+
+  - id: search-the-web
+    message: "what is the current price of a stamp?"
+    expected_tool: web__search
+    expected_args: {}
+    forbidden_tools: [web__fetch]
+
+  - id: change-a-setting
+    message: "check your settings for the tick interval"
+    expected_tool: config__get
+    expected_args: {}
+    forbidden_tools: [config__set]

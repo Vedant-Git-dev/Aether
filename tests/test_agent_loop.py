@@ -43,6 +43,7 @@ from aether.agent.loop import (
 )
 from aether.agent.prompts import SYSTEM_PROMPT
 from aether.agent.tools import register_native_tools
+from aether.alerts.spec import AlertSpec
 from aether.authz.approvals import APPROVED, DENIED
 from aether.authz.audit import ChainVerification
 from aether.authz.policy import Policy
@@ -846,6 +847,67 @@ async def test_a_direct_alert_create_on_an_unprompted_turn_is_refused() -> None:
         )
     assert allowed.content == "should not run"
     assert len(calls) == 1
+
+
+async def test_update_alert_merges_only_the_fields_given() -> None:
+    class FakeAlerts:
+        def __init__(self) -> None:
+            self.spec = None
+            self.removed: list[int] = []
+
+        async def get(self, alert_id: int):
+            return SimpleNamespace(
+                id=alert_id,
+                spec=AlertSpec(title="old", scope="mail", description="loose words", contains=""),
+            )
+
+        async def update(self, alert_id: int, spec, origin) -> str:
+            self.spec = spec
+            return "Updated."
+
+        async def set_enabled(self, alert_id: int, enabled: bool, origin) -> str:
+            return "Paused."
+
+        async def remove(self, alert_id: int, origin) -> str:
+            self.removed.append(alert_id)
+            return "Removed."
+
+        def refusal(self, key: str, **params) -> str:
+            if key == "alerts.needs_id":
+                return "Tell me which alert — list them first."
+            return key
+
+    alerts = FakeAlerts()
+    kit = LoopKit(None)
+    register_native_tools(
+        registry=kit.tools,
+        events=kit.events,
+        entities=None,
+        approvals=kit.approvals,
+        scheduler=kit.scheduler,
+        surfaces=kit.loop._surfaces,
+        capture_box=kit.capture_box,
+        alerts=alerts,
+    )
+
+    with use_origin(owner_message()):
+        result = await kit.loop._execute(
+            ToolCall(
+                id="t1",
+                name="alerts__update",
+                arguments={"alert_id": 3, "contains": "invoice"},
+            )
+        )
+        missing = await kit.loop._execute(ToolCall(id="t2", name="alerts__delete", arguments={}))
+
+    assert result.content == "Updated."
+    assert alerts.spec.title == "old"  # omitted fields stay
+    assert alerts.spec.scope == "mail"
+    assert alerts.spec.contains == "invoice"
+    # the loose legacy description no longer matches words the user replaced
+    assert alerts.spec.description == ""
+    assert missing.content == "Tell me which alert — list them first."
+    assert alerts.removed == []
 
 
 async def test_a_stale_web_decide_touches_nothing() -> None:
