@@ -22,7 +22,8 @@ from aether.agent.traces import Traces
 from aether.authz.approvals import APPROVED
 from aether.authz.policy import Policy
 from aether.config import AuthzRule
-from aether.llm.types import ToolCall, Turn, WireSpec
+from aether.counters import today
+from aether.llm.types import ToolCall, Turn, Usage, WireSpec
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.scheduler.jobs import ScheduledAction
 
@@ -127,6 +128,44 @@ async def test_an_observation_only_turn_is_traced_with_what_was_seen() -> None:
     assert observation["source"] == "mail"
     assert observation["kind"] == "poll:unread"
     assert "3 unread" in observation["line"]
+
+
+async def test_a_turn_records_usage_and_the_token_ledger() -> None:
+    class FakeCounters:
+        def __init__(self) -> None:
+            self.bumps: list[tuple[str, str, int]] = []
+
+        async def bump(self, day: str, field: str, n: int = 1) -> int:
+            self.bumps.append((day, field, n))
+            return n
+
+    provider = FakeProvider(
+        [
+            Turn(
+                text="the answer",
+                usage=Usage(
+                    input_tokens=100,
+                    output_tokens=20,
+                    cache_read_tokens=80,
+                    cache_write_tokens=10,
+                ),
+            )
+        ]
+    )
+    kit = LoopKit(provider)
+    counters = FakeCounters()
+    kit.loop._counters = counters
+    kit.loop.submit_message(_msg("hi"))
+    await kit.loop._tick()
+
+    payload = kit.traces.created[0]["payload"]
+    assert payload["usage"] == {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "cache_read_tokens": 80,
+        "cache_write_tokens": 10,
+    }
+    assert counters.bumps == [(today(), "tokens", 120)]
 
 
 async def test_a_parked_call_records_its_approval_id() -> None:

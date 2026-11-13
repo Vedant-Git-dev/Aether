@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable
 
 from ..outbound import is_deliverable
 from .base import Provider
-from .types import Message, ToolCall, ToolResult, Turn, WireSpec
+from .types import Message, ToolCall, ToolResult, Turn, Usage, WireSpec
 
 log = logging.getLogger("aether.llm.agent")
 
@@ -64,16 +64,19 @@ async def run_tool_loop(
     history = progress if progress is not None else []
     history.extend(messages)
     turn = Turn()
+    total = Usage()
     active: set[str] = {t.name for t in tools} if isinstance(tools, list) else set()
     for _ in range(max_iterations):
         offered = tools(active, history) if callable(tools) else list(tools)
         turn = await provider.complete(system, history, offered)
+        total = total + turn.usage
         if not turn.tool_calls:
             # a blank or a bare placeholder never joins the history: it is
             # not words the model said, and putting it back in would feed
             # the stand-in to the very next call
             if is_deliverable(turn.text):
                 history.append(Message.assistant(turn.text))
+            turn.usage = total
             return turn, history
 
         # Record the proposal, then execute every call and feed results back.
@@ -130,6 +133,7 @@ async def run_tool_loop(
         # typed outcome from its call record; letting the model keep going
         # would invite a second, differently worded delivery.
         if terminal and any(result.name in terminal for result in results):
+            turn.usage = total
             return turn, history
 
     # Iteration budget exhausted with the model still proposing tools: force
@@ -140,6 +144,8 @@ async def run_tool_loop(
         max_iterations,
     )
     turn = await provider.complete(system, history, tools=[])
+    total = total + turn.usage
     if is_deliverable(turn.text):
         history.append(Message.assistant(turn.text))
+    turn.usage = total
     return turn, history

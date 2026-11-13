@@ -709,6 +709,7 @@ def create_app(
             inbound_states=inbound_states,
             query_pipeline=query_pipeline,
             summary_job=summary_job,
+            counters=counters,
         )
         app.state.agent = agent
 

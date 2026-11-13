@@ -54,6 +54,7 @@ from ..connectors.mail_allowlist import MailAllowlist
 from ..connectors.mcp_host import MCPHost
 from ..connectors.polling import next_poll_delay
 from ..connectors.registry import ToolRegistry
+from ..counters import today as counter_day
 from ..llm.agent import run_tool_loop
 from ..llm.base import Provider
 from ..llm.base import ProviderError as LLMProviderError
@@ -711,6 +712,7 @@ class AgentLoop:
         query_pipeline: QueryPipeline | None = None,
         proactive_path: Any = None,
         summary_job: Any = None,
+        counters: Any = None,
     ) -> None:
         self._providers = providers
         # the in-flight reply to a decision, if the model is writing one —
@@ -779,6 +781,7 @@ class AgentLoop:
         # the outbound-send record: a failed or empty send is a fact, not a
         # log line, and the next turn is told about it
         self._deliveries = deliveries
+        self._counters = counters
         # the inbound ledger: one terminal outcome per message the user
         # sent, so no later turn re-answers a question that already had its
         # turn. The in-memory ledger is the default; the boot wires the
@@ -2621,6 +2624,15 @@ class AgentLoop:
                 ),
                 timeout=self._config.agent.turn_timeout_seconds,
             )
+            # token accounting: the provider's own numbers, on the trace, and
+            # the same daily ledger the background budget reads. A counter
+            # failure is a log line, never a reason to lose the turn.
+            trace["usage"] = final.usage.as_dict()
+            if self._counters is not None and final.usage.total_tokens:
+                try:
+                    await self._counters.bump(counter_day(), "tokens", final.usage.total_tokens)
+                except Exception:
+                    log.warning("token counter failed — continuing", exc_info=True)
             # the typed outcome is the only door to the user. An answer turn
             # uses reply/ask; an unprompted turn uses notify/ask. Free text on
             # an unprompted turn is internal — unless a typed triage call

@@ -5,7 +5,7 @@ import asyncio
 from fakes import CrashingExecutor, FakeExecutor, FakeProvider
 
 from aether.llm.agent import DEFAULT_MAX_ITERATIONS, run_tool_loop
-from aether.llm.types import Message, ToolCall, ToolResult, Turn, WireSpec
+from aether.llm.types import Message, ToolCall, ToolResult, Turn, Usage, WireSpec
 
 
 def _spec(name: str = "search") -> WireSpec:
@@ -250,3 +250,34 @@ async def test_an_exact_repeat_in_one_proposal_runs_after_its_first() -> None:
     results = [b for b in tool_msg.blocks if isinstance(b, ToolResult)]
     assert [r.tool_call_id for r in results] == ["c1", "c2", "c3"]
     assert [r.content for r in results] == ["did it", "already did that this turn", "did it"]
+
+
+async def test_usage_is_summed_across_the_tool_loop() -> None:
+    provider = FakeProvider(
+        [
+            Turn(
+                text="checking",
+                tool_calls=[ToolCall(id="c1", name="search", arguments={"q": "x"})],
+                usage=Usage(input_tokens=100, output_tokens=10, cache_read_tokens=60),
+            ),
+            Turn(
+                text="done",
+                usage=Usage(input_tokens=120, output_tokens=5, cache_read_tokens=100),
+            ),
+        ]
+    )
+    executor = FakeExecutor(results={"search": "found"})
+
+    final, _ = await run_tool_loop(
+        provider,
+        "sys",
+        [Message.user("go")],
+        [_spec()],
+        executor,
+    )
+
+    assert final.usage == Usage(
+        input_tokens=220,
+        output_tokens=15,
+        cache_read_tokens=160,
+    )

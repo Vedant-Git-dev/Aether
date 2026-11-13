@@ -125,6 +125,15 @@ export default function TraceDetail({ t }) {
         <div className="mt-1 text-sm text-ink-2">{plainText(p.reply)}</div>
       )}
 
+      {p.usage ? (
+        <div className="mt-3 text-xs text-ink-3">
+          {p.usage.input_tokens + p.usage.output_tokens} tokens
+          {p.usage.cache_read_tokens
+            ? ` · ${p.usage.cache_read_tokens} served from cache`
+            : ""}
+        </div>
+      ) : null}
+
       {(p.internal || p.internal_notes) && (
         <>
           <div className="surface-head mt-5">{TRACE_SECTIONS.internal}</div>

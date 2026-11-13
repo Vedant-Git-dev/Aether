@@ -18,6 +18,7 @@ from .types import (
     ToolCall,
     ToolResult,
     Turn,
+    Usage,
     VideoBlock,
     WireSpec,
 )
@@ -205,12 +206,26 @@ def turn_from_gemini(response: Any) -> Turn:
         reason = "max_output_tokens"
     else:
         reason = "tool_use" if calls else "end_turn"
+    meta = getattr(response, "usage_metadata", None)
     return Turn(
         text="".join(text_parts),
         tool_calls=calls,
         stop_reason=reason,
         provider_extra=signatures or None,
+        usage=Usage(
+            input_tokens=_count(meta, "prompt_token_count"),
+            output_tokens=_count(meta, "candidates_token_count"),
+            cache_read_tokens=_count(meta, "cached_content_token_count"),
+        ),
     )
+
+
+def _count(meta: Any, name: str) -> int:
+    value = getattr(meta, name, 0) if meta is not None else 0
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _retry_delay_seconds(exc: Exception) -> float | None:
