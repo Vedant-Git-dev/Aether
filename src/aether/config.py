@@ -105,6 +105,36 @@ MODEL_DEFAULT = "default"
 MODEL_OFF = "off"
 
 
+class DatabaseConfig(BaseModel):
+    """Measured database use and the budgets its report is judged against.
+
+    The accounting meters are in process memory; they hold counts, query
+    shapes and timings, never parameters or rows. The limits are public
+    Neon free-tier numbers, used by the replay harness to turn a simulated
+    day into projected monthly totals — they are not read from Neon.
+    """
+
+    # every query is measured for `aether db-stats` and the panel
+    accounting: bool = True
+    # the shared pool: one per process, reused by every store and loop
+    pool_min_size: int = 1
+    pool_max_size: int = 5
+    # one simulated day's regression ceilings (the replay harness reports
+    # against these; CI enforces them once the post-fix baseline is set)
+    replay_messages_per_day: int = 20
+    replay_mails_per_day: int = 12
+    replay_panel_hours: float = 2.0
+    daily_query_budget: int = 2500
+    daily_response_budget_mb: float = 120.0
+    daily_active_minutes_budget: int = 120
+    # the provider's published free-tier limits and compute shape, so the
+    # projection is one config change from the truth when the plan changes
+    monthly_compute_cu_hours: float = 100.0
+    monthly_transfer_gb: float = 5.0
+    compute_cu: float = 0.25
+    autosuspend_seconds: int = 300
+
+
 class LLMConfig(BaseModel):
     provider: Literal["anthropic", "openai", "gemini", "ollama", "nvidia", "groq"] = "anthropic"
     model: str = "claude-opus-5"
@@ -509,6 +539,7 @@ class ProvidersConfig(BaseModel):
 
 class AppConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    db: DatabaseConfig = Field(default_factory=DatabaseConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     salience: SalienceConfig = Field(default_factory=SalienceConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)

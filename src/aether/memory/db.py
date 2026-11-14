@@ -9,6 +9,7 @@ from pathlib import Path
 import asyncpg
 
 from ..config_validation import normalize_database_url
+from ..db_accounting import DBAccounting, MeteredPool
 
 log = logging.getLogger("aether.db")
 
@@ -25,10 +26,18 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 """
 
 
-async def create_pool(url: str) -> asyncpg.Pool:
-    return await asyncpg.create_pool(
-        normalize_database_url(url), min_size=1, max_size=5, command_timeout=30
+async def create_pool(
+    url: str, *, min_size: int = 1, max_size: int = 5, accounting: bool = True
+) -> MeteredPool:
+    """One measured pool. Every store receives this wrapper and calls it like
+    an asyncpg pool; each query lands in the process-local accounting meters."""
+    pool = await asyncpg.create_pool(
+        normalize_database_url(url),
+        min_size=max(1, min_size),
+        max_size=max(1, max_size),
+        command_timeout=30,
     )
+    return MeteredPool(pool, DBAccounting(enabled=accounting))
 
 
 async def run_migrations(pool: asyncpg.Pool, *, before: Before | None = None) -> list[str]:

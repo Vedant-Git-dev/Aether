@@ -275,6 +275,19 @@ async def decide_approval(
     return {"ok": True, "status": approval.status}
 
 
+@router.get("/api/db/stats")
+async def db_stats_feed(request: Request, token: str | None = None) -> dict:
+    """The process-local query meters: counts, estimated response bytes,
+    durations and call sites. Counts and query shapes only — no parameters,
+    rows or user content. This route itself touches no database."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    accounting = getattr(request.app.state, "db_accounting", None)
+    if accounting is None:
+        raise HTTPException(status_code=503, detail="database accounting is not wired")
+    return accounting.snapshot()
+
+
 @router.get("/api/events")
 async def events_feed(request: Request, limit: int = 50, token: str | None = None) -> dict:
     """The newest events, decrypted for the owner's eyes only."""

@@ -16,6 +16,7 @@ import MemoryPage from "./pages/Memory.jsx";
 import PolicyPage from "./pages/Policy.jsx";
 import AppsPage from "./pages/Apps.jsx";
 import ContactsPage from "./pages/Contacts.jsx";
+import DatabasePage from "./pages/Database.jsx";
 
 const COLLAPSE_KEY = "aether_sidebar_collapsed";
 
@@ -29,6 +30,7 @@ const PAGES = {
   policy: { title: "Authorization & Policies", el: PolicyPage },
   apps: { title: "Apps & Permissions", el: AppsPage },
   contacts: { title: "Contacts", el: ContactsPage },
+  database: { title: "Database Use", el: DatabasePage },
   settings: { title: "Settings", el: SettingsPage },
 };
 

@@ -174,7 +174,13 @@ def create_app(
             )
 
         # --- database ------------------------------------------------------
-        pool = await create_pool(settings.database_url)
+        pool = await create_pool(
+            settings.database_url,
+            min_size=config.db.pool_min_size,
+            max_size=config.db.pool_max_size,
+            accounting=config.db.accounting,
+        )
+        app.state.db_accounting = pool.accounting
 
         # a deploy seals and cuts over in one boot: the sealer runs between
         # the expand migration and the drop migration, so nobody has to
@@ -937,7 +943,14 @@ def main() -> None:
     words; the loop then serves a fresh app (fresh lifespan, fresh boot
     merge) without the process ever leaving the container — nobody restarts
     Aether by hand. A real SIGINT/SIGTERM never arms a restart, so the loop
-    exits."""
+    exits. `aether db-stats` is a read-only client for the running process."""
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "db-stats":
+        from .db_stats import main as db_stats_main
+
+        raise SystemExit(db_stats_main(sys.argv[2:]))
+
     import os
 
     import uvicorn

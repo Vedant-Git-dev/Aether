@@ -280,3 +280,24 @@ async def upsert_workspace_file(
 
 async def delete_workspace_file(pool: asyncpg.Pool, token: bytes) -> None:
     await pool.execute("DELETE FROM workspace_files WHERE name_token = $1", token)
+
+
+# ---------------------------------------------------------------------------
+# replay harness support — the scratch database it owns
+# ---------------------------------------------------------------------------
+
+
+async def reset_application_tables(pool: Any, tables: str) -> None:
+    """Empty the application tables on a scratch database the harness owns.
+
+    `tables` is a comma-separated list built by the replay harness. The
+    statement lives here so SQL stays in the storage API, and the callers
+    gate it behind the scratch-name check.
+    """
+    await pool.execute(f"TRUNCATE {tables} RESTART IDENTITY")
+
+
+async def database_size_bytes(pool: Any) -> int:
+    """The scratch database's on-disk size — the replay's seed figure."""
+    return int(await pool.fetchval("SELECT pg_database_size(current_database())"))
+

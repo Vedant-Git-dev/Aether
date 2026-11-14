@@ -1,0 +1,241 @@
+---
+title: "Database budget"
+summary: "How Aether measures its database work, what the first measurement found, and the plan for keeping a free-tier database inside its limits."
+read_when:
+  - You are running Aether on a metered Postgres plan
+  - You want to read `aether db-stats` or the Database Use page
+  - You are changing a background loop or a panel list
+---
+
+# Database budget
+
+Aether treats the database as a metered resource. The application is one
+long-running process, and a 30-second agent tick used to mean a query every
+30 seconds around the clock — enough that a free-tier compute instance never
+reached its idle window and ran continuously. This page records how the cost
+is measured, what the first measurement found, and the rules that keep it
+down.
+
+**Every number on this page is an estimate from the local harness, not a
+reading of a provider's meter.** The harness runs against a scratch Postgres
+database with synthetic data. It never reads the live database.
+
+## Reading the meters
+
+- The panel's **Database Use** page shows query counts, estimated response
+  sizes, the busiest parts of Aether, the most-read tables and an hourly
+  pattern. It loads once when opened and again only when you press Refresh.
+- `aether db-stats` prints the same snapshot in a terminal. The counters live
+  inside the running server, so the command talks to it over localhost:
+
+  ```bash
+  AETHER_TOKEN=... aether db-stats
+  ```
+
+- The meters hold counts, query shapes, timings and call sites. They never
+  hold query parameters, rows or any user content, and they are memory-only.
+  No new table, file or log is created for them.
+
+## What the replay measures
+
+`python -m aether.db_replay --url postgresql:///your_scratch_database` seeds
+synthetic history and walks one simulated day: agent ticks, scheduler claims,
+provider checks, source polls, messages with recall, mail arrivals, panel
+reads and a restart. It reports queries, rows, estimated response bytes and
+active compute time.
+
+Active time is a model: a query wakes compute, and compute stays awake for the
+provider's idle window (five minutes on the free Neon tier) after the last
+query. The union of those windows is the estimate. It is not a provider
+reading.
+
+The harness refuses any database whose name does not contain `scratch`,
+`test`, `ci` or `replay`, and it refuses `aether` outright: it truncates every
+application table.
+
+## Baseline, before the fixes
+
+One simulated day on a 15.3 MB scratch database, with 20 messages, 12 mails,
+2,880 agent ticks, 4,320 scheduler claims, one restart and a panel left open
+for two hours:
+
+| Measure | Result |
+| --- | --- |
+| Queries | 30,987 |
+| Rows returned | 337,849 |
+| Estimated response bytes | 168.5 MB |
+| Active compute | 24.0 hours |
+| Projected compute | 180 CU-hours / month |
+| Projected transfer | 5.05 GB / month |
+
+The provider's free tier allows 100 CU-hours and 5 GB per month, so the
+baseline is over on compute by 80 percent and at the transfer limit. The
+observed production figure of about 67 CU-hours in 12 days is consistent
+with a compute that never suspends: 0.25 CU times 24 hours is 6 CU-hours a
+day, or about 180 a month.
+
+### The largest readers
+
+| Code path | Calls | Rows | Estimated bytes |
+| --- | --- | --- | --- |
+| Vector recall (`VectorMemory.search_vector`) | 20 | 44,780 | 53.3 MB |
+| Panel audit list | 720 | 144,000 | 39.2 MB |
+| Panel trace list | 720 | 36,000 | 34.2 MB |
+| Panel event list | 720 | 72,000 | 27.1 MB |
+| Open commitments, every tick | 2,880 | 34,560 | 11.3 MB |
+
+### The largest query counts
+
+| Code path | Calls | Why it ran |
+| --- | --- | --- |
+| Reply-delivery checks | 5,760 | twice on every 30-second tick |
+| Scheduler claim | 4,321 | every 20 seconds |
+| Open commitments | 2,880 | every 30-second tick |
+| Approval expiry | 2,880 | every 30-second tick |
+| Stale inbound check | 2,880 | every 30-second tick |
+| Observation stream | 2,880 | every 30-second tick |
+| Vector index backfill poll | 1,440 | every minute, even when caught up |
+| Panel approval poll | 1,440 | every 5 seconds while open |
+
+Every one of these is shorter than the five-minute idle window, so compute
+never suspends for the whole day.
+
+## Hypotheses, checked against the code
+
+1. **Recall reads and decrypts every chunk on each solicited turn.** Confirmed.
+   `VectorMemory.search_vector` selects `text_enc`, `embedding_enc` and
+   `meta_enc` for every chunk of the embedding model
+   (`src/aether/memory/vectors.py:442-446`), although only the top-k rows need
+   their text decrypted (`vectors.py:468-476`). In the replay, 20 recalls read
+   44,780 rows and 53 MB.
+2. **The embedding backfill loop.** Confirmed as an idle-wake source. When
+   caught up it issues one `SELECT ... WHERE indexed_at IS NULL` every 60
+   seconds forever (`src/aether/agent/loop.py:872-884`,
+   `src/aether/memory/vectors.py:359-373`). It is cheap in bytes, but 60
+   seconds is below the idle window.
+3. **Polling loops that query or write when nothing changed.** Confirmed.
+   - The provider poll reads every connection row and both cursor values
+     before it can know whether a poll is due
+     (`src/aether/providers/runtime.py:620-653`), then writes three poll-state
+     rows on every due poll even when the result is empty
+     (`runtime.py:668`, `runtime.py:703-724`). The poll runs on the 30-second
+     tick.
+   - The scheduler claims work every 20 seconds by reading every pending row
+     with its sealed payload (`src/aether/scheduler/jobs.py:108-133`,
+     `scheduler_worker` interval at `jobs.py:212`).
+   - Source polls write an audit row and ingest a poll event even when the
+     result is unchanged (`src/aether/agent/loop.py:2002-2059`).
+   - The alert tick reads pending notifications and the day's sent count every
+     tick (`src/aether/alerts/engine.py:178-184`).
+   - Commitment reminders read the whole open set every tick
+     (`src/aether/proactive/path.py:182-204`).
+   - Delivery checks read the failed and queued rows twice per tick
+     (`src/aether/agent/loop.py:1432-1433`,
+     `src/aether/memory/deliveries.py:141-152`).
+4. **The uptime ping hits the database.** Rejected. `/healthz` and `/health`
+   return a literal dictionary and never touch the pool
+   (`src/aether/main.py:900-902`); the Render health check points there.
+5. **Panel pages auto-refresh with large queries.** Confirmed. The panel
+   polls approvals every 5 seconds and events, audit and traces every 10
+   seconds (`webapp/src/store.jsx:66-76`), and those routes decrypt full rows
+   with payloads (`src/aether/api/routes.py:233-279`, `292-315`, `844-875`,
+   `878-898`). Two hours with the panel open cost about 100 MB in the replay.
+6. **Full table reads on startup or wake.** Partly confirmed. Startup reads
+   are bounded, not full-table: the newest `memory.hot_events` event rows
+   (`src/aether/main.py:353`) and the newest `memory.hot_chunks` chunk rows
+   (`main.py:363`), plus the schema audit
+   (`src/aether/memory/storage.py:56-70`). They cost about 3 MB in the replay
+   per restart. The real full read is the recall scan in item 1, not startup.
+7. **`SELECT *` and unneeded sealed payloads.** Partly confirmed. The active
+   SQL mostly names its columns, but recall fetches every chunk's text when
+   only the top-k need it, and three proactive-store queries do use
+   `SELECT *` (`src/aether/proactive/store.py:168`, `299`, `305`) — those run
+   only when the background worker is enabled or its page is read.
+8. **Frequent reconnects or connection churn.** Not confirmed in the code.
+   There is one pool (`src/aether/memory/db.py:28-39`), every store reuses it,
+   and no code creates a pool per request or per loop. Whether an idle
+   connection alone keeps a Neon compute awake could not be verified from
+   this repository; the provider's documentation is the authority, and the
+   idle-connection test below is the plan.
+
+## Every loop that touches the database
+
+| Loop | Interval | What it does when nothing changed |
+| --- | --- | --- |
+| Agent tick (`loop.py:1073-1082`) | `agent.tick_seconds`, 30 s | Expiry update, two delivery reads, owner lookup (cached after first), stale-inbound read, observation read, reminder read, alert reads |
+| Scheduler worker (`scheduler/jobs.py:240-247`) | 20 s | Reads every pending action with its sealed payload |
+| Vector backfill (`loop.py:872-884`) | 1 s while catching up, 60 s caught up | One `indexed_at IS NULL` read |
+| Provider runtime (`runtime.py:615-682`) | Every tick, network poll every 5 min | Reads connections and both cursors; writes three state rows when due |
+| MCP source polls (`loop.py:2002-2059`) | `every_minutes`, default 5 min | Audits and ingests the empty result |
+| Proactive path (`path.py:182-204`) | Every tick | Reads the whole open commitment set |
+| Alert engine (`alerts/engine.py:178-184`) | Every tick | Reads pending notifications and the day's sent count |
+| Proactive worker (`worker.py:209-226`) | `proactive.interval_minutes`, 30 min, off by default | One re-arm write at boot; disabled cycles do not query |
+| Panel pollers (`store.jsx:66-76`) | 5 s and 10 s while a tab is open | Re-reads and decrypts every list |
+| Telegram and Discord long polling | Platform-held connection | No database unless a message arrives; the processed-update ledger writes on arrival |
+
+## What changes, in priority order
+
+1. **Recall reads only what it ranks on, then only the text it cites.**
+   Rank over ids and sealed vectors; fetch text and metadata for the top-k by
+   id. This alone removes most of the 53 MB day.
+2. **Idle means no queries.**
+   - Pollers keep due times, cursors and last-seen values in memory and
+     write only on change, batched with a bounded flush and a shutdown flush.
+   - A poll that finds nothing performs zero queries.
+   - The backfill loop waits for a wake signal or a configured long interval
+     instead of polling every minute.
+   - Expiry, delivery checks, stale-inbound checks and observation reads run
+     on configured intervals or are driven by events, not on a fixed 30-second
+     query cadence.
+3. **Panel lists are pulled, not polled.** No auto-refresh; explicit refresh
+   and refresh after a user action. Lists get offset pagination with a
+   configured maximum page size, and conditional requests (ETag from a version
+   token) return no body when nothing changed.
+4. **Batched scheduled work.** Background checks run in configured windows
+   (for example every 15 minutes) so compute can suspend between them.
+   Interactive messages are never delayed: a message wakes the database
+   immediately.
+5. **One shared pool with configured size, idle timeout and reuse.** Release
+   idle connections after a configured period and measure whether that lets
+   the compute suspend.
+6. **Memory-only retrieval caches.** The vector matrix, lexical index, hot
+   event view and entity lookups load once in bounded batches and follow a
+   sequence watermark. Recall hits the database only for rows missing from
+   the cache. Cold start records its bytes.
+7. **Budget manager and graceful degradation.** A circuit breaker with
+   exponential backoff and jitter, a bounded sealed-or-memory write queue,
+   cached answers, one user notice when memory is unavailable and when it
+   returns, and a recovery runbook.
+8. **Verification.** Run the replay before and after each phase, keep the
+   configured daily budgets, and add the CI regression gate once the
+   post-fix baseline is stable.
+
+## Configuration keys
+
+All of these live under `db:` in `config.yaml`; see
+[Configuration](configuration.md) for precedence and editing.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `accounting` | `true` | measure every query for `aether db-stats` and the panel |
+| `pool_min_size` / `pool_max_size` | `1` / `5` | the one shared connection pool |
+| `replay_messages_per_day` / `replay_mails_per_day` | `20` / `12` | replay shape |
+| `replay_panel_hours` | `2.0` | how long the replay keeps a panel open |
+| `daily_query_budget` | `2500` | replay regression ceiling, queries per simulated day |
+| `daily_response_budget_mb` | `120.0` | replay regression ceiling, estimated MB per day |
+| `daily_active_minutes_budget` | `120` | replay regression ceiling, active compute per day |
+| `monthly_compute_cu_hours` / `monthly_transfer_gb` | `100` / `5` | the provider's limits, used only for projection |
+| `compute_cu` | `0.25` | the compute size used for the projection |
+| `autosuspend_seconds` | `300` | the provider's idle window used for the active-time model |
+
+## What could not be verified
+
+- Whether an idle connection by itself prevents a Neon compute from
+  suspending. The pool release experiment in the plan settles it on the
+  deployment itself.
+- Exact provider billing. The byte figures are estimates of returned data,
+  and the active-time model is a model. Only the provider's usage page is the
+  meter.
+- The production query mix. The replay mirrors the code's database calls but
+  uses synthetic sizes; the first day of real `aether db-stats` output is what
+  calibrates the synthetic day.
