@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fakes import FakeProvider, FakeRoutines, FakeTraces
+from fakes import FakeProvider, FakeTraces
 from test_agent_loop import LoopKit, _event, _msg
 from test_native_tools import NativeKit
 
@@ -22,7 +22,8 @@ from aether.agent.traces import Traces
 from aether.authz.approvals import APPROVED
 from aether.authz.policy import Policy
 from aether.config import AuthzRule
-from aether.llm.types import ToolCall, Turn, WireSpec
+from aether.counters import today
+from aether.llm.types import ToolCall, Turn, Usage, WireSpec
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.scheduler.jobs import ScheduledAction
 
@@ -90,6 +91,7 @@ async def test_a_turn_leaves_a_trace_with_calls_rulings_and_reply() -> None:
     assert call["approval_id"] is None
     assert call["result"] == "2 unread: alice, bob"
     assert call["is_error"] is False
+    assert call["status"] == "ok"
     assert payload["reasoning"] == ["checking mail"]  # words between calls
     assert payload["reply"] == "2 unread"  # and the reply is its own field
     assert "error" not in payload
@@ -128,6 +130,44 @@ async def test_an_observation_only_turn_is_traced_with_what_was_seen() -> None:
     assert "3 unread" in observation["line"]
 
 
+async def test_a_turn_records_usage_and_the_token_ledger() -> None:
+    class FakeCounters:
+        def __init__(self) -> None:
+            self.bumps: list[tuple[str, str, int]] = []
+
+        async def bump(self, day: str, field: str, n: int = 1) -> int:
+            self.bumps.append((day, field, n))
+            return n
+
+    provider = FakeProvider(
+        [
+            Turn(
+                text="the answer",
+                usage=Usage(
+                    input_tokens=100,
+                    output_tokens=20,
+                    cache_read_tokens=80,
+                    cache_write_tokens=10,
+                ),
+            )
+        ]
+    )
+    kit = LoopKit(provider)
+    counters = FakeCounters()
+    kit.loop._counters = counters
+    kit.loop.submit_message(_msg("hi"))
+    await kit.loop._tick()
+
+    payload = kit.traces.created[0]["payload"]
+    assert payload["usage"] == {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "cache_read_tokens": 80,
+        "cache_write_tokens": 10,
+    }
+    assert counters.bumps == [(today(), "tokens", 120)]
+
+
 async def test_a_parked_call_records_its_approval_id() -> None:
     provider = _scripted_risky()
     kit = LoopKit(provider)
@@ -141,6 +181,7 @@ async def test_a_parked_call_records_its_approval_id() -> None:
     assert call["decision"] == "require_approval"
     assert call["approval_id"] == 1  # the trace points at the held approval
     assert call["audit_seq"] is None  # parking is not an audit decision row
+    assert call["status"] == "pending"
     assert kit.approvals.created[0].id == 1
 
 
@@ -155,6 +196,7 @@ async def test_a_denied_call_is_traced_with_its_reason() -> None:
     assert call["decision"] == "deny"
     assert call["matched_rule"] == "user:mail__send_message"  # the user rule won
     assert call["is_error"] is True
+    assert call["status"] == "refused"
     assert "denied by policy" in call["result"]
 
 
@@ -182,27 +224,28 @@ async def test_a_quiet_tick_leaves_no_trace() -> None:
 
 
 # ---------------------------------------------------------------------------
-# unit: routines, schedules, and carried-out approvals leave traces
+# unit: alert actions, schedules, and carried-out approvals leave traces
 # ---------------------------------------------------------------------------
 
 
-async def test_a_routine_fire_is_traced() -> None:
-    kit = LoopKit(None)  # routines fire before any LLM is involved
-    kit.add_tool("note_entity")
-    kit.routines.add(
-        label="billing",
-        trigger={"source": "mail"},
-        action={"type": "tool", "tool": "note_entity", "params": {"note": "invoice"}},
-    )
-    kit.events.events[1] = _event(1)
+async def test_an_alert_action_is_traced() -> None:
+    from types import SimpleNamespace
 
-    await kit.loop._tick()
+    kit = LoopKit(None)
+    kit.add_tool("note_entity")
+    alert = SimpleNamespace(
+        id=1,
+        title="billing",
+        spec=SimpleNamespace(action={"tool": "note_entity", "params": {"note": "invoice"}}),
+    )
+
+    await kit.loop._run_alert_action(alert, _event(1))
 
     created = kit.traces.created[0]
-    assert created["kind"] == "routine"
+    assert created["kind"] == "alert"
     assert created["label"] == "billing"
     payload = created["payload"]
-    assert payload["routine"] == {"id": 1, "label": "billing", "trigger": {"source": "mail"}}
+    assert payload["alert"] == {"id": 1, "title": "billing"}
     assert payload["event"]["id"] == 1
     assert payload["event"]["source"] == "mail"
     call = payload["calls"][0]
@@ -324,13 +367,11 @@ async def test_a_poisoned_trace_store_never_breaks_the_act() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_eight_native_tools_register_when_traces_are_wired() -> None:
+async def test_tracing_tools_register_only_when_wired() -> None:
     kit = NativeKit(traces=FakeTraces())
-    assert kit.count == 8
-    assert len(kit.registry) == 8
-    both = NativeKit(routines=FakeRoutines(), traces=FakeTraces())
-    assert both.count == 12
-    assert len(both.registry) == 12
+    assert len(kit.registry) == kit.count
+    both = NativeKit(traces=FakeTraces(), audit=kit.audit)
+    assert len(both.registry) == both.count
 
 
 def _seed_turn(kit: NativeKit, *, approval_id: int | None = None) -> None:
@@ -410,12 +451,12 @@ async def test_explain_by_approval_id_finds_the_origin_and_the_carry_out() -> No
 
 async def test_explain_by_topic_searches_recent_traces() -> None:
     kit = NativeKit(traces=FakeTraces())
-    kit.traces.add(kind="routine", label="billing", payload={"routine": {"label": "billing"}})
+    kit.traces.add(kind="alert", label="billing", payload={"alert": {"title": "billing"}})
     kit.traces.add(kind="turn", label="unread check", payload={"reply": "2 unread"})
 
     out = await kit.run("explain_decision", {"about": "billing"})
 
-    assert "Trace #1 (routine) — billing" in out
+    assert "Trace #1 (alert) — billing" in out
     assert "Trace #2" not in out  # limit defaults to 3, but only matches show
     assert "No recorded trace mentioning 'zzz'." in await kit.run(
         "explain_decision", {"about": "zzz"}

@@ -12,12 +12,14 @@ from fakes import FakeAudit
 from aether.config import AppConfig
 from aether.connectors.registry import ToolRegistry
 from aether.providers.runtime import ProviderRuntime
+from aether.providers.scopes import describe, describe_many
 from aether.providers.types import (
     AppDefinition,
     PollDefinition,
     ProviderAuthError,
     ProviderConnection,
     ProviderDefinition,
+    ProviderError,
     ProviderHTTPError,
     ProviderRateLimited,
     ProviderReauthRequired,
@@ -32,7 +34,7 @@ async def _ping(ctx, params):
 
 
 async def _poll(ctx):
-    await ctx.set_sync("cursor", "2")
+    ctx.stage_sync("cursor", "2")
     return {"successful": True, "data": {"messages": [{"id": "1"}]}}
 
 
@@ -51,7 +53,7 @@ APP = AppDefinition(
             handler=_ping,
         ),
     ),
-    poll=PollDefinition(key="new", every_minutes=5.0, handler=_poll),
+    polls=(PollDefinition(key="new", every_minutes=5.0, handler=_poll),),
 )
 
 PROVIDER = ProviderDefinition(
@@ -440,8 +442,157 @@ async def test_poll_runs_once_then_waits_for_the_interval() -> None:
     results = await runtime.poll_due(now)
     assert len(results) == 1
     assert results[0].payload["data"]["messages"] == [{"id": "1"}]
+    assert results[0].cursor == {"cursor": "2"}
+    assert ("demo", "demo", "cursor") not in store.sync  # waits for the ingest
     assert store.sync[("demo", "demo", "poll:new:last")]
+
+    await runtime.commit_poll(results[0])
+    assert store.sync[("demo", "demo", "cursor")] == "2"
     assert await runtime.poll_due(now + timedelta(minutes=1)) == []
+
+
+@pytest.mark.asyncio
+async def test_a_failing_poll_is_surfaced_in_plain_words() -> None:
+    connection = ProviderConnection(
+        provider="demo",
+        auth_mode="oauth",
+        access_token="token",
+        scopes="read",
+        status="active",
+    )
+    store = FakeStore(connection)
+
+    async def failed(ctx):
+        raise ProviderError("the demo check failed")
+
+    app = replace(
+        APP,
+        polls=(PollDefinition(key="new", every_minutes=5.0, handler=failed),),
+    )
+    runtime = _runtime(
+        store,
+        FakeOAuth(),
+        lambda request: httpx.Response(200),
+        definitions=[replace(PROVIDER, apps=(app,))],
+    )
+    now = datetime.now(UTC)
+    assert await runtime.poll_due(now) == []
+
+    assert store.sync[("demo", "demo", "poll:new:failures")] == "1"
+    assert store.sync[("demo", "demo", "poll:new:last_error")]
+    feed = await runtime.feed()
+    app = feed["apps"][0]
+    assert app["poll_failing"] is True
+    assert "retrying on its own" in app["poll_note"]
+
+
+@pytest.mark.asyncio
+async def test_a_healthy_poll_reads_as_checking_on_its_own() -> None:
+    connection = ProviderConnection(
+        provider="demo",
+        auth_mode="oauth",
+        access_token="token",
+        scopes="read",
+        status="active",
+    )
+    store = FakeStore(connection)
+    runtime = _runtime(store, FakeOAuth(), lambda request: httpx.Response(200))
+    results = await runtime.poll_due(datetime.now(UTC))
+    await runtime.commit_poll(results[0])
+
+    app = (await runtime.feed())["apps"][0]
+    assert app["poll_failing"] is False
+    assert app["poll_note"] == "Checking on its own."
+
+
+def test_the_reconcile_sweep_has_its_own_interval() -> None:
+    store = FakeStore()
+    runtime = _runtime(store, FakeOAuth(), lambda request: httpx.Response(200))
+    app = AppDefinition(
+        key="gmail",
+        name="Gmail",
+        provider="google",
+        scopes=("read",),
+        tools=(),
+        polls=(
+            PollDefinition(key="new_mail", every_minutes=5.0, handler=_poll),
+            PollDefinition(key="reconcile_mail", every_minutes=60.0, handler=_poll),
+        ),
+    )
+    runtime._config.providers.gmail.poll_minutes = 5.0
+    runtime._config.providers.gmail.reconcile_minutes = 60.0
+
+    assert runtime._poll_interval(app, app.polls[0]) == 5.0
+    assert runtime._poll_interval(app, app.polls[1]) == 60.0
+
+
+def test_scope_descriptions_are_plain_and_never_urls() -> None:
+    assert describe("https://www.googleapis.com/auth/gmail.readonly") == "read your mail"
+    assert describe("repo") == "your repositories, issues and pull requests"
+    unknown = describe("https://example.com/auth/strange")
+    assert "http" not in unknown
+    assert unknown == "an extra permission this app asks for"
+    assert describe_many(["repo", "repo", "notifications"]).startswith("your repositories")
+
+
+def test_a_narrower_grant_is_audited_as_missing() -> None:
+    provider, app = PROVIDER, APP
+    connection = ProviderConnection(
+        provider="demo",
+        auth_mode="oauth",
+        access_token="token",
+        scopes="read",
+        status="active",
+    )
+
+    requested, granted, missing = ProviderRuntime._scope_audit(provider, app, connection)
+
+    assert requested == ("read",)
+    assert granted == ("read",)
+    assert missing == ()
+
+
+async def test_a_missing_scope_is_named_in_plain_words_in_the_feed() -> None:
+    connection = ProviderConnection(
+        provider="demo",
+        auth_mode="oauth",
+        access_token="token",
+        scopes="read",
+        status="active",
+    )
+    store = FakeStore(connection)
+    gmail = replace(
+        APP,
+        scopes=("https://www.googleapis.com/auth/gmail.readonly",),
+    )
+    provider = replace(PROVIDER, apps=(gmail,))
+    runtime = _runtime(
+        store,
+        FakeOAuth(),
+        lambda request: httpx.Response(200),
+        definitions=[provider],
+    )
+
+    entry = (await runtime.feed())["apps"][0]
+    assert entry["missing_scopes"] == ("https://www.googleapis.com/auth/gmail.readonly",)
+    assert "read your mail" in entry["scope_note"]
+    assert "https://" not in entry["scope_note"]
+
+
+def test_a_token_connection_is_not_flagged_for_missing_scopes() -> None:
+    connection = ProviderConnection(
+        provider="demo",
+        auth_mode="token",
+        access_token="pat",
+        scopes="",
+        status="active",
+    )
+    provider, app = PROVIDER, APP
+
+    _, granted, missing = ProviderRuntime._scope_audit(provider, app, connection)
+
+    assert granted == ()
+    assert missing == ()
 
 
 class FakeSecrets:

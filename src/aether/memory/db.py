@@ -13,6 +13,7 @@ from ..config_validation import normalize_database_url
 log = logging.getLogger("aether.db")
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"
+ROLLBACK_DIR = MIGRATIONS_DIR / "rollback"
 
 Before = Callable[[str], Awaitable[None]]
 
@@ -56,3 +57,25 @@ async def run_migrations(pool: asyncpg.Pool, *, before: Before | None = None) ->
         log.info("applied migration %s", version)
         applied.append(version)
     return applied
+
+
+async def rollback_migration(pool: asyncpg.Pool, version: str) -> bool:
+    """Undo one applied migration from `migrations/rollback/<version>.sql`.
+
+    The forward runner never reads this directory — its globs are not
+    recursive — so a down script can sit beside the schema it undoes without
+    ever being applied by accident. The version row is removed by the script
+    itself, after the schema is restored.
+    """
+    path = ROLLBACK_DIR / f"{version}.sql"
+    if not path.is_file():
+        raise FileNotFoundError(f"no rollback script for {version}")
+    async with pool.acquire() as conn:
+        applied = await conn.fetchval("SELECT 1 FROM schema_migrations WHERE version = $1", version)
+    if applied is None:
+        return False
+    sql = path.read_text(encoding="utf-8")
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute(sql)
+    log.info("rolled back migration %s", version)
+    return True

@@ -1,0 +1,8 @@
+# Replace IDENTITY.md or SOUL.md.
+id: workspace.rewrite
+legacy: workspace_rewrite
+risk: write
+decision: allow
+provenance: owner
+core: false
+summary: Replace IDENTITY.md or SOUL.md.

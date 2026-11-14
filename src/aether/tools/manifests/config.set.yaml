@@ -1,0 +1,8 @@
+# Change one configuration setting.
+id: config.set
+legacy: set_config
+risk: write
+decision: allow
+provenance: owner
+core: false
+summary: Change one configuration setting.

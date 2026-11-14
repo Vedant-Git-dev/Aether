@@ -354,9 +354,37 @@ import use a passphrase.
 | `max_sandbox_minutes_per_day` | `20` | |
 | `notify_daily_cap` | `5` | Results delivered per day |
 | `skills` | `[followups, research, media]` | Unknown names are ignored |
-| `watches_enabled` | `true` | Mark matching arrivals for the agent; independent of `enabled` |
 | `reminders_enabled` | `true` | Due reminders, then one overdue escalation (needs `memory.enrichment` to have extracted the commitment) |
 | `poll_jitter` | `0.15` | Share by which poll intervals are spread |
+
+### `tools`
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `manifest_audit` | `enforce` | Every registered native tool must have a manifest under `src/aether/tools/manifests/`; `warn` logs and boots, `off` skips |
+
+A manifest declares the tool's risk, whether it may run without asking (`decision: allow` or `approval`), whether it needs the owner's own turn (`provenance: none` or `owner`), whether its schema always rides the prompt (`core`), and its prompt-index line. The handler, schema and description stay in code. Provider tools keep their declared effect, and MCP tools stay on the fail-safe ladder because their namespace is remote and dynamic.
+
+### `alerts`
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `enabled` | `true` | Check the alerts you set as things arrive |
+| `tell_window_hours` | `2` | A second note for the same alert inside this window is batched instead of pinging again |
+| `digest_minutes` | `30` | How long a digest-style alert collects matches before it speaks |
+| `daily_cap` | `12` | The most alert notifications that may land in one local day, all alerts |
+| `retry_minutes` | `5` | Spacing between retries of a failed send |
+| `max_attempts` | `3` | Tries one notification gets before it is dropped |
+| `action_cooldown_seconds` | `300` | A folded alert action runs once per window, however many events match |
+| `compose_wording` | `true` | Let the model phrase a notification from the matched facts; off uses the catalog sentences |
+| `compat_until` | `2027-02-11` | The day the `watches` compatibility view is dropped |
+
+Every gate is read live: a change applies on the next evaluation without a restart. A
+match never waits for a model to decide: code chooses immediate, digest, quiet-hours
+hold, suppression or retry. Wording is a separate step — with `compose_wording` on, the
+model phrases one sentence from the matched facts (title, sender, subject, count, the
+reminder's local time, never the raw payload or a tool); a provider failure falls back
+to the message catalog sentence. Off, every notification is the catalog sentence.
 
 ### `workbench`
 
@@ -384,7 +412,17 @@ import use a passphrase.
 | Key | Default | Notes |
 | --- | --- | --- |
 | `enabled` | `true` | Direct app connections |
-| `gmail.poll_minutes` | `5` | Gmail polling interval |
+| `gmail.poll_minutes` | `5` | Minutes between Gmail history polls |
+| `gmail.reconcile_minutes` | `60` | Minutes between the independent lookback sweep that fills any gap the history cursor missed |
+| `gmail.reconcile_lookback_hours` | `24` | How far back that sweep looks; wide enough to survive an outage |
+
+The app card also audits OAuth scopes: what the app asks for, what the grant
+actually holds, and — when the grant is narrower than the request — a plain sentence
+naming what is missing ("Aether still needs: read your mail") with an Add access button
+that reruns the sign-in for the full set. A token connection reports no scopes, so it is
+not flagged.
+
+A poll's cursor is committed only after its payload is durably ingested, so a crash re-reads the window; ingest dedups by the provider's own message id, so the repeat is invisible. Every poll records when it last ran, when it last succeeded and its consecutive failures, and the app card says plainly when a check is being retried.
 
 ---
 

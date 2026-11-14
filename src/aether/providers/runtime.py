@@ -16,9 +16,11 @@ from ..config import AppConfig
 from ..connectors.polling import next_poll_delay
 from ..connectors.registry import ToolRegistry
 from ..llm.types import WireSpec, with_plain_param
+from ..message_catalog import render as render_message
 from ..secret_env import EnvResolver
 from ..secret_store import SecretStore
 from .oauth import OAuthEngine
+from .scopes import describe_many
 from .store import ProviderStore
 from .types import (
     AppDefinition,
@@ -56,6 +58,21 @@ class ProviderContext:
         self.provider = provider
         self.app = app
         self.connection = connection
+        # cursor values a poll earns but must not commit before the caller
+        # has durably ingested the payload; the runtime owns the commit
+        self._pending: dict[str, str] = {}
+
+    def stage_sync(self, key: str, value: str) -> None:
+        self._pending[key] = value
+
+    @property
+    def pending(self) -> dict[str, str]:
+        return dict(self._pending)
+
+    @property
+    def app_settings(self) -> Any:
+        """This app's own knobs from the live config, or None."""
+        return getattr(self._runtime._config.providers, self.app.key, None)
 
     async def request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         base = self.app.api_base or self.provider.api_base
@@ -206,6 +223,9 @@ class ProviderRuntime:
                 setup_required = not configured or (
                     provider.default_auth_mode == "oauth" and not client_configured
                 )
+                requested_scopes, granted_scopes, missing_scopes = self._scope_audit(
+                    provider, app, connection
+                )
                 apps.append(
                     ProviderAppView(
                         key=app.key,
@@ -245,6 +265,24 @@ class ProviderRuntime:
                             else ""
                         ),
                         note=app.note,
+                        poll_note=(
+                            await self._poll_note(provider.key, app)
+                            if connection is not None and connection.status == "active"
+                            else ""
+                        ),
+                        poll_failing=await self._poll_failing(provider.key, app),
+                        requested_scopes=requested_scopes,
+                        granted_scopes=granted_scopes,
+                        missing_scopes=missing_scopes,
+                        scope_note=(
+                            render_message(
+                                "providers.scope_missing",
+                                locale=self._config.agent.locale,
+                                scopes=describe_many(missing_scopes),
+                            )
+                            if missing_scopes
+                            else ""
+                        ),
                     )
                 )
         return {
@@ -589,61 +627,154 @@ class ProviderRuntime:
             if connection is None or connection.status != "active":
                 continue
             for app in provider.apps:
-                poll = app.poll
-                if poll is None:
-                    continue
-                lock = self._locks.setdefault(f"poll:{app.key}", asyncio.Lock())
-                async with lock:
-                    interval = self._poll_interval(app)
-                    if interval <= 0:
-                        continue
-                    failures_raw = await self._store.get_sync(
-                        provider.key, app.key, f"poll:{poll.key}:failures"
-                    )
-                    try:
-                        failures = max(0, int(failures_raw or 0))
-                    except (TypeError, ValueError):
-                        failures = 0
-                    delay = next_poll_delay(
-                        interval,
-                        failures=failures,
-                        jitter=self._config.proactive.poll_jitter,
-                    )
-                    last_raw = await self._store.get_sync(
-                        provider.key, app.key, f"poll:{poll.key}:last"
-                    )
-                    last = _parse_time(last_raw)
-                    if last is not None and now < last + timedelta(minutes=delay):
-                        continue
-                    ctx = ProviderContext(self, provider, app, connection)
-                    try:
-                        payload = await poll.handler(ctx)
-                    except ProviderError as exc:
-                        log.warning("provider poll failed for %s: %s", app.key, exc)
-                        await self._set_poll_state(
-                            provider.key, app.key, poll.key, now, failures + 1
+                for poll in app.polls:
+                    lock = self._locks.setdefault(f"poll:{app.key}:{poll.key}", asyncio.Lock())
+                    async with lock:
+                        interval = self._poll_interval(app, poll)
+                        if interval <= 0:
+                            continue
+                        failures_raw = await self._store.get_sync(
+                            provider.key, app.key, f"poll:{poll.key}:failures"
                         )
-                        continue
-                    await self._set_poll_state(provider.key, app.key, poll.key, now, 0)
-                    if payload:
-                        results.append(
-                            PollResult(app=app.key, tool=f"{app.key}__{poll.key}", payload=payload)
+                        try:
+                            failures = max(0, int(failures_raw or 0))
+                        except (TypeError, ValueError):
+                            failures = 0
+                        delay = next_poll_delay(
+                            interval,
+                            failures=failures,
+                            jitter=self._config.proactive.poll_jitter,
                         )
+                        last_raw = await self._store.get_sync(
+                            provider.key, app.key, f"poll:{poll.key}:last"
+                        )
+                        last = _parse_time(last_raw)
+                        if last is not None and now < last + timedelta(minutes=delay):
+                            continue
+                        ctx = ProviderContext(self, provider, app, connection)
+                        try:
+                            payload = await poll.handler(ctx)
+                        except ProviderError as exc:
+                            log.warning("provider poll failed for %s: %s", app.key, exc)
+                            await self._set_poll_state(
+                                provider.key,
+                                app.key,
+                                poll.key,
+                                now,
+                                failures + 1,
+                                error=exc.plain,
+                            )
+                            continue
+                        await self._set_poll_state(provider.key, app.key, poll.key, now, 0)
+                        if payload:
+                            results.append(
+                                PollResult(
+                                    app=app.key,
+                                    tool=f"{app.key}__{poll.key}",
+                                    payload=payload,
+                                    poll_key=poll.key,
+                                    cursor=ctx.pending,
+                                )
+                            )
+                        elif ctx.pending:
+                            # nothing to deliver: the cursor can move now
+                            await self._commit_cursor(provider.key, app.key, ctx.pending)
         return results
 
+    async def commit_poll(self, result: PollResult) -> None:
+        """Move a poll's cursor after its payload is durably ingested.
+
+        A crash between the poll and the ingest leaves the cursor where it
+        was, so the next run re-reads the same window. Ingest dedups by the
+        provider's own message id, so the repeat is invisible.
+        """
+        if self._store is None or not result.poll_key or not result.cursor:
+            return
+        found = self._apps.get(result.app)
+        if found is None:
+            return
+        provider, _ = found
+        await self._commit_cursor(provider.key, result.app, result.cursor)
+
+    async def _commit_cursor(self, provider: str, app: str, cursor: dict[str, str]) -> None:
+        for key, value in cursor.items():
+            await self.set_sync(provider, app, key, value)
+
     async def _set_poll_state(
-        self, provider: str, app: str, key: str, now: datetime, failures: int
+        self,
+        provider: str,
+        app: str,
+        key: str,
+        now: datetime,
+        failures: int,
+        *,
+        error: str = "",
     ) -> None:
-        """One poll's two facts — when it last ran and how many times it has
-        failed in a row. Both are sealed values in the sync store."""
+        """One poll's facts — when it last ran and whether it is failing.
+
+        Values are sealed in the sync store. `last_error` carries the plain
+        sentence a provider gave, never a raw response body.
+        """
         assert self._store is not None
         await self._store.set_sync(provider, app, f"poll:{key}:last", now.isoformat())
         await self._store.set_sync(provider, app, f"poll:{key}:failures", str(max(0, failures)))
+        if failures == 0:
+            await self._store.set_sync(provider, app, f"poll:{key}:last_ok", now.isoformat())
+        elif error:
+            await self._store.set_sync(provider, app, f"poll:{key}:last_error", error)
 
-    def _poll_interval(self, app: AppDefinition) -> float:
-        if app.key == "gmail":
+    @staticmethod
+    def _scope_audit(
+        provider: ProviderDefinition,
+        app: AppDefinition,
+        connection: ProviderConnection | None,
+    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+        """Requested vs granted, with the gap the app card explains.
+
+        A token connection reports no scopes at all, and an OAuth row
+        written before scopes were recorded is empty too; neither is a
+        missing grant, so both read as "unknown" and produce no warning.
+        """
+        requested = tuple(dict.fromkeys((*app.scopes, *provider.base_scopes)))
+        if connection is None or connection.auth_mode != "oauth" or not connection.scopes:
+            return requested, (), ()
+        granted = tuple(dict.fromkeys(connection.scopes.split()))
+        missing = tuple(scope for scope in requested if scope not in granted)
+        return requested, granted, missing
+
+    async def _poll_failing(self, provider: str, app: AppDefinition) -> bool:
+        if self._store is None or not app.polls:
+            return False
+        for poll in app.polls:
+            raw = await self._store.get_sync(provider, app.key, f"poll:{poll.key}:failures")
+            try:
+                if int(raw or 0) > 0:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+
+    async def _poll_note(self, provider: str, app: AppDefinition) -> str:
+        """The plain sentence the app card shows about its own checks."""
+        if self._store is None or not app.polls:
+            return ""
+        locale = self._config.agent.locale
+        if await self._poll_failing(provider, app):
+            return render_message("providers.poll_retrying", locale=locale)
+        seen = False
+        for poll in app.polls:
+            if await self._store.get_sync(provider, app.key, f"poll:{poll.key}:last_ok"):
+                seen = True
+                break
+        key = "providers.poll_ok" if seen else "providers.poll_waiting"
+        return render_message(key, locale=locale)
+
+    def _poll_interval(self, app: AppDefinition, poll: Any) -> float:
+        if app.key == "gmail" and poll.key == "new_mail":
             return self._config.providers.gmail.poll_minutes
-        return app.poll.every_minutes if app.poll is not None else 0.0
+        if app.key == "gmail" and poll.key == "reconcile_mail":
+            return self._config.providers.gmail.reconcile_minutes
+        return poll.every_minutes
 
     # -- HTTP ---------------------------------------------------------------
 

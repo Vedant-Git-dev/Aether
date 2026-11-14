@@ -396,14 +396,57 @@ class ProactiveConfig(BaseModel):
     # which skills the worker may run; names not in the registry are ignored
     skills: list[str] = Field(default_factory=lambda: ["followups", "research", "media"])
     # -- the proactive path (plan.md section 6) --
-    # watches the user asked for. A match tags the event for the agent; it
-    # never sends a message itself. Runs independently of the worker above.
-    watches_enabled: bool = True
-    # due reminders (24h/2h/15m scaled by urgency, then one overdue)
+    # due commitment reminders (24h/2h/15m scaled by urgency, then one
+    # overdue). Event alerts live in `alerts` and run on their own switch.
     reminders_enabled: bool = True
     # polling spreads its checks by this share of the interval, so several
     # reconnects never hammer a provider in lockstep
     poll_jitter: float = Field(default=0.15, ge=0.0, le=0.5)
+
+
+class AlertsConfig(BaseModel):
+    """Alerts and reminders: what the deterministic notification path may
+    do, and how loudly.
+
+    A match never waits for a model. Code decides notify, digest or
+    suppress from these values; every one is editable in Settings and read
+    live, so a change bites on the next evaluation without a restart.
+    """
+
+    # the master switch for event alerts; a reminder the user asked for is
+    # their instruction and does not ride it (see ProactiveConfig)
+    enabled: bool = True
+    # a second immediate note for the same alert inside this window is
+    # folded into the next digest instead of pinging again
+    tell_window_hours: float = Field(default=2.0, ge=0.0)
+    # digest-style alerts batch until this much time has passed
+    digest_minutes: float = Field(default=30.0, ge=0.0)
+    # how many alert notifications may land in one local day, all alerts
+    daily_cap: int = Field(default=12, ge=1)
+    # a failed send is retried this often, up to max_attempts
+    retry_minutes: float = Field(default=5.0, ge=0.0)
+    max_attempts: int = Field(default=3, ge=1)
+    # a folded routine action runs once per this window, however many events
+    # match in a burst
+    action_cooldown_seconds: float = Field(default=300.0, ge=0.0)
+    # the decision to speak is code; this only lets the model phrase it from
+    # the matched facts. Off, every notification uses the catalog sentence.
+    compose_wording: bool = True
+    # the day the `watches` compatibility view is dropped; a panel reminder,
+    # never a silent migration
+    compat_until: str = "2027-02-11"
+
+
+class ToolsConfig(BaseModel):
+    """The tool namespace's own guard.
+
+    Every native tool declares its policy in a manifest. `enforce` refuses
+    to boot when a registered native tool has none, so a new tool cannot
+    quietly inherit a weaker rule than the one somebody wrote down; `warn`
+    logs it and boots; `off` skips the check.
+    """
+
+    manifest_audit: Literal["off", "warn", "enforce"] = "enforce"
 
 
 class WorkbenchConfig(BaseModel):
@@ -449,6 +492,11 @@ class ProviderAppConfig(BaseModel):
     """One direct provider app's local settings."""
 
     poll_minutes: float = 5.0
+    # the independent lookback sweep that closes any gap the history cursor
+    # missed; relies on message-id dedup, so re-reading is harmless
+    reconcile_minutes: float = 60.0
+    # how far back that sweep looks; wide enough to survive an outage
+    reconcile_lookback_hours: int = 24
 
 
 class ProvidersConfig(BaseModel):
@@ -470,6 +518,8 @@ class AppConfig(BaseModel):
     authz: AuthzConfig = Field(default_factory=AuthzConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     proactive: ProactiveConfig = Field(default_factory=ProactiveConfig)
+    alerts: AlertsConfig = Field(default_factory=AlertsConfig)
+    tools: ToolsConfig = Field(default_factory=ToolsConfig)
     workbench: WorkbenchConfig = Field(default_factory=WorkbenchConfig)
     media: MediaConfig = Field(default_factory=MediaConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)

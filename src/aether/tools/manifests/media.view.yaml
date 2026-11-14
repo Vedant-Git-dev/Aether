@@ -1,0 +1,8 @@
+# Look again at a stored image.
+id: media.view
+legacy: look_at_media
+risk: external
+decision: allow
+provenance: none
+core: false
+summary: Look again at a stored image.

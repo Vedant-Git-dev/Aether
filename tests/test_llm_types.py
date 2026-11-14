@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from aether.llm.anthropic_provider import (
+    AnthropicProvider,
     messages_to_anthropic,
     tools_to_anthropic,
     turn_from_anthropic,
@@ -21,6 +22,7 @@ from aether.llm.gemini_provider import (
     turn_from_gemini,
 )
 from aether.llm.groq_provider import GroqProvider
+from aether.llm.nvidia_provider import NvidiaProvider
 from aether.llm.openai_provider import (
     OpenAIProvider,
     messages_to_openai,
@@ -33,6 +35,7 @@ from aether.llm.types import (
     Message,
     ToolCall,
     ToolResult,
+    Usage,
     VideoBlock,
     WireSpec,
 )
@@ -53,6 +56,9 @@ def test_anthropic_user_text_and_image() -> None:
                 {
                     "type": "image",
                     "source": {"type": "base64", "media_type": "image/png", "data": "abc"},
+                    # the message-layer cache breakpoint: the reusable prefix
+                    # ends at the last block of the last message
+                    "cache_control": {"type": "ephemeral"},
                 },
             ],
         }
@@ -82,7 +88,13 @@ def test_anthropic_assistant_tool_use_round_trips_thinking() -> None:
     assert out[0]["content"] == [
         thinking,
         {"type": "text", "text": "plan"},
-        {"type": "tool_use", "id": "t1", "name": "search", "input": {"q": "x"}},
+        {
+            "type": "tool_use",
+            "id": "t1",
+            "name": "search",
+            "input": {"q": "x"},
+            "cache_control": {"type": "ephemeral"},
+        },
     ]
 
 
@@ -100,6 +112,7 @@ def test_anthropic_tool_results_ride_in_user_message() -> None:
                     "tool_use_id": "t1",
                     "content": [{"type": "text", "text": "found"}],
                     "is_error": True,
+                    "cache_control": {"type": "ephemeral"},
                 }
             ],
         }
@@ -114,7 +127,12 @@ def test_anthropic_empty_messages_are_dropped() -> None:
 def test_anthropic_tools_shape() -> None:
     spec = WireSpec(name="search", description="Search memory", input_schema={"type": "object"})
     assert tools_to_anthropic([spec]) == [
-        {"name": "search", "description": "Search memory", "input_schema": {"type": "object"}}
+        {
+            "name": "search",
+            "description": "Search memory",
+            "input_schema": {"type": "object"},
+            "cache_control": {"type": "ephemeral"},
+        }
     ]
 
 
@@ -492,3 +510,111 @@ async def test_openai_still_sends_its_token_cap() -> None:
     await provider.complete("sys", [Message.user("hi")], [])
     assert client.kwargs is not None
     assert client.kwargs["max_completion_tokens"] == 16000
+
+
+# ---------------------------------------------------------------------------
+# Usage and prompt caching
+# ---------------------------------------------------------------------------
+
+
+def test_anthropic_usage_is_read_including_cache_numbers() -> None:
+    response = SimpleNamespace(
+        content=[],
+        stop_reason="end_turn",
+        usage=SimpleNamespace(
+            input_tokens=100,
+            output_tokens=20,
+            cache_read_input_tokens=80,
+            cache_creation_input_tokens=10,
+        ),
+    )
+    turn = turn_from_anthropic(response)
+    assert turn.usage == Usage(
+        input_tokens=100,
+        output_tokens=20,
+        cache_read_tokens=80,
+        cache_write_tokens=10,
+    )
+
+
+def test_openai_usage_is_read_including_cached_tokens() -> None:
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="hi", tool_calls=[]))],
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=20,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=64),
+        ),
+    )
+    turn = turn_from_openai(response)
+    assert turn.usage == Usage(input_tokens=100, output_tokens=20, cache_read_tokens=64)
+
+
+def test_gemini_usage_is_read_including_cached_content() -> None:
+    candidate = SimpleNamespace(
+        content=SimpleNamespace(parts=[SimpleNamespace(text="hi", function_call=None)]),
+        finish_reason="STOP",
+    )
+    response = SimpleNamespace(
+        candidates=[candidate],
+        usage_metadata=SimpleNamespace(
+            prompt_token_count=100,
+            candidates_token_count=20,
+            cached_content_token_count=64,
+        ),
+    )
+    turn = turn_from_gemini(response)
+    assert turn.usage == Usage(input_tokens=100, output_tokens=20, cache_read_tokens=64)
+
+
+def test_missing_usage_reads_as_zero_not_a_crash() -> None:
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="hi", tool_calls=[]))],
+        usage=None,
+    )
+    assert turn_from_openai(response).usage == Usage()
+
+
+async def test_anthropic_sends_system_as_a_cache_breakpoint() -> None:
+    class FakeMessages:
+        def __init__(self) -> None:
+            self.kwargs: dict = {}
+
+        async def create(self, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(content=[], stop_reason="end_turn", usage=None)
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.messages = FakeMessages()
+
+    client = FakeClient()
+    provider = AnthropicProvider(client, "claude-sonnet-5")
+    await provider.complete("a stable prefix", [Message.user("hi")], [])
+
+    assert client.messages.kwargs["system"] == [
+        {"type": "text", "text": "a stable prefix", "cache_control": {"type": "ephemeral"}}
+    ]
+
+
+async def test_nvidia_never_sends_a_prompt_cache_key() -> None:
+    class FakeCompletions:
+        def __init__(self) -> None:
+            self.kwargs: dict = {}
+
+        async def create(self, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="hi", tool_calls=[]))],
+                usage=None,
+            )
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    client = FakeClient()
+    provider = NvidiaProvider(client, "nvidia/model")
+    await provider.complete("system", [Message.user("hi")], [])
+
+    assert "prompt_cache_key" not in client.chat.completions.kwargs

@@ -1,0 +1,8 @@
+# Run a tool call at a future time.
+id: schedule.create
+legacy: schedule_action
+risk: write
+decision: allow
+provenance: none
+core: false
+summary: Run a tool call at a future time.

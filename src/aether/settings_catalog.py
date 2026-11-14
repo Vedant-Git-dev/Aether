@@ -279,11 +279,6 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
                 hint="Whether Aether looks for useful things to do on its own, within these caps.",
             ),
             FieldSpec(
-                path="proactive.watches_enabled",
-                label="Watches",
-                hint="Whether the things you asked to watch are marked for Aether as they arrive.",
-            ),
-            FieldSpec(
                 path="proactive.reminders_enabled",
                 label="Commitment reminders",
                 hint="Remind you before something you owe falls due, and once after it is overdue.",
@@ -314,6 +309,50 @@ SETTINGS_GROUPS: tuple[GroupSpec, ...] = (
                 label="Daily result cap",
                 hint="The most result notifications one day carries — quiet hours "
                 "ride their own budget.",
+            ),
+        ),
+    ),
+    GroupSpec(
+        key="alerts",
+        title="Alerts",
+        note="A match never waits for a model: code decides, code sends.",
+        fields=(
+            FieldSpec(
+                path="alerts.enabled",
+                label="Alerts",
+                hint="Whether the alerts you set are checked as things arrive.",
+            ),
+            FieldSpec(
+                path="alerts.tell_window_hours",
+                label="Repeat window",
+                hint="After telling you about an alert, fold a second note into "
+                "the next batch for this many hours instead of pinging again.",
+            ),
+            FieldSpec(
+                path="alerts.digest_minutes",
+                label="Digest window",
+                hint="How long a digest-style alert collects matches before it speaks.",
+            ),
+            FieldSpec(
+                path="alerts.daily_cap",
+                label="Daily notification cap",
+                hint="The most alert notifications that may land in one day, all alerts.",
+            ),
+            FieldSpec(
+                path="alerts.retry_minutes",
+                label="Retry spacing",
+                hint="How long to wait before trying a failed alert send again.",
+            ),
+            FieldSpec(
+                path="alerts.max_attempts",
+                label="Retry limit",
+                hint="How many tries one notification gets before it is dropped.",
+            ),
+            FieldSpec(
+                path="alerts.compose_wording",
+                label="Natural wording",
+                hint="Let the model phrase a notification from the facts it "
+                "already matched. Off uses the fixed sentences instead.",
             ),
         ),
     ),

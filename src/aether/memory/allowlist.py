@@ -77,7 +77,7 @@ PLAINTEXT_ALLOWLIST: dict[str, frozenset[str]] = {
     ),
     "connector_cursors": frozenset({"source", "key_version"}),
     "agent_settings": frozenset({"id", "updated_at", "key_version"}),
-    "routines": frozenset(
+    "routines_legacy": frozenset(
         {
             "id",
             "enabled",
@@ -86,6 +86,23 @@ PLAINTEXT_ALLOWLIST: dict[str, frozenset[str]] = {
             "last_fired_at",
             "created_at",
             "key_version",
+        }
+    ),
+    "alert_notifications": frozenset(
+        {
+            "id",
+            "alert_id",
+            "event_id",
+            "status",
+            "style",
+            "reason",
+            "urgent",
+            "attempts",
+            "next_try_at",
+            "key_token",
+            "key_version",
+            "created_at",
+            "updated_at",
         }
     ),
     "decision_traces": frozenset({"id", "kind", "created_at", "key_version"}),
@@ -188,12 +205,13 @@ PLAINTEXT_ALLOWLIST: dict[str, frozenset[str]] = {
             "key_version",
         }
     ),
-    "watches": frozenset(
+    "alerts": frozenset(
         {
             "id",
             "scope_token",
             "channel",
             "status",
+            "converted_from",
             "last_event_id",
             "last_run_at",
             "last_notified_at",
@@ -238,7 +256,7 @@ SEALED_COLUMNS: dict[str, frozenset[str]] = {
     "pending_approvals": frozenset({"params_enc", "rules_matched_enc", "note_enc"}),
     "scheduled_actions": frozenset({"payload_enc", "meta_enc"}),
     "agent_settings": frozenset({"personality_enc"}),
-    "routines": frozenset({"label_enc", "trigger_enc", "action_enc"}),
+    "routines_legacy": frozenset({"label_enc", "trigger_enc", "action_enc"}),
     "decision_traces": frozenset({"label_enc", "trace_enc"}),
     "config_overrides": frozenset({"value_enc"}),
     "oauth_tokens": frozenset({"access_enc", "refresh_enc"}),
@@ -264,7 +282,8 @@ SEALED_COLUMNS: dict[str, frozenset[str]] = {
     "connector_cursors": frozenset({"last_seen_enc"}),
     "facts": frozenset({"body_enc"}),
     "commitments": frozenset({"body_enc"}),
-    "watches": frozenset({"spec_enc"}),
+    "alerts": frozenset({"spec_enc", "origin_enc"}),
+    "alert_notifications": frozenset({"event_enc"}),
     "summaries": frozenset({"body_enc"}),
     "focus": frozenset({"state_enc"}),
     "conclusions": frozenset({"value_enc"}),

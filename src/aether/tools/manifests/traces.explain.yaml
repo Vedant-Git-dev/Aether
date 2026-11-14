@@ -1,0 +1,8 @@
+# Replay why an action happened.
+id: traces.explain
+legacy: explain_decision
+risk: read
+decision: allow
+provenance: none
+core: false
+summary: Replay why an action happened.

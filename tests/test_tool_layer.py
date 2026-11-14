@@ -169,28 +169,31 @@ def test_a_user_rule_still_matches_the_old_name_of_a_renamed_tool() -> None:
 
 def test_the_policy_sees_new_internal_names_as_internal() -> None:
     policy = Policy([])
-    assert policy.classify("routines__delete", internal=True).decision is Decision.ALLOW
-    assert policy.classify("routines__delete", internal=True).matched_rule == "builtin:internal"
+    assert policy.classify("alerts__delete", internal=True).decision is Decision.ALLOW
+    assert policy.classify("alerts__delete", internal=True).matched_rule == "builtin:internal"
     assert (
-        policy.classify("alerts__create", {"basis": "ping me"}, internal=True).matched_rule
+        policy.classify("alerts__create", {"scope": "mail"}, internal=True).matched_rule
         == "builtin:internal"
     )
     # the same name without the registry's word is just a risky verb — an
-    # MCP server called routines must never inherit Aether's own trust
-    assert policy.classify("routines__delete", internal=False).decision is (
-        Decision.REQUIRE_APPROVAL
-    )
+    # MCP server called alerts must never inherit Aether's own trust
+    assert policy.classify("alerts__delete", internal=False).decision is (Decision.REQUIRE_APPROVAL)
 
 
-def test_an_unquoted_alert_create_parks_for_the_user() -> None:
+def test_an_alert_offer_parks_for_the_user() -> None:
     policy = Policy([])
 
-    offered = policy.classify("alerts__create", {"scope": "mail"}, internal=True)
-    armed = policy.classify("alerts__create", {"basis": "ping me"}, internal=True)
+    offered = policy.classify("alerts__offer", {"scope": "mail"}, internal=True)
+    direct = policy.classify(
+        "alerts__create", {"title": "landlord", "scope": "mail"}, internal=True
+    )
 
+    # an offer is always a card: no path arms a spotted alert silently
     assert offered.decision is Decision.REQUIRE_APPROVAL
     assert offered.matched_rule == "builtin:alert-offer"
-    assert armed.decision is Decision.ALLOW
+    # a direct create does not park here — the tool layer reads the turn's
+    # provenance, so content that was read can never arm one
+    assert direct.decision is Decision.ALLOW
 
 
 def test_an_alert_tool_is_registered_as_internal() -> None:
@@ -208,10 +211,10 @@ def test_an_alert_tool_is_registered_as_internal() -> None:
             description="Set an alert.",
             risk="write",
             raw_schema={"type": "object", "properties": {}},
-            aliases=("watches__create",),
+            aliases=("alerts__create",),
         ),
         handler,
     )
 
     assert registry.is_internal("alerts__create") is True
-    assert registry.is_internal("watches__create") is True
+    assert registry.is_internal("alerts__delete") is False  # not on this spec

@@ -1,0 +1,8 @@
+# Keep a relationship note about a person.
+id: memory.note
+legacy: note_entity
+risk: write
+decision: allow
+provenance: none
+core: false
+summary: Keep a relationship note about a person.

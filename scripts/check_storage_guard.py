@@ -43,6 +43,9 @@ from aether.memory.allowlist import (  # noqa: E402
 SQL_MODULES = frozenset(
     {
         "src/aether/agent/settings.py",
+        "src/aether/alerts/migrate.py",
+        "src/aether/alerts/notifications.py",
+        "src/aether/alerts/store.py",
         "src/aether/agent/traces.py",
         "src/aether/api/routes.py",
         "src/aether/authz/approvals.py",
@@ -67,12 +70,10 @@ SQL_MODULES = frozenset(
         "src/aether/memory/storage.py",
         "src/aether/memory/summaries.py",
         "src/aether/memory/vectors.py",
-        "src/aether/memory/watches.py",
         "src/aether/proactive/path.py",
         "src/aether/proactive/store.py",
         "src/aether/providers/rotate_tokens.py",
         "src/aether/providers/store.py",
-        "src/aether/routines/store.py",
         "src/aether/scheduler/jobs.py",
         "src/aether/secret_store.py",
         "src/aether/workbench/minutes.py",

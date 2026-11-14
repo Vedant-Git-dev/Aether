@@ -1,0 +1,8 @@
+# Load the full schemas for tool names.
+id: tools.load
+legacy: load_tools
+risk: read
+decision: allow
+provenance: none
+core: true
+summary: Load the full schemas for tool names.

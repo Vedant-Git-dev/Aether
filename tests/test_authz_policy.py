@@ -39,10 +39,11 @@ def test_internal_tools_are_allowed() -> None:
         "share_media",
         "get_pending_approvals",
         "send_chat_message",
-        "create_routine",
-        "list_routines",
-        "set_routine_enabled",
-        "delete_routine",
+        "list_alerts",
+        "create_alert",
+        "offer_alert",
+        "update_alert",
+        "delete_alert",
         "explain_decision",
         "verify_integrity",
         "get_config",
@@ -100,15 +101,24 @@ def test_internal_prefix_does_not_swallow_mcp_namespaced_tools() -> None:
         assert ruling.decision is Decision.REQUIRE_APPROVAL, name  # "delete" still wins
 
 
-def test_routine_management_beats_the_risky_verbs() -> None:
-    """delete_routine and create_routine carry risky verb stems — they may
-    only pass because `builtin:internal` is checked before `builtin:risky`.
-    If the classifier is ever reordered, this is the test that notices."""
+def test_alert_management_beats_the_risky_verbs() -> None:
+    """delete_alert carries a risky verb stem — it may only pass because
+    `builtin:internal` is checked before `builtin:risky`. If the classifier
+    is ever reordered, this is the test that notices."""
     policy = Policy([])
-    for name in ("create_routine", "delete_routine"):
+    for name in ("create_alert", "delete_alert", "update_alert", "list_alerts"):
         ruling = policy.classify(name)
         assert ruling.decision is Decision.ALLOW, name
         assert ruling.matched_rule == "builtin:internal"
+
+
+def test_an_alert_offer_always_asks() -> None:
+    """An alert Aether spotted itself is a card, whatever the turn."""
+    policy = Policy([])
+    for name in ("offer_alert", "alerts__offer"):
+        ruling = policy.classify(name, internal=True)
+        assert ruling.decision is Decision.REQUIRE_APPROVAL, name
+        assert ruling.matched_rule == "builtin:alert-offer"
 
 
 def test_risky_tools_require_approval() -> None:
@@ -243,6 +253,9 @@ def test_set_config_tuning_paths_are_allowed() -> None:
         "proactive.max_sandbox_minutes_per_day",
         "proactive.notify_daily_cap",
         "proactive.skills",
+        "alerts.enabled",
+        "alerts.daily_cap",
+        "alerts.digest_minutes",
         "workbench.provider",
         "workbench.monthly_minutes_cap",
         "workbench.job_timeout_minutes",

@@ -1,0 +1,8 @@
+# Read the current configuration.
+id: config.get
+legacy: get_config
+risk: read
+decision: allow
+provenance: none
+core: false
+summary: Read the current configuration.

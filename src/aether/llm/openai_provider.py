@@ -19,6 +19,7 @@ from .types import (
     ToolCall,
     ToolResult,
     Turn,
+    Usage,
     VideoBlock,
     WireSpec,
 )
@@ -121,7 +122,34 @@ def turn_from_openai(response: Any) -> Turn:
         text=getattr(message, "content", None) or "",
         tool_calls=calls,
         stop_reason=reason,
+        usage=_usage_from_openai(getattr(response, "usage", None)),
     )
+
+
+def _usage_from_openai(usage: Any) -> Usage:
+    """The OpenAI-compatible usage shape, tolerated as an object or a dict.
+
+    Groq, Ollama and NVIDIA all speak this shape; only some report cached
+    tokens. A missing or malformed number reads as zero, never a crash.
+    """
+    if usage is None:
+        return Usage()
+    cached = _number(usage, "prompt_tokens_details", "cached_tokens")
+    return Usage(
+        input_tokens=_number(usage, "prompt_tokens"),
+        output_tokens=_number(usage, "completion_tokens"),
+        cache_read_tokens=cached,
+    )
+
+
+def _number(usage: Any, name: str, nested: str | None = None) -> int:
+    value = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+    if nested is not None:
+        value = value.get(nested) if isinstance(value, dict) else getattr(value, nested, None)
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 class OpenAIProvider:

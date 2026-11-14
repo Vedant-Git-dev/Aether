@@ -25,7 +25,6 @@ from fakes import (
     FakeEventStore,
     FakeProvider,
     FakeRegistry,
-    FakeRoutines,
     FakeSalience,
     FakeScheduler,
     FakeSurfaceConnector,
@@ -44,6 +43,7 @@ from aether.agent.loop import (
 )
 from aether.agent.prompts import SYSTEM_PROMPT
 from aether.agent.tools import register_native_tools
+from aether.alerts.spec import AlertSpec
 from aether.authz.approvals import APPROVED, DENIED
 from aether.authz.audit import ChainVerification
 from aether.authz.policy import Policy
@@ -63,6 +63,7 @@ from aether.llm.types import ImageBlock, ToolCall, ToolResult, Turn, WireSpec
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.events import Event, IngestResult
 from aether.memory.vectors import MemoryHit
+from aether.origin import owner_message, use_origin
 from aether.proactive.path import DueReminder
 from aether.providers.types import ConnectResult, PollResult
 from aether.scheduler.jobs import ScheduledAction
@@ -129,6 +130,7 @@ class FakeProviderRuntime:
         self.polls = list(polls or [])
         self.connect_calls: list[str] = []
         self.poll_calls = 0
+        self.committed: list[PollResult] = []
 
     async def feed(self) -> dict:
         return {"configured": True, "apps": list(self.apps), "providers": []}
@@ -145,6 +147,9 @@ class FakeProviderRuntime:
         results = list(self.polls)
         self.polls = []
         return results
+
+    async def commit_poll(self, result: PollResult) -> None:
+        self.committed.append(result)
 
 
 class LoopKit:
@@ -177,7 +182,6 @@ class LoopKit:
         self.salience = FakeSalience()
         self.context = FakeContextBuilder()
         self.scheduler = FakeScheduler()
-        self.routines = FakeRoutines()
         self.traces = FakeTraces()
         self.connector = FakeSurfaceConnector()
         self.capture_box = CaptureRequestBox()
@@ -196,7 +200,6 @@ class LoopKit:
             capture_box=self.capture_box,
             config=config or AppConfig(),
             host=None,
-            routines=self.routines,
             traces=self.traces,
             agent_settings=agent_settings,
             config_manager=config_manager,
@@ -738,32 +741,37 @@ async def test_the_web_panel_decide_path_carries_out_a_fresh_approval() -> None:
     assert any("Sent the email" in s for s in kit.connector.sent)
 
 
-async def test_an_unquoted_alert_create_parks_and_arms_only_on_approval() -> None:
-    class FakeAlertPath:
+async def test_an_alert_offer_parks_and_arms_only_on_approval() -> None:
+    class FakeAlerts:
         def __init__(self) -> None:
             self.created: list = []
 
-        async def create_watch(self, spec, *, origin: str):
+        async def create(self, spec, origin):
+            if not origin.may_mutate:
+                return "Only you can change your alerts."
             self.created.append(spec)
-            return SimpleNamespace(id=1, spec=spec, label=spec.label, status="active")
+            return f"Alert set: {spec.title}."
 
-        async def list_watches(self, limit: int = 50):
-            return []
+        async def sections(self, limit: int = 30) -> str:
+            return "Nothing is set."
 
-        async def get_watch(self, watch_id: int):
+        async def get(self, alert_id: int):
             return None
 
-        async def update_watch(self, watch_id: int, spec, *, origin: str):
-            return None
+        def refusal(self, key: str, **params) -> str:
+            return key
 
-        async def set_watch_enabled(self, watch_id: int, enabled: bool, *, origin: str):
-            return None
+        async def set_enabled(self, alert_id: int, enabled: bool, origin):
+            return ""
 
-        async def delete_watch(self, watch_id: int, *, origin: str) -> bool:
-            return False
+        async def update(self, alert_id: int, spec, origin):
+            return ""
+
+        async def remove(self, alert_id: int, origin):
+            return ""
 
     kit = LoopKit(None)
-    path = FakeAlertPath()
+    path = FakeAlerts()
     register_native_tools(
         registry=kit.tools,
         events=kit.events,
@@ -772,29 +780,134 @@ async def test_an_unquoted_alert_create_parks_and_arms_only_on_approval() -> Non
         scheduler=kit.scheduler,
         surfaces=kit.loop._surfaces,
         capture_box=kit.capture_box,
-        proactive_path=path,
-        alert_basis=kit.loop.alert_basis,
+        alerts=path,
     )
 
     result = await kit.loop._execute(
         ToolCall(
             id="t1",
-            name="alerts__create",
-            arguments={"scope": "mail", "description": "offer letter"},
+            name="alerts__offer",
+            arguments={"title": "Offer letter", "scope": "mail", "contains": "offer letter"},
         )
     )
 
     assert result.content.startswith("held for approval")
     approval = kit.approvals.created[0]
-    assert approval.tool_name == "alerts__create"
+    assert approval.tool_name == "alerts__offer"
 
     approval.status = APPROVED
     kit.approvals.result = approval
     await kit.loop.decide(approval.id, "approve")
 
     assert len(path.created) == 1
-    assert path.created[0].description == "offer letter"
+    assert path.created[0].contains == "offer letter"
     assert kit.approvals.executed == [approval.id]
+
+
+async def test_a_direct_alert_create_on_an_unprompted_turn_is_refused() -> None:
+    calls: list = []
+
+    class FakeAlerts:
+        async def create(self, spec, origin):
+            calls.append(spec)
+            return "should not run"
+
+    kit = LoopKit(None)
+    register_native_tools(
+        registry=kit.tools,
+        events=kit.events,
+        entities=None,
+        approvals=kit.approvals,
+        scheduler=kit.scheduler,
+        surfaces=kit.loop._surfaces,
+        capture_box=kit.capture_box,
+        alerts=FakeAlerts(),
+    )
+
+    trace: list[dict] = []
+    result = await kit.loop._execute(
+        ToolCall(id="t1", name="alerts__create", arguments={"title": "x", "scope": "mail"}),
+        trace=trace,
+    )
+
+    # the manifest's owner provenance refuses before the handler runs
+    assert result.content == (
+        "Only you can do that — I won't do it from a message I read or a feed I polled."
+    )
+    assert result.is_error is True
+    assert result.status == "refused"
+    assert trace[0]["status"] == "refused"
+    assert calls == []
+    assert kit.approvals.created == []
+
+    # the same call on the owner's own turn reaches the handler
+    with use_origin(owner_message({"message_ids": ["m-1"]})):
+        allowed = await kit.loop._execute(
+            ToolCall(id="t2", name="alerts__create", arguments={"title": "x", "scope": "mail"})
+        )
+    assert allowed.content == "should not run"
+    assert len(calls) == 1
+
+
+async def test_update_alert_merges_only_the_fields_given() -> None:
+    class FakeAlerts:
+        def __init__(self) -> None:
+            self.spec = None
+            self.removed: list[int] = []
+
+        async def get(self, alert_id: int):
+            return SimpleNamespace(
+                id=alert_id,
+                spec=AlertSpec(title="old", scope="mail", description="loose words", contains=""),
+            )
+
+        async def update(self, alert_id: int, spec, origin) -> str:
+            self.spec = spec
+            return "Updated."
+
+        async def set_enabled(self, alert_id: int, enabled: bool, origin) -> str:
+            return "Paused."
+
+        async def remove(self, alert_id: int, origin) -> str:
+            self.removed.append(alert_id)
+            return "Removed."
+
+        def refusal(self, key: str, **params) -> str:
+            if key == "alerts.needs_id":
+                return "Tell me which alert — list them first."
+            return key
+
+    alerts = FakeAlerts()
+    kit = LoopKit(None)
+    register_native_tools(
+        registry=kit.tools,
+        events=kit.events,
+        entities=None,
+        approvals=kit.approvals,
+        scheduler=kit.scheduler,
+        surfaces=kit.loop._surfaces,
+        capture_box=kit.capture_box,
+        alerts=alerts,
+    )
+
+    with use_origin(owner_message()):
+        result = await kit.loop._execute(
+            ToolCall(
+                id="t1",
+                name="alerts__update",
+                arguments={"alert_id": 3, "contains": "invoice"},
+            )
+        )
+        missing = await kit.loop._execute(ToolCall(id="t2", name="alerts__delete", arguments={}))
+
+    assert result.content == "Updated."
+    assert alerts.spec.title == "old"  # omitted fields stay
+    assert alerts.spec.scope == "mail"
+    assert alerts.spec.contains == "invoice"
+    # the loose legacy description no longer matches words the user replaced
+    assert alerts.spec.description == ""
+    assert missing.content == "Tell me which alert — list them first."
+    assert alerts.removed == []
 
 
 async def test_a_stale_web_decide_touches_nothing() -> None:
@@ -1460,15 +1573,15 @@ async def test_new_events_become_scored_observations() -> None:
     assert any("[new event]" in m.text and "poll:unread" in m.text for m in messages)
 
 
-async def test_a_watch_match_rides_the_observation_as_plain_context() -> None:
+async def test_an_alert_match_rides_the_observation_as_plain_context() -> None:
     kit = LoopKit(None)
     event = _event(1)
-    event.meta["watch_labels"] = ["urgent mail"]
+    event.meta["alert_matches"] = ["urgent mail"]
 
     line = kit.loop._event_line(event)
 
-    assert 'the user asked to be told about this ("urgent mail")' in line
-    assert "watch_labels" not in line
+    assert 'an alert matched this ("urgent mail")' in line
+    assert "alert_matches" not in line
 
 
 async def test_a_due_reminder_becomes_an_agent_written_message() -> None:
@@ -1697,22 +1810,22 @@ async def test_held_notes_ship_as_one_message_when_the_window_ends() -> None:
     assert kit.loop._held == []
 
 
-async def test_a_routine_acts_at_night_but_its_note_waits() -> None:
-    # a taught routine is solicited by the teaching — its action still runs
-    # during quiet hours; only the meta-commentary about the fire waits
-    kit = _quiet_kit(None)
+async def test_an_alert_action_runs_through_the_gate_and_records_a_trace() -> None:
+    kit = LoopKit(None)
     kit.add_tool("note_entity", result="noted")
-    kit.routines.add(
-        label="billing",
-        trigger={"source": "mail"},
-        action={"type": "tool", "tool": "note_entity", "params": {"note": "invoice"}},
+    alert = SimpleNamespace(
+        id=3,
+        title="billing",
+        spec=SimpleNamespace(action={"tool": "note_entity", "params": {"note": "invoice"}}),
     )
-    kit.events.events[1] = _event(1)
-    await kit.loop._tick()
 
+    ran = await kit.loop._run_alert_action(alert, _event(1))
+
+    assert ran is True
     assert kit.executed == [("note_entity", {"note": "invoice"})]
-    assert kit.connector.sent == []
-    assert any("routine" in h and "billing" in h for h in kit.loop._held)
+    payload = kit.traces.created[-1]["payload"]
+    assert payload["alert"] == {"id": 3, "title": "billing"}
+    assert "calls" in payload
 
 
 # ---------------------------------------------------------------------------
@@ -2168,19 +2281,24 @@ async def test_a_carried_out_approval_speaks_after_the_record_is_complete() -> N
     assert kit.connector.sent[-1].startswith("Sent the email (to a@b.c")
 
 
-async def test_a_routine_fire_records_where_its_ping_landed() -> None:
-    kit = LoopKit(None)  # routines fire before any LLM turn
-    kit.add_tool("note_entity", result="noted")
-    kit.routines.add(
-        label="billing",
-        trigger={"source": "mail"},
-        action={"type": "tool", "tool": "note_entity", "params": {"note": "invoice"}},
+async def test_an_alert_action_that_parks_records_the_approval() -> None:
+    kit = LoopKit(None)
+    kit.add_tool("mail__send_message", result="sent")
+    alert = SimpleNamespace(
+        id=4,
+        title="forward it",
+        spec=SimpleNamespace(
+            action={"tool": "mail__send_message", "params": {"to": "a@b.c", "body": "hi"}}
+        ),
     )
-    kit.events.events[1] = _event(1)
-    await kit.loop._tick()
 
+    ran = await kit.loop._run_alert_action(alert, _event(1))
+
+    # a folded action is a call like any other: it parked, and the trace says so
+    assert ran is False
+    assert kit.approvals.created[0].tool_name == "mail__send_message"
     payload = kit.traces.created[-1]["payload"]
-    assert payload["chat_refs"] == {"fake": "m1"}
+    assert payload["calls"][0]["approval_id"] == kit.approvals.created[0].id
 
 
 # ---------------------------------------------------------------------------
@@ -3030,19 +3148,19 @@ async def test_the_direct_provider_callback_asks_the_gates_question() -> None:
 
 async def test_provider_polls_are_filtered_audited_and_ingested() -> None:
     mail_filter = FakeMailFilter()
-    runtime = FakeProviderRuntime(
-        polls=[
-            PollResult(
-                app="gmail",
-                tool="gmail__new_mail",
-                payload={"successful": True, "data": {"messages": [{"id": "m1"}]}},
-            )
-        ]
+    poll = PollResult(
+        app="gmail",
+        tool="gmail__new_mail",
+        payload={"successful": True, "data": {"messages": [{"id": "m1"}]}},
+        poll_key="new_mail",
+        cursor={"history_id": "102"},
     )
+    runtime = FakeProviderRuntime(polls=[poll])
     kit = LoopKit(None, provider_runtime=runtime, mail_filter=mail_filter)
 
     await kit.loop._run_due_provider_polls()
 
+    assert runtime.committed == [poll]
     assert mail_filter.calls
     assert mail_filter.calls[0][0] == "gmail__new_mail"
     assert kit.audit.entries[-1]["tool_name"] == "gmail__new_mail"
@@ -3055,6 +3173,29 @@ async def test_provider_polls_are_filtered_audited_and_ingested() -> None:
             "sender": None,
         }
     ]
+
+
+async def test_a_failed_ingest_leaves_the_poll_cursor_alone() -> None:
+    poll = PollResult(
+        app="gmail",
+        tool="gmail__new_mail",
+        payload={"successful": True, "data": {"messages": [{"id": "m1"}]}},
+        poll_key="new_mail",
+        cursor={"history_id": "102"},
+    )
+    runtime = FakeProviderRuntime(polls=[poll])
+    kit = LoopKit(None, provider_runtime=runtime)
+
+    async def boom(result):
+        raise RuntimeError("the store is down")
+
+    kit.loop._consume_poll_result = boom  # type: ignore[method-assign]
+
+    await kit.loop._run_due_provider_polls()
+
+    # no commit: the next poll re-reads the same window, and message-id
+    # dedup makes the repeat harmless
+    assert runtime.committed == []
 
 
 async def test_the_status_names_a_connected_direct_provider() -> None:

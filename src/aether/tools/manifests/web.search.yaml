@@ -1,0 +1,8 @@
+# Search the web for current information.
+id: web.search
+legacy: web_search
+risk: external
+decision: allow
+provenance: none
+core: false
+summary: Search the web for current information.

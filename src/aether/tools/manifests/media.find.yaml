@@ -1,0 +1,8 @@
+# List stored files, newest first.
+id: media.find
+legacy: find_media
+risk: read
+decision: allow
+provenance: none
+core: false
+summary: List stored files, newest first.

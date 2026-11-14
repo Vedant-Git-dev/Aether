@@ -31,6 +31,7 @@ def test_every_nav_route_loads(page, live_server, token) -> None:
     routes = {
         "activity": "Live Activity",
         "tasks": "Tasks",
+        "alerts": "Alerts",
         "memory": "Memory & Context",
         "audit": "Audit Log",
         "traces": "Decision Traces",

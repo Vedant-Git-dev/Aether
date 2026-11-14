@@ -11,6 +11,7 @@ import ActivityPage from "./pages/Activity.jsx";
 import TracesPage from "./pages/Traces.jsx";
 import AuditPage from "./pages/Audit.jsx";
 import TasksPage from "./pages/Tasks.jsx";
+import AlertsPage from "./pages/Alerts.jsx";
 import MemoryPage from "./pages/Memory.jsx";
 import PolicyPage from "./pages/Policy.jsx";
 import AppsPage from "./pages/Apps.jsx";
@@ -21,6 +22,7 @@ const COLLAPSE_KEY = "aether_sidebar_collapsed";
 const PAGES = {
   activity: { title: "Live Activity", el: ActivityPage },
   tasks: { title: "Tasks", el: TasksPage },
+  alerts: { title: "Alerts", el: AlertsPage },
   memory: { title: "Memory & Context", el: MemoryPage },
   audit: { title: "Audit Log", el: AuditPage },
   traces: { title: "Decision Traces", el: TracesPage },

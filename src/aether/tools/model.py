@@ -84,6 +84,12 @@ class ToolSpec:
     backends: tuple[str, ...] = field(default_factory=tuple)
     aliases: tuple[str, ...] = field(default_factory=tuple)
     core: bool = False
+    # The declared policy. None means no manifest declared one — the
+    # production boot refuses that (tools.manifest_audit) and the classifier
+    # asks, so an unlisted tool can never run on a weaker rule by accident.
+    decision: Literal["allow", "approval"] | None = None
+    # owner: only the owner's own message or an approved card may run it.
+    provenance: Literal["none", "owner"] = "none"
 
     def __post_init__(self) -> None:
         if not self.id or "." not in self.id:
@@ -92,6 +98,10 @@ class ToolSpec:
             raise ValueError(f"tool {self.id!r} needs a capability and an intent")
         if self.risk not in ("read", "write", "external"):
             raise ValueError(f"tool {self.id!r} has an unknown risk {self.risk!r}")
+        if self.decision not in (None, "allow", "approval"):
+            raise ValueError(f"tool {self.id!r} has an unknown decision {self.decision!r}")
+        if self.provenance not in ("none", "owner"):
+            raise ValueError(f"tool {self.id!r} has an unknown provenance {self.provenance!r}")
         if len(self.summary) > MAX_SUMMARY:
             raise ValueError(
                 f"tool {self.id!r} summary is {len(self.summary)} chars — "

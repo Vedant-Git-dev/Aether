@@ -609,6 +609,63 @@ class FakeEntities:
         return self.notes.get(identity_id, [])[:limit]
 
 
+class FakeAlertRow:
+    def __init__(
+        self, alert_id: int, *, kind: str, title: str, condition: str, when: str = ""
+    ) -> None:
+        from types import SimpleNamespace
+
+        self.id = alert_id
+        self.status = "active"
+        self.last_notified_at = None
+        self.created_at = datetime.now(UTC)
+        self._condition = condition
+        self._when = when
+        self.spec = SimpleNamespace(
+            title=title, kind=kind, style="immediate", is_reminder=kind == "reminder"
+        )
+
+
+class FakeAlertEngine:
+    """The alert surface: plain words only, the same shapes the backend sends."""
+
+    def __init__(self, now: datetime) -> None:
+        self.now = now
+        self.rows = [
+            FakeAlertRow(
+                1, kind="alert", title="Landlord", condition="Mail, from landlord@example.com"
+            ),
+            FakeAlertRow(
+                2,
+                kind="reminder",
+                title="Send the invoice",
+                condition="",
+                when="2026-11-20 09:00 UTC",
+            ),
+        ]
+
+    def describe(self, spec) -> str:
+        return next((row._condition for row in self.rows if row.spec is spec), "Mail")
+
+    def when(self, spec) -> str:
+        return next((row._when for row in self.rows if row.spec is spec), "")
+
+    async def set_enabled(self, alert_id: int, enabled: bool, origin) -> str:
+        return "Paused." if not enabled else "Resumed."
+
+    async def remove(self, alert_id: int, origin) -> str:
+        self.rows = [row for row in self.rows if row.id != alert_id]
+        return "Removed."
+
+
+class FakeAlertStore:
+    def __init__(self, engine: FakeAlertEngine) -> None:
+        self.engine = engine
+
+    async def list(self, limit: int = 50):
+        return self.engine.rows[:limit]
+
+
 class FakeMemoryControl:
     """The inspection/forget surface for the Memory page — the real route's
     response shapes, with plain sentences the panel can render."""
@@ -642,7 +699,7 @@ class FakeMemoryControl:
             "indexed_chunks": 7,
             "active_facts": 1,
             "open_commitments": 1,
-            "active_watches": 0,
+            "active_alerts": 0,
             "semantic_search": {"on": True, "model": "gemini-embedding-001", "note": ""},
             "flags": {"enrichment": False, "query_pipeline": True, "summaries": False},
         }
@@ -771,15 +828,10 @@ class FakeTraces:
             ),
             Trace(
                 id=2,
-                kind="routine",
+                kind="alert",
                 label="morning mail triage",
                 payload={
-                    # the real trigger shape: a condition dict, not a string
-                    "routine": {
-                        "id": 1,
-                        "label": "morning mail triage",
-                        "trigger": {"source": "mail", "kind": "poll:unread"},
-                    },
+                    "alert": {"id": 1, "title": "morning mail triage"},
                     "event": {"id": 1, "source": "mail", "kind": "poll:unread", "line": mail_line},
                     "calls": [
                         {
@@ -1760,6 +1812,9 @@ def build_app() -> FastAPI:
     app.state.agent_settings = FakeAgentSettings()
     app.state.entities = FakeEntities(now)
     app.state.memory_control = FakeMemoryControl(now)
+    alert_engine = FakeAlertEngine(now)
+    app.state.alerts = alert_engine
+    app.state.alerts_store = FakeAlertStore(alert_engine)
     app.state.scheduler = FakeScheduler(now)
     app.state.traces = FakeTraces(now)
     proactive_store = FakeProactiveStore(now)

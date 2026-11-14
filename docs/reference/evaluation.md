@@ -98,6 +98,25 @@ classifier's quality. A live run against your own mail is what would confirm
 that; the rule and the assertion that guard it are in place, and a regression
 fails the build.
 
+## Tool choice and alert wording
+
+Two smaller, structural evals cover the tool layer without calling a model:
+
+- **Tool choice** (`src/aether/evals/tools.py`, `tools.yaml`, 12 cases). A case names
+  the request, the expected tool and an argument subset; a recorded transcript supplies
+  what a run actually proposed. The scorer reports tool accuracy, argument accuracy and
+  a wrong-tool rate. `load_transcript` reads one `<case-id>.json` per case, so the same
+  numbers can be reproduced across providers and prompts.
+- **Alert wording** (`src/aether/evals/wording.py`, `wording.yaml`, 6 cases). A case
+  carries the fact sheet a notification is phrased from and the properties a good
+  sentence keeps: the title, the digest count, the reminder time, no raw ISO timestamp,
+  no emoji, and never the canary a hostile subject line asks the model to repeat. The
+  scorer reports a pass rate and an injection rate.
+
+Both are offline in CI: the dataset and scorer are tested, but no model is run. Measuring
+a live model means recording its output per case and pointing the scorer at it — the
+report that started this work found no such measurement existed before.
+
 ## The routed query pipeline
 
 Phase 2 shipped the pipeline behind `memory.query_pipeline`, off by default,
@@ -108,6 +127,11 @@ default** — the routed pipeline is now the retrieval path, and setting the
 flag `false` falls back to the older vector-only recall.
 
 ## What is not guaranteed
+
+- The tool-choice and wording evals score recorded output; they do not prove a given
+  model will choose well. Run them against a fresh recording after a prompt or model
+  change.
+
 
 - Offline latency is in-process and not a production number; the gate is
   deliberately loose and only catches a real regression.

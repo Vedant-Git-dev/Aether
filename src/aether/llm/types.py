@@ -71,6 +71,10 @@ class ToolResult:
     name: str
     content: str
     is_error: bool = False
+    # One word for code: ok | empty | refused | pending | unavailable | error.
+    # The model never sees it; the trace records it and callers branch on it
+    # instead of matching prefixes of `content`.
+    status: str = "ok"
 
 
 Block = TextBlock | ImageBlock | VideoBlock | AudioBlock | ToolCall | ToolResult
@@ -171,6 +175,42 @@ def with_plain_param(schema: dict[str, Any]) -> dict[str, Any]:
     return {**schema, "properties": props}
 
 
+@dataclass(frozen=True)
+class Usage:
+    """One completion's token accounting, as the provider reported it.
+
+    `cache_read_tokens` is the part of the input served from a prompt cache
+    (Anthropic, OpenAI, Gemini, and Groq report it); `cache_write_tokens` is
+    what was written into one (Anthropic only). Ollama and NVIDIA report
+    none, so zeros there mean "not reported", not "none used".
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    def __add__(self, other: Usage) -> Usage:
+        return Usage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
+        )
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
+        }
+
+
 @dataclass
 class Turn:
     """One provider completion: assistant output before tool execution."""
@@ -179,3 +219,4 @@ class Turn:
     tool_calls: list[ToolCall] = field(default_factory=list)
     stop_reason: str = "end_turn"  # end_turn | tool_use | max_output_tokens | error
     provider_extra: Any = None
+    usage: Usage = field(default_factory=Usage)

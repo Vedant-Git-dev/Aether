@@ -169,6 +169,32 @@ If a stored model id is not in the catalog, the picker keeps it selected and lab
 reports the resolved model per role, which settings differ from `config.yaml`, pending
 approvals, and queue depth. It is deterministic and costs no tokens.
 
+## Prompt caching and usage
+
+The prompt is assembled in a stable order so a provider can reuse the longest
+unchanged prefix: tools, then the system prompt, then the conversation. Nothing
+provider-specific is added to the message model.
+
+- **Anthropic** gets explicit cache breakpoints at the end of each layer — the
+  last tool definition, the system block, and the last cacheable content block —
+  with the default five-minute TTL. A tool loop that runs inside the window pays
+  the cached rate for everything before the breakpoint.
+- **OpenAI and Gemini** cache automatically; their usage envelopes report the
+  cached portion.
+- **Groq** caches automatically on the models that support it.
+- **Ollama** has no provider-side prompt cache.
+- **NVIDIA NIM** documents no prompt cache, and Aether never sends it a
+  `prompt_cache_key`; the adapter only carries the OpenAI-compatible usage
+  numbers when the server returns them.
+
+Every completion's usage (input, output, cached read, cache write) is summed
+across the tool loop and recorded on the turn's decision trace, where the panel
+shows the total and how much came from cache. Input plus output tokens also land
+in the daily token ledger the background budget reads, so chat and background
+spend are one honest total.
+
+None of this changes `llm.max_tokens` or any platform message limit.
+
 ## Cost and latency notes
 
 - The first pass can be a small model. Turning it off saves tokens but reduces how much
@@ -184,4 +210,3 @@ approvals, and queue depth. It is deterministic and costs no tokens.
 
 - Automatic fallback from one LLM provider to another when a provider is down.
 - Per-conversation model switching.
-- Provider-side prompt caching controls beyond what the SDK does by default.

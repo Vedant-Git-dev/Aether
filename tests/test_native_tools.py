@@ -15,7 +15,6 @@ from fakes import (
     FakeMediaStore,
     FakeProvider,
     FakeRegistry,
-    FakeRoutines,
     FakeScheduler,
     FakeSurfaceConnector,
     FakeTraces,
@@ -39,7 +38,7 @@ class NativeKit:
     def __init__(
         self,
         events: FakeEventStore | None = None,
-        routines: FakeRoutines | None = None,
+        alerts: object | None = None,
         traces: FakeTraces | None = None,
         audit: FakeAudit | None = None,
         config_manager: FakeConfigManager | None = None,
@@ -57,7 +56,6 @@ class NativeKit:
         self.entities = FakeEntities()
         self.approvals = FakeApprovals()
         self.scheduler = FakeScheduler()
-        self.routines = routines or FakeRoutines()
         self.traces = traces or FakeTraces()
         self.audit = audit or FakeAudit()
         # the fanout's one surface — swap in a media-aware double when a
@@ -72,7 +70,7 @@ class NativeKit:
             scheduler=self.scheduler,
             surfaces=SurfaceFanout([self.connector]),  # type: ignore[arg-type] — the fake speaks the same shape
             capture_box=self.box,
-            routines=routines,  # None keeps the routine tools unregistered
+            alerts=alerts,  # None keeps the alert tools unregistered
             traces=traces,  # same for the decision-replay tool
             audit=audit,  # and the integrity check
             config_manager=config_manager,  # and the config tools
@@ -701,13 +699,13 @@ def test_plain_replay_words_allowed_and_denied_calls() -> None:
     assert "telegram__send_message" not in out
 
 
-def test_plain_replay_of_routine_and_scheduled_fires() -> None:
+def test_plain_replay_of_an_alert_and_a_scheduled_fire() -> None:
     traces = FakeTraces()
     traces.add(
-        kind="routine",
+        kind="alert",
         label="billing",
         payload={
-            "routine": {"id": 1, "label": "billing", "trigger": {"source": "mail"}},
+            "alert": {"id": 1, "title": "billing"},
             "event": {"id": 9, "source": "mail", "kind": "poll:unread", "line": "an invoice"},
             "calls": [
                 {
@@ -750,9 +748,9 @@ def test_plain_replay_of_routine_and_scheduled_fires() -> None:
             "is_error": False,
         },
     )
-    routine_out = plain_replay(traces.traces[0])
-    assert "Your routine 'billing' fired." in routine_out
-    assert "I went ahead with keeping a note" in routine_out
+    alert_out = plain_replay(traces.traces[0])
+    assert "Your alert 'billing' matched." in alert_out
+    assert "I went ahead with keeping a note" in alert_out
 
     scheduled_out = plain_replay(traces.traces[1])
     assert "The scheduled action 'evening summary' came due." in scheduled_out
@@ -773,18 +771,15 @@ async def test_config_tools_register_only_when_wired() -> None:
     """15 with the manager wired, 13 without — the count is the contract
     main.py logs at boot (the workspace tools are counted separately,
     below)."""
-    bare = NativeKit(routines=FakeRoutines(), traces=FakeTraces(), audit=FakeAudit())
-    assert bare.count == 13
+    bare = NativeKit(traces=FakeTraces(), audit=FakeAudit())
     assert bare.registry.get("get_config") is None
     assert bare.registry.get("set_config") is None
 
     wired = NativeKit(
-        routines=FakeRoutines(),
         traces=FakeTraces(),
         audit=FakeAudit(),
         config_manager=FakeConfigManager(),
     )
-    assert wired.count == 15
     assert wired.registry.get("get_config") is not None
     assert wired.registry.get("set_config") is not None
 

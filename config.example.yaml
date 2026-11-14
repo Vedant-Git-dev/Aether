@@ -89,6 +89,11 @@ workspace:
   # optional (default: true, retained for older files)
   encrypted: true
 
+tools:
+  # optional (default: enforce) off | warn | enforce — every native tool must
+  # have a manifest under src/aether/tools/manifests/ before booting
+  manifest_audit: enforce
+
 proactive:
   # optional (default: false)
   enabled: false
@@ -97,11 +102,30 @@ proactive:
     - research
     - media
   # optional (default: true)
-  watches_enabled: true
-  # optional (default: true)
   reminders_enabled: true
   # optional (default: 0.15)
   poll_jitter: 0.15
+
+alerts:
+  # optional (default: true)
+  enabled: true
+  # optional (default: 2) hours to fold a repeat note into the next batch
+  tell_window_hours: 2
+  # optional (default: 30) minutes a digest-style alert collects matches
+  digest_minutes: 30
+  # optional (default: 12) alert notifications per local day, all alerts
+  daily_cap: 12
+  # optional (default: 5) minutes between retries of a failed send
+  retry_minutes: 5
+  # optional (default: 3) tries one notification gets before it is dropped
+  max_attempts: 3
+  # optional (default: 300) seconds between folded-action fires
+  action_cooldown_seconds: 300
+  # optional (default: true) let the model phrase a notification from the
+  # facts it matched; off uses the fixed catalog sentences
+  compose_wording: true
+  # optional (default: 2027-02-11) when the `watches` view is dropped
+  compat_until: "2027-02-11"
 
 workbench:
   # optional (default: modal) modal | vercel | github_actions | none
@@ -118,3 +142,10 @@ media:
 providers:
   # optional (default: true) needs AETHER_TOKEN_ENCRYPTION_KEY
   enabled: true
+  gmail:
+    # optional (default: 5) minutes between history polls
+    poll_minutes: 5
+    # optional (default: 60) minutes between the lookback reconcile sweep
+    reconcile_minutes: 60
+    # optional (default: 24) how far back that sweep looks
+    reconcile_lookback_hours: 24

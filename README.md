@@ -92,7 +92,7 @@ flowchart TD
     F --> H
 ```
 
-1. **Trigger.** A polled event, a scheduled action, a routine, a background task, or a
+1. **Trigger.** A polled event, a scheduled action, an alert, a background task, or a
    message from you.
 2. **Reasoning.** The agent loop uses your configured model, recent context, and the
    tools currently connected.
@@ -156,7 +156,7 @@ The rules and the built-in ladder are in [Policy](docs/concepts/policy.md).
   Chat changes persist and can be reset to the YAML baseline.
 - **Self-host anywhere.** One asyncio process and Postgres. A Render blueprint is
   included.
-- **Persistent schedules.** Scheduled actions and routines survive restarts and re-arm on
+- **Persistent schedules.** Scheduled actions and alerts survive restarts and re-arm on
   boot.
 
 ## Install
@@ -243,7 +243,7 @@ A full component and persistence walkthrough is in
 | `src/aether/media/` | Media store, image generation, video edits, frames, voice |
 | `src/aether/migrations/` | Forward-only SQL migrations |
 | `src/aether/proactive/`, `src/aether/skills/` | Background worker, budgets, and the follow-up, research, and media skills |
-| `src/aether/scheduler/`, `src/aether/routines/` | Persisted scheduled actions and event-triggered instructions |
+| `src/aether/alerts/`, `src/aether/scheduler/` | Alerts, reminders, deterministic delivery, persisted scheduled actions |
 | `src/aether/workbench/` | Sandbox adapters and the routing ladder |
 | `webapp/` | React and Tailwind panel source, built into `src/aether/web/` |
 | `tests/`, `companion/`, `docs/` | Unit, integration, and browser tests; Wayland capture CLI; guides |

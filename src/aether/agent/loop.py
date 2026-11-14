@@ -35,6 +35,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ..alerts.engine import AlertEngine
 from ..authz.approvals import APPROVED, DENIED, Approval, Approvals
 from ..authz.audit import AuditLog, verification_text
 from ..authz.policy import Decision, Policy, Ruling, params_blob
@@ -53,6 +54,7 @@ from ..connectors.mail_allowlist import MailAllowlist
 from ..connectors.mcp_host import MCPHost
 from ..connectors.polling import next_poll_delay
 from ..connectors.registry import ToolRegistry
+from ..counters import today as counter_day
 from ..llm.agent import run_tool_loop
 from ..llm.base import Provider
 from ..llm.base import ProviderError as LLMProviderError
@@ -76,11 +78,21 @@ from ..memory.vectors import MemoryHit, VectorMemory
 from ..memory.verify import find_findings, unsupported
 from ..memory.views import Views, wants_attention
 from ..message_catalog import render as render_message
+from ..origin import (
+    alert_action,
+    approved_call,
+    current_origin,
+    owner_message,
+    reset_origin,
+    scheduled,
+    set_origin,
+    unprompted,
+    use_origin,
+)
 from ..outbound import clean_outbound, is_deliverable
 from ..providers.runtime import ProviderRuntime
 from ..providers.types import ConnectResult, ProviderError, ProviderNotConfigured
 from ..restart import pending as restart_pending
-from ..routines import Routines, trigger_matches
 from ..scheduler.jobs import ScheduledAction, Scheduler
 from ..secret_env import EnvResolver
 from ..secret_store import SecretStore
@@ -116,21 +128,12 @@ from .tools import (
     plain_outcome,
     plain_replay,
 )
-from .traces import CARRY_OUT, ROUTINE, SCHEDULED, TURN, Traces
+from .traces import ALERT, CARRY_OUT, SCHEDULED, TURN, Traces
 from .triage import TriageDecision, triage_unprompted
 
 log = logging.getLogger("aether.agent")
 
 _MAX_OBSERVATIONS = 20
-
-# Only a message matching one of these makes `forget_origin()` return "owner".
-# The same boundary as a watch: memory is deleted on the user's own words,
-# never on an instruction read out of an email or a polled feed.
-_FORGET_INTENT = re.compile(
-    r"\b(forget|delete\s+(that|this|it)|remove\s+(that|this|it)\s+from\s+"
-    r"(your\s+)?memory|wipe\s+(that|this|it)|stop\s+remembering)\b",
-    re.IGNORECASE,
-)
 
 # A solicited turn waits this long for write-time enrichment still in
 # flight before it answers from the deterministic floor. The classifier is
@@ -687,7 +690,6 @@ class AgentLoop:
         capture_box: CaptureRequestBox,
         config: AppConfig,
         host: MCPHost | None = None,
-        routines: Routines | None = None,
         traces: Traces | None = None,
         agent_settings: AgentSettings | None = None,
         config_manager: ConfigManager | None = None,
@@ -710,6 +712,7 @@ class AgentLoop:
         query_pipeline: QueryPipeline | None = None,
         proactive_path: Any = None,
         summary_job: Any = None,
+        counters: Any = None,
     ) -> None:
         self._providers = providers
         # the in-flight reply to a decision, if the model is writing one —
@@ -727,7 +730,6 @@ class AgentLoop:
         self._capture_box = capture_box
         self._config = config
         self._host = host
-        self._routines = routines
         self._traces = traces
         self._agent_settings = agent_settings
         self._config_manager = config_manager
@@ -765,19 +767,21 @@ class AgentLoop:
         # packing). Behind memory.query_pipeline; without it the old vector
         # recall above still serves each turn.
         self._query_pipeline = query_pipeline
-        # the proactive path: watch matching and reminders. Late-wired like
-        # the enrichment pieces, because a reminder delivers through this
-        # loop's own interruption budget.
+        # commitment reminders: due leads the path reports and the model
+        # words. Late-wired like the enrichment pieces, because a reminder
+        # delivers through this loop's own interruption budget.
         self._proactive_path = proactive_path
+        # alerts: deterministic matching and delivery. Late-wired for the
+        # same reason — a notification rides the surfaces, and a folded
+        # routine action runs through this loop's gate.
+        self._alerts: AlertEngine | None = None
         # the summary generator: one due thread/daily/weekly summary per tick,
         # a model call behind memory.summaries
         self._summary_job = summary_job
-        # the messages the current turn answers — empty for an unprompted
-        # tick, which is what keeps mail content from arming a watch
-        self._turn_messages: list[InboundMessage] = []
         # the outbound-send record: a failed or empty send is a fact, not a
         # log line, and the next turn is told about it
         self._deliveries = deliveries
+        self._counters = counters
         # the inbound ledger: one terminal outcome per message the user
         # sent, so no later turn re-answers a question that already had its
         # turn. The in-memory ledger is the default; the boot wires the
@@ -969,30 +973,67 @@ class AgentLoop:
         return await self._notify(text, urgent=urgent, channel=channel)
 
     def attach_proactive_path(self, path: Any) -> None:
-        """Join the proactive path after boot builds it — the same
-        late-wire shape as the enrichment pieces, because the path
-        delivers through this loop's interruption budget."""
+        """Join the commitment-reminder path after boot builds it — the same
+        late-wire shape as the enrichment pieces, because the path delivers
+        through this loop's interruption budget."""
         self._proactive_path = path
 
-    def alert_basis(self) -> list[str]:
-        """The user's own messages this turn, for the alert tools' basis check.
+    def attach_alerts(self, alerts: AlertEngine) -> None:
+        """Join the alert engine: it delivers through the surfaces and runs a
+        folded routine action through this loop's authorization gate."""
+        self._alerts = alerts
+        alerts.attach_notify(self._notify)
+        alerts.attach_action_runner(self._run_alert_action)
 
-        An unprompted tick, a routine or the background worker has no user
-        messages, so an instruction inside an email or a feed can never arm,
-        change or list an alert.
-        """
-        return [message.text or "" for message in self._turn_messages]
+    async def _run_alert_action(self, alert: Any, event: Event) -> None:
+        """Run one alert's optional action through the ordinary gate.
 
-    def forget_origin(self) -> str:
-        """`owner` only when the user's own message asked to forget something.
-
-        The same boundary the alert tools ride: an email or a polled feed can
-        describe the world, but only the person can delete what Aether keeps.
-        """
-        for message in self._turn_messages:
-            if _FORGET_INTENT.search(message.text or ""):
-                return "owner"
-        return "context"
+        A folded routine is still a tool call: it is classified, parked and
+        audited exactly as the model's own proposal, under a provenance that
+        says an alert triggered it."""
+        action = alert.spec.action or {}
+        call = ToolCall(
+            id=f"alert-{alert.id}-{event.id}",
+            name=str(action.get("tool", "")),
+            arguments=dict(action.get("params") or {}),
+        )
+        calls: list[dict[str, Any]] = []
+        with use_origin(alert_action(alert.id, event.id)):
+            try:
+                result = await self._execute(call, trace=calls)
+            except Exception as exc:
+                log.exception("alert %s action failed", alert.id)
+                result = ToolResult(
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=f"alert action failed: {exc}",
+                    is_error=True,
+                    status="error",
+                )
+                self._note_call(calls, call, result)
+        seq = await self._audit.append(
+            actor="alert",
+            tool_name=call.name,
+            decision="info",
+            params={"event_id": event.id, "event": f"{event.source}/{event.kind}"},
+            outcome="alert action fired",
+        )
+        await self._save_trace(
+            kind=ALERT,
+            label=alert.title,
+            payload={
+                "alert": {"id": alert.id, "title": alert.title},
+                "event": {
+                    "id": event.id,
+                    "source": event.source,
+                    "kind": event.kind,
+                    "line": self._event_line(event),
+                },
+                "calls": calls,
+                "audit_seq": seq,
+            },
+        )
+        return not result.is_error and not any(call.get("approval_id") for call in calls)
 
     async def present_result(
         self,
@@ -1073,6 +1114,17 @@ class AgentLoop:
             await self._turn([], observations)
         except Exception:
             log.exception("reminder turn failed")
+
+    async def _run_alert_tick(self) -> None:
+        """Deliver alert candidates that are due: a reminder moment, a held
+        digest, or a failed send whose retry time arrived. Code decides and
+        code sends — no unprompted turn is required for a notification."""
+        if self._alerts is None:
+            return
+        try:
+            await self._alerts.tick()
+        except Exception:
+            log.exception("alert delivery pass failed — continuing")
 
     @staticmethod
     def _reminder_event(item: Any) -> Event:
@@ -1289,9 +1341,19 @@ class AgentLoop:
             # ingested or any model is woken: a /verify badge and a why?
             # replay cost no tokens and store no memory — they are reads,
             # answered from the record
-            if await self._try_chat_command(message):
-                continue
-            if await self._try_explain_reply(message):
+            # a typed command is the owner's own words: config changes,
+            # pauses and pastes it drives carry that provenance, exactly as
+            # the model's turn does
+            command_origin = owner_message(
+                {
+                    "chat_refs": [message.chat_ref] if message.chat_ref else [],
+                    "message_ids": [message.message_id] if message.message_id else [],
+                }
+            )
+            with use_origin(command_origin):
+                handled = await self._try_chat_command(message)
+                explained = False if handled else await self._try_explain_reply(message)
+            if handled or explained:
                 continue
             result = await self._events.ingest(
                 source=message.surface,
@@ -1394,8 +1456,6 @@ class AgentLoop:
 
         # (c2) standing triggers the user taught — deterministic matching
         # over the same observations, before any LLM is involved
-        if observations and self._routines is not None:
-            await self._run_routines(observations)
 
         # held unprompted notes from the quiet window ship as one batched
         # message the moment the window ends — the budget pays out, in one
@@ -1413,6 +1473,7 @@ class AgentLoop:
             # a retry that came due while the queue was busy still runs
             await self._run_due_resumes()
             await self._run_proactive_tick()
+            await self._run_alert_tick()
             self._spawn_summary_tick()
             return
 
@@ -1447,6 +1508,7 @@ class AgentLoop:
         # reminders and alerts held by a quiet window — never in front of
         # the words someone is waiting on
         await self._run_proactive_tick()
+        await self._run_alert_tick()
         self._spawn_summary_tick()
 
         # a tick that never suspended (a provider-less turn, say) still
@@ -2018,27 +2080,39 @@ class AgentLoop:
             log.exception("provider polling failed — continuing")
             return
         for result in results:
-            text = json.dumps(result.payload, ensure_ascii=False, default=str)
-            if self._mail_filter is not None:
-                text = await self._mail_filter.filter_result(result.tool, text)
-            await self._audit.append(
-                actor="scheduler",
-                tool_name=result.tool,
-                decision="allow",
-                rules_matched="provider:poll",
-                params={},
-                outcome="provider poll",
-            )
-            if await self._ingest_mail(text, result):
+            try:
+                await self._consume_poll_result(result)
+            except Exception:
+                # the cursor stays put, so the next poll re-reads this window;
+                # ingest dedups by the provider's own id, so a repeat is
+                # invisible and a miss is not
+                log.exception("provider poll result failed — cursor not advanced")
                 continue
-            kind = result.tool.split("__", 1)[-1]
-            ingest = await self._events.ingest(
-                source=result.app,
-                kind=f"poll:{kind}",
-                payload={"result": text[:4000]},
-            )
-            if ingest.stored:
-                self.notify()
+            await self._provider_runtime.commit_poll(result)
+
+    async def _consume_poll_result(self, result: Any) -> None:
+        """Filter, audit and ingest one poll envelope, or raise."""
+        text = json.dumps(result.payload, ensure_ascii=False, default=str)
+        if self._mail_filter is not None:
+            text = await self._mail_filter.filter_result(result.tool, text)
+        await self._audit.append(
+            actor="scheduler",
+            tool_name=result.tool,
+            decision="allow",
+            rules_matched="provider:poll",
+            params={},
+            outcome="provider poll",
+        )
+        if await self._ingest_mail(text, result):
+            return
+        kind = result.tool.split("__", 1)[-1]
+        ingest = await self._events.ingest(
+            source=result.app,
+            kind=f"poll:{kind}",
+            payload={"result": text[:4000]},
+        )
+        if ingest.stored:
+            self.notify()
 
     async def _ingest_mail(self, text: str, result: Any) -> bool:
         """One event per mail in a filtered poll envelope.
@@ -2133,89 +2207,6 @@ class AgentLoop:
             if gained > 0:
                 word = "action" if gained == 1 else "actions"
                 await self._surfaces.send_to_user(f"{name} — {gained} new {word} in my vocabulary")
-
-    # -- routines ---------------------------------------------------------------
-
-    async def _run_routines(self, observations: list[Event]) -> None:
-        """Evaluate the user's standing triggers against this tick's new
-        events. Matching is pure code — no LLM in the decision of *whether*
-        to react — and each fire goes through `_execute`, so the gate
-        applies at fire time, every time."""
-        routines = await self._routines.list_enabled()
-        if not routines:
-            return
-        now = datetime.now(UTC)
-        for routine in routines:
-            if (
-                routine.last_fired_at is not None
-                and routine.cooldown_seconds > 0
-                and now < routine.last_fired_at + timedelta(seconds=routine.cooldown_seconds)
-            ):
-                continue  # inside its cooldown window — a burst of similar events fires it once
-            event = next(
-                (e for e in observations if trigger_matches(routine.trigger, e)),
-                None,
-            )
-            if event is None:
-                continue
-            try:
-                await self._fire_routine(routine, event)
-            except Exception:
-                log.exception("routine %d failed — continuing", routine.id)
-
-    async def _fire_routine(self, routine: Any, event: Event) -> None:
-        action = routine.action or {}
-        call = ToolCall(
-            id=f"routine-{routine.id}-{event.id}",
-            name=str(action.get("tool", "")),
-            arguments=dict(action.get("params") or {}),
-        )
-        calls: list[dict[str, Any]] = []
-        try:
-            result = await self._execute(call, trace=calls)
-        except Exception as exc:
-            log.exception("routine %d fire failed", routine.id)
-            result = ToolResult(
-                tool_call_id=call.id,
-                name=call.name,
-                content=f"routine fire failed: {exc}",
-                is_error=True,
-            )
-            self._note_call(calls, call, result)  # decision "error": no ruling
-        # fired counts even on failure: the cooldown should gate a broken
-        # action's retries, not let it hammer every tick
-        await self._routines.mark_fired(routine.id)
-        seq = await self._audit.append(
-            actor="routine",
-            tool_name=call.name,
-            decision="info",
-            rules_matched=f"routine:{routine.id}",
-            params={"event_id": event.id, "event": f"{event.source}/{event.kind}"},
-            outcome="routine fired",
-        )
-        refs = await self._notify(
-            # the exact call stays in the audit row and the trace; the chat
-            # note speaks plainly, never in internal tool names
-            f"routine '{routine.label}' fired: {result.content[:220]}"
-        )
-        payload = {
-            "routine": {
-                "id": routine.id,
-                "label": routine.label,
-                "trigger": routine.trigger,
-            },
-            "event": {
-                "id": event.id,
-                "source": event.source,
-                "kind": event.kind,
-                "line": self._event_line(event),
-            },
-            "calls": calls,
-            "audit_seq": seq,
-        }
-        if refs:  # the ping only links back if it actually landed somewhere
-            payload["chat_refs"] = refs
-        await self._save_trace(kind=ROUTINE, label=routine.label, payload=payload)
 
     # -- the LLM turn ---------------------------------------------------------------
 
@@ -2544,6 +2535,7 @@ class AgentLoop:
                         "outcome accepted" if accepted else "that action is not offered this turn"
                     ),
                     is_error=not accepted,
+                    status="ok" if accepted else "refused",
                 )
             tool = self._tools.resolve(call.name)
             if tool is not None and tool.spec.id == "tools.load":
@@ -2551,7 +2543,11 @@ class AgentLoop:
                 if not isinstance(raw, list) or not raw:
                     content = "tools__load needs a list of tool names."
                     result = ToolResult(
-                        tool_call_id=call.id, name=call.name, content=content, is_error=True
+                        tool_call_id=call.id,
+                        name=call.name,
+                        content=content,
+                        is_error=True,
+                        status="refused",
                     )
                     self._note_call(calls, call, result)
                     return result
@@ -2577,6 +2573,7 @@ class AgentLoop:
                         "tools__search and load it with tools__load first"
                     ),
                     is_error=True,
+                    status="refused",
                 )
                 self._note_call(calls, call, result)
                 return result
@@ -2594,9 +2591,20 @@ class AgentLoop:
         # can resume from the exact step that died instead of starting over
         loop_history: list[Message] = []
         attempt = 1 if resume is None else resume.attempts + 1
-        # what this turn answers, for the alert tools' basis check — an
-        # unprompted tick leaves it empty, so an email cannot arm an alert
-        self._turn_messages = list(messages)
+        # where this turn came from. The harness decides; the model cannot
+        # produce an owner origin from content it read. A solicited turn
+        # carries the message ids it answers, sealed on any alert it writes;
+        # an unprompted tick carries nothing, so it cannot mutate.
+        origin_token = set_origin(
+            owner_message(
+                {
+                    "chat_refs": sorted({m.chat_ref for m in messages if m.chat_ref}),
+                    "message_ids": sorted({m.message_id for m in messages if m.message_id}),
+                }
+            )
+            if messages
+            else unprompted()
+        )
         system = await self._system_prompt()
         system = f"{system}\n\n{self._tool_index(outcome_tools)}"
         try:
@@ -2616,6 +2624,15 @@ class AgentLoop:
                 ),
                 timeout=self._config.agent.turn_timeout_seconds,
             )
+            # token accounting: the provider's own numbers, on the trace, and
+            # the same daily ledger the background budget reads. A counter
+            # failure is a log line, never a reason to lose the turn.
+            trace["usage"] = final.usage.as_dict()
+            if self._counters is not None and final.usage.total_tokens:
+                try:
+                    await self._counters.bump(counter_day(), "tokens", final.usage.total_tokens)
+                except Exception:
+                    log.warning("token counter failed — continuing", exc_info=True)
             # the typed outcome is the only door to the user. An answer turn
             # uses reply/ask; an unprompted turn uses notify/ask. Free text on
             # an unprompted turn is internal — unless a typed triage call
@@ -2813,9 +2830,9 @@ class AgentLoop:
             await self._settle_inbound(records, answered=False, reason="turn failed")
             raise
         finally:
-            # the turn is over; a later routine or worker call must read as
-            # context, never as the user's own instruction
-            self._turn_messages = []
+            # the turn is over; a later worker call must read as context,
+            # never as the user's own instruction
+            reset_origin(origin_token)
             # the pulse dies with the turn, whatever ended it — awaited so
             # the cancelled task never outlives the turn as a dangling
             # pending warning at loop close
@@ -3381,7 +3398,7 @@ class AgentLoop:
                 f"{event.occurred_at:%Y-%m-%d %H:%M} {event.source}/{event.kind}"
                 f" (salience {event.salience_score:.0f}): {text[:400]}"
             )
-        labels = event.meta.get("watch_labels") if isinstance(event.meta, dict) else None
+        labels = event.meta.get("alert_matches") if isinstance(event.meta, dict) else None
         if isinstance(labels, list):
             names = ", ".join(
                 f'"{str(label).replace(chr(10), " ").strip()[:80]}"'
@@ -3391,7 +3408,7 @@ class AgentLoop:
             if names:
                 # context for the model, not a message: the agent decides in
                 # its own words whether this is worth saying
-                line += f" — the user asked to be told about this ({names})"
+                line += f" — an alert matched this ({names})"
         return line
 
     async def _refresh_owner_addresses(self) -> None:
@@ -3695,6 +3712,7 @@ class AgentLoop:
                 "approval_id": approval_id,
                 "result": result.content,
                 "is_error": result.is_error,
+                "status": result.status,
             }
         )
 
@@ -3750,23 +3768,21 @@ class AgentLoop:
         call = ToolCall(
             call.id, call.name, arguments, plain=str(plain) if plain is not None else ""
         )
+        tool = self._tools.get(call.name)
         ruling = self._policy.classify(
             call.name,
             call.arguments,
             origin=origin,
-            effect=(
-                self._tools.get(call.name).effect
-                if self._tools.get(call.name) is not None
-                else None
-            ),
+            effect=tool.effect if tool is not None else None,
             internal=self._tools.is_internal(call.name),
             aliases=self._tools.aliases_for(call.name),
+            native=tool is not None and tool.kind == "native",
+            declared=(tool.spec.decision if tool is not None and tool.kind == "native" else None),
         )
 
         # memory_search stays a model tool, capped per turn: the third round
         # is the last one, so a model that keeps rephrasing cannot loop the
         # same question through retrieval for the whole turn budget
-        tool = self._tools.get(call.name)
         if tool is not None and tool.spec.id == "memory.search" and trace is not None:
             used = 0
             for entry in trace:
@@ -3782,6 +3798,7 @@ class AgentLoop:
                         "this turn — answer from the memory already in front of you."
                     ),
                     is_error=True,
+                    status="refused",
                 )
                 self._note_call(trace, call, result)
                 return result
@@ -3800,6 +3817,34 @@ class AgentLoop:
                 name=call.name,
                 content=f"denied by policy: {ruling.reason}",
                 is_error=True,
+                status="refused",
+            )
+            self._note_call(trace, call, result, ruling=ruling, audit_seq=seq)
+            return result
+
+        # a tool that declares it needs the owner's own turn refuses here,
+        # before any handler sees it. The handler checks stay as a second
+        # line, but this one cannot be forgotten by a new call site.
+        if (
+            ruling.decision is Decision.ALLOW
+            and tool is not None
+            and tool.spec.provenance == "owner"
+            and not current_origin().may_mutate
+        ):
+            seq = await self._audit.append(
+                actor="agent",
+                tool_name=call.name,
+                decision="deny",
+                rules_matched="builtin:owner-only",
+                params=call.arguments,
+                outcome="refused: not the owner's own turn",
+            )
+            result = ToolResult(
+                tool_call_id=call.id,
+                name=call.name,
+                content=render_message("tools.owner_only", locale=self._config.agent.locale),
+                is_error=True,
+                status="refused",
             )
             self._note_call(trace, call, result, ruling=ruling, audit_seq=seq)
             return result
@@ -3823,17 +3868,19 @@ class AgentLoop:
                             tool_call_id=call.id,
                             name=call.name,
                             content=str(entry.get("result", "")),
+                            status=str(entry.get("status") or "ok"),
                         )
                         self._note_call(trace, call, result, ruling=ruling)
                         return result
             try:
-                content = await self._tools.execute(call.name, call.arguments)
+                outcome = await self._tools.execute_outcome(call.name, call.arguments)
             except UnknownToolError:
                 result = ToolResult(
                     tool_call_id=call.id,
                     name=call.name,
                     content=self._plain_unavailable(call.name),
                     is_error=True,
+                    status="unavailable",
                 )
                 self._note_call(trace, call, result, ruling=ruling)
                 return result
@@ -3843,6 +3890,7 @@ class AgentLoop:
                     name=call.name,
                     content=self._plain_unresponsive(call.name),
                     is_error=True,
+                    status="unavailable",
                 )
                 self._note_call(trace, call, result, ruling=ruling)
                 return result
@@ -3860,6 +3908,7 @@ class AgentLoop:
                     name=call.name,
                     content=exc.plain,
                     is_error=True,
+                    status="error",
                 )
                 self._note_call(trace, call, result, ruling=ruling, audit_seq=seq)
                 return result
@@ -3871,7 +3920,13 @@ class AgentLoop:
                 params=call.arguments,
                 outcome=ruling.reason,
             )
-            result = ToolResult(tool_call_id=call.id, name=call.name, content=content)
+            result = ToolResult(
+                tool_call_id=call.id,
+                name=call.name,
+                content=outcome.message,
+                is_error=outcome.is_error,
+                status=outcome.status,
+            )
             self._note_call(trace, call, result, ruling=ruling, audit_seq=seq)
             return result
 
@@ -3885,6 +3940,7 @@ class AgentLoop:
                 name=call.name,
                 content=self._plain_unavailable(call.name),
                 is_error=True,
+                status="unavailable",
             )
             self._note_call(trace, call, result, ruling=ruling)
             return result
@@ -3902,6 +3958,7 @@ class AgentLoop:
                     tool_call_id=call.id,
                     name=call.name,
                     content=(f"already settled — {settled[key]}. Do not propose it again."),
+                    status="ok",
                 )
                 self._note_call(trace, call, result, ruling=ruling)
                 return result
@@ -3920,6 +3977,7 @@ class AgentLoop:
                         tool_call_id=call.id,
                         name=call.name,
                         content=str(entry.get("result", "")),
+                        status="pending",
                     )
                     self._note_call(trace, call, result, ruling=ruling)
                     return result
@@ -3937,6 +3995,7 @@ class AgentLoop:
                     "request is in front of them with one-tap buttons. Do not "
                     "propose it again."
                 ),
+                status="pending",
             )
             self._note_call(trace, call, result, ruling=ruling, approval_id=existing.id)
             return result
@@ -3969,7 +4028,7 @@ class AgentLoop:
                     "wants the action, propose the call again without media_id "
                     "and say plainly that the file will stay behind."
                 )
-            result = ToolResult(tool_call_id=call.id, name=call.name, content=why)
+            result = ToolResult(tool_call_id=call.id, name=call.name, content=why, status="refused")
             self._note_call(trace, call, result, ruling=ruling)
             return result
         approval = await self._approvals.create(
@@ -3993,6 +4052,7 @@ class AgentLoop:
                 "in front of the user with one-tap buttons — do not announce or "
                 "narrate the wait in your reply."
             ),
+            status="pending",
         )
         self._note_call(trace, call, result, ruling=ruling, approval_id=approval.id)
         return result
@@ -4036,12 +4096,8 @@ class AgentLoop:
         }
         try:
             run_params = dict(approval.params)
-            tool = self._tools.get(approval.tool_name)
-            if tool is not None and tool.spec.id == "alerts.create":
-                # the tap is the user's decision; the tool arms what the
-                # card described instead of asking for a chat quote again
-                run_params["_approved"] = True
-            result = await self._tools.execute(approval.tool_name, run_params)
+            with use_origin(approved_call(approval.id)):
+                result = await self._tools.execute(approval.tool_name, run_params)
         except UnknownToolError as exc:
             # rows parked before the up-front check — or an app unlinked
             # while one sat pending — still land here. The user hears plain
@@ -4221,7 +4277,8 @@ class AgentLoop:
             arguments=dict(payload.get("params") or {}),
         )
         calls: list[dict[str, Any]] = []
-        result = await self._execute(call, trace=calls)
+        with use_origin(scheduled(action.id)):
+            result = await self._execute(call, trace=calls)
         # recorded before any raise, so a failed fire still has its trace
         await self._save_trace(
             kind=SCHEDULED,

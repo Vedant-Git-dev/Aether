@@ -19,6 +19,11 @@ from .agent import AgentLoop, CaptureRequestBox, SurfaceFanout, register_native_
 from .agent.settings import AgentSettings
 from .agent.tools import describe_full
 from .agent.traces import Traces
+from .alerts.engine import AlertEngine
+from .alerts.migrate import routines_to_alerts
+from .alerts.notifications import AlertNotifications
+from .alerts.store import AlertStore
+from .alerts.wording import AlertWording
 from .api import router as api_router
 from .authz.approvals import Approvals
 from .authz.audit import AuditLog
@@ -74,7 +79,6 @@ from .memory.storage import StorageGuardError, enforce_schema
 from .memory.summaries import LLMSummarizer, Summaries, SummaryJob
 from .memory.vectors import VectorMemory
 from .memory.views import Views
-from .memory.watches import WatchStore
 from .proactive import (
     Budget,
     CommitmentReminders,
@@ -87,12 +91,12 @@ from .providers.crypto import TokenKeyError, TokenKeyring
 from .providers.oauth import OAuthEngine
 from .providers.runtime import ProviderRuntime
 from .providers.store import ProviderStore
-from .routines import Routines
 from .scheduler import Scheduler, SchedulerWorker
 from .secret_env import EnvResolver
 from .secret_store import SecretStore
 from .skills import build_skills
 from .tools.grants import BackendHealth
+from .tools.manifest import audit_native_manifests
 from .web import WebTools, build_client
 from .workbench import Workbench, ordered
 from .workbench import run as run_workbench
@@ -136,16 +140,6 @@ def _build_cipher(settings: Settings) -> Cipher:
         '  python -c "from aether.memory.crypto import generate_key_b64; print(generate_key_b64())"\n'
         "(or set AETHER_DEV_EPHEMERAL_KEY=1 for a throwaway dev instance)"
     )
-
-
-def _watch_channels(fanout: SurfaceFanout) -> set[str]:
-    """The surfaces a watch may name right now. Read live by the proactive
-    path, because /config can switch a connector on or off without a
-    restart; a channel that is not here never gets stored on a watch."""
-    names = {connector.name for connector in fanout.connectors}
-    if fanout.hub is not None:
-        names.add("web")
-    return names
 
 
 def create_app(
@@ -532,9 +526,11 @@ def create_app(
         # deterministic floor is all there is.
         commitments = Commitments(pool, cipher, audit)
         facts = Facts(pool, cipher, audit)
-        watches = WatchStore(pool, cipher, audit)
+        alerts_store = AlertStore(pool, cipher, audit)
+        alert_notifications = AlertNotifications(pool, cipher)
         commitment_reminders = CommitmentReminders(pool)
-        app.state.watches = watches
+        app.state.alerts_store = alerts_store
+        app.state.alert_notifications = alert_notifications
         app.state.commitment_reminders = commitment_reminders
         app.state.facts = facts
         enricher = (
@@ -627,7 +623,7 @@ def create_app(
             facts=facts,
             commitments=commitments,
             summaries=summaries,
-            watches=watches,
+            alerts=alerts_store,
             memory=config.memory,
             embedding_model=config.llm.embedding_model or "",
         )
@@ -636,8 +632,6 @@ def create_app(
         # everything else; the worker and its skills land later in boot
         proactive_store = ProactiveStore(pool, cipher, audit)
         app.state.proactive_store = proactive_store
-        routines = Routines(pool, cipher, audit)
-        app.state.routines = routines
         traces = Traces(pool, cipher)
         app.state.traces = traces
 
@@ -694,7 +688,6 @@ def create_app(
             capture_box=capture_box,
             config=config,
             host=host,
-            routines=routines,
             traces=traces,
             agent_settings=agent_settings,
             config_manager=config_manager,
@@ -716,31 +709,52 @@ def create_app(
             inbound_states=inbound_states,
             query_pipeline=query_pipeline,
             summary_job=summary_job,
+            counters=counters,
         )
         app.state.agent = agent
 
-        # --- the proactive path: watch matches, reminders -------------------
-        # Built after the loop because a reminder is delivered through the
-        # loop's own interruption budget (quiet hours, holding, batching).
-        # The store is attached to the event store, so every ingest path —
-        # chat, mail poll, attachment — is evaluated once, on the tracked
+        # --- alerts: deterministic matching and delivery --------------------
+        # Built after the loop because delivery rides the surfaces and a
+        # folded routine action runs through the loop's gate. Matching is
+        # attached to the event store, so every ingest path — chat, mail
+        # poll, attachment — produces its candidates on the tracked
         # enrichment task, never in front of a reply.
+        alert_engine = AlertEngine(
+            config=config,
+            store=alerts_store,
+            notifications=alert_notifications,
+            scheduler=scheduler,
+            timezone=config.memory.default_timezone,
+            locale=config.agent.locale,
+        )
+        if config.alerts.compose_wording and providers is not None:
+            # phrasing only: the provider writes the sentence from the facts
+            # the engine matched, and a failure falls back to the catalog
+            wording_provider = providers.for_role("reasoning")
+            if wording_provider is not None:
+                alert_engine.attach_wording(AlertWording(wording_provider))
+        agent.attach_alerts(alert_engine)
+        events.attach_proactive(alert_engine)
+        try:
+            await routines_to_alerts(pool, cipher, alerts_store)
+            await alert_engine.refresh()
+        except Exception:
+            log.warning("could not load alerts at boot — the first event will retry", exc_info=True)
+        app.state.alerts = alert_engine
+
+        # --- commitment reminders: the clock-driven lead -------------------
         proactive_path = ProactivePath(
             config=config,
-            watches=watches,
             commitments=commitments,
             reminders=commitment_reminders,
-            channels=lambda: _watch_channels(surfaces),
             timezone=config.memory.default_timezone,
         )
         agent.attach_proactive_path(proactive_path)
-        events.attach_proactive(proactive_path)
         try:
             await proactive_path.refresh()
         except Exception:
             log.warning(
-                "could not load watches at boot — the first event will retry",
-                exc_info=True,
+                "could not load reminder ledger at boot — the first tick will retry", exc_info=True
             )
         app.state.proactive_path = proactive_path
 
@@ -752,7 +766,6 @@ def create_app(
             scheduler=scheduler,
             surfaces=surfaces,
             capture_box=capture_box,
-            routines=routines,
             traces=traces,
             audit=audit,
             config_manager=config_manager,
@@ -764,12 +777,17 @@ def create_app(
             providers=providers,
             editor=editor,
             generator=image_generator,
-            proactive_path=proactive_path,
-            alert_basis=agent.alert_basis,
-            forget_origin=agent.forget_origin,
+            alerts=alert_engine,
             memory_control=memory_control,
         )
         log.info("native tools registered: %d", native)
+        violations = audit_native_manifests(tools.native_names())
+        if violations:
+            detail = "; ".join(violations[:8])
+            if config.tools.manifest_audit == "enforce":
+                raise StartupError(f"tool manifest audit failed: {detail}")
+            if config.tools.manifest_audit == "warn":
+                log.warning("tool manifest audit: %s", detail)
 
         # the background worker — off by default and self-gating on
         # proactive.enabled every cycle, so it always spins and /resume

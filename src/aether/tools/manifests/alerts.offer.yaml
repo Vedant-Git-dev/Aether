@@ -1,0 +1,8 @@
+# Offer to set an alert, for one tap.
+id: alerts.offer
+legacy: offer_alert
+risk: write
+decision: approval
+provenance: none
+core: true
+summary: Offer to set an alert, for one tap.

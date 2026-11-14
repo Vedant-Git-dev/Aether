@@ -1,30 +1,26 @@
-"""The proactive path: watch matching on arrivals, and commitment reminders.
+"""Commitment reminders: the time-based leads a due commitment earns.
 
-Two deterministic jobs share one object so the loop has one seam to call:
+A commitment Aether noticed (a promise in mail, a deadline in a message) can
+carry a due time. This path reports the lead that has arrived — nearest
+first, once each, then one overdue escalation — as facts, never as a
+sentence. The loop feeds them to the agent, which writes the words.
 
-- ``evaluate_event`` runs once per ingested event (from the event store's
-  tracked enrichment task). Each active watch keeps an id watermark, so an
-  event is considered once per watch even across a restart. A match writes
-  the watch label onto the event as context; it sends nothing. The agent
-  reads that label with its ordinary observations and writes any message
-  itself, under the same notification policy as every other unprompted turn.
+Event alerts are a different engine (`aether.alerts`): they match sealed
+specs against inbound events and deliver through their own deterministic
+queue. Keeping the two apart is deliberate — a reminder is a clock
+comparison, an alert is a pattern match, and neither needs the other's
+state.
 
-- ``tick`` runs on the loop's cadence and reports commitments whose reminder
-  lead has arrived. Leads scale with the source event's urgency, and each
-  lead fires once; after the due time there is one overdue escalation and
-  no more. A due reminder is returned as facts, never as a sentence; the
-  loop feeds it to the agent, which writes the words itself.
-
-The model is nowhere in either decision. A watch is code matching a sealed
-spec, and a reminder is a comparison against an absolute due time.
+The model is nowhere in either decision. A reminder is a comparison against
+an absolute due time; an alert match is pure code.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass, replace
+from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -33,7 +29,6 @@ import asyncpg
 from ..config import AppConfig
 from ..memory.commitments import OPEN, Commitment, Commitments
 from ..memory.timewindow import local_stamp
-from ..memory.watches import Watch, WatchSpec, WatchStore, watch_matches
 
 log = logging.getLogger("aether.proactive")
 
@@ -148,29 +143,22 @@ class CommitmentReminders:
 
 
 class ProactivePath:
-    """Watch matching and commitment reminders."""
+    """Commitment reminders — the clock-driven half of the proactive path."""
 
     def __init__(
         self,
         *,
         config: AppConfig,
-        watches: WatchStore | None = None,
         commitments: Commitments | None = None,
         reminders: CommitmentReminders | None = None,
-        channels: Callable[[], set[str]] | None = None,
         timezone: str = "Asia/Kolkata",
-        clock: Callable[[], datetime] | None = None,
+        clock: Any = None,
     ) -> None:
         self._config = config  # THE live object; every gate is read per call
-        self._watches = watches
         self._commitments = commitments
         self._reminders = reminders
-        # the surfaces a watch may name right now — read live, because a
-        # connector can be switched on or off without a restart
-        self._channels = channels
         self._timezone = timezone
         self._clock = clock or (lambda: datetime.now(UTC))
-        self._active: list[Watch] = []
         self._loaded = False
         self._load_lock = asyncio.Lock()
         self._reminded: dict[int, set[int]] = {}
@@ -178,12 +166,9 @@ class ProactivePath:
     # -- lifecycle -----------------------------------------------------------
 
     async def refresh(self) -> None:
-        """Reload the active watches and the reminder ledger. Called at
-        boot and after every owner-made change, so a watch created in chat
-        is live at once and a restart cannot re-fire an old reminder."""
+        """Reload the reminder ledger. Called at boot and after every owner
+        change, so a restart cannot re-fire an old reminder."""
         async with self._load_lock:
-            if self._watches is not None:
-                self._active = await self._watches.list_active()
             if self._reminders is not None:
                 self._reminded = await self._reminders.load()
             self._loaded = True
@@ -191,96 +176,6 @@ class ProactivePath:
     async def _ensure_loaded(self) -> None:
         if not self._loaded:
             await self.refresh()
-
-    # -- watches -------------------------------------------------------------
-
-    async def create_watch(self, spec: WatchSpec, *, origin: str) -> Watch | None:
-        """Arm a watch through the owner gate and make it live immediately.
-
-        A channel the user named but that is not connected right now is
-        dropped to "every surface" rather than stored, so the saved spec
-        never points at a connector that is switched off. The confirmation
-        reads the normalized spec back.
-        """
-        if self._watches is None:
-            return None
-        spec = replace(spec, channel=self._normalized_channel(spec.channel))
-        watch = await self._watches.create(spec=spec, origin=origin)
-        if watch is not None:
-            await self.refresh()
-        return watch
-
-    async def set_watch_enabled(self, watch_id: int, enabled: bool, *, origin: str) -> Watch | None:
-        if self._watches is None:
-            return None
-        watch = await self._watches.set_enabled(watch_id, enabled, origin=origin)
-        if watch is not None:
-            await self.refresh()
-        return watch
-
-    async def update_watch(self, watch_id: int, spec: WatchSpec, *, origin: str) -> Watch | None:
-        """Replace one alert's condition through the owner gate."""
-        if self._watches is None:
-            return None
-        spec = replace(spec, channel=self._normalized_channel(spec.channel))
-        watch = await self._watches.update(watch_id, spec=spec, origin=origin)
-        if watch is not None:
-            await self.refresh()
-        return watch
-
-    async def get_watch(self, watch_id: int) -> Watch | None:
-        if self._watches is None:
-            return None
-        return await self._watches.get(watch_id)
-
-    async def delete_watch(self, watch_id: int, *, origin: str) -> bool:
-        if self._watches is None:
-            return False
-        removed = await self._watches.delete(watch_id, origin=origin)
-        if removed:
-            await self.refresh()
-        return removed
-
-    async def list_watches(self, limit: int = 50) -> list[Watch]:
-        if self._watches is None:
-            return []
-        return await self._watches.list(limit)
-
-    async def evaluate_event(self, event: Any) -> list[str]:
-        """Match one ingested event against the active watches.
-
-        Returns the labels of the watches it matched, so the event store can
-        record them on the event as context. Nothing is sent from here: the
-        agent sees the match in its ordinary observations and writes any
-        message itself, under the same notification policy as every other
-        unprompted turn. The watermark still moves for every event, so an
-        event is considered once per watch even across a restart.
-        """
-        if not self._config.proactive.watches_enabled:
-            return []
-        if getattr(event, "noise", False):
-            return []
-        await self._ensure_loaded()
-        matched = [
-            watch
-            for watch in self._active
-            if event.id > watch.last_event_id and watch_matches(watch.spec, event)
-        ]
-        await self._advance(event.id)
-        return [watch.spec.label for watch in matched if watch.spec.label]
-
-    async def _advance(self, event_id: int) -> None:
-        """Move every watch's watermark past this event, once, in one
-        statement — matching and non-matching alike, so the next boot does
-        not reconsider it."""
-        if self._watches is None:
-            return
-        stale = [watch for watch in self._active if watch.last_event_id < event_id]
-        if not stale:
-            return
-        await self._watches.mark_run([watch.id for watch in stale], event_id)
-        for watch in stale:
-            watch.last_event_id = event_id
 
     # -- reminders -----------------------------------------------------------
 
@@ -317,26 +212,3 @@ class ProactivePath:
                 )
             )
         return due
-
-    def _available_channels(self) -> set[str] | None:
-        """The surfaces a watch may name right now, or None when the caller
-        wired no channel source (tests) — then nothing can be validated."""
-        if self._channels is None:
-            return None
-        try:
-            return set(self._channels())
-        except Exception:
-            log.warning("could not read the connected surfaces", exc_info=True)
-            return None
-
-    def _normalized_channel(self, channel: str) -> str:
-        """A named surface that is not connected becomes "every surface",
-        so the stored watch never points at a connector that is switched off."""
-        clean = (channel or "").strip()
-        if not clean:
-            return ""
-        available = self._available_channels()
-        if available is None or clean in available:
-            return clean
-        log.info("watch channel %r is not connected — storing all surfaces", clean)
-        return ""

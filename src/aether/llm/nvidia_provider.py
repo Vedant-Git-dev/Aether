@@ -6,6 +6,10 @@ swaps the endpoint, the max-token spelling (NIM takes the older
 NIM hosts both text-only and vision-capable models under one API, so
 whether a given model id accepts images is a config choice, the same way
 it is for Ollama.
+
+NIM documents no prompt cache and rejects `prompt_cache_key`; this adapter
+never sends it. Usage numbers come from the OpenAI-compatible envelope and
+mean "not reported" when absent.
 """
 
 from __future__ import annotations

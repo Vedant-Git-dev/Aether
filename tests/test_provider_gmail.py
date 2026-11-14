@@ -22,6 +22,7 @@ from aether.providers.google import (
     get_message,
     list_messages,
     poll_new_mail,
+    poll_reconcile_mail,
     send_draft,
     send_email,
 )
@@ -32,8 +33,12 @@ from aether.secret_env import EnvResolver
 
 class FakeCtx:
     def __init__(self) -> None:
+        from types import SimpleNamespace
+
         self.calls: list[tuple[str, str, dict]] = []
         self.sync: dict[str, str] = {}
+        self.staged: dict[str, str] = {}
+        self.app_settings = SimpleNamespace(reconcile_lookback_hours=24)
         self.history = {
             "historyId": "102",
             "history": [
@@ -98,6 +103,9 @@ class FakeCtx:
     async def set_sync(self, key: str, value: str) -> None:
         self.sync[key] = value
 
+    def stage_sync(self, key: str, value: str) -> None:
+        self.staged[key] = value
+
 
 def test_raw_message_is_valid_mime() -> None:
     raw = _raw_message(
@@ -156,7 +164,9 @@ async def test_history_poll_sets_a_cursor_then_returns_new_mail() -> None:
     result = await poll_new_mail(ctx)
     assert result["successful"] is True
     assert [m["id"] for m in result["data"]["messages"]] == ["m1", "m2"]
-    assert ctx.sync["history_id"] == "102"
+    # staged, not committed: the loop commits after the ingest succeeds
+    assert ctx.staged["history_id"] == "102"
+    assert ctx.sync["history_id"] == "100"
 
 
 @pytest.mark.asyncio
@@ -172,7 +182,22 @@ async def test_an_expired_history_cursor_resets_and_returns_recent_mail() -> Non
     result = await poll_new_mail(ctx)
     assert result["successful"] is True
     assert [m["id"] for m in result["data"]["messages"]] == ["m1"]
-    assert ctx.sync["history_id"] == "100"
+    assert ctx.staged["history_id"] == "100"
+
+
+@pytest.mark.asyncio
+async def test_the_reconcile_sweep_skips_ids_it_already_returned() -> None:
+    ctx = FakeCtx()
+
+    first = await poll_reconcile_mail(ctx)
+    assert first["successful"] is True
+    assert [m["id"] for m in first["data"]["messages"]] == ["m1"]
+    assert "m1" in json.loads(ctx.staged["reconcile_ids"])
+    query = [call for call in ctx.calls if call[1].endswith("/messages")][-1][2]["params"]
+    assert query["q"] == "newer_than:24h"
+
+    ctx.sync["reconcile_ids"] = ctx.staged["reconcile_ids"]
+    assert await poll_reconcile_mail(ctx) is None
 
 
 @pytest.mark.asyncio

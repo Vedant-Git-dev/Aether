@@ -15,6 +15,10 @@ import pytest
 from fakes import FakePersonJudge
 
 from aether.agent.traces import Traces
+from aether.alerts.migrate import routines_to_alerts
+from aether.alerts.notifications import AlertNotifications
+from aether.alerts.spec import AlertSpec
+from aether.alerts.store import AlertStore
 from aether.authz.approvals import Approvals
 from aether.authz.audit import AuditLog
 from aether.chat.ws import ChatHistory
@@ -32,11 +36,10 @@ from aether.memory.focus import Focus
 from aether.memory.indexes import MemoryIndex
 from aether.memory.lexical import LexicalIndex
 from aether.memory.summaries import Summaries
-from aether.memory.watches import WatchSpec, WatchStore
+from aether.origin import owner_message
 from aether.proactive.store import ProactiveStore
 from aether.providers.crypto import TokenKeyring
 from aether.providers.store import ProviderStore
-from aether.routines.store import Routines
 from aether.scheduler.jobs import Scheduler
 from aether.workspace.store import Workspace
 
@@ -104,12 +107,31 @@ async def test_no_canary_leaks_into_any_column(db, caplog) -> None:
             payload={"type": "tool", "tool": "gmail__send", "params": {"body": canary}},
         )
 
-        routines = Routines(db, cipher, audit)
-        await routines.create(
-            label=f"label {canary}",
-            trigger={"subject_contains": canary},
-            action={"tool": "gmail__send", "params": {"body": canary}},
+        alerts = AlertStore(db, cipher, audit)
+
+        # a legacy routine row, then the real migration: both the old sealed
+        # columns and the alert it becomes are swept for the canary
+        row = await db.fetchrow(
+            "INSERT INTO routines_legacy (label_enc, trigger_enc, action_enc, key_version)"
+            " VALUES ($1, $2, $3, $4) RETURNING id",
+            b"",
+            b"",
+            b"",
+            cipher.key_id,
         )
+        routine_id = int(row["id"])
+        await db.execute(
+            "UPDATE routines_legacy SET label_enc = $1, trigger_enc = $2, action_enc = $3"
+            " WHERE id = $4",
+            cipher.encrypt_text(f"label {canary}", aad=f"routines:label_enc:{routine_id}"),
+            cipher.encrypt_json({"contains": canary}, aad=f"routines:trigger_enc:{routine_id}"),
+            cipher.encrypt_json(
+                {"type": "tool", "tool": "gmail__send", "params": {"body": canary}},
+                aad=f"routines:action_enc:{routine_id}",
+            ),
+            routine_id,
+        )
+        await routines_to_alerts(db, cipher, alerts)
 
         traces = Traces(db, cipher)
         await traces.create(kind="turn", label=f"label {canary}", payload={"reply": canary})
@@ -146,15 +168,26 @@ async def test_no_canary_leaks_into_any_column(db, caplog) -> None:
         )
         summaries = Summaries(db, cipher)
         await summaries.upsert("daily", f"period {canary}", f"summary {canary}", [event.event_id])
-        watches = WatchStore(db, cipher, audit)
-        await watches.create(
-            spec=WatchSpec(
-                label=f"label {canary}",
+        alert = await alerts.create(
+            spec=AlertSpec(
+                title=f"label {canary}",
                 scope="mail",
                 sender=f"{canary}@example.com",
                 contains=canary,
             ),
-            origin="owner",
+            origin=owner_message({"message_ids": [canary]}),
+        )
+        assert alert is not None
+        notifications = AlertNotifications(db, cipher)
+        await notifications.enqueue(
+            event=__import__("aether.alerts.spec", fromlist=["AlertEvent"]).AlertEvent(
+                alert_id=alert.id,
+                event_id=1,
+                source="gmail",
+                kind="mail",
+                subject=f"subject {canary}",
+            ),
+            style="immediate",
         )
         await Entities(db, cipher, audit, FakePersonJudge([])).note(
             1, {"kind": "general", "note": f"note {canary}", "address": f"{canary}@x.com"}

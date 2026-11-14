@@ -31,7 +31,7 @@ export default function TracesPage() {
         <Card>
           <EmptyState
             title="No traces yet."
-            sub="Aether records the reasoning behind every action — conversations, routines, scheduled actions and approved calls land here."
+            sub="Aether records the reasoning behind every action — conversations, alerts, scheduled actions and approved calls land here."
           />
         </Card>
       ) : (

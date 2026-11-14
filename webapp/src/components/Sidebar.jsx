@@ -4,6 +4,7 @@ import Icon from "./Icon.jsx";
 const NAV_ITEMS = [
   ["activity", "Live Activity"],
   ["tasks", "Tasks"],
+  ["alerts", "Alerts"],
   ["memory", "Memory & Context"],
   ["audit", "Audit Log"],
   ["traces", "Decision Traces"],

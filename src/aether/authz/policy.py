@@ -6,7 +6,7 @@ before it executes. First match wins:
 1. user rules from config.yaml — explicit trust or distrust, a regex on the
    tool name, optionally combined with a regex on the call parameters
 2. set_config — personal tuning (agent.*, salience.*, llm.*, and the
-   background-work sections proactive.*/workbench.* — the user's own
+   background-work sections proactive.*/alerts.*/workbench.* — the user's own
    budgets and switches, with the worst case a capped retry) -> ALLOW;
    a connect the user just drove in chat (origin "walk" from the /apps
    pick-and-paste — a loop-internal argument the model can never produce)
@@ -67,22 +67,18 @@ class Ruling:
 # sharing a stored file back to the owner is the same trust line as any chat
 # reply, and anything further out (an email, another person) is a different
 # call that parks; verify_integrity because it only reads Aether's own audit
-# chain back to the owner, the routine tools because they manage Aether's
-# own stored instructions (delete_routine removes a stored trigger, not
+# chain back to the owner, the alert tools because they manage Aether's
+# own stored instructions (a delete removes a stored condition, not
 # anything external), and the workspace tools because they only read/write
 # Aether's own Markdown workspace on disk. edit_video writes only a new row
 # in Aether's own encrypted store from a sandbox job under the media
 # budget — the file goes nowhere until a separate act sends it. Checked
-# before the risky verbs, which is what lets "delete_routine" and
+# before the risky verbs, which is what lets "delete_alert" and
 # "workspace_remove" (if ever added) win over the bare "delete"/"remove".
 _INTERNAL = re.compile(
     r"^(?!.*__)(memory_\w+|note_entity|schedule_action|request_screen_capture"
     r"|look_at_media|share_media|edit_video|get_pending_approvals|send_chat_message"
-    r"|create_routine|list_routines"
-    r"|set_routine_enabled|delete_routine"
-    r"|create_watch|list_watches|set_watch_enabled|delete_watch"
-    r"|create_alert|update_alert|delete_alert"
-    r"|list_alerts|set_alert_enabled"
+    r"|list_alerts|create_alert|offer_alert|update_alert|delete_alert"
     r"|explain_decision|verify_integrity"
     r"|get_config|workspace_\w+)$"
 )
@@ -92,15 +88,16 @@ _INTERNAL = re.compile(
 # so an MCP server that happens to be named "memory" can never inherit
 # this rule. Web research and image generation keep their own rules.
 _INTERNAL_WIRE = re.compile(
-    r"^(?:tools|memory|approvals|schedule|screen|routines|alerts|watches|traces|audit"
+    r"^(?:tools|memory|approvals|schedule|screen|alerts|traces|audit"
     r"|config|workspace)__[a-z_]+$"
     r"|^(?:message__note|media__(?:find|view|share|edit))$"
 )
 
-# A create call with no quote from the user is an offer, not a silent write.
-# The policy parks it for a one-tap card; the approval carries the user's
-# decision, and only then does the tool arm it.
-_ALERT_CREATE = re.compile(r"^(?:alerts__create|create_alert|watches__create|create_watch)$")
+# An offer is always the user's decision, whatever the turn: the card is
+# the point. A direct create does not park here — the tool layer reads the
+# turn's provenance, so content that was read can never arm one even if it
+# somehow reaches a direct call.
+_ALERT_OFFER = re.compile(r"^(?:alerts__offer|offer_alert)$")
 
 # Verbs that reach an external system or are hard to undo. The verb must
 # start a word inside the name ("fetch_and_delete" is risky, "resend" and
@@ -139,7 +136,15 @@ _MEDIA_GENERATION = re.compile(r"^(?:generate_image|media__generate)$")
 # apply silently. The airtight direction matters because an approved call
 # is carried out without re-classifying — park-time is the only gate a
 # security write passes, and the worst case is an extra approval tap.
-_CONFIG_TUNING_ROOTS = {"agent", "salience", "llm", "proactive", "workbench", "providers"}
+_CONFIG_TUNING_ROOTS = {
+    "agent",
+    "salience",
+    "llm",
+    "proactive",
+    "alerts",
+    "workbench",
+    "providers",
+}
 _CONFIG_SECURITY_ROOTS = {"contacts", "authz", "messaging", "mcp_servers"}
 
 
@@ -185,6 +190,8 @@ class Policy:
         *,
         internal: bool = False,
         aliases: tuple[str, ...] = (),
+        native: bool = False,
+        declared: str | None = None,
     ) -> Ruling:
         params = params or {}
         names = (tool_name, *aliases)
@@ -202,6 +209,22 @@ class Policy:
             if connect is not None:
                 return connect
             return self._classify_set_config(params)
+        if native and declared is not None:
+            # a native tool's tier is its manifest's declaration, not a
+            # regex over its name. An unmanifested tool falls through to the
+            # legacy classifier, and the boot audit (on by default) refuses
+            # to start with one, so production never reaches that path.
+            if declared == "approval":
+                return Ruling(
+                    Decision.REQUIRE_APPROVAL,
+                    "builtin:manifest-approval",
+                    "this tool's declared rule always asks the user first",
+                )
+            return Ruling(
+                Decision.ALLOW,
+                "builtin:manifest",
+                "this tool's declared rule allows it",
+            )
         if effect == "read":
             return Ruling(
                 Decision.ALLOW,
@@ -214,11 +237,7 @@ class Policy:
                 "builtin:provider-write" if effect == "write" else "builtin:provider-destructive",
                 "changes something in a connected app — the user decides that with one tap",
             )
-        if (
-            internal
-            and _ALERT_CREATE.match(tool_name)
-            and not str(params.get("basis") or "").strip()
-        ):
+        if internal and _ALERT_OFFER.match(tool_name):
             return Ruling(
                 Decision.REQUIRE_APPROVAL,
                 "builtin:alert-offer",

@@ -56,7 +56,9 @@ class AppDefinition:
     provider: str
     scopes: tuple[str, ...]
     tools: tuple[ToolDefinition, ...]
-    poll: PollDefinition | None = None
+    # a poll is an independent schedule: the history sweep and the lookback
+    # reconcile run on their own clocks and report their own health
+    polls: tuple[PollDefinition, ...] = ()
     api_base: str = ""
     note: str = ""
 
@@ -142,6 +144,15 @@ class ProviderAppView:
     token_expires: bool = False
     token_url: str = ""
     note: str = ""
+    # plain words about the app's own polling, authored by the backend
+    poll_note: str = ""
+    poll_failing: bool = False
+    # the scope audit: what the app asks for, what the grant holds, and the
+    # plain sentence when the grant is narrower than the request
+    requested_scopes: tuple[str, ...] = ()
+    granted_scopes: tuple[str, ...] = ()
+    missing_scopes: tuple[str, ...] = ()
+    scope_note: str = ""
 
 
 @dataclass(frozen=True)
@@ -149,6 +160,10 @@ class PollResult:
     app: str
     tool: str
     payload: Any
+    # the poll that produced it and the sealed cursor values to commit only
+    # after the payload is durably ingested; an empty payload commits at once
+    poll_key: str = ""
+    cursor: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
