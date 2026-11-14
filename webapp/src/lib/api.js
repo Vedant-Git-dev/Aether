@@ -2,21 +2,33 @@
 // it would land in the server's access logs (and any proxy's). 204 maps to
 // null, and FastAPI's `detail` field is extracted for error text.
 const TOKEN_KEY = "aether_token";
+const ETAGS = new Map();
 
 export const token = () => localStorage.getItem(TOKEN_KEY) || "";
 export const hasToken = () => Boolean(token());
 
 export async function api(path, opts) {
   const { headers, ...rest } = opts || {};
+  const method = String(rest.method || "GET").toUpperCase();
+  const known = method === "GET" ? ETAGS.get(path) : "";
   const res = await fetch(path, {
     ...rest,
-    headers: { "x-aether-token": token(), ...headers },
+    headers: {
+      "x-aether-token": token(),
+      ...(known ? { "if-none-match": known } : {}),
+      ...headers,
+    },
   });
+  // 304 means the list is byte-for-byte the one we already hold — callers
+  // keep their state and nothing crosses the wire
+  if (res.status === 304) return null;
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.json()).detail || detail; } catch { /* not json */ }
     throw new Error(detail || `request failed (${res.status})`);
   }
+  const etag = res.headers.get("ETag");
+  if (etag && method === "GET") ETAGS.set(path, etag);
   if (res.status === 204) return null;
   return res.json();
 }

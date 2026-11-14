@@ -36,6 +36,7 @@ from urllib.parse import urlsplit
 import asyncpg
 import yaml
 
+from .agent.loop import _poll_empty
 from .agent.traces import Traces
 from .alerts.engine import AlertEngine
 from .alerts.notifications import AlertNotifications
@@ -117,11 +118,11 @@ class ReplayOptions:
     seed_deliveries: int = 40
     messages: int = 20
     mails: int = 12
-    panel_mode: str = "poll"  # poll (baseline) | visit | off
+    panel_mode: str = "off"  # off (post-fix default) | visit | poll (baseline)
     panel_hours: float = 2.0
     tick_seconds: float = 30.0
     scheduler_seconds: float = 20.0
-    backfill_seconds: float = 60.0
+    backfill_seconds: float = 900.0
     provider_poll_minutes: float = 5.0
     mcp_poll_minutes: float = 5.0
     restarts_per_day: int = 1
@@ -293,6 +294,7 @@ def load_options(config: AppConfig, **overrides: object) -> ReplayOptions:
         "mails": config.db.replay_mails_per_day,
         "panel_hours": config.db.replay_panel_hours,
         "tick_seconds": float(config.agent.tick_seconds),
+        "backfill_seconds": float(config.db.backfill_seconds),
     }
     base.update({key: value for key, value in overrides.items() if value is not None})
     return ReplayOptions(**base)  # type: ignore[arg-type]
@@ -586,6 +588,14 @@ class _ReplayDay:
         self._message_number = 0
         self._mail_number = 0
         self._stamp = datetime.fromtimestamp(clock.now, UTC)
+        # Phase 1 idle state: a background burst cadence, dirty flags for the
+        # work that actually changed, and the runtime's in-memory poll cache
+        self._next_background_at = self._stamp
+        self._owner_loaded = False
+        self._events_pending = True
+        self._delivery_pending = False
+        self._provider_loaded = False
+        self._provider_sync: dict[tuple[str, str, str], str] = {}
 
     def _now(self) -> datetime:
         return datetime.fromtimestamp(self.clock.now, UTC)
@@ -598,21 +608,42 @@ class _ReplayDay:
         )
         await self.b.lexical.rebuild(self.b.pool, self.b.cipher)
         self.last_event_id = await self.b.events.max_id()
+        # the scheduler worker's boot re-arm also teaches the due gate
+        await self.b.scheduler.overdue_pending()
 
     async def agent_tick(self) -> None:
-        """The quiet-tick DB footprint: nothing new, yet every check runs."""
+        """The tick's DB footprint under the Phase 1 idle rules.
+
+        Non-urgent checks ride the background window. A dirty flag (a
+        delivery, a stored event) pulls its own check forward; everything
+        else is a datetime comparison in memory.
+        """
         now = self._now()
-        await self.b.approvals.expire_overdue()
-        await self.b.deliveries.undelivered(5)
-        await self.b.deliveries.undelivered(5)
-        await self.b.entities.owner_addresses()
-        await self.b.inbound.stale_unchecked(now - timedelta(seconds=600))
-        await self.b.events.list_since(self.last_event_id, limit=100)
-        await self.b.path.tick(now)
-        await self.b.alert_engine.tick(now)
+        background_due = now >= self._next_background_at
+        if background_due:
+            self._next_background_at = now + timedelta(
+                minutes=self.config.db.background_window_minutes
+            )
+        if background_due:
+            await self.b.approvals.expire_overdue()
+        if background_due or self._delivery_pending:
+            self._delivery_pending = False
+            await self.b.deliveries.undelivered(5)
+            await self.b.deliveries.undelivered(5)
+        if background_due or not self._owner_loaded:
+            await self.b.entities.owner_addresses()
+            self._owner_loaded = True
+        if background_due:
+            await self.b.inbound.stale_unchecked(now - timedelta(seconds=600))
+        if background_due or self._events_pending:
+            self._events_pending = False
+            await self.b.events.list_since(self.last_event_id, limit=100)
+        if background_due:
+            await self.b.path.tick(now)
+            await self.b.alert_engine.tick(now)
 
     async def backfill_poll(self) -> None:
-        """The vector backfill loop when caught up: one SELECT every minute."""
+        """The backfill loop when caught up: one read per fallback interval."""
         await self.b.vectors.backfill(50)
 
     async def scheduler_claim(self) -> None:
@@ -622,47 +653,59 @@ class _ReplayDay:
     async def provider_poll(self) -> None:
         """The DB side of ProviderRuntime.poll_due(), with no network call.
 
-        It reads the connection rows and both cursor values before it can
-        know whether a poll is due, then writes the poll state when it is —
-        exactly the shape of runtime.py:620-682 and _set_poll_state.
+        Phase 1 shape: the connection rows and poll state are read once,
+        then kept in memory; an unchanged poll writes nothing. This mirrors
+        runtime.py's cache and _set_poll_state.
         """
         now = self._now()
-        connections = await self.b.provider_store.list()
-        if not connections:
-            return
+        if not self._provider_loaded:
+            connections = await self.b.provider_store.list()
+            self._provider_loaded = True
+            if not connections:
+                return
         for poll_key, interval in (
             ("new_mail", self.options.provider_poll_minutes),
             ("reconcile_mail", 60.0),
         ):
-            failures_raw = await self.b.provider_store.get_sync(
-                "gmail", "gmail", f"poll:{poll_key}:failures"
-            )
+            failures_raw = await self._cached_sync(f"poll:{poll_key}:failures")
             try:
                 failures = max(0, int(failures_raw or 0))
             except (TypeError, ValueError):
                 failures = 0
             delay = next_poll_delay(interval, failures=failures, jitter=0.0)
-            last_raw = await self.b.provider_store.get_sync(
-                "gmail", "gmail", f"poll:{poll_key}:last"
-            )
-            last = _parse_time(last_raw)
+            last = _parse_time(await self._cached_sync(f"poll:{poll_key}:last"))
             if last is not None and now < last + timedelta(minutes=delay):
                 continue
-            await self.b.provider_store.set_sync(
-                "gmail", "gmail", f"poll:{poll_key}:last", now.isoformat()
-            )
-            await self.b.provider_store.set_sync("gmail", "gmail", f"poll:{poll_key}:failures", "0")
-            await self.b.provider_store.set_sync(
-                "gmail", "gmail", f"poll:{poll_key}:last_ok", now.isoformat()
-            )
+            # memory only: a healthy poll schedules itself without a write
+            self._provider_sync[("gmail", "gmail", f"poll:{poll_key}:last")] = now.isoformat()
+            if failures:
+                await self._cached_set(f"poll:{poll_key}:failures", "0")
+            if not await self._cached_sync(f"poll:{poll_key}:last_ok"):
+                await self._cached_set(f"poll:{poll_key}:last_ok", now.isoformat())
+
+    async def _cached_sync(self, key: str) -> str | None:
+        cache_key = ("gmail", "gmail", key)
+        if cache_key not in self._provider_sync:
+            value = await self.b.provider_store.get_sync("gmail", "gmail", key)
+            self._provider_sync[cache_key] = value or ""
+        return self._provider_sync[cache_key] or None
+
+    async def _cached_set(self, key: str, value: str) -> None:
+        cache_key = ("gmail", "gmail", key)
+        if self._provider_sync.get(cache_key) == value:
+            return
+        await self.b.provider_store.set_sync("gmail", "gmail", key, value)
+        self._provider_sync[cache_key] = value
 
     async def mcp_poll(self) -> None:
-        """One configured source poll per interval: audit, then ingest.
+        """One configured source poll per interval.
 
-        The real path writes the audit row and ingests the poll result even
-        when the result is empty; ingest dedups the repeat, so the writes are
-        the cost that remains.
+        Phase 1: a poll that found nothing writes nothing — no audit row,
+        no event. Only a result with content is audited and ingested.
         """
+        result = self._mcp_result()
+        if _poll_empty(result):
+            return
         await self.b.audit.append(
             actor="scheduler",
             tool_name="mail__list_messages",
@@ -674,19 +717,25 @@ class _ReplayDay:
         await self.b.events.ingest(
             source="mail",
             kind="poll:list_messages",
-            payload={"args": {}, "result": ""},
+            payload={"args": {}, "result": result},
             occurred_at=self._now(),
         )
+        self._events_pending = True
+
+    def _mcp_result(self) -> str:
+        """The replay's source poll finds new mail only when the day's own
+        mails arrived since the last pass; ordinary passes are empty."""
+        return ""
 
     async def panel_reads(self) -> None:
-        """One round of every panel list the old pollers fetched."""
-        await self.b.approvals.list_pending()
+        """One round of every panel list an explicit page load fetches."""
+        await self.b.approvals.list_pending(limit=100)
         await self.b.events.recent(limit=100)
-        await self.b.audit.recent(limit=200)
-        await self.b.traces.recent(limit=50)
+        await self.b.audit.recent(limit=100)
+        await self.b.traces.recent_summaries(limit=50)
 
     async def panel_approvals(self) -> None:
-        await self.b.approvals.list_pending()
+        await self.b.approvals.list_pending(limit=100)
 
     async def message(self) -> None:
         """One inbound message's full DB footprint, minus the model call."""
@@ -703,6 +752,7 @@ class _ReplayDay:
             payload={"text": text, "chat_ref": "web"},
             occurred_at=now,
         )
+        self._events_pending = True
         await self.b.vectors.wait_idle()
         if result.event_id is not None:
             self.last_event_id = max(self.last_event_id, result.event_id)
@@ -717,6 +767,7 @@ class _ReplayDay:
         delivery = await self.b.deliveries.record_queued("web", reply)
         if delivery is not None:
             await self.b.deliveries.mark_sent(delivery.id)
+            self._delivery_pending = True
         await self.b.traces.create(
             kind="turn",
             label=f"turn {number}",
@@ -747,6 +798,7 @@ class _ReplayDay:
             },
             occurred_at=self._now(),
         )
+        self._events_pending = True
         await self.b.vectors.wait_idle()
         if result.event_id is not None:
             self.last_event_id = max(self.last_event_id, result.event_id)

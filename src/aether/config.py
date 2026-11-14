@@ -117,8 +117,18 @@ class DatabaseConfig(BaseModel):
     # every query is measured for `aether db-stats` and the panel
     accounting: bool = True
     # the shared pool: one per process, reused by every store and loop
-    pool_min_size: int = 1
+    pool_min_size: int = 0
     pool_max_size: int = 5
+    # a connection idle longer than this is closed, so the database can
+    # reach its idle window without a client holding it awake
+    pool_idle_seconds: float = 60.0
+    # non-urgent background work (expiry, delivery checks, reminders,
+    # observations) runs in bursts this far apart
+    background_window_minutes: float = 15.0
+    # the vector backfill retry cadence once it has drained
+    backfill_seconds: float = 900.0
+    # hard cap for one panel list page
+    panel_page_size: int = 100
     # one simulated day's regression ceilings (the replay harness reports
     # against these; CI enforces them once the post-fix baseline is set)
     replay_messages_per_day: int = 20
@@ -126,7 +136,10 @@ class DatabaseConfig(BaseModel):
     replay_panel_hours: float = 2.0
     daily_query_budget: int = 2500
     daily_response_budget_mb: float = 120.0
-    daily_active_minutes_budget: int = 120
+    # 100 CU-hours/month is about 3.33 CU-hours/day; at 0.25 CU that is
+    # ~13.3 active hours a day. 600 minutes (10 h) is the post-fix ceiling
+    # with headroom, and a quiet day should sit far below it.
+    daily_active_minutes_budget: int = 600
     # the provider's published free-tier limits and compute shape, so the
     # projection is one config change from the truth when the plan changes
     monthly_compute_cu_hours: float = 100.0

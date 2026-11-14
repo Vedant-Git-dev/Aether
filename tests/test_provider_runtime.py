@@ -107,8 +107,13 @@ class FakeStore:
         self.connection = connection
         self.status = connection.status if connection is not None else ""
         self.sync: dict[tuple[str, str, str], str] = {}
+        # call counters: the idle rule's evidence
+        self.list_calls = 0
+        self.get_calls = 0
+        self.set_calls = 0
 
     async def list(self):
+        self.list_calls += 1
         return [self.connection] if self.connection is not None else []
 
     async def get(self, provider: str):
@@ -132,9 +137,11 @@ class FakeStore:
         self.connection = None
 
     async def get_sync(self, provider: str, app: str, key: str):
+        self.get_calls += 1
         return self.sync.get((provider, app, key))
 
     async def set_sync(self, provider: str, app: str, key: str, value: str) -> None:
+        self.set_calls += 1
         self.sync[(provider, app, key)] = value
 
 
@@ -444,7 +451,10 @@ async def test_poll_runs_once_then_waits_for_the_interval() -> None:
     assert results[0].payload["data"]["messages"] == [{"id": "1"}]
     assert results[0].cursor == {"cursor": "2"}
     assert ("demo", "demo", "cursor") not in store.sync  # waits for the ingest
-    assert store.sync[("demo", "demo", "poll:new:last")]
+    # `last` is a memory-only schedule: a healthy poll writes no state that
+    # did not change, so this value is readable but not persisted
+    assert await runtime.get_sync("demo", "demo", "poll:new:last")
+    assert ("demo", "demo", "poll:new:last") not in store.sync
 
     await runtime.commit_poll(results[0])
     assert store.sync[("demo", "demo", "cursor")] == "2"
@@ -669,3 +679,39 @@ async def test_save_client_writes_both_names_and_never_echoes_values() -> None:
     }
     assert recipe["configured"] is True
     assert "client-secret" not in str(recipe)
+
+
+@pytest.mark.asyncio
+async def test_an_empty_poll_is_a_quiet_no_op_once_warm() -> None:
+    connection = ProviderConnection(
+        provider="demo",
+        auth_mode="oauth",
+        access_token="token",
+        scopes="read",
+        status="active",
+    )
+    store = FakeStore(connection)
+
+    async def empty(ctx):
+        return None
+
+    app = replace(APP, polls=(PollDefinition(key="new", every_minutes=0.0001, handler=empty),))
+    runtime = _runtime(
+        store,
+        FakeOAuth(),
+        lambda request: httpx.Response(200),
+        definitions=[replace(PROVIDER, apps=(app,))],
+    )
+    now = datetime.now(UTC)
+    assert await runtime.poll_due(now) == []
+
+    # warm: the connection row and both poll state keys are cached, and the
+    # first success wrote last_ok once. Every later empty poll is zero queries.
+    reads = store.get_calls
+    writes = store.set_calls
+    loads = store.list_calls
+    assert await runtime.poll_due(now + timedelta(seconds=30)) == []
+    assert await runtime.poll_due(now + timedelta(seconds=60)) == []
+    assert store.get_calls == reads
+    assert store.set_calls == writes
+    assert store.list_calls == loads

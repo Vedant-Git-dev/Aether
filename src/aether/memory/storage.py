@@ -300,4 +300,3 @@ async def reset_application_tables(pool: Any, tables: str) -> None:
 async def database_size_bytes(pool: Any) -> int:
     """The scratch database's on-disk size — the replay's seed figure."""
     return int(await pool.fetchval("SELECT pg_database_size(current_database())"))
-

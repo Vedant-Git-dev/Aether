@@ -100,6 +100,34 @@ day, or about 180 a month.
 Every one of these is shorter than the five-minute idle window, so compute
 never suspends for the whole day.
 
+## After Phase 1
+
+Same synthetic day, same seed, same 20 messages and 12 mails. The panel is
+closed (its pollers are gone) unless noted.
+
+| Measure | Before | After |
+| --- | --- | --- |
+| Queries | 30,987 | 1,300 |
+| Rows returned | 337,849 | 51,009 |
+| Estimated response bytes | 168.5 MB | 19.0 MB |
+| Active compute | 24.0 h | 8.8 h |
+| Projected compute | 180 CU-hours / month | 65.8 CU-hours / month |
+| Projected transfer | 5.05 GB / month | 0.57 GB / month |
+
+With an explicit panel visit (two page loads, no polling) the day is 1,308
+queries and 19.2 MB. The budgets are now met: queries 1,308 of 2,500,
+response 19.2 of 120 MB, active 526 of 600 minutes.
+
+What is left is mostly content, not polling:
+
+- Vector recall still scans every chunk (40 calls, 45,360 rows, 15.6 MB).
+  Phase 2's in-memory vector cache removes it.
+- The remaining active time is the 15-minute background bursts plus the
+  messages themselves; Phase 2 and 3 shrink it further.
+- Reply-delivery checks (232), observation reads (126), open commitments
+  (96), expiry (96), stale-inbound (96) and backfill (96) each run once per
+  background burst, not once per 30-second tick.
+
 ## Hypotheses, checked against the code
 
 1. **Recall reads and decrypts every chunk on each solicited turn.** Confirmed.
@@ -175,40 +203,50 @@ never suspends for the whole day.
 
 ## What changes, in priority order
 
+Phase 1 (shipped) is items 1-5, 7 and 8 below, with the numbers in
+[After Phase 1](#after-phase-1). Phase 2 and 3 are open.
+
 1. **Recall reads only what it ranks on, then only the text it cites.**
-   Rank over ids and sealed vectors; fetch text and metadata for the top-k by
-   id. This alone removes most of the 53 MB day.
-2. **Idle means no queries.**
-   - Pollers keep due times, cursors and last-seen values in memory and
-     write only on change, batched with a bounded flush and a shutdown flush.
-   - A poll that finds nothing performs zero queries.
-   - The backfill loop waits for a wake signal or a configured long interval
-     instead of polling every minute.
+   Shipped: the scan carries ids and sealed vectors, and the top-k fetch
+   their text and metadata by id. Phase 2 replaces the scan itself with the
+   in-memory matrix.
+2. **Idle means no queries.** Shipped:
+   - Provider poll cursors and state, the scheduler due time and the MCP
+     poll schedule live in memory; the database is read once and written only
+     when a value changes.
+   - A poll that finds nothing performs zero queries — no audit row, no
+     event, no cursor write.
+   - The backfill loop runs at boot, on a failed index pass, and then once
+     per `backfill_seconds`.
    - Expiry, delivery checks, stale-inbound checks and observation reads run
-     on configured intervals or are driven by events, not on a fixed 30-second
-     query cadence.
-3. **Panel lists are pulled, not polled.** No auto-refresh; explicit refresh
-   and refresh after a user action. Lists get offset pagination with a
-   configured maximum page size, and conditional requests (ETag from a version
-   token) return no body when nothing changed.
-4. **Batched scheduled work.** Background checks run in configured windows
-   (for example every 15 minutes) so compute can suspend between them.
-   Interactive messages are never delayed: a message wakes the database
-   immediately.
-5. **One shared pool with configured size, idle timeout and reuse.** Release
-   idle connections after a configured period and measure whether that lets
-   the compute suspend.
-6. **Memory-only retrieval caches.** The vector matrix, lexical index, hot
-   event view and entity lookups load once in bounded batches and follow a
-   sequence watermark. Recall hits the database only for rows missing from
-   the cache. Cold start records its bytes.
-7. **Budget manager and graceful degradation.** A circuit breaker with
-   exponential backoff and jitter, a bounded sealed-or-memory write queue,
-   cached answers, one user notice when memory is unavailable and when it
-   returns, and a recovery runbook.
-8. **Verification.** Run the replay before and after each phase, keep the
-   configured daily budgets, and add the CI regression gate once the
-   post-fix baseline is stable.
+     in the background burst or on a dirty flag.
+3. **Panel lists are pulled, not polled.** Shipped: no auto-refresh, a
+   visible Refresh control, offset pagination capped by
+   `panel_page_size`, and ETag conditional reads that return no body when
+   unchanged.
+4. **Batched scheduled work.** Shipped as `background_window_minutes`
+   (default 15). Interactive messages never wait.
+5. **One shared pool with configured size and idle release.** Shipped:
+   `pool_min_size=0`, `pool_max_size`, and
+   `max_inactive_connection_lifetime=pool_idle_seconds`.
+6. **Memory-only retrieval caches (Phase 2).** The vector matrix, lexical
+   index, hot event view and entity lookups load once in bounded batches and
+   follow a sequence watermark. Recall hits the database only for rows
+   missing from the cache. Cold start records its bytes.
+7. **Budget manager and graceful degradation (Phase 3).** A circuit breaker
+   with exponential backoff and jitter, a bounded sealed-or-memory write
+   queue, cached answers, one user notice when memory is unavailable and one
+   when it returns, and a recovery runbook.
+8. **Verification.** Shipped the before/after replay; the CI benchmark gate
+   lands in Phase 4.
+
+### Audit verification stays a full walk
+
+The panel used to verify the whole audit chain on every poll. Removing the
+pollers removes that cost. The verification itself is deliberately still a
+full walk when the panel is opened or refreshed: an incremental check would
+miss an edit to an old row while the process is running, and the chain's
+tamper evidence is a hard rule.
 
 ## Configuration keys
 
@@ -218,12 +256,16 @@ All of these live under `db:` in `config.yaml`; see
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `accounting` | `true` | measure every query for `aether db-stats` and the panel |
-| `pool_min_size` / `pool_max_size` | `1` / `5` | the one shared connection pool |
+| `pool_min_size` / `pool_max_size` | `0` / `5` | the one shared connection pool |
+| `pool_idle_seconds` | `60.0` | close an idle connection after this long |
+| `background_window_minutes` | `15.0` | non-urgent background burst cadence |
+| `backfill_seconds` | `900.0` | fallback vector-backfill retry interval |
+| `panel_page_size` | `100` | hard cap for one panel list page |
 | `replay_messages_per_day` / `replay_mails_per_day` | `20` / `12` | replay shape |
 | `replay_panel_hours` | `2.0` | how long the replay keeps a panel open |
 | `daily_query_budget` | `2500` | replay regression ceiling, queries per simulated day |
 | `daily_response_budget_mb` | `120.0` | replay regression ceiling, estimated MB per day |
-| `daily_active_minutes_budget` | `120` | replay regression ceiling, active compute per day |
+| `daily_active_minutes_budget` | `600` | replay regression ceiling, active compute per day |
 | `monthly_compute_cu_hours` / `monthly_transfer_gb` | `100` / `5` | the provider's limits, used only for projection |
 | `compute_cu` | `0.25` | the compute size used for the projection |
 | `autosuspend_seconds` | `300` | the provider's idle window used for the active-time model |

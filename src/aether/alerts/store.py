@@ -164,9 +164,11 @@ class AlertStore:
             converted_from=converted_from,
         )
 
-    async def list(self, limit: int = 50) -> list[Alert]:
+    async def list(self, limit: int = 50, offset: int = 0) -> list[Alert]:
         rows = await self._pool.fetch(
-            f"SELECT {_COLUMNS} FROM alerts ORDER BY id DESC LIMIT $1", limit
+            f"SELECT {_COLUMNS} FROM alerts ORDER BY id DESC LIMIT $1 OFFSET $2",
+            limit,
+            max(0, offset),
         )
         return [self._to_alert(row) for row in rows]
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import re
@@ -223,6 +224,41 @@ WHY_REPLY_WORDS = frozenset({"why", "explain"})
 # hears about the state once, and once again when it recovers — never per
 # failure. A server with no configured poll has no heartbeat to watch.
 POLL_FAILURES_BEFORE_DOWN = 2
+
+
+def _poll_empty(value: Any) -> bool:
+    """True when a poll result carries nothing a user or model could read.
+
+    Provider envelopes wrap their payload in `data`; a message list, a
+    string or a mapping of empty values all count as empty. An empty poll
+    must not write an audit row or an event — that is the whole point of
+    the idle rule.
+    """
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return len(value) == 0
+    if isinstance(value, dict):
+        return all(_poll_empty(item) for item in value.values())
+    if isinstance(value, str):
+        return not value.strip()
+    if value is None:
+        return True
+    # numbers, booleans and other scalars are metadata a provider always
+    # sends (a count, an "ok"); they are not content a user could read
+    return True
+
+
+def _poll_digest(value: Any) -> str:
+    """A stable digest of one poll's result, used to skip an unchanged replay."""
+    try:
+        canonical = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:
+        canonical = repr(value)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
 
 # A proactive reply that matches one already sent to this chat inside this
 # window, or that mostly echoes a question already closed, is the stale-
@@ -793,6 +829,17 @@ class AgentLoop:
         # the owner's own addresses, refreshed once per turn so mail renders
         # "(your other address)" without an async lookup per event line
         self._owner_addresses: set[str] = set()
+        self._owner_addresses_loaded = False
+        # non-urgent background work runs in bursts: a quiet tick asks a
+        # datetime, not the database. Dirty flags pull the next burst
+        # forward when something relevant actually changed.
+        self._next_background_at = datetime.now(UTC)
+        self._delivery_pending = True
+        self._events_pending = True
+        self._last_poll_digest: dict[str, str] = {}
+        self._watched_deliveries = self._deliveries
+        if self._deliveries is not None and hasattr(self._deliveries, "watch"):
+            self._deliveries.watch(self._delivery_changed)
         # the guided /config walk in progress, if any — memory only
         self._wizard: ConfigWizard | None = None
         # the guided /apps walk in progress, if any — same rules, memory only
@@ -841,6 +888,7 @@ class AgentLoop:
             # catch-up indexing runs beside the answering loop, never on
             # it — a turn never waits on history draining
             if self._vectors is not None and self._vectors.enabled:
+                self._vectors.wake_backfill()
                 self._backfill_task = asyncio.create_task(
                     self._backfill_loop(), name="vector-backfill"
                 )
@@ -871,9 +919,10 @@ class AgentLoop:
 
     async def _backfill_loop(self) -> None:
         """Index the events that predate vector memory (or lost a race with
-        a rate limit), 50 oldest at a time: tight passes while history is
-        draining, a minute's rest once caught up. A failed pass just
-        retries — indexed_at is the ledger, so nothing is ever lost."""
+        a rate limit), 50 oldest at a time. It runs at boot, immediately
+        after a failed background index pass, and otherwise once per
+        `db.backfill_seconds` — a caught-up loop is not a minute-by-minute
+        database poll. `indexed_at` is the ledger, so nothing is lost."""
         assert self._vectors is not None
         while self._running:
             try:
@@ -881,11 +930,20 @@ class AgentLoop:
             except Exception:
                 log.exception("vector backfill pass failed — pausing before the retry")
                 handled = None
-            await asyncio.sleep(1 if handled else 60)
+            if handled:
+                # history is still draining: keep the next pass immediate
+                await asyncio.sleep(0)
+                continue
+            await self._vectors.wait_backfill(self._config.db.backfill_seconds)
 
     def notify(self) -> None:
         """Wake the loop early — used after screen captures, poll results,
         anything the API layer knows the agent will want to see now."""
+        self._woken.set()
+
+    def _delivery_changed(self) -> None:
+        """A delivery was queued or failed: the next tick owes it a look."""
+        self._delivery_pending = True
         self._woken.set()
 
     def submit_message(self, message: InboundMessage) -> None:
@@ -1092,6 +1150,19 @@ class AgentLoop:
             wait = min(wait, max(0.05, remaining))
         return wait
 
+    def _take_background_window(self, now: datetime) -> bool:
+        """True when this tick owns the non-urgent database pass.
+
+        The window turns many 30-second polls into one burst every
+        `db.background_window_minutes`. Dirty flags still pull a pass
+        forward; an interactive message never consults the window.
+        """
+        if now < self._next_background_at:
+            return False
+        minutes = max(0.1, float(self._config.db.background_window_minutes))
+        self._next_background_at = now + timedelta(minutes=minutes)
+        return True
+
     async def _run_proactive_tick(self) -> None:
         """Turn due commitment reminders into an unprompted turn.
 
@@ -1291,6 +1362,13 @@ class AgentLoop:
 
     async def _tick(self) -> None:
         anchor = self._last_event_id
+        if self._deliveries is not None and self._deliveries is not self._watched_deliveries:
+            if hasattr(self._deliveries, "watch"):
+                self._deliveries.watch(self._delivery_changed)
+            self._watched_deliveries = self._deliveries
+            self._delivery_pending = True
+        now = datetime.now(UTC)
+        background_due = self._take_background_window(now)
 
         # (a) due source polls first, so their results are observed this
         # tick — unless someone is waiting on a reply: a message never
@@ -1314,8 +1392,9 @@ class AgentLoop:
 
         # (a3) pending approvals past their TTL flip to expired and are
         # audited — without this they'd sit as 'pending' forever, and every
-        # pending-approvals reader would keep offering dead decisions
-        if self._approvals is not None:
+        # pending-approvals reader would keep offering dead decisions.
+        # Expiry precision is minutes, so it rides the background window.
+        if self._approvals is not None and background_due:
             try:
                 await self._approvals.expire_overdue()
             except Exception:
@@ -1429,18 +1508,31 @@ class AgentLoop:
         # model call, and the record also becomes an event for the panel.
         # That event is stripped from the model's observations below — a
         # delivery hiccup must never trigger a turn or read as a new request.
-        await self._record_delivery_notices()
-        self._delivery_lines = await self._redeliver_failed()
-        await self._refresh_owner_addresses()
+        # The delivery store wakes the loop when a send is queued or fails,
+        # so a quiet tick pays nothing here.
+        if background_due or self._delivery_pending:
+            self._delivery_pending = False
+            await self._record_delivery_notices()
+            self._delivery_lines = await self._redeliver_failed()
+        else:
+            self._delivery_lines = []
+        if background_due or not self._owner_addresses_loaded:
+            await self._refresh_owner_addresses()
         # a received message older than the limit is never auto-answered
-        await self._expire_stale_inbounds()
+        if background_due:
+            await self._expire_stale_inbounds()
 
         # (c) everything else ingested since last tick becomes observations —
-        # except delivery/diagnostic events, which the model never sees
-        observations = await self._events.list_since(anchor, limit=_MAX_OBSERVATIONS)
-        for event in observations:
-            self._last_event_id = max(self._last_event_id, event.id)
-        observations = [event for event in observations if event.kind != "delivery_failed"]
+        # except delivery/diagnostic events, which the model never sees. A
+        # poll that stored something sets the pending flag (and wakes the
+        # loop); an undisturbed quiet tick asks its datetime instead.
+        observations: list[Event] = []
+        if background_due or self._events_pending:
+            self._events_pending = False
+            observations = await self._events.list_since(anchor, limit=_MAX_OBSERVATIONS)
+            for event in observations:
+                self._last_event_id = max(self._last_event_id, event.id)
+            observations = [event for event in observations if event.kind != "delivery_failed"]
         if messages:
             # a reply is waiting — the scoring spawns beside the turn; the
             # verdicts land moments later and the next reader (recall,
@@ -1472,9 +1564,10 @@ class AgentLoop:
                 await self._run_due_provider_polls()
             # a retry that came due while the queue was busy still runs
             await self._run_due_resumes()
-            await self._run_proactive_tick()
-            await self._run_alert_tick()
-            self._spawn_summary_tick()
+            if background_due:
+                await self._run_proactive_tick()
+                await self._run_alert_tick()
+                self._spawn_summary_tick()
             return
 
         # more than one question pending is answered question-by-question, so
@@ -1507,9 +1600,10 @@ class AgentLoop:
         await self._run_due_resumes()
         # reminders and alerts held by a quiet window — never in front of
         # the words someone is waiting on
-        await self._run_proactive_tick()
-        await self._run_alert_tick()
-        self._spawn_summary_tick()
+        if background_due:
+            await self._run_proactive_tick()
+            await self._run_alert_tick()
+            self._spawn_summary_tick()
 
         # a tick that never suspended (a provider-less turn, say) still
         # lets the scorers it spawned take their first step here, so none
@@ -2042,6 +2136,10 @@ class AgentLoop:
             # filter never sees it — so the same allowlist rides here
             if self._mail_filter is not None:
                 result = await self._mail_filter.filter_result(qualified, result)
+            digest = _poll_digest(result)
+            if _poll_empty(result) or self._last_poll_digest.get(qualified) == digest:
+                continue
+            self._last_poll_digest[qualified] = digest
             await self._audit.append(
                 actor="scheduler",
                 tool_name=qualified,
@@ -2056,6 +2154,7 @@ class AgentLoop:
                 payload={"args": poll.args, "result": result[:4000]},
             )
             if ingest.stored:
+                self._events_pending = True
                 self.notify()
 
     async def _run_due_provider_polls(self) -> None:
@@ -2112,6 +2211,7 @@ class AgentLoop:
             payload={"result": text[:4000]},
         )
         if ingest.stored:
+            self._events_pending = True
             self.notify()
 
     async def _ingest_mail(self, text: str, result: Any) -> bool:
@@ -2152,6 +2252,7 @@ class AgentLoop:
                 stored += 1
         if stored:
             log.info("ingested %d mail message(s) from %s", stored, result.app)
+            self._events_pending = True
             self.notify()
         return True
 
@@ -3417,6 +3518,7 @@ class AgentLoop:
             return
         try:
             self._owner_addresses = await self._entities.owner_addresses()
+            self._owner_addresses_loaded = True
         except Exception:
             log.warning("could not read the owner addresses — rendering without them")
 

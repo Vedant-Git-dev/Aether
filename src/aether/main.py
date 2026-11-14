@@ -178,6 +178,7 @@ def create_app(
             settings.database_url,
             min_size=config.db.pool_min_size,
             max_size=config.db.pool_max_size,
+            idle_seconds=config.db.pool_idle_seconds,
             accounting=config.db.accounting,
         )
         app.state.db_accounting = pool.accounting

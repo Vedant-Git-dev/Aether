@@ -27,6 +27,7 @@ tick, and a missing embedder turns the whole layer into a quiet no-op
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
@@ -132,6 +133,19 @@ class VectorMemory:
         # BM25 index registers here). One callback per commit — the only
         # chunk writer there is, so no index can drift from the store.
         self._chunk_listeners: list[Callable[[dict[str, Any]], None]] = []
+        # the backfill loop waits here instead of polling: a failed
+        # background index pass is the one thing that needs a retry
+        self._backfill_wake = asyncio.Event()
+
+    def wake_backfill(self) -> None:
+        """Ask the loop's backfill pass to run now (boot and failed indexes)."""
+        self._backfill_wake.set()
+
+    async def wait_backfill(self, timeout: float) -> None:
+        """Sleep until a retry is needed or the fallback interval passes."""
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self._backfill_wake.wait(), timeout=max(0.05, timeout))
+        self._backfill_wake.clear()
 
     def add_chunk_listener(self, listener: Callable[[dict[str, Any]], None]) -> None:
         """An in-memory index that wants every committed chunk. The event
@@ -195,6 +209,7 @@ class VectorMemory:
         if not task.cancelled() and (exc := task.exception()) is not None:
             # the event stays indexed_at NULL — backfill retries it
             log.warning("background event indexing failed — backfill will retry", exc_info=exc)
+            self.wake_backfill()
 
     async def wait_idle(self) -> None:
         """Every background index currently in flight — shutdowns and tests
@@ -432,15 +447,15 @@ class VectorMemory:
     ) -> list[MemoryHit]:
         """The ranking half: cosine of every chunk of this model's space
         against an already-embedded query. Vectors are encrypted, so the
-        math happens here — every row decrypts to its packed vector, and
-        only the top-k pay for a text decryption too. Only sealed vectors
-        are read: a row without one was never searchable and is left out
-        of the scan rather than warned about on every query."""
+        math happens here — the scan carries ids and sealed vectors only,
+        and the top-k rows then fetch their text and metadata by id. Only
+        sealed vectors are read: a row without one was never searchable and
+        is left out of the scan rather than warned about on every query."""
         if self._embedder is None:
             return []
         token = self._cipher.blind_token("embed_model", self._embedder.model)
         rows = await self._pool.fetch(
-            "SELECT id, event_id, text_enc, embedding_enc, meta_enc"
+            "SELECT id, event_id, embedding_enc"
             " FROM memory_chunks WHERE embed_model_token = $1 AND embedding_enc IS NOT NULL",
             token,
         )
@@ -464,16 +479,28 @@ class VectorMemory:
             if score >= min_similarity:
                 ranked.append((float(score), row))
         ranked.sort(key=lambda pair: pair[0], reverse=True)
+        top = ranked[:limit]
+        details: dict[int, asyncpg.Record] = {}
+        if top:
+            detail_rows = await self._pool.fetch(
+                "SELECT id, text_enc, meta_enc FROM memory_chunks WHERE id = ANY($1::bigint[])",
+                [row["id"] for _, row in top],
+            )
+            details = {row["id"]: row for row in detail_rows}
         hits: list[MemoryHit] = []
-        for score, row in ranked[:limit]:
+        for score, row in top:
+            detail = details.get(row["id"])
+            if detail is None:
+                log.warning("chunk %s disappeared before its text could be read", row["id"])
+                continue
             try:
                 text = self._cipher.decrypt_text(
-                    row["text_enc"], aad=f"chunks:text_enc:{row['id']}"
+                    detail["text_enc"], aad=f"chunks:text_enc:{row['id']}"
                 )
             except Exception:
                 log.warning("chunk %s undecryptable — skipped", row["id"])
                 continue
-            meta = self._chunk_meta(row)
+            meta = self._chunk_meta(detail)
             hits.append(
                 MemoryHit(
                     event_id=row["event_id"],

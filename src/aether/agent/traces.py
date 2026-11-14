@@ -109,6 +109,29 @@ class Traces:
         )
         return [self._to_trace(r) for r in rows]
 
+    async def recent_summaries(self, limit: int = 30, offset: int = 0) -> list[Trace]:
+        """Newest first, header only — the panel list never needs the payload.
+
+        Decrypting every trace body to render a one-line label was most of
+        the trace list's cost. The detail route still reads the full row.
+        """
+        rows = await self._pool.fetch(
+            "SELECT id, kind, label_enc, created_at FROM decision_traces"
+            " ORDER BY id DESC LIMIT $1 OFFSET $2",
+            limit,
+            max(0, offset),
+        )
+        return [
+            Trace(
+                id=row["id"],
+                kind=row["kind"],
+                label=self._label(row),
+                payload={},
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
     def _label(self, row: asyncpg.Record) -> str:
         blob = row.get("label_enc")
         if blob:

@@ -27,14 +27,25 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 
 async def create_pool(
-    url: str, *, min_size: int = 1, max_size: int = 5, accounting: bool = True
+    url: str,
+    *,
+    min_size: int = 0,
+    max_size: int = 5,
+    idle_seconds: float = 60.0,
+    accounting: bool = True,
 ) -> MeteredPool:
     """One measured pool. Every store receives this wrapper and calls it like
-    an asyncpg pool; each query lands in the process-local accounting meters."""
+    an asyncpg pool; each query lands in the process-local accounting meters.
+
+    `min_size=0` and a short `max_inactive_connection_lifetime` let an idle
+    process release every connection, so a client connection cannot keep a
+    metered database awake on its own.
+    """
     pool = await asyncpg.create_pool(
         normalize_database_url(url),
-        min_size=max(1, min_size),
+        min_size=max(0, min(min_size, max_size)),
         max_size=max(1, max_size),
+        max_inactive_connection_lifetime=max(1.0, float(idle_seconds)),
         command_timeout=30,
     )
     return MeteredPool(pool, DBAccounting(enabled=accounting))

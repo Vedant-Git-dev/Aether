@@ -42,17 +42,26 @@ mcp_servers: []
 db:
   # optional (default: true) measure every query
   accounting: true
-  # optional (default: 1 / 5) the one shared connection pool
-  pool_min_size: 1
+  # optional (default: 0 / 5 / 60) the one shared connection pool: a zero
+  # floor and a short idle lifetime release every connection when quiet
+  pool_min_size: 0
   pool_max_size: 5
+  pool_idle_seconds: 60.0
+  # optional (default: 15) non-urgent background work runs in bursts this
+  # far apart; a new message never waits for the window
+  background_window_minutes: 15.0
+  # optional (default: 900) vector backfill retry cadence once drained
+  backfill_seconds: 900.0
+  # optional (default: 100) hard cap for one panel list page
+  panel_page_size: 100
   # optional (default: 20 / 12 / 2.0) one simulated day for the replay
   replay_messages_per_day: 20
   replay_mails_per_day: 12
   replay_panel_hours: 2.0
-  # optional (default: 2500 / 120 / 120) one replay day's regression ceilings
+  # optional (default: 2500 / 120 / 600) one replay day's regression ceilings
   daily_query_budget: 2500
   daily_response_budget_mb: 120.0
-  daily_active_minutes_budget: 120
+  daily_active_minutes_budget: 600
   # optional (default: Neon free tier) used only to project a replay day
   monthly_compute_cu_hours: 100.0
   monthly_transfer_gb: 5.0

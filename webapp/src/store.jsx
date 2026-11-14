@@ -32,7 +32,7 @@ export function DataProvider({ children }) {
     if (!hasToken()) return;
     try {
       const data = await api("/api/approvals");
-      setApprovals(data.pending);
+      if (data) setApprovals(data.pending);
     } catch { return; /* transient network hiccup — keep the last known list */ }
   }, []);
 
@@ -40,15 +40,15 @@ export function DataProvider({ children }) {
     if (!hasToken()) return;
     try {
       const data = await api("/api/events?limit=100");
-      setEvents(data.events);
+      if (data) setEvents(data.events);
     } catch { return; }
   }, []);
 
   const refreshAudit = useCallback(async () => {
     if (!hasToken()) return;
     try {
-      const data = await api("/api/audit?limit=200");
-      setAudit(data);
+      const data = await api("/api/audit?limit=100");
+      if (data) setAudit(data);
     } catch { return; }
   }, []);
 
@@ -56,23 +56,21 @@ export function DataProvider({ children }) {
     if (!hasToken()) return;
     try {
       const data = await api("/api/traces?limit=50");
-      setTraces(data.traces);
+      if (data) setTraces(data.traces);
       setTracesError("");
     } catch (err) {
       setTracesError(err.message); // e.g. not wired — the page says so honestly
     }
   }, []);
 
-  // the four pollers run globally from boot, exactly like the old panel
+  // One initial load, then only explicit refreshes and refresh-after-action.
+  // The panel no longer polls: an open tab must not keep the database awake.
   useEffect(() => {
     refreshApprovals(); refreshEvents(); refreshAudit(); refreshTraces();
-    const handles = [
-      setInterval(refreshApprovals, 5000),
-      setInterval(refreshEvents, 10000),
-      setInterval(refreshAudit, 10000),
-      setInterval(refreshTraces, 10000),
-    ];
-    return () => handles.forEach(clearInterval);
+  }, [refreshApprovals, refreshEvents, refreshAudit, refreshTraces]);
+
+  const refreshAll = useCallback(async () => {
+    await Promise.all([refreshApprovals(), refreshEvents(), refreshAudit(), refreshTraces()]);
   }, [refreshApprovals, refreshEvents, refreshAudit, refreshTraces]);
 
   useEffect(() => () => {
@@ -151,7 +149,7 @@ export function DataProvider({ children }) {
   const value = {
     approvals, events, audit, traces, tracesError, policy, people,
     approvalUi, tracesOpen, traceDetails,
-    refreshApprovals, updatePeople, ensurePeople, decide, toggleTrace, ensurePolicy,
+    refreshApprovals, refreshAll, updatePeople, ensurePeople, decide, toggleTrace, ensurePolicy,
   };
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;

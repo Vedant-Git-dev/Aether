@@ -46,6 +46,20 @@ def _authorized(request: Request, token: str | None) -> bool:
     return bool(candidate) and hmac.compare_digest(candidate, request.app.state.settings.api_token)
 
 
+def _page_limit(request: Request, requested: int | None, default: int = 50) -> int:
+    """One page's size, capped by the configured panel maximum."""
+    config = getattr(request.app.state, "config", None)
+    cap = int(getattr(getattr(config, "db", None), "panel_page_size", 100) or 100)
+    return max(1, min(int(requested or default), cap))
+
+
+def _conditional(request: Request, etag: str) -> Response | None:
+    """A 304 with no body when the caller already has this exact list."""
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "no-cache"})
+    return None
+
+
 class DecisionBody(BaseModel):
     decision: str  # "approve" | "deny"
 
@@ -231,13 +245,25 @@ async def upload_media(
 
 
 @router.get("/api/approvals")
-async def list_approvals(request: Request, token: str | None = None) -> dict:
+async def list_approvals(
+    request: Request,
+    response: Response,
+    limit: int = 50,
+    offset: int = 0,
+    token: str | None = None,
+) -> Any:
     """Pending approvals for the web panel — the same rows the chat
-    surfaces show buttons for."""
+    surfaces show buttons for. Paginated, capped, and revalidated by ETag."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
     approvals = request.app.state.approvals
-    pending = await approvals.list_pending()
+    page = _page_limit(request, limit)
+    pending = await approvals.list_pending(limit=page, offset=offset)
+    etag = f'W/"approvals-{max((a.id for a in pending), default=0)}-{len(pending)}-{offset}"'
+    if (not_modified := _conditional(request, etag)) is not None:
+        return not_modified
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "no-cache"
     return {
         "pending": [
             {
@@ -289,11 +315,23 @@ async def db_stats_feed(request: Request, token: str | None = None) -> dict:
 
 
 @router.get("/api/events")
-async def events_feed(request: Request, limit: int = 50, token: str | None = None) -> dict:
+async def events_feed(
+    request: Request,
+    response: Response,
+    limit: int = 50,
+    offset: int = 0,
+    token: str | None = None,
+) -> Any:
     """The newest events, decrypted for the owner's eyes only."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
-    events = await request.app.state.events.recent(limit=min(limit, 200))
+    page = _page_limit(request, limit)
+    events = await request.app.state.events.recent(limit=page, offset=offset)
+    etag = f'W/"events-{max((e.id for e in events), default=0)}-{len(events)}-{offset}"'
+    if (not_modified := _conditional(request, etag)) is not None:
+        return not_modified
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "no-cache"
     return {
         "events": [
             {
@@ -841,14 +879,31 @@ async def apps_feed(request: Request, token: str | None = None) -> dict:
 
 
 @router.get("/api/audit")
-async def audit_feed(request: Request, limit: int = 100, token: str | None = None) -> dict:
+async def audit_feed(
+    request: Request,
+    response: Response,
+    limit: int = 100,
+    offset: int = 0,
+    token: str | None = None,
+) -> Any:
     """Recent audit entries plus the live chain verification — the panel
-    shows both, so tampering is visible in the same view as the history."""
+    shows both, so tampering is visible in the same view as the history.
+    The full chain walk happens only when this explicit read asks for it."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
     audit = request.app.state.audit
-    rows = await audit.recent(limit=min(limit, 500))
+    page = _page_limit(request, limit, default=100)
+    rows = await audit.recent(limit=page, offset=offset)
     chain = await audit.verify_chain()
+    head_seq = max((r["seq"] for r in rows), default=0)
+    etag = (
+        f'W/"audit-{head_seq}-{len(rows)}-{offset}-{int(chain.ok)}-'
+        f'{chain.entries}-{chain.first_bad_seq or 0}"'
+    )
+    if (not_modified := _conditional(request, etag)) is not None:
+        return not_modified
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "no-cache"
     return {
         "entries": [
             {
@@ -875,7 +930,13 @@ async def audit_feed(request: Request, limit: int = 100, token: str | None = Non
 
 
 @router.get("/api/traces")
-async def traces_feed(request: Request, limit: int = 30, token: str | None = None) -> dict:
+async def traces_feed(
+    request: Request,
+    response: Response,
+    limit: int = 30,
+    offset: int = 0,
+    token: str | None = None,
+) -> Any:
     """Recent decision traces (the "why" to the audit's "what") for the
     web panel — summaries; the full payload comes per trace."""
     if not _authorized(request, token):
@@ -883,7 +944,13 @@ async def traces_feed(request: Request, limit: int = 30, token: str | None = Non
     traces = getattr(request.app.state, "traces", None)
     if traces is None:
         raise HTTPException(status_code=503, detail="decision traces not wired")
-    rows = await traces.recent(limit=min(limit, 200))
+    page = _page_limit(request, limit, default=30)
+    rows = await traces.recent_summaries(limit=page, offset=offset)
+    etag = f'W/"traces-{max((t.id for t in rows), default=0)}-{len(rows)}-{offset}"'
+    if (not_modified := _conditional(request, etag)) is not None:
+        return not_modified
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "no-cache"
     return {
         "traces": [
             {
@@ -921,7 +988,9 @@ async def trace_detail(trace_id: int, request: Request, token: str | None = None
 
 
 @router.get("/api/memory")
-async def memory_feed(request: Request, limit: int = 50, token: str | None = None) -> dict:
+async def memory_feed(
+    request: Request, limit: int = 50, offset: int = 0, token: str | None = None
+) -> dict:
     """Everyone Aether has resolved a cross-platform identity for, with
     their linked handles and most recent relationship note."""
     if not _authorized(request, token):
@@ -929,7 +998,8 @@ async def memory_feed(request: Request, limit: int = 50, token: str | None = Non
     entities = getattr(request.app.state, "entities", None)
     if entities is None:
         raise HTTPException(status_code=503, detail="entity store is not wired")
-    people = await entities.list_people(limit=min(limit, 200))
+    page = _page_limit(request, limit)
+    people = await entities.list_people(limit=page, offset=offset)
     out = []
     for person in people:
         notes = await entities.notes_for(person.id, limit=1)
@@ -1017,7 +1087,9 @@ async def memory_forget(body: MemoryForgetBody, request: Request, token: str | N
 
 
 @router.get("/api/tasks")
-async def tasks_feed(request: Request, limit: int = 50, token: str | None = None) -> dict:
+async def tasks_feed(
+    request: Request, limit: int = 50, offset: int = 0, token: str | None = None
+) -> dict:
     """Scheduled actions — persisted, survive restarts, run through the
     same authorization gate as everything else when they fire."""
     if not _authorized(request, token):
@@ -1025,7 +1097,8 @@ async def tasks_feed(request: Request, limit: int = 50, token: str | None = None
     scheduler = getattr(request.app.state, "scheduler", None)
     if scheduler is None:
         raise HTTPException(status_code=503, detail="scheduler is not wired")
-    actions = await scheduler.list(limit=min(limit, 200))
+    page = _page_limit(request, limit)
+    actions = await scheduler.list(limit=page, offset=offset)
     return {
         "tasks": [
             {
@@ -1042,7 +1115,9 @@ async def tasks_feed(request: Request, limit: int = 50, token: str | None = None
 
 
 @router.get("/api/alerts")
-async def alerts_feed(request: Request, token: str | None = None) -> dict:
+async def alerts_feed(
+    request: Request, limit: int = 50, offset: int = 0, token: str | None = None
+) -> dict:
     """Alerts and reminders, newest first, with the plain condition and
     time the backend already authored. The status word is vocabulary, not
     free text; nothing internal is rendered here."""
@@ -1052,7 +1127,8 @@ async def alerts_feed(request: Request, token: str | None = None) -> dict:
     store = getattr(request.app.state, "alerts_store", None)
     if engine is None or store is None:
         raise HTTPException(status_code=503, detail="alerts are not wired")
-    rows = await store.list(limit=200)
+    page = _page_limit(request, limit)
+    rows = await store.list(limit=page, offset=offset)
     return {
         "alerts": [
             {
@@ -1120,7 +1196,9 @@ def _verdict_options(task) -> list[str]:
 
 
 @router.get("/api/proactive/tasks")
-async def proactive_tasks_feed(request: Request, limit: int = 50, token: str | None = None) -> dict:
+async def proactive_tasks_feed(
+    request: Request, limit: int = 50, offset: int = 0, token: str | None = None
+) -> dict:
     """The background worker's task rows — the same list a chat-surface
     result notification summarizes, newest first. A row's `options` are
     the one-tap verdicts that still apply to it."""
@@ -1129,7 +1207,8 @@ async def proactive_tasks_feed(request: Request, limit: int = 50, token: str | N
     store = getattr(request.app.state, "proactive_store", None)
     if store is None:
         raise HTTPException(status_code=503, detail="proactive worker is not wired")
-    tasks = await store.list(limit=min(limit, 200))
+    page = _page_limit(request, limit)
+    tasks = await store.list(limit=page, offset=offset)
     return {
         "tasks": [
             {

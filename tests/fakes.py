@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -223,11 +224,12 @@ class FakeApprovals:
     async def mark_failed(self, approval_id: int) -> None:
         self.failed.append(approval_id)
 
-    async def list_pending(self) -> list[Approval]:
+    async def list_pending(self, limit: int | None = None, offset: int = 0) -> list[Approval]:
         # mirrors the store: pending rows past their TTL never read as
         # waiting, even before expire_overdue has flipped them
         now = datetime.now(UTC)
-        return [a for a in self.created if a.status == PENDING and a.expires_at > now]
+        rows = [a for a in self.created if a.status == PENDING and a.expires_at > now]
+        return rows[offset : offset + limit] if limit is not None else rows
 
     async def find_pending(self, tool_name: str, params: dict) -> Approval | None:
         # mirrors the store: the still-pending row for this exact call
@@ -279,8 +281,8 @@ class FakeAudit:
         )
         return len(self.entries)
 
-    async def recent(self, limit: int = 100) -> list[dict]:
-        return list(reversed(self.entries))[:limit]  # newest first, matching the real AuditLog
+    async def recent(self, limit: int = 100, offset: int = 0) -> list[dict]:
+        return list(reversed(self.entries))[offset : offset + limit]  # newest first
 
     async def verify_chain(self) -> object:
         if self.verification is not None:
@@ -366,6 +368,13 @@ class FakeTraces:
 
     async def recent(self, limit: int = 20) -> list[Trace]:
         return list(reversed(self.traces))[:limit]
+
+    async def recent_summaries(self, limit: int = 30, offset: int = 0) -> list[Trace]:
+        rows = list(reversed(self.traces))[offset : offset + limit]
+        return [
+            Trace(id=t.id, kind=t.kind, label=t.label, payload={}, created_at=t.created_at)
+            for t in rows
+        ]
 
 
 class FakeTranscript:
@@ -532,8 +541,9 @@ class FakeEventStore:
     async def max_id(self) -> int:
         return max(self.events, default=0)
 
-    async def recent(self, limit: int = 50) -> list[Event]:
-        return [self.events[i] for i in sorted(self.events, reverse=True)][:limit]
+    async def recent(self, limit: int = 50, offset: int = 0) -> list[Event]:
+        rows = [self.events[i] for i in sorted(self.events, reverse=True)]
+        return rows[offset : offset + limit]
 
     async def recent_memorable(self, limit: int = 50, hours: float | None = None) -> list[Event]:
         rows = [e for e in self.events.values() if e.memorable]
@@ -673,6 +683,13 @@ class FakeVectorMemory:
         self.indexed_events: list[dict] = []
         self.indexed_docs: list[dict] = []
         self.documents: dict[int, str] = {}
+
+    def wake_backfill(self) -> None:
+        return None
+
+    async def wait_backfill(self, timeout: float) -> None:
+        # yield so a cancelled test task can stop the drain loop
+        await asyncio.sleep(0)
 
     async def backfill(self, batch: int = 50) -> int | None:
         self.backfills += 1
@@ -918,5 +935,6 @@ class FakeProactiveStore:
     async def get(self, task_id: int) -> ProactiveTask | None:
         return next((t for t in self.tasks if t.id == task_id), None)
 
-    async def list(self, limit: int = 50) -> list[ProactiveTask]:
-        return list(reversed(self.tasks))[:limit]
+    async def list(self, limit: int = 50, offset: int = 0) -> list[ProactiveTask]:
+        rows = list(reversed(self.tasks))
+        return rows[offset : offset + limit]
