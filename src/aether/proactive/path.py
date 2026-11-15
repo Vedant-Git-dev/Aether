@@ -43,6 +43,8 @@ _LEADS_BY_URGENCY: dict[int, tuple[int, ...]] = {
 
 OVERDUE = -1
 
+MAX_REMINDER_ATTEMPTS = 3
+
 
 def leads_for(urgency: int) -> tuple[int, ...]:
     """The reminder leads for one urgency, nearest milestone first."""
@@ -162,6 +164,7 @@ class ProactivePath:
         self._loaded = False
         self._load_lock = asyncio.Lock()
         self._reminded: dict[int, set[int]] = {}
+        self._attempts: dict[tuple[int, int], int] = {}
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -180,9 +183,10 @@ class ProactivePath:
     # -- reminders -----------------------------------------------------------
 
     async def tick(self, now: datetime | None = None) -> list[DueReminder]:
-        """Report commitments whose reminder lead has arrived. Each lead is
-        recorded here so a restart never repeats it; the entries are facts
-        for the agent, never ready-made words."""
+        """Report commitments whose reminder lead has arrived. Nothing is
+        recorded here: the caller settles each lead after its turn, so a
+        turn that fails does not use the lead up. The entries are facts for
+        the agent, never ready-made words."""
         now = now or self._clock()
         await self._ensure_loaded()
         if not self._config.proactive.reminders_enabled or self._commitments is None:
@@ -198,12 +202,6 @@ class ProactivePath:
             lead = reminder_due(commitment, now, sent)
             if lead is None:
                 continue
-            self._reminded.setdefault(commitment.id, set()).add(lead)
-            if self._reminders is not None:
-                try:
-                    await self._reminders.mark(commitment.id, lead)
-                except Exception:
-                    log.warning("could not record reminder for commitment %s", commitment.id)
             due.append(
                 DueReminder(
                     payload=reminder_payload(commitment, lead, timezone=self._timezone),
@@ -212,3 +210,30 @@ class ProactivePath:
                 )
             )
         return due
+
+    async def settle(self, due: Iterable[DueReminder], *, delivered: bool) -> None:
+        for item in due:
+            commitment_id = int(item.payload["commitment_id"])
+            lead = int(item.payload["lead_minutes"])
+            key = (commitment_id, lead)
+            if not delivered:
+                attempts = self._attempts.get(key, 0) + 1
+                if attempts < MAX_REMINDER_ATTEMPTS:
+                    self._attempts[key] = attempts
+                    continue
+                log.warning(
+                    "reminder for commitment %s failed %d times, giving up on this lead",
+                    commitment_id,
+                    attempts,
+                )
+            self._attempts.pop(key, None)
+            await self.mark_lead(commitment_id, lead)
+
+    async def mark_lead(self, commitment_id: int, lead: int) -> None:
+        self._reminded.setdefault(commitment_id, set()).add(lead)
+        if self._reminders is None:
+            return
+        try:
+            await self._reminders.mark(commitment_id, lead)
+        except Exception:
+            log.warning("could not record reminder for commitment %s", commitment_id)

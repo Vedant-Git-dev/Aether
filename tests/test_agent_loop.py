@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 from fakes import (
+    BrokenHeldNotes,
     FakeAgentSettings,
     FakeApprovals,
     FakeAudit,
@@ -31,6 +32,7 @@ from fakes import (
     FakeTraces,
     FakeTranscript,
     FakeVectorMemory,
+    held_texts,
 )
 
 from aether.agent.loop import (
@@ -62,6 +64,7 @@ from aether.connectors.registry import ToolRegistry
 from aether.llm.types import ImageBlock, ToolCall, ToolResult, Turn, WireSpec
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.events import Event, IngestResult
+from aether.memory.held_notes import MemoryHeldNotes
 from aether.memory.vectors import MemoryHit
 from aether.origin import owner_message, use_origin
 from aether.proactive.path import DueReminder
@@ -174,6 +177,7 @@ class LoopKit:
         entities: Any = None,
         views: Any = None,
         conclusions: Any = None,
+        held_notes: Any = None,
     ):
         self.tools = ToolRegistry()
         self.events = FakeEventStore()
@@ -214,6 +218,7 @@ class LoopKit:
             entities=entities,
             views=views,
             conclusions=conclusions,
+            held_notes=held_notes,
         )
         if config_manager is not None:
             # the real native config tools, so a /config write goes through
@@ -1616,12 +1621,44 @@ async def test_a_due_reminder_becomes_an_agent_written_message() -> None:
                 )
             ]
 
+        async def settle(self, due: list[DueReminder], *, delivered: bool) -> None:
+            settled.append((len(due), delivered))
+
+    settled: list[tuple[int, bool]] = []
     kit.loop.attach_proactive_path(FakeReminderPath())
     await kit.loop._run_proactive_tick()
 
     assert kit.connector.sent == ["the invoice is due in 15 minutes"]
     # the due facts rode the turn as an observation, not as ready words
     assert any("send the invoice" in m.text for m in provider.calls[0][1])
+    assert settled == [(1, True)]
+
+
+async def test_a_reminder_turn_that_raises_settles_the_lead_as_not_delivered() -> None:
+    kit = LoopKit(FakeProvider([]))
+    settled: list[bool] = []
+
+    class FakeReminderPath:
+        async def tick(self) -> list[DueReminder]:
+            return [
+                DueReminder(
+                    payload={"commitment_id": 3, "text": "send the invoice", "lead_minutes": 15},
+                    urgency=2,
+                    salience=8.0,
+                )
+            ]
+
+        async def settle(self, due: list[DueReminder], *, delivered: bool) -> None:
+            settled.append(delivered)
+
+    async def raising_turn(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("turn crashed")
+
+    kit.loop._turn = raising_turn
+    kit.loop.attach_proactive_path(FakeReminderPath())
+    await kit.loop._run_proactive_tick()
+
+    assert settled == [False]
 
 
 async def test_a_quiet_tick_calls_no_llm() -> None:
@@ -1753,14 +1790,14 @@ async def test_quiet_hours_hold_a_proactive_send_and_batch_it_later() -> None:
 
     # the send was offered; quiet hours hold the words instead of blocking
     assert kit.connector.sent == []
-    assert kit.loop._held == ["saw the mail"]
+    assert await held_texts(kit.loop) == ["saw the mail"]
 
     kit.loop._config.agent.quiet_hours = None
     kit.loop.reparse_quiet_hours()
     await kit.loop._tick()  # nothing new — the held batch ships
 
     assert kit.connector.sent == ["While it was quiet:\n\nsaw the mail"]
-    assert kit.loop._held == []
+    assert await held_texts(kit.loop) == []
 
 
 async def test_urgent_events_still_interrupt_quiet_hours() -> None:
@@ -1782,7 +1819,7 @@ async def test_urgent_events_still_interrupt_quiet_hours() -> None:
     await kit.loop._tick()
 
     assert kit.connector.sent == ["prod is down — on it"]
-    assert kit.loop._held == []
+    assert await held_texts(kit.loop) == []
 
 
 async def test_replies_to_the_user_never_wait_out_quiet_hours() -> None:
@@ -1792,7 +1829,7 @@ async def test_replies_to_the_user_never_wait_out_quiet_hours() -> None:
     await kit.loop._tick()
 
     assert kit.connector.sent == ["here now"]
-    assert kit.loop._held == []
+    assert await held_texts(kit.loop) == []
 
 
 async def test_held_notes_ship_as_one_message_when_the_window_ends() -> None:
@@ -1800,14 +1837,60 @@ async def test_held_notes_ship_as_one_message_when_the_window_ends() -> None:
     await kit.loop.note_to_user("first held")
     await kit.loop.note_to_user("second held")
     assert kit.connector.sent == []
-    assert kit.loop._held == ["first held", "second held"]
+    assert await held_texts(kit.loop) == ["first held", "second held"]
 
     # the window ends: the backlog ships as ONE message, even on a tick with
     # nothing else to say
     kit.loop._quiet = None
     await kit.loop._tick()
     assert kit.connector.sent == ["While it was quiet:\n\nfirst held\n\nsecond held"]
-    assert kit.loop._held == []
+    assert await held_texts(kit.loop) == []
+
+
+async def test_held_notes_survive_a_restart_on_the_same_store() -> None:
+    store = MemoryHeldNotes()
+    config = AppConfig(agent=AgentConfig(quiet_hours="00:00-23:59"))
+    before = LoopKit(FakeProvider([]), config=config, held_notes=store)
+    await before.loop.note_to_user("held before the restart")
+    assert before.connector.sent == []
+
+    after = LoopKit(FakeProvider([]), held_notes=store)
+    await after.loop._tick()
+    assert after.connector.sent == ["While it was quiet:\n\nheld before the restart"]
+    assert await store.pending() == []
+
+
+async def test_a_broken_held_store_keeps_the_note_in_memory() -> None:
+    kit = LoopKit(
+        FakeProvider([]),
+        config=AppConfig(agent=AgentConfig(quiet_hours="00:00-23:59")),
+        held_notes=BrokenHeldNotes(),
+    )
+    await kit.loop.note_to_user("still held")
+    assert kit.connector.sent == []
+
+    kit.loop._quiet = None
+    await kit.loop._tick()
+    assert kit.connector.sent == ["While it was quiet:\n\nstill held"]
+
+
+async def test_held_notes_stay_stored_when_the_send_raises() -> None:
+    store = MemoryHeldNotes()
+    kit = LoopKit(
+        FakeProvider([]),
+        config=AppConfig(agent=AgentConfig(quiet_hours="00:00-23:59")),
+        held_notes=store,
+    )
+    await kit.loop.note_to_user("not lost")
+    kit.loop._quiet = None
+
+    async def failing_send(text: str, only: Any = None) -> dict[str, str]:
+        raise ConnectionError("surface down")
+
+    kit.loop._surfaces.send_to_user = failing_send
+    with pytest.raises(ConnectionError):
+        await kit.loop.flush_held()
+    assert [note.text for note in await store.pending()] == ["not lost"]
 
 
 async def test_an_alert_action_runs_through_the_gate_and_records_a_trace() -> None:
@@ -2177,7 +2260,7 @@ async def test_verify_answers_even_during_quiet_hours() -> None:
     await kit.loop._tick()
 
     assert "decision record" in kit.connector.sent[-1]
-    assert kit.loop._held == []
+    assert await held_texts(kit.loop) == []
 
 
 async def test_an_unknown_command_flows_to_the_model() -> None:
@@ -2222,7 +2305,7 @@ async def test_a_held_note_records_no_chat_refs() -> None:
     payload = kit.traces.created[-1]["payload"]
     assert payload["outcome"] == "notify"
     assert "chat_refs" not in payload  # held, nothing landed anywhere
-    assert kit.loop._held == ["saw the mail"]
+    assert await held_texts(kit.loop) == ["saw the mail"]
 
 
 async def test_a_why_reply_is_answered_from_the_record() -> None:

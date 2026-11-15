@@ -280,3 +280,11 @@ async def upsert_workspace_file(
 
 async def delete_workspace_file(pool: asyncpg.Pool, token: bytes) -> None:
     await pool.execute("DELETE FROM workspace_files WHERE name_token = $1", token)
+
+
+async def held_note_rows(pool: asyncpg.Pool, limit: int) -> list[asyncpg.Record]:
+    return await pool.fetch("SELECT id, body_enc FROM held_notes ORDER BY id LIMIT $1", limit)
+
+
+async def delete_held_notes(pool: asyncpg.Pool, note_ids: list[int]) -> None:
+    await pool.execute("DELETE FROM held_notes WHERE id = ANY($1::bigint[])", note_ids)

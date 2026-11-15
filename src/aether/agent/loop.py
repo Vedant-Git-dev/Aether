@@ -67,6 +67,7 @@ from ..memory.deliveries import FAILED, Deliveries
 from ..memory.entities import Entities, Sender
 from ..memory.events import Event, EventStore
 from ..memory.focus import Focus
+from ..memory.held_notes import HeldNotes, MemoryHeldNotes
 from ..memory.inbound import MemoryInboundStates
 from ..memory.mail import MAIL_KIND, MAIL_SOURCE, render_mail_event, split_mail
 from ..memory.pipeline import QueryPipeline
@@ -709,6 +710,7 @@ class AgentLoop:
         conclusions: Conclusions | None = None,
         deliveries: Deliveries | None = None,
         inbound_states: Any = None,
+        held_notes: HeldNotes | None = None,
         query_pipeline: QueryPipeline | None = None,
         proactive_path: Any = None,
         summary_job: Any = None,
@@ -826,7 +828,9 @@ class AgentLoop:
         self._poll_failures: dict[str, int] = {}
         self._down: set[str] = set()
         self._quiet = _parse_quiet_hours(config.agent.quiet_hours)
-        self._held: list[str] = []  # unprompted notes waiting out the window
+        self._held_notes: HeldNotes = held_notes or MemoryHeldNotes()
+        self._held_spill = MemoryHeldNotes()
+        self._held_waiting = True
         # solicited turns a provider outage interrupted, waiting their turn
         # again — see _handle_provider_failure and _run_due_resumes
         self._resumes: list[_Resume] = []
@@ -954,13 +958,45 @@ class AgentLoop:
         if not is_deliverable(text):
             return None
         if self._quiet_now() and urgent < self._config.agent.quiet_urgent_salience:
-            self._held.append(text)
-            # the words never ride the log — held text is the message
-            # itself, and it ships whole when the window ends
-            log.info("held for quiet hours (%d chars)", len(text))
+            await self.hold_note(text)
             return None
         only = {channel} if channel else None
         return await self._surfaces.send_to_user(text, only=only)
+
+    async def hold_note(self, text: str) -> None:
+        log.info("held for quiet hours (%d chars)", len(text))
+        self._held_waiting = True
+        try:
+            await self._held_notes.hold(text)
+        except Exception:
+            log.warning("could not store a held note, keeping it in memory", exc_info=True)
+            await self._held_spill.hold(text)
+
+    async def flush_held(self) -> None:
+        if not self._held_waiting or self._quiet_now():
+            return
+        batches = []
+        unread = False
+        for store in (self._held_notes, self._held_spill):
+            try:
+                notes = await store.pending()
+            except Exception:
+                log.warning("could not read held notes, the next tick retries", exc_info=True)
+                unread = True
+                continue
+            if notes:
+                batches.append((store, notes))
+        if not batches:
+            self._held_waiting = unread
+            return
+        texts = [note.text for _, notes in batches for note in notes if note.text]
+        if texts:
+            await self._surfaces.send_to_user("While it was quiet:\n\n" + "\n\n".join(texts))
+        for store, notes in batches:
+            try:
+                await store.release([note.id for note in notes])
+            except Exception:
+                log.warning("could not release sent held notes", exc_info=True)
 
     async def note_to_user(
         self, text: str, *, urgent: float = 0.0, channel: str = ""
@@ -1054,9 +1090,7 @@ class AgentLoop:
         if not is_deliverable(text):
             return
         if self._quiet_now():
-            self._held.append(text)
-            # same rule as _notify: the words stay out of the log
-            log.info("held for quiet hours (%d chars)", len(text))
+            await self.hold_note(text)
             return
         media = {"attachment": attachment} if attachment is not None else {}
         await self._surfaces.present_result(task_id, text, options, **media)
@@ -1110,10 +1144,16 @@ class AgentLoop:
         if not due:
             return
         observations = [self._reminder_event(item) for item in due]
+        delivered = True
         try:
             await self._turn([], observations)
         except Exception:
             log.exception("reminder turn failed")
+            delivered = False
+        try:
+            await self._proactive_path.settle(due, delivered=delivered)
+        except Exception:
+            log.warning("could not settle reminder leads", exc_info=True)
 
     async def _run_alert_tick(self) -> None:
         """Deliver alert candidates that are due: a reminder moment, a held
@@ -1460,9 +1500,7 @@ class AgentLoop:
         # held unprompted notes from the quiet window ship as one batched
         # message the moment the window ends — the budget pays out, in one
         # interruption instead of a drip
-        if self._held and not self._quiet_now():
-            held, self._held = self._held, []
-            await self._surfaces.send_to_user("While it was quiet:\n\n" + "\n\n".join(held))
+        await self.flush_held()
 
         if not messages and not observations:
             # a quiet tick: no LLM turn, no tokens spent — but the polls a

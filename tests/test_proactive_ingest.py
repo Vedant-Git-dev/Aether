@@ -117,6 +117,7 @@ async def test_a_reminder_ledger_survives_a_new_path_object(db) -> None:
     due = await first.tick()
     assert len(due) == 1
     assert due[0].payload["overdue"] is False
+    await first.settle(due, delivered=True)
 
     # a fresh object after a restart reads the same ledger and stays silent
     second = ProactivePath(
