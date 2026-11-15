@@ -146,6 +146,10 @@ export default function DatabasePage() {
   const areas = grouped(stats?.sites);
   const tables = (stats?.tables || []).slice(0, 10);
   const connections = stats?.connections || {};
+  const vectors = stats?.caches?.vectors || {};
+  const vectorSummary = vectors.loaded
+    ? `Memory search keeps ${Number(vectors.chunks || 0).toLocaleString()} chunks in this process (${Number(vectors.dims || 0)} dimensions, about ${size(vectors.bytes)}), so ranking reads no rows.${vectors.capped ? " The oldest chunks stay on the database and are out of the in-memory index." : ""}`
+    : "Memory search loads its in-memory index when it first runs, and reads no rows to rank after that.";
 
   return (
     <div>
@@ -189,6 +193,8 @@ export default function DatabasePage() {
               {" "}{Number(connections.peak || 0)} at once at most, {Number(connections.size || 0)} open now.
               The pool is reused by every part of Aether.
             </p>
+            <SectionLabel>In memory</SectionLabel>
+            <p className="px-4 py-3 text-[13px] leading-relaxed text-ink-2">{vectorSummary}</p>
           </Card>
 
           <Card>

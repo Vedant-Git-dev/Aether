@@ -47,6 +47,7 @@ from .chat.ws import ChatHistory
 from .config import AppConfig
 from .connectors.polling import next_poll_delay
 from .db_accounting import DBAccounting, MeteredPool
+from .memory.budget import DailyBudget
 from .memory.commitments import Commitments
 from .memory.crypto import Cipher, generate_key_b64
 from .memory.db import run_migrations
@@ -357,7 +358,12 @@ def _build_bundle(pool: MeteredPool, config: AppConfig) -> _Bundle:
     audit = AuditLog(pool)
     keyring = TokenKeyring.from_values(active_key_b64=generate_key_b64(), active_id="replay")
     assert keyring is not None
-    vectors = VectorMemory(pool, cipher, _ReplayEmbedder())
+    budget = DailyBudget(
+        getattr(pool, "accounting", None),
+        max_queries=config.db.daily_query_budget,
+        max_bytes=int(config.db.daily_response_budget_mb * 1024 * 1024),
+    )
+    vectors = VectorMemory(pool, cipher, _ReplayEmbedder(), budget=budget)
     index = MemoryIndex()
     lexical = LexicalIndex(hot_chunks=config.memory.hot_chunks, cold_batch=config.memory.cold_batch)
     entities = Entities(pool, cipher, audit, _NoSamePerson())
@@ -607,6 +613,11 @@ class _ReplayDay:
             self.b.pool, self.b.cipher, hot_limit=self.config.memory.hot_events
         )
         await self.b.lexical.rebuild(self.b.pool, self.b.cipher)
+        # the resident vector matrix loads once at boot, like the app does
+        await self.b.vectors.load_cache(
+            batch=self.config.memory.cache_batch,
+            max_chunks=self.config.memory.vector_cache_max_chunks,
+        )
         self.last_event_id = await self.b.events.max_id()
         # the scheduler worker's boot re-arm also teaches the due gate
         await self.b.scheduler.overdue_pending()

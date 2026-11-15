@@ -238,6 +238,12 @@ class MemoryConfig(BaseModel):
     hot_events: int = 2_000
     hot_chunks: int = 8_000
     cold_batch: int = 500
+    # the resident vector matrix: recall ranks in process over the newest
+    # chunks instead of scanning the table. The load is bounded by this many
+    # rows per query and this many chunks resident; hitting the cap drops the
+    # oldest chunks from the cache, not from the database.
+    cache_batch: int = 1_000
+    vector_cache_max_chunks: int = 8_000
     # write-time enrichment: one cheap model turn per event reading out
     # urgency, deadlines, commitments and a one-line summary, so "anything
     # urgent?" and "what's due?" are lookups. On by default after the

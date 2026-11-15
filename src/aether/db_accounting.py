@@ -152,6 +152,12 @@ class DBAccounting:
         self._sites: dict[str, SiteStat] = {}
         self._tables: dict[str, QueryStat] = {}
         self._hourly = [0] * 24
+        # the current UTC day's counters, for optional-work budgets. The day
+        # is a whole number of seconds since the epoch, so the rollover check
+        # is an integer compare on every query.
+        self._today_index = -1
+        self._today_calls = 0
+        self._today_bytes = 0
         # connection bookkeeping — acquisitions, peak concurrent leases, and
         # the pool's own view of its size when one is attached
         self._acquires = 0
@@ -183,10 +189,17 @@ class DBAccounting:
         moment = self._clock() if at is None else at
         hour = datetime.fromtimestamp(moment, UTC).hour
         origin = site or _callsite()
+        today = int(moment // 86_400)
         with self._lock:
             self._sites.setdefault(origin, SiteStat()).add(kind, table, rows, size, seconds)
             self._tables.setdefault(table or "(no table)", QueryStat()).add(rows, size, seconds)
             self._hourly[hour] += 1
+            if today != self._today_index:
+                self._today_index = today
+                self._today_calls = 0
+                self._today_bytes = 0
+            self._today_calls += 1
+            self._today_bytes += size
             if self._collect_timeline:
                 self._timeline.append(moment)
 
@@ -274,11 +287,19 @@ class DBAccounting:
                 },
             }
 
+    def today(self) -> dict[str, int]:
+        """Queries and estimated bytes recorded for the current UTC day."""
+        with self._lock:
+            return {"calls": self._today_calls, "bytes": self._today_bytes}
+
     def reset(self) -> None:
         with self._lock:
             self._sites.clear()
             self._tables.clear()
             self._hourly = [0] * 24
+            self._today_index = -1
+            self._today_calls = 0
+            self._today_bytes = 0
             self._timeline.clear()
             self._acquires = 0
             self._active = 0

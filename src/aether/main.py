@@ -57,6 +57,7 @@ from .media.frames import FrameWatcher
 from .media.generate import ImageGenerator
 from .media.store import MediaStore
 from .media.voice import GroqTranscriber
+from .memory.budget import DailyBudget
 from .memory.commitments import Commitments
 from .memory.conclusions import Conclusions
 from .memory.context import ContextBuilder
@@ -342,7 +343,21 @@ def create_app(
                         "unavailable until the key is set",
                         exc,
                     )
-        vectors = VectorMemory(pool, cipher, embedder)
+        # optional background work pauses once the day's measured use reaches
+        # the configured daily totals; interactive work never consults it
+        budget = DailyBudget(
+            getattr(pool, "accounting", None),
+            max_queries=config.db.daily_query_budget,
+            max_bytes=int(config.db.daily_response_budget_mb * 1024 * 1024),
+        )
+        vectors = VectorMemory(pool, cipher, embedder, budget=budget)
+        # the resident vector matrix: recall ranks in process, so this is the
+        # one full read of memory_chunks for the process's lifetime. It reads
+        # ids and sealed vectors only; text stays on disk until a hit cites it
+        await vectors.load_cache(
+            batch=config.memory.cache_batch,
+            max_chunks=config.memory.vector_cache_max_chunks,
+        )
         app.state.vectors = vectors
 
         # --- memory + authz ------------------------------------------------

@@ -70,6 +70,16 @@ def render(payload: dict[str, Any], *, top: int = 15) -> str:
             f"open {int(connection.get('size', 0))}"
         )
 
+    vectors = (payload.get("caches") or {}).get("vectors") or {}
+    if vectors:
+        suffix = " (capped, oldest chunks left out)" if vectors.get("capped") else ""
+        lines.append(
+            "  vector cache: "
+            f"{int(vectors.get('chunks', 0)):,} chunks, "
+            f"{int(vectors.get('dims', 0))} dims, "
+            f"~{_human_bytes(vectors.get('bytes', 0))}{suffix}"
+        )
+
     sites = payload.get("sites") or []
     if sites:
         lines += ["", f"Top readers by estimated response bytes (of {len(sites)} call sites)"]

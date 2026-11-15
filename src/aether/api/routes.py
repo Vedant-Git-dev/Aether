@@ -311,7 +311,13 @@ async def db_stats_feed(request: Request, token: str | None = None) -> dict:
     accounting = getattr(request.app.state, "db_accounting", None)
     if accounting is None:
         raise HTTPException(status_code=503, detail="database accounting is not wired")
-    return accounting.snapshot()
+    snapshot = accounting.snapshot()
+    vectors = getattr(request.app.state, "vectors", None)
+    if vectors is not None and hasattr(vectors, "cache_stats"):
+        # memory-only: the resident matrix's chunk count, dimensions and
+        # approximate bytes. No ids, text or vectors leave the process.
+        snapshot["caches"] = {"vectors": vectors.cache_stats}
+    return snapshot
 
 
 @router.get("/api/events")

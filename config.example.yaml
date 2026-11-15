@@ -111,6 +111,12 @@ memory:
   conclusion_ttl_seconds: 120
   # optional (default: enforce) off | warn | enforce
   schema_audit: enforce
+  # the resident vector matrix behind recall: rows per load query, and the
+  # most chunks kept in memory (the oldest leave the cache, not the database)
+  # optional (default: 1000)
+  cache_batch: 1000
+  # optional (default: 8000)
+  vector_cache_max_chunks: 8000
 
 workspace:
   # optional (default: true)
