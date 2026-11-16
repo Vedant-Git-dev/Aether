@@ -67,5 +67,11 @@ async def test_replay_reports_queries_bytes_and_cache_missing_reads() -> None:
     assert snapshot["totals"]["bytes"] > 0
     sites = {site["site"] for site in snapshot["sites"]}
     assert "aether.memory.vectors.VectorMemory.search_vector" in sites
+    # the resident matrix loads once at boot in bounded batches; a recall
+    # never re-reads the table to rank
+    cache = next(
+        site for site in snapshot["sites"] if site["site"].endswith("VectorMemory.load_cache")
+    )
+    assert sum(query["calls"] for query in cache["queries"]) == 1
     assert result.active_seconds > 0
     assert result.seed_bytes > 0

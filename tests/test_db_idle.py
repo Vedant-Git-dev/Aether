@@ -1,9 +1,10 @@
 """Idle discipline: the reads and writes a quiet Aether must not make.
 
 These are offline tests with recording doubles. They pin the shapes that
-Phase 1 changed: recall scans vectors only and fetches text by id, trace
-summaries never decrypt a payload, the scheduler asks a datetime instead of
-the database, and the panel source has no timer at all.
+Phase 1 and Phase 2 changed: recall ranks over a resident matrix and fetches
+only the text it cites, trace summaries never decrypt a payload, the
+scheduler asks a datetime instead of the database, and the panel source has
+no timer at all.
 """
 
 from __future__ import annotations
@@ -102,6 +103,104 @@ async def test_recall_scan_excludes_text_and_metadata_and_fetches_by_id() -> Non
     assert "meta_enc" not in scan
     assert "= ANY" in detail
     assert "text_enc" in detail and "meta_enc" in detail
+
+
+async def test_cold_load_reads_each_row_once_within_the_batch_limit() -> None:
+    cipher = Cipher.from_b64(generate_key_b64())
+    rows = [
+        {"id": index, "event_id": index, "embedding_enc": _sealed_vector(cipher, index, [1.0, 0.0])}
+        for index in (3, 2, 1)
+    ]
+    pool = RecordingPool([rows[:2], rows[2:]])
+    vectors = VectorMemory(pool, cipher, _phantom_embedder())
+
+    await vectors.load_cache(batch=2, max_chunks=10)
+
+    assert len(pool.queries) == 2
+    assert all("embedding_enc" in query and "text_enc" not in query for query in pool.queries)
+    assert vectors.cache_stats["chunks"] == 3
+    assert vectors.cache_stats["watermark"] == 3
+
+
+async def test_the_chunk_cap_keeps_the_newest_and_reports_it() -> None:
+    cipher = Cipher.from_b64(generate_key_b64())
+    rows = [
+        {"id": index, "event_id": index, "embedding_enc": _sealed_vector(cipher, index, [1.0, 0.0])}
+        for index in (3, 2)
+    ]
+    pool = RecordingPool([rows, rows])
+    vectors = VectorMemory(pool, cipher, _phantom_embedder())
+
+    await vectors.load_cache(batch=2, max_chunks=2)
+
+    assert len(pool.queries) == 1
+    assert vectors.cache_stats["chunks"] == 2
+    assert vectors.cache_stats["capped"] is True
+
+
+async def test_warm_recall_ranks_in_memory_and_never_rescans() -> None:
+    cipher = Cipher.from_b64(generate_key_b64())
+    rows = [
+        {"id": 2, "event_id": 9, "embedding_enc": _sealed_vector(cipher, 2, [1.0, 0.0])},
+        {"id": 1, "event_id": 8, "embedding_enc": _sealed_vector(cipher, 1, [0.0, 1.0])},
+    ]
+    detail = [
+        {
+            "id": 2,
+            "text_enc": cipher.encrypt_text("the invoice is due", aad="chunks:text_enc:2"),
+            "meta_enc": cipher.encrypt_json(
+                {"source": "gmail", "kind": "mail", "location": ""},
+                aad="memory_chunks:meta_enc:2",
+            ),
+        }
+    ]
+    pool = RecordingPool([rows, detail, detail])
+    vectors = VectorMemory(pool, cipher, _phantom_embedder())
+
+    first = await vectors.search_vector([1.0, 0.0], limit=1, min_similarity=0.0)
+    after_cold = len(pool.queries)
+    second = await vectors.search_vector([1.0, 0.0], limit=1, min_similarity=0.0)
+
+    assert first[0].text == "the invoice is due" and second[0].text == "the invoice is due"
+    warm_queries = pool.queries[after_cold:]
+    assert len(warm_queries) == 1
+    assert "= ANY" in warm_queries[0]
+    assert "ORDER BY id DESC" not in warm_queries[0]
+
+
+async def test_a_freshly_indexed_chunk_joins_the_matrix_without_a_scan() -> None:
+    cipher = Cipher.from_b64(generate_key_b64())
+    rows = [
+        {"id": 1, "event_id": 8, "embedding_enc": _sealed_vector(cipher, 1, [0.0, 1.0])},
+    ]
+    detail = [
+        {
+            "id": 2,
+            "text_enc": cipher.encrypt_text("the new page", aad="chunks:text_enc:2"),
+            "meta_enc": cipher.encrypt_json(
+                {"source": "drive", "kind": "doc", "location": "page 2"},
+                aad="memory_chunks:meta_enc:2",
+            ),
+        }
+    ]
+    pool = RecordingPool([rows, detail])
+    vectors = VectorMemory(pool, cipher, _phantom_embedder())
+    await vectors.load_cache(batch=10, max_chunks=10)
+
+    # the chunk writer's notification is the only path a new row needs
+    vectors._notify(
+        {
+            "action": "add",
+            "chunk_id": 2,
+            "event_id": 9,
+            "vector": [1.0, 0.0],
+            "text": "the new page",
+        }
+    )
+    hits = await vectors.search_vector([1.0, 0.0], limit=1, min_similarity=0.0)
+
+    assert [hit.text for hit in hits] == ["the new page"]
+    assert len(pool.queries) == 2  # one load, one top-k detail read
 
 
 async def test_trace_summaries_never_select_the_payload() -> None:

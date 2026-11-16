@@ -118,15 +118,54 @@ With an explicit panel visit (two page loads, no polling) the day is 1,308
 queries and 19.2 MB. The budgets are now met: queries 1,308 of 2,500,
 response 19.2 of 120 MB, active 526 of 600 minutes.
 
-What is left is mostly content, not polling:
+What was left after Phase 1 was mostly content, not polling:
 
-- Vector recall still scans every chunk (40 calls, 45,360 rows, 15.6 MB).
-  Phase 2's in-memory vector cache removes it.
+- Vector recall still scanned every chunk (40 calls, 45,360 rows, 15.6 MB).
+  The Phase 2 matrix removes it.
 - The remaining active time is the 15-minute background bursts plus the
-  messages themselves; Phase 2 and 3 shrink it further.
+  messages themselves.
 - Reply-delivery checks (232), observation reads (126), open commitments
   (96), expiry (96), stale-inbound (96) and backfill (96) each run once per
   background burst, not once per 30-second tick.
+
+## After Phase 2
+
+The same synthetic day, with the same two-hour panel visit.
+
+| Measure | Phase 1 | Phase 2 |
+| --- | --- | --- |
+| Queries | 1,308 | 1,291 |
+| Rows returned | 51,509 | 8,969 |
+| Estimated response bytes | 19.2 MB | 4.6 MB |
+| Active compute | 8.8 h | 8.8 h |
+| Projected compute | 65.8 CU-hours / month | 65.8 CU-hours / month |
+| Projected transfer | 0.57 GB / month | 0.14 GB / month |
+
+**The vector matrix.** At boot, `VectorMemory.load_cache` reads ids and sealed
+vectors only, newest first, in `memory.cache_batch` batches (1,000 rows). It
+ran three times for this seed's 2,220 chunks: 2,220 rows, about 759 KB on the
+wire. The process then holds a `float32` matrix of 768 dimensions — about
+6.8 MB for this corpus, roughly double while the staging rows and the built
+matrix are both held — and ranking is one in-process matrix-vector product.
+A recall fetches only the text and metadata of its top-k by id: 20 recalls
+read 600 rows and 252 KB, down from 45,360 rows and 15.6 MB.
+
+The matrix is capped at `memory.vector_cache_max_chunks` (8,000 chunks). When
+the cap is reached the oldest chunks leave the cache, not the database; they
+stay reachable by the lexical index, and the Database Use page reports the
+cap. Adding a chunk is incremental through the existing chunk listener, so a
+new message is searchable without any scan.
+
+**Optional-work budget.** The backfill checks `DailyBudget`, which reads the
+same in-process meters as the panel. When the current UTC day's measured use
+has reached `daily_query_budget` or `daily_response_budget_mb`, the backfill
+pauses with zero queries and resumes after the UTC day rolls over.
+Interactive messages, polls and panel reads never consult it.
+
+What is left is the content path itself: message recall and ingestion, open
+commitments (96 reads), delivery checks (232), and the 15-minute background
+bursts. Active time is unchanged at 8.8 h; Phase 3 is about behavior under
+pressure, not more idle gains.
 
 ## Hypotheses, checked against the code
 
@@ -204,12 +243,13 @@ What is left is mostly content, not polling:
 ## What changes, in priority order
 
 Phase 1 (shipped) is items 1-5, 7 and 8 below, with the numbers in
-[After Phase 1](#after-phase-1). Phase 2 and 3 are open.
+[After Phase 1](#after-phase-1). Phase 2's item 6 is shipped, with the
+numbers in [After Phase 2](#after-phase-2). Phase 3 is open.
 
 1. **Recall reads only what it ranks on, then only the text it cites.**
-   Shipped: the scan carries ids and sealed vectors, and the top-k fetch
-   their text and metadata by id. Phase 2 replaces the scan itself with the
-   in-memory matrix.
+   Shipped twice: Phase 1 made the scan carry ids and sealed vectors and
+   fetched the top-k text by id; Phase 2 replaced the scan with the resident
+   matrix.
 2. **Idle means no queries.** Shipped:
    - Provider poll cursors and state, the scheduler due time and the MCP
      poll schedule live in memory; the database is read once and written only
@@ -229,10 +269,15 @@ Phase 1 (shipped) is items 1-5, 7 and 8 below, with the numbers in
 5. **One shared pool with configured size and idle release.** Shipped:
    `pool_min_size=0`, `pool_max_size`, and
    `max_inactive_connection_lifetime=pool_idle_seconds`.
-6. **Memory-only retrieval caches (Phase 2).** The vector matrix, lexical
-   index, hot event view and entity lookups load once in bounded batches and
-   follow a sequence watermark. Recall hits the database only for rows
-   missing from the cache. Cold start records its bytes.
+6. **Memory-only retrieval caches.** Shipped: the vector matrix loads once
+   in bounded batches and follows the chunk listener; ranking reads no
+   `memory_chunks` rows. The lexical index and hot event view were already
+   resident and are verified by the replay (no query sites). Entity lookups
+   were left alone: the replay measured no entity queries in a day, and the
+   loop already caches owner addresses per background burst.
+   - The optional vector truncation in the plan is not shipped: it changes
+     what is stored for a saving the matrix already provides, and it stays
+     off unless a real quality evaluation asks for it.
 7. **Budget manager and graceful degradation (Phase 3).** A circuit breaker
    with exponential backoff and jitter, a bounded sealed-or-memory write
    queue, cached answers, one user notice when memory is unavailable and one
@@ -263,12 +308,19 @@ All of these live under `db:` in `config.yaml`; see
 | `panel_page_size` | `100` | hard cap for one panel list page |
 | `replay_messages_per_day` / `replay_mails_per_day` | `20` / `12` | replay shape |
 | `replay_panel_hours` | `2.0` | how long the replay keeps a panel open |
-| `daily_query_budget` | `2500` | replay regression ceiling, queries per simulated day |
-| `daily_response_budget_mb` | `120.0` | replay regression ceiling, estimated MB per day |
+| `daily_query_budget` | `2500` | replay ceiling and optional-work pause point, queries per UTC day |
+| `daily_response_budget_mb` | `120.0` | replay ceiling and optional-work pause point, estimated MB per UTC day |
 | `daily_active_minutes_budget` | `600` | replay regression ceiling, active compute per day |
 | `monthly_compute_cu_hours` / `monthly_transfer_gb` | `100` / `5` | the provider's limits, used only for projection |
 | `compute_cu` | `0.25` | the compute size used for the projection |
 | `autosuspend_seconds` | `300` | the provider's idle window used for the active-time model |
+
+The resident vector matrix has its own keys under `memory:`:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `cache_batch` | `1000` | rows per boot-load query; a larger batch is fewer round trips |
+| `vector_cache_max_chunks` | `8000` | most chunks kept resident; the oldest leave the cache, not the database |
 
 ## What could not be verified
 
@@ -281,3 +333,6 @@ All of these live under `db:` in `config.yaml`; see
 - The production query mix. The replay mirrors the code's database calls but
   uses synthetic sizes; the first day of real `aether db-stats` output is what
   calibrates the synthetic day.
+- The process's resident memory after the vector matrix loads. The Database
+  Use page reports a computed estimate (chunks times dimensions times four
+  bytes), not a reading of the process's RSS.

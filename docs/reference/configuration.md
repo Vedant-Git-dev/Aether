@@ -244,6 +244,8 @@ authz:
 | `hot_events` | `2000` | Resident event index size; lower it on a small host |
 | `hot_chunks` | `8000` | Resident BM25 chunk budget: about 190 MB at 8,000 chunks (measured), scaling linearly; lower it on a small host |
 | `cold_batch` | `500` | Rows per bounded cold scan |
+| `cache_batch` | `1000` | Rows per boot-load query for the resident vector matrix |
+| `vector_cache_max_chunks` | `8000` | Most chunks the vector matrix keeps resident; at 768 dimensions that is about 50 MB (matrix and its staging rows). Older chunks stay on the database |
 | `conclusion_ttl_seconds` | `120` | How long a live-state answer stays usable |
 | `rrf_k` | `60` | Reciprocal-rank-fusion constant |
 | `mmr_lambda` | `0.7` | Relevance versus diversity in selection (0.7 keeps relevance ahead) |
