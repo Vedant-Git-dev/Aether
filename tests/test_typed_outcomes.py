@@ -12,7 +12,7 @@ and batch it rather than blocking the offer.
 
 from __future__ import annotations
 
-from fakes import FakeProvider
+from fakes import FakeProvider, held_texts
 from test_agent_loop import LoopKit, _event, _msg
 
 from aether.config import AgentConfig, AppConfig
@@ -236,7 +236,7 @@ async def test_a_proactive_send_in_quiet_hours_is_held_then_batched() -> None:
     # the tool was offered and the model sent; the words wait, not vanish
     assert "message__send" in _offered(provider)
     assert kit.connector.sent == []
-    assert kit.loop._held == ["saw the mail"]
+    assert await held_texts(kit.loop) == ["saw the mail"]
     assert "chat_refs" not in kit.traces.created[-1]["payload"]
 
     kit.loop._config.agent.quiet_hours = None
@@ -244,7 +244,7 @@ async def test_a_proactive_send_in_quiet_hours_is_held_then_batched() -> None:
     await kit.loop._tick()  # nothing new — the batch flushes on its own
 
     assert kit.connector.sent == ["While it was quiet:\n\nsaw the mail"]
-    assert kit.loop._held == []
+    assert await held_texts(kit.loop) == []
 
 
 async def test_an_urgent_note_breaks_quiet_hours_immediately() -> None:
@@ -255,4 +255,4 @@ async def test_an_urgent_note_breaks_quiet_hours_immediately() -> None:
     await kit.loop._tick()
 
     assert kit.connector.sent == ["prod is down — on it"]
-    assert kit.loop._held == []
+    assert await held_texts(kit.loop) == []

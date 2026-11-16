@@ -19,7 +19,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 
-from fakes import FakeEventStore, FakeMediaStore, FakeProvider, FakeRegistry
+from fakes import FakeEventStore, FakeMediaStore, FakeProvider, FakeRegistry, held_texts
 from test_agent_loop import LoopKit, _event, _msg
 from test_attachments import _image, _message
 
@@ -183,7 +183,7 @@ async def test_held_words_never_ride_the_log(caplog) -> None:
         await kit.loop.note_to_user("the surprise party for Ravi is at 8")
         await kit.loop.present_result(1, "the report on Project Blue is ready")
 
-    assert kit.loop._held == [
+    assert await held_texts(kit.loop) == [
         "the surprise party for Ravi is at 8",
         "the report on Project Blue is ready",
     ]

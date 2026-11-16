@@ -920,3 +920,18 @@ class FakeProactiveStore:
 
     async def list(self, limit: int = 50) -> list[ProactiveTask]:
         return list(reversed(self.tasks))[:limit]
+
+
+async def held_texts(loop) -> list[str]:
+    return [note.text for note in await loop._held_notes.pending()]
+
+
+class BrokenHeldNotes:
+    async def hold(self, text: str) -> None:
+        raise ConnectionError("database unavailable")
+
+    async def pending(self, limit: int = 100) -> list:
+        raise ConnectionError("database unavailable")
+
+    async def release(self, note_ids: list[int]) -> None:
+        raise ConnectionError("database unavailable")
