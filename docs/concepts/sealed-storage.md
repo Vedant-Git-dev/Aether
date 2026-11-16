@@ -177,8 +177,11 @@ content.
   before they reach a log line.
 - `held_notes` — unprompted notes waiting out quiet hours. Only the id,
   creation time and key version are plaintext; the note text is sealed. A
-  row is deleted once its batch has been sent, so held notes survive a
-  restart instead of living only in process memory.
+  row is deleted once the fan-out for its batch returns, so held notes
+  survive a restart instead of living only in process memory. The rows
+  stay only when the fan-out itself raises: a single surface that fails
+  inside it is recorded in `deliveries` and re-sent from there, not from
+  `held_notes`.
 - `inbound_messages` — one terminal outcome per message the user sent.
   The surface and status word are plaintext; the chat, message and
   idempotency keys are blind tokens; the failure reason and the outbound

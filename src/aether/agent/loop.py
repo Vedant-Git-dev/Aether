@@ -975,28 +975,32 @@ class AgentLoop:
     async def flush_held(self) -> None:
         if not self._held_waiting or self._quiet_now():
             return
+        self._held_waiting = False
         batches = []
-        unread = False
         for store in (self._held_notes, self._held_spill):
             try:
                 notes = await store.pending()
             except Exception:
                 log.warning("could not read held notes, the next tick retries", exc_info=True)
-                unread = True
+                self._held_waiting = True
                 continue
             if notes:
                 batches.append((store, notes))
         if not batches:
-            self._held_waiting = unread
             return
         texts = [note.text for _, notes in batches for note in notes if note.text]
         if texts:
-            await self._surfaces.send_to_user("While it was quiet:\n\n" + "\n\n".join(texts))
+            try:
+                await self._surfaces.send_to_user("While it was quiet:\n\n" + "\n\n".join(texts))
+            except Exception:
+                self._held_waiting = True
+                raise
         for store, notes in batches:
             try:
                 await store.release([note.id for note in notes])
             except Exception:
                 log.warning("could not release sent held notes", exc_info=True)
+                self._held_waiting = True
 
     async def note_to_user(
         self, text: str, *, urgent: float = 0.0, channel: str = ""
@@ -1144,9 +1148,8 @@ class AgentLoop:
         if not due:
             return
         observations = [self._reminder_event(item) for item in due]
-        delivered = True
         try:
-            await self._turn([], observations)
+            delivered = await self._turn([], observations)
         except Exception:
             log.exception("reminder turn failed")
             delivered = False
@@ -2318,7 +2321,7 @@ class AgentLoop:
         resume: _Resume | None = None,
         records: list[Any] | None = None,
         force_quote: bool = False,
-    ) -> None:
+    ) -> bool:
         provider = self._providers.for_role("reasoning") if self._providers else None
         if provider is None:
             if messages:
@@ -2326,7 +2329,7 @@ class AgentLoop:
                     "I'm running without an LLM provider — add provider keys to "
                     ".env to talk to me. Feeds and schedules keep working."
                 )
-            return
+            return False
 
         # the inbound rows this turn owes a terminal outcome
         if resume is not None:
@@ -2645,6 +2648,7 @@ class AgentLoop:
         )
         system = await self._system_prompt()
         system = f"{system}\n\n{self._tool_index(outcome_tools)}"
+        completed = False
         try:
             # one turn's hard ceiling: a hung provider or a runaway tool
             # loop ends here (the wait cancels whatever was stuck) instead
@@ -2822,6 +2826,7 @@ class AgentLoop:
                     else:
                         trace["reply_blocked"] = True
                         log.info("proactive ask blocked (turn %s, stale replay)", turn_ref)
+            completed = True
         except TimeoutError:
             # the ceiling bit: a handled outcome, not a crash — the trace
             # keeps the fact, the user gets plain words, and the tick
@@ -2920,6 +2925,7 @@ class AgentLoop:
                     await self._record_state_conclusion(messages, reply)
             except Exception:
                 log.warning("focus/conclusion update failed — continuing", exc_info=True)
+        return completed
 
     async def _retry_empty_reply(
         self, provider: Provider, system: str, history: list[Message]

@@ -61,10 +61,11 @@ from aether.config import (
 )
 from aether.connectors.base import InboundMessage
 from aether.connectors.registry import ToolRegistry
-from aether.llm.types import ImageBlock, ToolCall, ToolResult, Turn, WireSpec
+from aether.llm.base import ProviderError as LLMProviderError
+from aether.llm.types import ImageBlock, Message, ToolCall, ToolResult, Turn, WireSpec
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.events import Event, IngestResult
-from aether.memory.held_notes import MemoryHeldNotes
+from aether.memory.held_notes import HeldNote, MemoryHeldNotes
 from aether.memory.vectors import MemoryHit
 from aether.origin import owner_message, use_origin
 from aether.proactive.path import DueReminder
@@ -1661,6 +1662,55 @@ async def test_a_reminder_turn_that_raises_settles_the_lead_as_not_delivered() -
     assert settled == [False]
 
 
+class OneReminderPath:
+    def __init__(self) -> None:
+        self.settled: list[bool] = []
+
+    async def tick(self) -> list[DueReminder]:
+        return [
+            DueReminder(
+                payload={"commitment_id": 3, "text": "send the invoice", "lead_minutes": 15},
+                urgency=2,
+                salience=8.0,
+            )
+        ]
+
+    async def settle(self, due: list[DueReminder], *, delivered: bool) -> None:
+        self.settled.append(delivered)
+
+
+class FailingProvider(FakeProvider):
+    async def complete(
+        self,
+        system: str,
+        messages: list[Message],
+        tools: list[WireSpec],
+    ) -> Turn:
+        self.calls.append((system, list(messages), list(tools)))
+        raise LLMProviderError("provider call failed: 503 service unavailable")
+
+
+async def test_a_reminder_turn_without_a_provider_settles_as_not_delivered() -> None:
+    kit = LoopKit(None)
+    path = OneReminderPath()
+    kit.loop.attach_proactive_path(path)
+    await kit.loop._run_proactive_tick()
+
+    assert path.settled == [False]
+
+
+async def test_a_reminder_turn_whose_provider_fails_settles_as_not_delivered() -> None:
+    provider = FailingProvider([])
+    kit = LoopKit(provider)
+    path = OneReminderPath()
+    kit.loop.attach_proactive_path(path)
+    await kit.loop._run_proactive_tick()
+
+    assert provider.calls
+    assert path.settled == [False]
+    assert kit.connector.sent == []
+
+
 async def test_a_quiet_tick_calls_no_llm() -> None:
     provider = FakeProvider([])  # would AssertionError if called
     kit = LoopKit(provider)
@@ -1891,6 +1941,36 @@ async def test_held_notes_stay_stored_when_the_send_raises() -> None:
     with pytest.raises(ConnectionError):
         await kit.loop.flush_held()
     assert [note.text for note in await store.pending()] == ["not lost"]
+    assert kit.loop._held_waiting
+
+
+class CountingHeldNotes(MemoryHeldNotes):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reads = 0
+
+    async def pending(self, limit: int = 100) -> list[HeldNote]:
+        self.reads += 1
+        return await super().pending(limit)
+
+
+async def test_a_successful_flush_skips_the_read_on_the_next_tick() -> None:
+    store = CountingHeldNotes()
+    kit = LoopKit(
+        FakeProvider([]),
+        config=AppConfig(agent=AgentConfig(quiet_hours="00:00-23:59")),
+        held_notes=store,
+    )
+    await kit.loop.note_to_user("held once")
+    kit.loop._quiet = None
+
+    await kit.loop.flush_held()
+    assert kit.connector.sent == ["While it was quiet:\n\nheld once"]
+    reads = store.reads
+
+    await kit.loop.flush_held()
+    assert store.reads == reads
+    assert kit.connector.sent == ["While it was quiet:\n\nheld once"]
 
 
 async def test_an_alert_action_runs_through_the_gate_and_records_a_trace() -> None:
