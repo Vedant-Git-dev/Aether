@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 from aether.config import AppConfig, ProactiveConfig
 from aether.memory.commitments import OPEN, Commitment
-from aether.proactive.path import ProactivePath
+from aether.proactive.path import MAX_REMINDER_ATTEMPTS, ProactivePath
 
 NOW = datetime(2026, 11, 3, 6, 16, tzinfo=UTC)
 
@@ -80,6 +80,7 @@ async def test_a_reminder_fires_once_then_the_overdue_escalation_fires_once() ->
     assert len(first) == 1
     assert first[0].payload["text"] == "send the invoice"
     assert first[0].payload["overdue"] is False
+    await path.settle(first, delivered=True)
     assert await path.tick() == []  # the same lead never repeats
 
     commitments.items[0] = replace(item, due_at=NOW - timedelta(minutes=1))
@@ -87,6 +88,19 @@ async def test_a_reminder_fires_once_then_the_overdue_escalation_fires_once() ->
     overdue = await path.tick()
     assert len(overdue) == 1
     assert overdue[0].payload["overdue"] is True
+    await path.settle(overdue, delivered=True)
+    assert await path.tick() == []
+
+
+async def test_a_lead_whose_turn_failed_comes_back_until_the_attempts_run_out() -> None:
+    commitments = FakeCommitments([_commitment(NOW + timedelta(minutes=10))])
+    path = await _path(commitments=commitments)
+
+    for _ in range(MAX_REMINDER_ATTEMPTS):
+        due = await path.tick()
+        assert len(due) == 1
+        await path.settle(due, delivered=False)
+
     assert await path.tick() == []
 
 

@@ -28,7 +28,7 @@ _TABLES = (
     "provider_sync_state, facts, commitments, commitment_reminders, alerts, "
     "alert_notifications, summaries, "
     "focus, forgotten_events, "
-    "conclusions, deliveries, workspace_files, inbound_messages"
+    "conclusions, deliveries, held_notes, workspace_files, inbound_messages"
 )
 
 

@@ -224,6 +224,7 @@ PLAINTEXT_ALLOWLIST: dict[str, frozenset[str]] = {
     "focus": frozenset({"chat_ref_token", "updated_at", "key_version"}),
     "conclusions": frozenset({"key_token", "created_at", "key_version"}),
     "deliveries": frozenset({"id", "surface_token", "status", "created_at", "key_version"}),
+    "held_notes": frozenset({"id", "created_at", "key_version"}),
     "workspace_files": frozenset({"id", "name_token", "updated_at", "key_version"}),
     # a forgotten event's tombstone: two keyed blind tokens and a stamp
     "forgotten_events": frozenset({"dedup_mac", "source_token", "forgotten_at"}),
@@ -288,6 +289,7 @@ SEALED_COLUMNS: dict[str, frozenset[str]] = {
     "focus": frozenset({"state_enc"}),
     "conclusions": frozenset({"value_enc"}),
     "deliveries": frozenset({"body_enc", "message_id_enc", "error_enc"}),
+    "held_notes": frozenset({"body_enc"}),
     "workspace_files": frozenset({"name_enc", "content_enc"}),
     "inbound_messages": frozenset({"reason_enc", "outcome_enc"}),
 }

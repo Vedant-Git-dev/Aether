@@ -124,6 +124,7 @@ encrypted store under a separate keyring.
 | `focus.py` | One sealed working set per chat |
 | `conclusions.py` | Caches state-of-now answers with `as_of` and `valid_until` |
 | `deliveries.py` | Records every outbound send attempt |
+| `held_notes.py` | Keeps unprompted notes held for quiet hours until they are sent |
 
 All of these live in `src/aether/memory/`.
 
@@ -354,7 +355,7 @@ records each version in `schema_migrations`.
 | Configuration | `config_overrides`, `app_secrets` |
 | Providers | `provider_connections`, `oauth_tokens`, `provider_oauth_states`, `provider_sync_state` |
 | Media and workbench | `media_blobs`, `workbench_transfers`, `workbench_minutes` |
-| Delivery | `processed_updates`, `inbound_messages` |
+| Delivery | `processed_updates`, `inbound_messages`, `held_notes` |
 
 Content columns are AES-256-GCM ciphertext bound to their row and column with additional
 authenticated data. Plain columns carry routing metadata: ids, statuses, timestamps,

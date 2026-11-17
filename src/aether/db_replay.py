@@ -80,7 +80,7 @@ _TABLES = (
     "processed_updates, provider_connections, provider_oauth_states, "
     "provider_sync_state, facts, commitments, commitment_reminders, alerts, "
     "alert_notifications, summaries, focus, forgotten_events, "
-    "conclusions, deliveries, workspace_files, inbound_messages"
+    "conclusions, deliveries, held_notes, workspace_files, inbound_messages"
 )
 
 _SCRATCH_TAGS = ("scratch", "test", "ci", "replay")
@@ -650,7 +650,9 @@ class _ReplayDay:
             self._events_pending = False
             await self.b.events.list_since(self.last_event_id, limit=100)
         if background_due:
-            await self.b.path.tick(now)
+            due = await self.b.path.tick(now)
+            if due:
+                await self.b.path.settle(due, delivered=True)
             await self.b.alert_engine.tick(now)
 
     async def backfill_poll(self) -> None:

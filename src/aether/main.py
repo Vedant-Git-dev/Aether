@@ -70,6 +70,7 @@ from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
 from .memory.facts import Facts
 from .memory.focus import Focus
+from .memory.held_notes import DbHeldNotes
 from .memory.inbound import DbInboundStates
 from .memory.indexes import MemoryIndex
 from .memory.lexical import LexicalIndex
@@ -729,6 +730,7 @@ def create_app(
             conclusions=conclusions,
             deliveries=deliveries,
             inbound_states=inbound_states,
+            held_notes=DbHeldNotes(pool, cipher),
             query_pipeline=query_pipeline,
             summary_job=summary_job,
             counters=counters,
