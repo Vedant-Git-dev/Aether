@@ -122,6 +122,11 @@ class DatabaseConfig(BaseModel):
     # a connection idle longer than this is closed, so the database can
     # reach its idle window without a client holding it awake
     pool_idle_seconds: float = 60.0
+    # the outage circuit: this many consecutive connection failures open it,
+    # then every call fails fast while the wait doubles from base to max
+    breaker_failures: int = 3
+    breaker_base_seconds: float = 2.0
+    breaker_max_seconds: float = 300.0
     # non-urgent background work (expiry, delivery checks, reminders,
     # observations) runs in bursts this far apart
     background_window_minutes: float = 15.0

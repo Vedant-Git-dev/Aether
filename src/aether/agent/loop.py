@@ -56,6 +56,7 @@ from ..connectors.mcp_host import MCPHost
 from ..connectors.polling import next_poll_delay
 from ..connectors.registry import ToolRegistry
 from ..counters import today as counter_day
+from ..db_resilience import CircuitBreaker
 from ..llm.agent import run_tool_loop
 from ..llm.base import Provider
 from ..llm.base import ProviderError as LLMProviderError
@@ -751,6 +752,7 @@ class AgentLoop:
         proactive_path: Any = None,
         summary_job: Any = None,
         counters: Any = None,
+        db_breaker: CircuitBreaker | None = None,
     ) -> None:
         self._providers = providers
         # the in-flight reply to a decision, if the model is writing one —
@@ -820,6 +822,11 @@ class AgentLoop:
         # log line, and the next turn is told about it
         self._deliveries = deliveries
         self._counters = counters
+        # the outage circuit shared with the pool: an open circuit means
+        # this tick keeps its queued messages and asks nothing of the
+        # database. True means "nothing said yet" — a boot is not a recovery.
+        self._db_breaker = db_breaker
+        self._db_announced = True
         # the inbound ledger: one terminal outcome per message the user
         # sent, so no later turn re-answers a question that already had its
         # turn. The in-memory ledger is the default; the boot wires the
@@ -1182,6 +1189,9 @@ class AgentLoop:
         retry comes due sooner. A retry never waits for the next tick by
         accident, so 'I'll try again in about 20 seconds' stays true."""
         wait = float(self._config.agent.tick_seconds)
+        if self._db_breaker is not None and self._db_breaker.state == "open":
+            # wake for the probe when the wait ends, not at the next tick
+            wait = min(wait, max(0.1, self._db_breaker.retry_in_seconds))
         if self._resumes:
             soonest = min(resume.due_at for resume in self._resumes)
             remaining = (soonest - datetime.now(UTC)).total_seconds()
@@ -1200,6 +1210,26 @@ class AgentLoop:
         minutes = max(0.1, float(self._config.db.background_window_minutes))
         self._next_background_at = now + timedelta(minutes=minutes)
         return True
+
+    async def _announce_database(self, *, available: bool) -> None:
+        """One plain sentence per transition: an outage and its recovery.
+
+        The notice opens no delivery row, so it can still reach the user over
+        a connector while the circuit is open. A transcript write is attempted
+        and fails harmlessly under the open circuit; on recovery it lands.
+        """
+        if available == self._db_announced:
+            return
+        self._db_announced = available
+        text = (
+            "My database is reachable again. I'll catch up on anything I missed."
+            if available
+            else "My database is temporarily unavailable. I'll answer again as soon as it's back."
+        )
+        try:
+            await self._surfaces.send_to_user(text, record=False)
+        except Exception:
+            log.warning("could not send the database notice", exc_info=True)
 
     async def _run_proactive_tick(self) -> None:
         """Turn due commitment reminders into an unprompted turn.
@@ -1404,6 +1434,18 @@ class AgentLoop:
         self._summary_task = asyncio.create_task(_summarize(), name="memory-summary")
 
     async def _tick(self) -> None:
+        # an open circuit means the database was unreachable moments ago.
+        # Say so once, keep queued messages queued, and ask it nothing until
+        # the breaker allows a probe — no retry storm, no lost words.
+        if self._db_breaker is not None:
+            state = self._db_breaker.state
+            if state == "open":
+                await self._announce_database(available=False)
+                return
+            if state == "closed":
+                await self._announce_database(available=True)
+            # half-open: let this tick probe, and say nothing until a call
+            # actually proves the database is reachable
         anchor = self._last_event_id
         if self._deliveries is not None and self._deliveries is not self._watched_deliveries:
             if hasattr(self._deliveries, "watch"):

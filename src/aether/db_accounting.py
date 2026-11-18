@@ -19,15 +19,18 @@ cannot see them, so the CLI talks to the running server over localhost.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from threading import Lock
 from typing import Any
+
+from .db_resilience import CircuitBreaker, is_connection_failure
 
 log = logging.getLogger("aether.db")
 
@@ -325,64 +328,78 @@ def _row_count(result: Any) -> int:
     return 1
 
 
+def _observe(breaker: CircuitBreaker | None, exc: BaseException | None) -> None:
+    """Tell the breaker what one call proved about reachability."""
+    if breaker is None:
+        return
+    if exc is None:
+        breaker.record_success()
+    elif isinstance(exc, asyncio.CancelledError):
+        breaker.record_cancelled()
+    elif is_connection_failure(exc):
+        breaker.record_failure()
+    else:
+        # the server answered, so the connection is healthy even when the
+        # statement itself was wrong
+        breaker.record_success()
+
+
+async def _measured(
+    accounting: DBAccounting,
+    breaker: CircuitBreaker | None,
+    query: str,
+    call: Callable[[], Any],
+    *,
+    rows: Callable[[Any], int] = _row_count,
+) -> Any:
+    """Run one query, record it, and tell the breaker how it went."""
+    started = time.perf_counter()
+    try:
+        result = await call()
+    except BaseException as exc:
+        accounting.record(query, None, 0, time.perf_counter() - started)
+        _observe(breaker, exc)
+        raise
+    accounting.record(query, result, rows(result), time.perf_counter() - started)
+    _observe(breaker, None)
+    return result
+
+
 class _MeteredConnection:
     """Connection proxy: the same methods, measured, everything else delegated."""
 
-    def __init__(self, conn: Any, accounting: DBAccounting) -> None:
+    def __init__(
+        self, conn: Any, accounting: DBAccounting, breaker: CircuitBreaker | None = None
+    ) -> None:
         self._conn = conn
         self._accounting = accounting
+        self._breaker = breaker
+
+    async def _call(self, query: str, call: Callable[[], Any], **kwargs: Any) -> Any:
+        return await _measured(self._accounting, self._breaker, query, call, **kwargs)
 
     async def fetch(self, query: str, *args: Any, **kwargs: Any) -> Any:
-        started = time.perf_counter()
-        try:
-            result = await self._conn.fetch(query, *args, **kwargs)
-        except BaseException:
-            self._accounting.record(query, None, 0, time.perf_counter() - started)
-            raise
-        self._accounting.record(query, result, _row_count(result), time.perf_counter() - started)
-        return result
+        return await self._call(query, lambda: self._conn.fetch(query, *args, **kwargs))
 
     async def fetchrow(self, query: str, *args: Any, **kwargs: Any) -> Any:
-        started = time.perf_counter()
-        try:
-            result = await self._conn.fetchrow(query, *args, **kwargs)
-        except BaseException:
-            self._accounting.record(query, None, 0, time.perf_counter() - started)
-            raise
-        self._accounting.record(query, result, _row_count(result), time.perf_counter() - started)
-        return result
+        return await self._call(query, lambda: self._conn.fetchrow(query, *args, **kwargs))
 
     async def fetchval(self, query: str, *args: Any, **kwargs: Any) -> Any:
-        started = time.perf_counter()
-        try:
-            result = await self._conn.fetchval(query, *args, **kwargs)
-        except BaseException:
-            self._accounting.record(query, None, 0, time.perf_counter() - started)
-            raise
-        self._accounting.record(
-            query, result, 0 if result is None else 1, time.perf_counter() - started
+        return await self._call(
+            query,
+            lambda: self._conn.fetchval(query, *args, **kwargs),
+            rows=lambda value: 0 if value is None else 1,
         )
-        return result
 
     async def execute(self, query: str, *args: Any, **kwargs: Any) -> Any:
-        started = time.perf_counter()
-        try:
-            result = await self._conn.execute(query, *args, **kwargs)
-        except BaseException:
-            self._accounting.record(query, None, 0, time.perf_counter() - started)
-            raise
-        self._accounting.record(query, result, 0, time.perf_counter() - started)
-        return result
+        return await self._call(
+            query, lambda: self._conn.execute(query, *args, **kwargs), rows=lambda _: 0
+        )
 
     async def executemany(self, query: str, args: Any, **kwargs: Any) -> Any:
-        started = time.perf_counter()
-        try:
-            result = await self._conn.executemany(query, args, **kwargs)
-        except BaseException:
-            self._accounting.record(query, None, 0, time.perf_counter() - started)
-            raise
-        self._accounting.record(query, result, 0, time.perf_counter() - started)
-        return result
+        return await self._call(
+            query, lambda: self._conn.executemany(query, args, **kwargs), rows=lambda _: 0
+        )
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._conn, name)
@@ -391,40 +408,70 @@ class _MeteredConnection:
 class _Acquire:
     """`pool.acquire()` proxy that measures the lease and wraps the connection."""
 
-    def __init__(self, pool: Any, context: Any, accounting: DBAccounting) -> None:
+    def __init__(
+        self,
+        pool: Any,
+        context: Any,
+        accounting: DBAccounting,
+        breaker: CircuitBreaker | None = None,
+    ) -> None:
         self._pool = pool
         self._context = context
         self._accounting = accounting
+        self._breaker = breaker
 
     async def __aenter__(self) -> _MeteredConnection:
-        conn = await self._context.__aenter__()
+        if self._breaker is not None:
+            self._breaker.check()
+        try:
+            conn = await self._context.__aenter__()
+        except BaseException as exc:
+            _observe(self._breaker, exc)
+            raise
+        # a lease is not proof the server answers: the first query on the
+        # connection reports that. Releasing the lease without one frees
+        # the probe so the next caller can try.
         self._accounting.acquired()
-        return _MeteredConnection(conn, self._accounting)
+        return _MeteredConnection(conn, self._accounting, self._breaker)
 
     async def __aexit__(self, *exc: Any) -> Any:
         try:
             return await self._context.__aexit__(*exc)
         finally:
             self._accounting.released()
+            if self._breaker is not None:
+                self._breaker.record_cancelled()
 
 
 class MeteredPool:
-    """An asyncpg pool with every query measured; a transparent stand-in."""
+    """An asyncpg pool with every query measured; a transparent stand-in.
 
-    def __init__(self, pool: Any, accounting: DBAccounting | None = None) -> None:
+    `breaker`, when given, gates every call: while the circuit is open the
+    pool raises `DatabaseUnavailable` immediately instead of waiting on a
+    network timeout, which is what keeps an outage from becoming a retry
+    storm.
+    """
+
+    def __init__(
+        self,
+        pool: Any,
+        accounting: DBAccounting | None = None,
+        breaker: CircuitBreaker | None = None,
+    ) -> None:
         self._pool = pool
         self.accounting = accounting or DBAccounting()
         self.accounting.attach_pool(pool)
+        self.breaker = breaker
 
     async def _run(self, method: str, query: str, args: tuple, kwargs: dict) -> Any:
-        started = time.perf_counter()
-        try:
-            result = await getattr(self._pool, method)(query, *args, **kwargs)
-        except BaseException:
-            self.accounting.record(query, None, 0, time.perf_counter() - started)
-            raise
-        self.accounting.record(query, result, _row_count(result), time.perf_counter() - started)
-        return result
+        if self.breaker is not None:
+            self.breaker.check()
+        return await _measured(
+            self.accounting,
+            self.breaker,
+            query,
+            lambda: getattr(self._pool, method)(query, *args, **kwargs),
+        )
 
     async def fetch(self, query: str, *args: Any, **kwargs: Any) -> Any:
         return await self._run("fetch", query, args, kwargs)
@@ -442,7 +489,7 @@ class MeteredPool:
         return await self._run("executemany", query, (args,), kwargs)
 
     def acquire(self, *args: Any, **kwargs: Any) -> _Acquire:
-        return _Acquire(self, self._pool.acquire(*args, **kwargs), self.accounting)
+        return _Acquire(self, self._pool.acquire(*args, **kwargs), self.accounting, self.breaker)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._pool, name)

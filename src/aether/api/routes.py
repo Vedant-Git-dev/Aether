@@ -317,6 +317,11 @@ async def db_stats_feed(request: Request, token: str | None = None) -> dict:
         # memory-only: the resident matrix's chunk count, dimensions and
         # approximate bytes. No ids, text or vectors leave the process.
         snapshot["caches"] = {"vectors": vectors.cache_stats}
+    pool = getattr(request.app.state, "pool", None)
+    breaker = getattr(pool, "breaker", None)
+    if breaker is not None:
+        # the circuit's state, failure count and probe wait — no queries
+        snapshot["breaker"] = breaker.snapshot()
     return snapshot
 
 

@@ -47,6 +47,7 @@ from .connectors.mcp_host import MCPHost
 from .connectors.registry import ToolRegistry
 from .connectors.screenvision import ScreenVision
 from .counters import DailyCounters
+from .db_resilience import CircuitBreaker
 from .llm.base import ProviderError
 from .llm.embeddings import GeminiEmbedder
 from .llm.model_list import ModelCatalog, is_sentinel
@@ -176,12 +177,20 @@ def create_app(
             )
 
         # --- database ------------------------------------------------------
+        # one breaker for the one pool: an outage fails fast instead of
+        # retrying through every loop on every tick
+        breaker = CircuitBreaker(
+            failures=config.db.breaker_failures,
+            base_seconds=config.db.breaker_base_seconds,
+            max_seconds=config.db.breaker_max_seconds,
+        )
         pool = await create_pool(
             settings.database_url,
             min_size=config.db.pool_min_size,
             max_size=config.db.pool_max_size,
             idle_seconds=config.db.pool_idle_seconds,
             accounting=config.db.accounting,
+            breaker=breaker,
         )
         app.state.db_accounting = pool.accounting
 
@@ -734,6 +743,7 @@ def create_app(
             query_pipeline=query_pipeline,
             summary_job=summary_job,
             counters=counters,
+            db_breaker=breaker,
         )
         app.state.agent = agent
 

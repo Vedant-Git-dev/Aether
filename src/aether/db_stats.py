@@ -80,6 +80,18 @@ def render(payload: dict[str, Any], *, top: int = 15) -> str:
             f"~{_human_bytes(vectors.get('bytes', 0))}{suffix}"
         )
 
+    breaker = payload.get("breaker") or {}
+    if breaker:
+        state = str(breaker.get("state") or "closed")
+        if state == "open":
+            wait = int(round(float(breaker.get("retry_in_seconds") or 0)))
+            mark = f"unreachable; next try in about {wait} seconds"
+        elif state == "half_open":
+            mark = "testing whether it is back"
+        else:
+            mark = "reachable"
+        lines.append(f"  database:     {mark}")
+
     sites = payload.get("sites") or []
     if sites:
         lines += ["", f"Top readers by estimated response bytes (of {len(sites)} call sites)"]

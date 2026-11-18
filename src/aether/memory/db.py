@@ -10,6 +10,7 @@ import asyncpg
 
 from ..config_validation import normalize_database_url
 from ..db_accounting import DBAccounting, MeteredPool
+from ..db_resilience import CircuitBreaker
 
 log = logging.getLogger("aether.db")
 
@@ -33,6 +34,7 @@ async def create_pool(
     max_size: int = 5,
     idle_seconds: float = 60.0,
     accounting: bool = True,
+    breaker: CircuitBreaker | None = None,
 ) -> MeteredPool:
     """One measured pool. Every store receives this wrapper and calls it like
     an asyncpg pool; each query lands in the process-local accounting meters.
@@ -48,7 +50,7 @@ async def create_pool(
         max_inactive_connection_lifetime=max(1.0, float(idle_seconds)),
         command_timeout=30,
     )
-    return MeteredPool(pool, DBAccounting(enabled=accounting))
+    return MeteredPool(pool, DBAccounting(enabled=accounting), breaker=breaker)
 
 
 async def run_migrations(pool: asyncpg.Pool, *, before: Before | None = None) -> list[str]:

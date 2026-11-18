@@ -47,6 +47,11 @@ db:
   pool_min_size: 0
   pool_max_size: 5
   pool_idle_seconds: 60.0
+  # optional (default: 3 / 2 / 300) consecutive connection failures that
+  # open the outage circuit, and the wait before a probe, doubling to max
+  breaker_failures: 3
+  breaker_base_seconds: 2.0
+  breaker_max_seconds: 300.0
   # optional (default: 15) non-urgent background work runs in bursts this
   # far apart; a new message never waits for the window
   background_window_minutes: 15.0
