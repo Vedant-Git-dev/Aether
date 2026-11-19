@@ -61,6 +61,7 @@ from aether.config import (
 )
 from aether.connectors.base import InboundMessage
 from aether.connectors.registry import ToolRegistry
+from aether.db_resilience import CircuitBreaker
 from aether.llm.base import ProviderError as LLMProviderError
 from aether.llm.types import ImageBlock, Message, ToolCall, ToolResult, Turn, WireSpec
 from aether.memory.crypto import Cipher, generate_key_b64
@@ -179,6 +180,7 @@ class LoopKit:
         views: Any = None,
         conclusions: Any = None,
         held_notes: Any = None,
+        db_breaker: Any = None,
     ):
         self.tools = ToolRegistry()
         self.events = FakeEventStore()
@@ -220,6 +222,7 @@ class LoopKit:
             views=views,
             conclusions=conclusions,
             held_notes=held_notes,
+            db_breaker=db_breaker,
         )
         if config_manager is not None:
             # the real native config tools, so a /config write goes through
@@ -3376,3 +3379,41 @@ async def test_the_status_names_a_connected_direct_provider() -> None:
     kit = LoopKit(None, provider_runtime=runtime)
     status = await kit.loop._apps_status()
     assert "Gmail — me@example.com — connected" in status
+
+
+async def test_an_outage_says_one_line_and_one_recovery() -> None:
+    breaker = CircuitBreaker(failures=1, base_seconds=60.0, jitter=lambda: 0.5)
+    kit = LoopKit(None, db_breaker=breaker)
+    breaker.record_failure()  # the circuit opens
+
+    await kit.loop._tick()
+    await kit.loop._tick()
+
+    assert len(kit.connector.sent) == 1
+    assert "temporarily unavailable" in kit.connector.sent[0]
+
+    breaker.record_success()  # the probe worked
+    await kit.loop._tick()
+
+    assert len(kit.connector.sent) == 2
+    assert "reachable again" in kit.connector.sent[1]
+
+
+async def test_messages_wait_in_the_queue_while_the_database_is_down() -> None:
+    breaker = CircuitBreaker(failures=1, base_seconds=60.0, jitter=lambda: 0.5)
+    kit = LoopKit(None, db_breaker=breaker)
+    breaker.record_failure()
+
+    kit.loop.submit_message(_msg("are you there?"))
+    await kit.loop._tick()
+
+    assert kit.loop._queue.qsize() == 1
+    assert len(kit.connector.sent) == 1  # the notice, not a model turn
+
+
+def test_the_loop_wakes_for_the_database_probe() -> None:
+    breaker = CircuitBreaker(failures=1, base_seconds=0.5, jitter=lambda: 0.5)
+    kit = LoopKit(None, db_breaker=breaker)
+    breaker.record_failure()
+
+    assert kit.loop._next_wait() <= 0.5

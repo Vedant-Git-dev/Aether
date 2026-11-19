@@ -23,8 +23,9 @@ database with synthetic data. It never reads the live database.
 ## Reading the meters
 
 - The panel's **Database Use** page shows query counts, estimated response
-  sizes, the busiest parts of Aether, the most-read tables and an hourly
-  pattern. It loads once when opened and again only when you press Refresh.
+  sizes, the busiest parts of Aether, the most-read tables, an hourly
+  pattern and the outage circuit's state. It loads once when opened and
+  again only when you press Refresh.
 - `aether db-stats` prints the same snapshot in a terminal. The counters live
   inside the running server, so the command talks to it over localhost:
 
@@ -244,7 +245,9 @@ pressure, not more idle gains.
 
 Phase 1 (shipped) is items 1-5, 7 and 8 below, with the numbers in
 [After Phase 1](#after-phase-1). Phase 2's item 6 is shipped, with the
-numbers in [After Phase 2](#after-phase-2). Phase 3 is open.
+numbers in [After Phase 2](#after-phase-2). Phase 3's outage circuit is
+shipped; its original write-behind queue was deliberately not built (see
+item 7).
 
 1. **Recall reads only what it ranks on, then only the text it cites.**
    Shipped twice: Phase 1 made the scan carry ids and sealed vectors and
@@ -278,10 +281,16 @@ numbers in [After Phase 2](#after-phase-2). Phase 3 is open.
    - The optional vector truncation in the plan is not shipped: it changes
      what is stored for a saving the matrix already provides, and it stays
      off unless a real quality evaluation asks for it.
-7. **Budget manager and graceful degradation (Phase 3).** A circuit breaker
-   with exponential backoff and jitter, a bounded sealed-or-memory write
-   queue, cached answers, one user notice when memory is unavailable and one
-   when it returns, and a recovery runbook.
+7. **Outage circuit and graceful degradation.** Shipped: a circuit breaker
+   with exponential backoff and jitter around the one pool, one plain notice
+   when it opens and one when it closes, messages held in memory while it is
+   open, and the recovery runbook below. The original bounded write-behind
+   queue is deliberately not built: every advisory write it would have held
+   (provider cursors, poll state, scheduler due times) is already memory-first
+   and written only on change, so a queue would duplicate that state without
+   making it safer. Approvals, authorization decisions and audit appends are
+   never queued in either design — if the database cannot take them, they
+   fail, which is the safe direction.
 8. **Verification.** Shipped the before/after replay; the CI benchmark gate
    lands in Phase 4.
 
@@ -303,6 +312,8 @@ All of these live under `db:` in `config.yaml`; see
 | `accounting` | `true` | measure every query for `aether db-stats` and the panel |
 | `pool_min_size` / `pool_max_size` | `0` / `5` | the one shared connection pool |
 | `pool_idle_seconds` | `60.0` | close an idle connection after this long |
+| `breaker_failures` | `3` | consecutive connection failures that open the outage circuit |
+| `breaker_base_seconds` / `breaker_max_seconds` | `2.0` / `300.0` | first probe wait, doubling with jitter to the max |
 | `background_window_minutes` | `15.0` | non-urgent background burst cadence |
 | `backfill_seconds` | `900.0` | fallback vector-backfill retry interval |
 | `panel_page_size` | `100` | hard cap for one panel list page |
@@ -321,6 +332,50 @@ The resident vector matrix has its own keys under `memory:`:
 | --- | --- | --- |
 | `cache_batch` | `1000` | rows per boot-load query; a larger batch is fewer round trips |
 | `vector_cache_max_chunks` | `8000` | most chunks kept resident; the oldest leave the cache, not the database |
+
+## When the database is unavailable
+
+The database is a metered, sometimes-absent dependency. A connection
+failure is not a crash, and it is not answered with a retry storm.
+
+**What the circuit does.** The shared pool counts consecutive connection
+failures. After `db.breaker_failures` (3) it opens for
+`db.breaker_base_seconds` (2), doubling on every failed probe with jitter up
+to `db.breaker_max_seconds` (300). While it is open, every database call
+raises `DatabaseUnavailable` immediately: no loop waits out a network
+timeout and the process makes no queries. When the wait ends, one probe is
+allowed. A success closes the circuit and logs
+`database reachable again`; a failure reopens it for longer. A SQL error is
+never counted — only connection refusals, dropped connections, a closed
+pool and timeouts are.
+
+**What still works.**
+
+- The agent loop sends one plain sentence when the circuit opens and one
+  when it closes. The notice opens no delivery row, so it can still reach a
+  chat surface while the database is down; a transcript write is skipped by
+  the failed circuit and costs nothing.
+- Messages that arrive while the circuit is open stay queued in memory.
+  The loop returns before draining them, so they are answered in order
+  after recovery, not dropped and not invented.
+- The panel and the web app keep serving pages that do not read the
+  database. `/api/db/stats` reports the circuit's state, and the Database
+  Use page shows it under Availability.
+
+**What stops.** Turns, approvals, audit appends, memory reads and writes,
+provider polls and the panel's database-backed lists fail while the circuit
+is open. That is intentional: no approval is decided, no action runs and no
+audit entry is invented without the database to record it. Nothing is held
+in a queue that could later execute stale work.
+
+**When it comes back.**
+
+1. Confirm recovery: the Database Use page and `aether db-stats` show
+   reachable, and the log has `database reachable again`.
+2. Send a test message. Any held messages are answered on the next tick.
+3. Do not restart the process to hurry it. A restart that cannot reach the
+   database fails at boot by design, and a healthy process recovers on its
+   own probe.
 
 ## What could not be verified
 
