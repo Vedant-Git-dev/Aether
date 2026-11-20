@@ -106,51 +106,20 @@ MODEL_OFF = "off"
 
 
 class DatabaseConfig(BaseModel):
-    """Measured database use and the budgets its report is judged against.
+    """Database behavior: the background cadence and optional-work budgets.
 
-    The accounting meters are in process memory; they hold counts, query
-    shapes and timings, never parameters or rows. The limits are public
-    Neon free-tier numbers, used by the replay harness to turn a simulated
-    day into projected monthly totals — they are not read from Neon.
+    The query meter is in process memory; it holds counts and estimated
+    response bytes, never parameters or rows. Only optional background work
+    reads the budgets, so they can never delay an interactive message.
     """
 
-    # every query is measured for `aether db-stats` and the panel
-    accounting: bool = True
-    # the shared pool: one per process, reused by every store and loop
-    pool_min_size: int = 0
-    pool_max_size: int = 5
-    # a connection idle longer than this is closed, so the database can
-    # reach its idle window without a client holding it awake
-    pool_idle_seconds: float = 60.0
-    # the outage circuit: this many consecutive connection failures open it,
-    # then every call fails fast while the wait doubles from base to max
-    breaker_failures: int = 3
-    breaker_base_seconds: float = 2.0
-    breaker_max_seconds: float = 300.0
     # non-urgent background work (expiry, delivery checks, reminders,
     # observations) runs in bursts this far apart
     background_window_minutes: float = 15.0
-    # the vector backfill retry cadence once it has drained
-    backfill_seconds: float = 900.0
-    # hard cap for one panel list page
-    panel_page_size: int = 100
-    # one simulated day's regression ceilings (the replay harness reports
-    # against these; CI enforces them once the post-fix baseline is set)
-    replay_messages_per_day: int = 20
-    replay_mails_per_day: int = 12
-    replay_panel_hours: float = 2.0
+    # the day's allowance for optional work; a spent day pauses the vector
+    # backfill until the next UTC day
     daily_query_budget: int = 2500
     daily_response_budget_mb: float = 120.0
-    # 100 CU-hours/month is about 3.33 CU-hours/day; at 0.25 CU that is
-    # ~13.3 active hours a day. 600 minutes (10 h) is the post-fix ceiling
-    # with headroom, and a quiet day should sit far below it.
-    daily_active_minutes_budget: int = 600
-    # the provider's published free-tier limits and compute shape, so the
-    # projection is one config change from the truth when the plan changes
-    monthly_compute_cu_hours: float = 100.0
-    monthly_transfer_gb: float = 5.0
-    compute_cu: float = 0.25
-    autosuspend_seconds: int = 300
 
 
 class LLMConfig(BaseModel):
@@ -244,10 +213,8 @@ class MemoryConfig(BaseModel):
     hot_chunks: int = 8_000
     cold_batch: int = 500
     # the resident vector matrix: recall ranks in process over the newest
-    # chunks instead of scanning the table. The load is bounded by this many
-    # rows per query and this many chunks resident; hitting the cap drops the
+    # chunks instead of scanning the table. Hitting this cap drops the
     # oldest chunks from the cache, not from the database.
-    cache_batch: int = 1_000
     vector_cache_max_chunks: int = 8_000
     # write-time enrichment: one cheap model turn per event reading out
     # urgency, deadlines, commitments and a one-line summary, so "anything

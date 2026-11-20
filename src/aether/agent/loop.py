@@ -138,6 +138,10 @@ log = logging.getLogger("aether.agent")
 
 _MAX_OBSERVATIONS = 20
 
+# the vector backfill retry cadence once it has drained — a caught-up loop
+# is not a minute-by-minute database poll
+BACKFILL_SECONDS = 900.0
+
 # A solicited turn waits this long for write-time enrichment still in
 # flight before it answers from the deterministic floor. The classifier is
 # one cheap model turn per event, so a burst can outrun the question that
@@ -932,7 +936,7 @@ class AgentLoop:
         """Index the events that predate vector memory (or lost a race with
         a rate limit), 50 oldest at a time. It runs at boot, immediately
         after a failed background index pass, and otherwise once per
-        `db.backfill_seconds` — a caught-up loop is not a minute-by-minute
+        `BACKFILL_SECONDS` — a caught-up loop is not a minute-by-minute
         database poll. `indexed_at` is the ledger, so nothing is lost."""
         assert self._vectors is not None
         while self._running:
@@ -945,7 +949,7 @@ class AgentLoop:
                 # history is still draining: keep the next pass immediate
                 await asyncio.sleep(0)
                 continue
-            await self._vectors.wait_backfill(self._config.db.backfill_seconds)
+            await self._vectors.wait_backfill(BACKFILL_SECONDS)
 
     def notify(self) -> None:
         """Wake the loop early — used after screen captures, poll results,

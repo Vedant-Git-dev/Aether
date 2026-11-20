@@ -119,6 +119,10 @@ def chunk_header(*, name: str = "", location: str = "", sender: str = "", when: 
     return f"[{' | '.join(parts)}]" if parts else ""
 
 
+# rows read per cache-load query; the boot load walks the table in these
+CACHE_BATCH = 1_000
+
+
 def _stamp(when: Any) -> str:
     if isinstance(when, datetime):
         return f"{when.astimezone(UTC):%Y-%m-%d %H:%M} UTC"
@@ -161,10 +165,9 @@ class VectorMemory:
         self._cache_matrix: np.ndarray | None = None
         self._cache_norms: np.ndarray | None = None
         self._cache_loaded = False
-        self._cache_capped = False
         self._cache_watermark = 0
         self._cache_dims = 0
-        self._cache_batch = 1000
+        self._cache_batch = CACHE_BATCH
         self._cache_max_chunks = 8_000
 
     def wake_backfill(self) -> None:
@@ -196,13 +199,13 @@ class VectorMemory:
 
     # -- vector cache ----------------------------------------------------------
 
-    async def load_cache(self, *, batch: int = 1000, max_chunks: int = 8_000) -> None:
+    async def load_cache(self, *, batch: int = CACHE_BATCH, max_chunks: int = 8_000) -> None:
         """Load the resident vector matrix, newest first, in bounded batches.
 
         Only ids and sealed vectors are read; text and metadata stay on the
         database until a hit is actually cited. The newest `max_chunks` are
-        kept when the table is larger — the cap is reported by
-        `cache_stats`, and recall simply cannot cite chunks older than it.
+        kept when the table is larger, and recall simply cannot cite chunks
+        older than it.
         """
         if not self.enabled or self._cache_loaded:
             return
@@ -267,7 +270,6 @@ class VectorMemory:
         self._cache_vectors = vectors
         self._cache_id_set = set(ids)
         self._cache_watermark = max(ids, default=0)
-        self._cache_capped = capped
         self._cache_loaded = True
         self._cache_matrix = None
         self._cache_norms = None
@@ -316,7 +318,6 @@ class VectorMemory:
             del self._cache_ids[0]
             del self._cache_events[0]
             del self._cache_vectors[0]
-            self._cache_capped = True
         self._cache_ids.append(chunk_id)
         self._cache_events.append(event_id)
         self._cache_vectors.append(vector)
@@ -346,24 +347,6 @@ class VectorMemory:
         self._cache_matrix = np.vstack(self._cache_vectors).astype(np.float32, copy=False)
         norms = np.linalg.norm(self._cache_matrix, axis=1).astype(np.float32)
         self._cache_norms = np.maximum(norms, np.float32(1e-12))
-
-    @property
-    def cache_stats(self) -> dict[str, Any]:
-        """What the resident matrix holds, in chunks and approximate bytes.
-
-        Deliberately does not build the matrix: a stats read must not cause
-        the largest allocation in the process.
-        """
-        bytes_used = len(self._cache_ids) * self._cache_dims * 4
-        bytes_used += len(self._cache_ids) * 16  # ids and event ids
-        return {
-            "loaded": self._cache_loaded,
-            "chunks": len(self._cache_ids),
-            "dims": self._cache_dims,
-            "bytes": bytes_used,
-            "capped": self._cache_capped,
-            "watermark": self._cache_watermark,
-        }
 
     @property
     def enabled(self) -> bool:

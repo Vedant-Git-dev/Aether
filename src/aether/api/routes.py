@@ -40,17 +40,18 @@ router = APIRouter()
 # a full-screen PNG is a few MB; anything past this is not a screenshot
 MAX_CAPTURE_BYTES = 20 * 1024 * 1024
 
+# hard cap for one panel list page
+PANEL_PAGE_SIZE = 100
+
 
 def _authorized(request: Request, token: str | None) -> bool:
     candidate = token or request.headers.get("x-aether-token", "")
     return bool(candidate) and hmac.compare_digest(candidate, request.app.state.settings.api_token)
 
 
-def _page_limit(request: Request, requested: int | None, default: int = 50) -> int:
-    """One page's size, capped by the configured panel maximum."""
-    config = getattr(request.app.state, "config", None)
-    cap = int(getattr(getattr(config, "db", None), "panel_page_size", 100) or 100)
-    return max(1, min(int(requested or default), cap))
+def _page_limit(requested: int | None, default: int = 50) -> int:
+    """One page's size, capped by the panel maximum."""
+    return max(1, min(int(requested or default), PANEL_PAGE_SIZE))
 
 
 def _conditional(request: Request, etag: str) -> Response | None:
@@ -257,7 +258,7 @@ async def list_approvals(
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
     approvals = request.app.state.approvals
-    page = _page_limit(request, limit)
+    page = _page_limit(limit)
     pending = await approvals.list_pending(limit=page, offset=offset)
     etag = f'W/"approvals-{max((a.id for a in pending), default=0)}-{len(pending)}-{offset}"'
     if (not_modified := _conditional(request, etag)) is not None:
@@ -301,30 +302,6 @@ async def decide_approval(
     return {"ok": True, "status": approval.status}
 
 
-@router.get("/api/db/stats")
-async def db_stats_feed(request: Request, token: str | None = None) -> dict:
-    """The process-local query meters: counts, estimated response bytes,
-    durations and call sites. Counts and query shapes only — no parameters,
-    rows or user content. This route itself touches no database."""
-    if not _authorized(request, token):
-        raise HTTPException(status_code=401, detail="bad or missing token")
-    accounting = getattr(request.app.state, "db_accounting", None)
-    if accounting is None:
-        raise HTTPException(status_code=503, detail="database accounting is not wired")
-    snapshot = accounting.snapshot()
-    vectors = getattr(request.app.state, "vectors", None)
-    if vectors is not None and hasattr(vectors, "cache_stats"):
-        # memory-only: the resident matrix's chunk count, dimensions and
-        # approximate bytes. No ids, text or vectors leave the process.
-        snapshot["caches"] = {"vectors": vectors.cache_stats}
-    pool = getattr(request.app.state, "pool", None)
-    breaker = getattr(pool, "breaker", None)
-    if breaker is not None:
-        # the circuit's state, failure count and probe wait — no queries
-        snapshot["breaker"] = breaker.snapshot()
-    return snapshot
-
-
 @router.get("/api/events")
 async def events_feed(
     request: Request,
@@ -336,7 +313,7 @@ async def events_feed(
     """The newest events, decrypted for the owner's eyes only."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
-    page = _page_limit(request, limit)
+    page = _page_limit(limit)
     events = await request.app.state.events.recent(limit=page, offset=offset)
     etag = f'W/"events-{max((e.id for e in events), default=0)}-{len(events)}-{offset}"'
     if (not_modified := _conditional(request, etag)) is not None:
@@ -903,7 +880,7 @@ async def audit_feed(
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
     audit = request.app.state.audit
-    page = _page_limit(request, limit, default=100)
+    page = _page_limit(limit, default=100)
     rows = await audit.recent(limit=page, offset=offset)
     chain = await audit.verify_chain()
     head_seq = max((r["seq"] for r in rows), default=0)
@@ -955,7 +932,7 @@ async def traces_feed(
     traces = getattr(request.app.state, "traces", None)
     if traces is None:
         raise HTTPException(status_code=503, detail="decision traces not wired")
-    page = _page_limit(request, limit, default=30)
+    page = _page_limit(limit, default=30)
     rows = await traces.recent_summaries(limit=page, offset=offset)
     etag = f'W/"traces-{max((t.id for t in rows), default=0)}-{len(rows)}-{offset}"'
     if (not_modified := _conditional(request, etag)) is not None:
@@ -1009,7 +986,7 @@ async def memory_feed(
     entities = getattr(request.app.state, "entities", None)
     if entities is None:
         raise HTTPException(status_code=503, detail="entity store is not wired")
-    page = _page_limit(request, limit)
+    page = _page_limit(limit)
     people = await entities.list_people(limit=page, offset=offset)
     out = []
     for person in people:
@@ -1108,7 +1085,7 @@ async def tasks_feed(
     scheduler = getattr(request.app.state, "scheduler", None)
     if scheduler is None:
         raise HTTPException(status_code=503, detail="scheduler is not wired")
-    page = _page_limit(request, limit)
+    page = _page_limit(limit)
     actions = await scheduler.list(limit=page, offset=offset)
     return {
         "tasks": [
@@ -1138,7 +1115,7 @@ async def alerts_feed(
     store = getattr(request.app.state, "alerts_store", None)
     if engine is None or store is None:
         raise HTTPException(status_code=503, detail="alerts are not wired")
-    page = _page_limit(request, limit)
+    page = _page_limit(limit)
     rows = await store.list(limit=page, offset=offset)
     return {
         "alerts": [
@@ -1218,7 +1195,7 @@ async def proactive_tasks_feed(
     store = getattr(request.app.state, "proactive_store", None)
     if store is None:
         raise HTTPException(status_code=503, detail="proactive worker is not wired")
-    page = _page_limit(request, limit)
+    page = _page_limit(limit)
     tasks = await store.list(limit=page, offset=offset)
     return {
         "tasks": [

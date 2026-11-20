@@ -91,6 +91,11 @@ config and the fixture server.
   timestamps, or JSON. When a new backend string shape appears, add a mapping in
   `webapp/src/lib/describe.js`; never add a raw `{value}` fallback.
 
+## Architecture notes
+
+- [Database behavior](docs/internal/database.md): idle discipline, resident caches,
+  the optional-work budget and the outage circuit.
+
 ## Pull requests
 
 - Keep the subject one line, Conventional Commits style (`feat`, `fix`, `chore`, `docs`).

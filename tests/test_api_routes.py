@@ -2324,8 +2324,8 @@ async def test_approvals_feed_is_paginated_and_capped() -> None:
         assert len(second.json()["pending"]) == 1
 
 
-async def test_pool_creation_uses_the_configured_idle_release(monkeypatch) -> None:
-    from aether.config import AppConfig
+async def test_pool_creation_releases_idle_connections(monkeypatch) -> None:
+    from aether.api.routes import PANEL_PAGE_SIZE
     from aether.memory import db as db_module
 
     captured: dict = {}
@@ -2335,15 +2335,9 @@ async def test_pool_creation_uses_the_configured_idle_release(monkeypatch) -> No
         return object()
 
     monkeypatch.setattr(db_module.asyncpg, "create_pool", fake_create_pool)
-    config = AppConfig()
-    await db_module.create_pool(
-        "postgresql:///aether_scratch_x",
-        min_size=config.db.pool_min_size,
-        max_size=config.db.pool_max_size,
-        idle_seconds=config.db.pool_idle_seconds,
-    )
+    await db_module.create_pool("postgresql:///aether_scratch_x")
     assert captured["min_size"] == 0
     assert captured["max_size"] == 5
     assert captured["max_inactive_connection_lifetime"] == 60.0
     # the MeteredPool wrapper is what main.py then stores
-    assert config.db.panel_page_size == 100
+    assert PANEL_PAGE_SIZE == 100

@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from aether.db_accounting import DBAccounting, MeteredPool
+from aether.db_meter import MeteredPool, QueryMeter
 from aether.db_resilience import (
     CircuitBreaker,
     DatabaseUnavailable,
@@ -51,11 +51,10 @@ def test_the_threshold_opens_the_circuit_and_calls_fail_fast() -> None:
 
     for _ in range(2):
         breaker.record_failure()
-    assert breaker.available
+    assert breaker.state == "closed"
 
     breaker.record_failure()
     assert breaker.state == "open"
-    assert breaker.available is False
     with pytest.raises(DatabaseUnavailable):
         breaker.check()
 
@@ -75,7 +74,6 @@ def test_one_probe_is_allowed_and_success_closes_the_circuit() -> None:
 
     breaker.record_success()
     assert breaker.state == "closed"
-    assert breaker.available
     breaker.check()  # calls pass again
 
 
@@ -108,7 +106,7 @@ async def test_an_open_circuit_stops_before_the_network() -> None:
     clock = FakeClock()
     breaker = _breaker(clock, failures=2, base_seconds=60.0)
     failing = FailingPool(ConnectionRefusedError("no route"))
-    pool = MeteredPool(failing, DBAccounting(), breaker=breaker)
+    pool = MeteredPool(failing, QueryMeter(), breaker=breaker)
 
     for _ in range(2):
         with pytest.raises(ConnectionRefusedError):
@@ -123,14 +121,14 @@ async def test_an_open_circuit_stops_before_the_network() -> None:
 
 async def test_a_statement_error_leaves_the_circuit_closed() -> None:
     breaker = _breaker(FakeClock())
-    pool = MeteredPool(FailingPool(ValueError("syntax")), DBAccounting(), breaker=breaker)
+    pool = MeteredPool(FailingPool(ValueError("syntax")), QueryMeter(), breaker=breaker)
 
     for _ in range(5):
         with pytest.raises(ValueError):
             await pool.fetch("SELECT 1")
 
-    assert breaker.available
-    assert breaker.snapshot()["consecutive_failures"] == 0
+    assert breaker.state == "closed"
+    breaker.check()  # calls pass again
 
 
 class _Lease:
@@ -160,7 +158,7 @@ class _HealthyConnection:
 async def test_a_lease_closes_the_circuit_only_after_its_query_succeeds() -> None:
     clock = FakeClock()
     breaker = _breaker(clock, failures=1, base_seconds=10.0)
-    pool = MeteredPool(_LeasePool(_HealthyConnection()), DBAccounting(), breaker=breaker)
+    pool = MeteredPool(_LeasePool(_HealthyConnection()), QueryMeter(), breaker=breaker)
 
     breaker.record_failure()
     clock.now = 10.0  # the wait is over: half-open
@@ -177,7 +175,7 @@ async def test_a_lease_closes_the_circuit_only_after_its_query_succeeds() -> Non
 async def test_an_unused_lease_frees_the_probe_for_the_next_caller() -> None:
     clock = FakeClock()
     breaker = _breaker(clock, failures=1, base_seconds=10.0)
-    pool = MeteredPool(_LeasePool(_HealthyConnection()), DBAccounting(), breaker=breaker)
+    pool = MeteredPool(_LeasePool(_HealthyConnection()), QueryMeter(), breaker=breaker)
 
     breaker.record_failure()
     clock.now = 10.0

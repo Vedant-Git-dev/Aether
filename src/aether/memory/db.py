@@ -9,7 +9,7 @@ from pathlib import Path
 import asyncpg
 
 from ..config_validation import normalize_database_url
-from ..db_accounting import DBAccounting, MeteredPool
+from ..db_meter import MeteredPool, QueryMeter
 from ..db_resilience import CircuitBreaker
 
 log = logging.getLogger("aether.db")
@@ -19,6 +19,12 @@ ROLLBACK_DIR = MIGRATIONS_DIR / "rollback"
 
 Before = Callable[[str], Awaitable[None]]
 
+# the one shared pool: a zero floor and a short idle lifetime release every
+# connection when quiet, so a client cannot keep the database awake on its own
+POOL_MIN_SIZE = 0
+POOL_MAX_SIZE = 5
+POOL_IDLE_SECONDS = 60.0
+
 _CREATE_MIGRATIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version    TEXT PRIMARY KEY,
@@ -27,30 +33,17 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 """
 
 
-async def create_pool(
-    url: str,
-    *,
-    min_size: int = 0,
-    max_size: int = 5,
-    idle_seconds: float = 60.0,
-    accounting: bool = True,
-    breaker: CircuitBreaker | None = None,
-) -> MeteredPool:
+async def create_pool(url: str, *, breaker: CircuitBreaker | None = None) -> MeteredPool:
     """One measured pool. Every store receives this wrapper and calls it like
-    an asyncpg pool; each query lands in the process-local accounting meters.
-
-    `min_size=0` and a short `max_inactive_connection_lifetime` let an idle
-    process release every connection, so a client connection cannot keep a
-    metered database awake on its own.
-    """
+    an asyncpg pool; each query lands in the process-local query meter."""
     pool = await asyncpg.create_pool(
         normalize_database_url(url),
-        min_size=max(0, min(min_size, max_size)),
-        max_size=max(1, max_size),
-        max_inactive_connection_lifetime=max(1.0, float(idle_seconds)),
+        min_size=max(0, min(POOL_MIN_SIZE, POOL_MAX_SIZE)),
+        max_size=max(1, POOL_MAX_SIZE),
+        max_inactive_connection_lifetime=max(1.0, POOL_IDLE_SECONDS),
         command_timeout=30,
     )
-    return MeteredPool(pool, DBAccounting(enabled=accounting), breaker=breaker)
+    return MeteredPool(pool, QueryMeter(), breaker=breaker)
 
 
 async def run_migrations(pool: asyncpg.Pool, *, before: Before | None = None) -> list[str]:

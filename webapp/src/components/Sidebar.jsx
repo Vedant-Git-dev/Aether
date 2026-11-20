@@ -11,7 +11,6 @@ const NAV_ITEMS = [
   ["policy", "Authorization & Policies"],
   ["apps", "Apps & Permissions"],
   ["contacts", "Contacts"],
-  ["database", "Database Use"],
   ["settings", "Settings"],
 ];
 

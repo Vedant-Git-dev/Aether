@@ -118,11 +118,11 @@ async def test_cold_load_reads_each_row_once_within_the_batch_limit() -> None:
 
     assert len(pool.queries) == 2
     assert all("embedding_enc" in query and "text_enc" not in query for query in pool.queries)
-    assert vectors.cache_stats["chunks"] == 3
-    assert vectors.cache_stats["watermark"] == 3
+    assert len(vectors._cache_ids) == 3
+    assert vectors._cache_watermark == 3
 
 
-async def test_the_chunk_cap_keeps_the_newest_and_reports_it() -> None:
+async def test_the_chunk_cap_keeps_the_newest() -> None:
     cipher = Cipher.from_b64(generate_key_b64())
     rows = [
         {"id": index, "event_id": index, "embedding_enc": _sealed_vector(cipher, index, [1.0, 0.0])}
@@ -134,8 +134,7 @@ async def test_the_chunk_cap_keeps_the_newest_and_reports_it() -> None:
     await vectors.load_cache(batch=2, max_chunks=2)
 
     assert len(pool.queries) == 1
-    assert vectors.cache_stats["chunks"] == 2
-    assert vectors.cache_stats["capped"] is True
+    assert vectors._cache_ids == [2, 3]
 
 
 async def test_warm_recall_ranks_in_memory_and_never_rescans() -> None:
@@ -248,11 +247,10 @@ def test_panel_source_has_no_interval_pollers() -> None:
     assert "refreshAll" in source
 
 
-def test_the_replay_harness_uses_the_configured_backfill_seconds() -> None:
-    # a caught-up backfill must not become a minute-by-minute poll
-    from aether.config import AppConfig
+def test_the_backfill_retry_is_not_a_minute_by_minute_poll() -> None:
+    from aether.agent.loop import BACKFILL_SECONDS
 
-    assert AppConfig().db.backfill_seconds >= 300
+    assert BACKFILL_SECONDS >= 300
 
 
 async def test_trace_dataclass_still_carries_a_full_payload_for_detail() -> None:

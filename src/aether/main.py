@@ -179,20 +179,8 @@ def create_app(
         # --- database ------------------------------------------------------
         # one breaker for the one pool: an outage fails fast instead of
         # retrying through every loop on every tick
-        breaker = CircuitBreaker(
-            failures=config.db.breaker_failures,
-            base_seconds=config.db.breaker_base_seconds,
-            max_seconds=config.db.breaker_max_seconds,
-        )
-        pool = await create_pool(
-            settings.database_url,
-            min_size=config.db.pool_min_size,
-            max_size=config.db.pool_max_size,
-            idle_seconds=config.db.pool_idle_seconds,
-            accounting=config.db.accounting,
-            breaker=breaker,
-        )
-        app.state.db_accounting = pool.accounting
+        breaker = CircuitBreaker()
+        pool = await create_pool(settings.database_url, breaker=breaker)
 
         # a deploy seals and cuts over in one boot: the sealer runs between
         # the expand migration and the drop migration, so nobody has to
@@ -262,7 +250,6 @@ def create_app(
         except PolicyError as exc:
             raise StartupError(f"bad authz rule: {exc}") from exc
 
-        app.state.pool = pool
         app.state.cipher = cipher
         app.state.settings = settings
         app.state.config = config
@@ -356,7 +343,7 @@ def create_app(
         # optional background work pauses once the day's measured use reaches
         # the configured daily totals; interactive work never consults it
         budget = DailyBudget(
-            getattr(pool, "accounting", None),
+            getattr(pool, "meter", None),
             max_queries=config.db.daily_query_budget,
             max_bytes=int(config.db.daily_response_budget_mb * 1024 * 1024),
         )
@@ -364,11 +351,7 @@ def create_app(
         # the resident vector matrix: recall ranks in process, so this is the
         # one full read of memory_chunks for the process's lifetime. It reads
         # ids and sealed vectors only; text stays on disk until a hit cites it
-        await vectors.load_cache(
-            batch=config.memory.cache_batch,
-            max_chunks=config.memory.vector_cache_max_chunks,
-        )
-        app.state.vectors = vectors
+        await vectors.load_cache(max_chunks=config.memory.vector_cache_max_chunks)
 
         # --- memory + authz ------------------------------------------------
         audit = AuditLog(pool)
@@ -971,14 +954,7 @@ def main() -> None:
     words; the loop then serves a fresh app (fresh lifespan, fresh boot
     merge) without the process ever leaving the container — nobody restarts
     Aether by hand. A real SIGINT/SIGTERM never arms a restart, so the loop
-    exits. `aether db-stats` is a read-only client for the running process."""
-    import sys
-
-    if len(sys.argv) > 1 and sys.argv[1] == "db-stats":
-        from .db_stats import main as db_stats_main
-
-        raise SystemExit(db_stats_main(sys.argv[2:]))
-
+    exits."""
     import os
 
     import uvicorn

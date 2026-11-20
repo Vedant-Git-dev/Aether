@@ -44,7 +44,6 @@ from aether.config import (
 )
 from aether.config_store import apply_note
 from aether.connectors.base import InboundMessage
-from aether.db_accounting import DBAccounting
 from aether.memory.entities import Entity, EntityNote
 from aether.memory.events import Event
 from aether.proactive import ProactiveTask
@@ -1840,7 +1839,6 @@ def build_app() -> FastAPI:
     app.state.resolver = FakeResolver(secret_store)
     app.state.model_catalog = FakeModelCatalog()
     app.state.provider_runtime = FakeProviderRuntime()
-    app.state.db_accounting = DBAccounting()
 
     @app.get("/healthz")
     @app.get("/health")

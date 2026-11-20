@@ -44,8 +44,7 @@
         "group": "Reference",
         "pages": [
           "reference/configuration",
-          "reference/evaluation",
-          "reference/database-budget"
+          "reference/evaluation"
         ]
       },
       {

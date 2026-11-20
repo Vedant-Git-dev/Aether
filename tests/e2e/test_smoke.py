@@ -37,7 +37,6 @@ def test_every_nav_route_loads(page, live_server, token) -> None:
         "traces": "Decision Traces",
         "policy": "Authorization & Policies",
         "apps": "Apps & Permissions",
-        "database": "Database Use",
         "settings": "Settings",
     }
     for path, title in routes.items():

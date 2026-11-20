@@ -17,7 +17,6 @@ import logging
 import random
 import time
 from collections.abc import Callable
-from typing import Any
 
 import asyncpg
 
@@ -82,10 +81,6 @@ class CircuitBreaker:
         return self._state
 
     @property
-    def available(self) -> bool:
-        return self.state != "open"
-
-    @property
     def retry_in_seconds(self) -> float:
         if self.state != "open":
             return 0.0
@@ -141,12 +136,3 @@ class CircuitBreaker:
             self._consecutive,
             self._retry_after,
         )
-
-    def snapshot(self) -> dict[str, Any]:
-        """A status read for the panel and `aether db-stats`; no secrets."""
-        return {
-            "state": self.state,
-            "consecutive_failures": self._consecutive,
-            "opens": self._opens,
-            "retry_in_seconds": round(self.retry_in_seconds, 1),
-        }

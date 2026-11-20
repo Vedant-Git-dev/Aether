@@ -27,7 +27,6 @@ PAGES = [
     "policy",
     "apps",
     "contacts",
-    "database",
     "settings",
 ]
 
