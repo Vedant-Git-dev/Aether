@@ -2,6 +2,7 @@
 // (collapse state, mobile drawer) — every server-backed list lives in the
 // DataProvider so polls keep running and caches survive page switches.
 import { useEffect, useState } from "react";
+import { useData } from "./store.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import Topbar from "./components/Topbar.jsx";
 import { useHashRoute } from "./hooks/useHashRoute.js";
@@ -34,6 +35,7 @@ const PAGES = {
 
 export default function App() {
   const route = useHashRoute(Object.keys(PAGES));
+  const { refreshAll } = useData();
   const [collapsed, setCollapsed] = useState(() => {
     // the full rail is the first impression; collapsing it is a choice
     try {
@@ -92,7 +94,7 @@ export default function App() {
         onNavigate={() => setNavOpen(false)}
       />
       <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar title={title} onMenu={() => setNavOpen(true)} />
+        <Topbar title={title} onMenu={() => setNavOpen(true)} onRefresh={refreshAll} />
         <main
           data-testid="page"
           className={`mx-auto w-full flex-1 px-4 pb-14 pt-6 min-[901px]:px-7 ${

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -57,6 +58,19 @@ class Deliveries:
         self._pool = pool
         self._cipher = cipher
         self._audit = audit
+        # the agent loop watches this: a queued or failed send is worth a
+        # tick's attention, and an in-memory flag costs no query
+        self._changed: Callable[[], None] | None = None
+
+    def watch(self, callback: Callable[[], None]) -> None:
+        self._changed = callback
+
+    def _notify_changed(self) -> None:
+        if self._changed is not None:
+            try:
+                self._changed()
+            except Exception:
+                log.warning("delivery change listener failed", exc_info=True)
 
     async def record_queued(self, surface: str, text: str) -> Delivery | None:
         """Open one attempt. An empty body is refused, never stored — the
@@ -82,6 +96,7 @@ class Deliveries:
                 ),
                 delivery_id,
             )
+        self._notify_changed()
         return Delivery(
             id=delivery_id,
             surface=surface,
@@ -131,6 +146,8 @@ class Deliveries:
             f"UPDATE deliveries SET {', '.join(assignments)} WHERE id = ${len(values)}",
             *values,
         )
+        if status in (QUEUED, FAILED):
+            self._notify_changed()
 
     async def get(self, delivery_id: int) -> Delivery | None:
         row = await self._pool.fetchrow(

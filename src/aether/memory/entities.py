@@ -282,13 +282,14 @@ class Entities:
             owner=_is_owner(profile),
         )
 
-    async def list_people(self, limit: int = 50) -> list[Entity]:
+    async def list_people(self, limit: int = 50, offset: int = 0) -> list[Entity]:
         """Everyone Aether has resolved an identity for, most recent first —
         the read side of the "who is this" cross-platform linking."""
         rows = await self._pool.fetch(
             "SELECT id, profile_enc FROM identities"
-            " WHERE merged_into_id IS NULL ORDER BY created_at DESC LIMIT $1",
+            " WHERE merged_into_id IS NULL ORDER BY created_at DESC LIMIT $1 OFFSET $2",
             limit,
+            max(0, offset),
         )
         if not rows:
             return []
@@ -644,14 +645,17 @@ class Entities:
         """
         if self._owners is None:
             rows = await self._pool.fetch("SELECT id, profile_enc FROM identities")
-            keys: set[str] = set()
+            owner_ids: list[int] = []
             for row in rows:
                 profile = _profile_data(self._cipher, row["id"], row.get("profile_enc"))
-                if not _is_owner(profile):
-                    continue
+                if _is_owner(profile):
+                    owner_ids.append(row["id"])
+            keys: set[str] = set()
+            if owner_ids:
                 handles = await self._pool.fetch(
-                    "SELECT id, handle_enc FROM identity_handles WHERE identity_id = $1",
-                    row["id"],
+                    "SELECT id, identity_id, handle_enc FROM identity_handles"
+                    " WHERE identity_id = ANY($1::bigint[])",
+                    owner_ids,
                 )
                 for handle_row in handles:
                     handle_platform, raw = _handle_ref(self._cipher, handle_row)

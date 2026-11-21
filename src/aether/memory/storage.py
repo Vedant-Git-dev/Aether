@@ -282,6 +282,11 @@ async def delete_workspace_file(pool: asyncpg.Pool, token: bytes) -> None:
     await pool.execute("DELETE FROM workspace_files WHERE name_token = $1", token)
 
 
+# ---------------------------------------------------------------------------
+# the held notes waiting out quiet hours
+# ---------------------------------------------------------------------------
+
+
 async def held_note_rows(pool: asyncpg.Pool, limit: int) -> list[asyncpg.Record]:
     return await pool.fetch("SELECT id, body_enc FROM held_notes ORDER BY id LIMIT $1", limit)
 

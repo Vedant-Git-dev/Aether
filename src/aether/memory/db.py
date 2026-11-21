@@ -9,6 +9,8 @@ from pathlib import Path
 import asyncpg
 
 from ..config_validation import normalize_database_url
+from ..db_meter import MeteredPool, QueryMeter
+from ..db_resilience import CircuitBreaker
 
 log = logging.getLogger("aether.db")
 
@@ -16,6 +18,12 @@ MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"
 ROLLBACK_DIR = MIGRATIONS_DIR / "rollback"
 
 Before = Callable[[str], Awaitable[None]]
+
+# the one shared pool: a zero floor and a short idle lifetime release every
+# connection when quiet, so a client cannot keep the database awake on its own
+POOL_MIN_SIZE = 0
+POOL_MAX_SIZE = 5
+POOL_IDLE_SECONDS = 60.0
 
 _CREATE_MIGRATIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -25,10 +33,17 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 """
 
 
-async def create_pool(url: str) -> asyncpg.Pool:
-    return await asyncpg.create_pool(
-        normalize_database_url(url), min_size=1, max_size=5, command_timeout=30
+async def create_pool(url: str, *, breaker: CircuitBreaker | None = None) -> MeteredPool:
+    """One measured pool. Every store receives this wrapper and calls it like
+    an asyncpg pool; each query lands in the process-local query meter."""
+    pool = await asyncpg.create_pool(
+        normalize_database_url(url),
+        min_size=max(0, min(POOL_MIN_SIZE, POOL_MAX_SIZE)),
+        max_size=max(1, POOL_MAX_SIZE),
+        max_inactive_connection_lifetime=max(1.0, POOL_IDLE_SECONDS),
+        command_timeout=30,
     )
+    return MeteredPool(pool, QueryMeter(), breaker=breaker)
 
 
 async def run_migrations(pool: asyncpg.Pool, *, before: Before | None = None) -> list[str]:

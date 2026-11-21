@@ -129,6 +129,21 @@ class ProviderRuntime:
         for provider in definitions:
             for app in provider.apps:
                 self._apps[app.key] = (provider, app)
+        # one process does every write, so every poll's cursor and state is
+        # safe to keep here: the database is read once per key and written
+        # only when the value actually changes. A restart reloads lazily.
+        self._connections: dict[str, ProviderConnection] | None = None
+        self._sync_values: dict[tuple[str, str, str], str | None] = {}
+
+    def invalidate_connections(self) -> None:
+        """The next poll or tool registration reloads the connection rows."""
+        self._connections = None
+
+    async def _connection_map(self, *, refresh: bool = False) -> dict[str, ProviderConnection]:
+        assert self._store is not None
+        if refresh or self._connections is None:
+            self._connections = {conn.provider: conn for conn in await self._store.list()}
+        return self._connections
 
     # -- registration -------------------------------------------------------
 
@@ -138,7 +153,7 @@ class ProviderRuntime:
             return 0
         self._registry.drop_provider_tools()
         try:
-            connections = {conn.provider: conn for conn in await self._store.list()}
+            connections = await self._connection_map(refresh=True)
         except Exception:
             log.exception("could not load provider connections")
             return 0
@@ -603,12 +618,21 @@ class ProviderRuntime:
     async def get_sync(self, provider: str, app: str, key: str) -> str | None:
         if self._store is None:
             return None
-        return await self._store.get_sync(provider, app, key)
+        cache_key = (provider, app, key)
+        if cache_key in self._sync_values:
+            return self._sync_values[cache_key]
+        value = await self._store.get_sync(provider, app, key)
+        self._sync_values[cache_key] = value
+        return value
 
     async def set_sync(self, provider: str, app: str, key: str, value: str) -> None:
         if self._store is None:
             return
+        cache_key = (provider, app, key)
+        if cache_key in self._sync_values and self._sync_values[cache_key] == value:
+            return
         await self._store.set_sync(provider, app, key, value)
+        self._sync_values[cache_key] = value
 
     # -- polling ------------------------------------------------------------
 
@@ -617,7 +641,7 @@ class ProviderRuntime:
             return []
         now = now or datetime.now(UTC)
         try:
-            connections = {conn.provider: conn for conn in await self._store.list()}
+            connections = await self._connection_map()
         except Exception:
             log.exception("could not read provider connections for polling")
             return []
@@ -633,7 +657,7 @@ class ProviderRuntime:
                         interval = self._poll_interval(app, poll)
                         if interval <= 0:
                             continue
-                        failures_raw = await self._store.get_sync(
+                        failures_raw = await self.get_sync(
                             provider.key, app.key, f"poll:{poll.key}:failures"
                         )
                         try:
@@ -645,7 +669,7 @@ class ProviderRuntime:
                             failures=failures,
                             jitter=self._config.proactive.poll_jitter,
                         )
-                        last_raw = await self._store.get_sync(
+                        last_raw = await self.get_sync(
                             provider.key, app.key, f"poll:{poll.key}:last"
                         )
                         last = _parse_time(last_raw)
@@ -713,15 +737,30 @@ class ProviderRuntime:
         """One poll's facts — when it last ran and whether it is failing.
 
         Values are sealed in the sync store. `last_error` carries the plain
-        sentence a provider gave, never a raw response body.
+        sentence a provider gave, never a raw response body. The in-memory
+        sync cache means an unchanged value is not written again; `last`
+        changes on every run, so it is the one write a healthy poll owes.
         """
         assert self._store is not None
-        await self._store.set_sync(provider, app, f"poll:{key}:last", now.isoformat())
-        await self._store.set_sync(provider, app, f"poll:{key}:failures", str(max(0, failures)))
+        previous = 0
+        raw = await self.get_sync(provider, app, f"poll:{key}:failures")
+        try:
+            previous = max(0, int(raw or 0))
+        except (TypeError, ValueError):
+            previous = 0
+        # `last` is the schedule, not content: it lives in memory so a
+        # healthy poll that found nothing writes nothing at all. A restart
+        # simply polls once immediately, which ingest dedups.
+        self._sync_values[(provider, app, f"poll:{key}:last")] = now.isoformat()
+        await self.set_sync(provider, app, f"poll:{key}:failures", str(max(0, failures)))
         if failures == 0:
-            await self._store.set_sync(provider, app, f"poll:{key}:last_ok", now.isoformat())
+            last_ok = await self.get_sync(provider, app, f"poll:{key}:last_ok")
+            if previous > 0 or not last_ok:
+                await self.set_sync(provider, app, f"poll:{key}:last_ok", now.isoformat())
         elif error:
-            await self._store.set_sync(provider, app, f"poll:{key}:last_error", error)
+            last_error = await self.get_sync(provider, app, f"poll:{key}:last_error")
+            if last_error != error:
+                await self.set_sync(provider, app, f"poll:{key}:last_error", error)
 
     @staticmethod
     def _scope_audit(

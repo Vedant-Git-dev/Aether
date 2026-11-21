@@ -679,11 +679,13 @@ class EventStore:
             return self._index.max_id
         return await self._pool.fetchval("SELECT COALESCE(MAX(id), 0) FROM events")
 
-    async def recent(self, limit: int = 50) -> list[Event]:
+    async def recent(self, limit: int = 50, offset: int = 0) -> list[Event]:
         """Newest events, memorable or not — the web feed's source."""
         rows = await self._pool.fetch(
-            "SELECT id, payload_enc, meta_enc, created_at FROM events ORDER BY id DESC LIMIT $1",
+            "SELECT id, payload_enc, meta_enc, created_at FROM events ORDER BY id DESC"
+            " LIMIT $1 OFFSET $2",
             limit,
+            max(0, offset),
         )
         return [self._to_event(r) for r in rows]
 

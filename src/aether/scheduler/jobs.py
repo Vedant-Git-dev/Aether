@@ -56,6 +56,11 @@ class Scheduler:
         self._pool = pool
         self._cipher = cipher
         self._audit = audit
+        # the earliest pending run time, kept current by create/claim — the
+        # 20-second worker asks a datetime instead of the database when
+        # nothing can be due
+        self._next_due: datetime | None = None
+        self._schedule_loaded = False
 
     async def create(
         self, *, label: str, run_at: datetime, payload: dict[str, Any], actor: str = "agent"
@@ -88,6 +93,9 @@ class Scheduler:
             params={"label": label, "run_at": run_at.isoformat()},
             outcome="action scheduled",
         )
+        self._schedule_loaded = True
+        if self._next_due is None or run_at < self._next_due:
+            self._next_due = run_at
         return ScheduledAction(
             id=action_id,
             label=label,
@@ -109,20 +117,24 @@ class Scheduler:
         """Pick the due pending rows in memory, then claim them atomically.
         The run time lives in the sealed meta, so SQL cannot order by it;
         the pending set is small enough to decrypt, and the claim still
-        flips status in the same statement that selects the rows."""
+        flips status in the same statement that selects the rows. When the
+        in-memory schedule says nothing can be due, this costs no query."""
         now = datetime.now(UTC)
+        if self._schedule_loaded and (self._next_due is None or now < self._next_due):
+            return []
         rows = await self._pool.fetch(
             "SELECT id, meta_enc, status, payload_enc, created_at"
             " FROM scheduled_actions WHERE status = 'pending'"
         )
-        due: list[tuple[datetime, int]] = []
+        pending: list[tuple[datetime, int]] = []
         for row in rows:
             action = self._to_action(row)
-            if action.run_at <= now:
-                due.append((action.run_at, action.id))
-        due.sort(key=lambda pair: pair[0])
+            pending.append((action.run_at, action.id))
+        due = sorted((pair for pair in pending if pair[0] <= now), key=lambda pair: pair[0])
         ids = [action_id for _, action_id in due[:limit]]
+        self._schedule_loaded = True
         if not ids:
+            self._next_due = pending[0][0] if pending else None
             return []
         claimed = await self._pool.fetch(
             "UPDATE scheduled_actions SET status = 'running'"
@@ -130,18 +142,25 @@ class Scheduler:
             " RETURNING id, meta_enc, status, payload_enc, created_at",
             ids,
         )
+        claimed_ids = {action_id for _, action_id in due[:limit]}
+        remaining = [pair for pair in pending if pair[1] not in claimed_ids]
+        self._next_due = min(remaining)[0] if remaining else None
         return [self._to_action(r) for r in claimed]
 
     async def overdue_pending(self) -> list[ScheduledAction]:
         """Still-pending rows that are already due — what `re_arm` reports
         on boot (the worker's next claim runs them; listing without claiming
-        keeps re_arm read-only and safe to call anytime)."""
+        keeps re_arm read-only and safe to call anytime). This is also the
+        boot read that teaches the in-memory schedule when the next action
+        can possibly be due."""
         now = datetime.now(UTC)
         rows = await self._pool.fetch(
             "SELECT id, meta_enc, status, payload_enc, created_at"
             " FROM scheduled_actions WHERE status = 'pending'"
         )
         actions = [self._to_action(row) for row in rows]
+        self._schedule_loaded = True
+        self._next_due = min((action.run_at for action in actions), default=None)
         actions = [action for action in actions if action.run_at <= now]
         actions.sort(key=lambda action: action.run_at)
         return actions
@@ -154,12 +173,13 @@ class Scheduler:
             action_id,
         )
 
-    async def list(self, limit: int = 50) -> list[ScheduledAction]:
+    async def list(self, limit: int = 50, offset: int = 0) -> list[ScheduledAction]:
         """Newest first, any status — the web panel's view."""
         rows = await self._pool.fetch(
             "SELECT id, meta_enc, status, payload_enc, created_at"
-            " FROM scheduled_actions ORDER BY id DESC LIMIT $1",
+            " FROM scheduled_actions ORDER BY id DESC LIMIT $1 OFFSET $2",
             limit,
+            max(0, offset),
         )
         return [self._to_action(r) for r in rows]
 

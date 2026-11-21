@@ -36,6 +36,7 @@ const ICONS = {
   cloud: <path d="M7 18a4 4 0 0 1-.7-7.9A5.5 5.5 0 0 1 17 9.5a3.5 3.5 0 0 1 .5 7H7Z"/>,
   image: <><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="m4 17 5-5 4 4 3-3 4 4"/></>,
   server: <><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/></>,
+  refresh: <><path d="M20 11a8 8 0 0 0-14.9-3"/><path d="M4 4v4h4"/><path d="M4 13a8 8 0 0 0 14.9 3"/><path d="M20 20v-4h-4"/></>,
   chat: <path d="M20 11.5a7.5 7.5 0 0 1-11 6.6L4 20l1.4-4.4A7.5 7.5 0 1 1 20 11.5Z"/>,
   search: <><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></>,
   x: <path d="M6 6l12 12M18 6 6 18"/>,

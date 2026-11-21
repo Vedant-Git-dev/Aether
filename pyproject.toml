@@ -16,6 +16,7 @@ dependencies = [
     "httpx>=0.27",
     "tenacity>=9",
     "rapidfuzz>=3.10",
+    "numpy>=2.0",  # the resident vector matrix behind in-process recall
     "pyyaml>=6.0",
     "rich>=13.0",  # the setup wizard's terminal styling and intro
     "prompt_toolkit>=3.0",  # the wizard's cross-platform arrow-key prompts

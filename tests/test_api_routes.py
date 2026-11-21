@@ -1053,8 +1053,8 @@ class FakeEntitiesStore:
         self.people = people or []
         self.notes = notes or {}
 
-    async def list_people(self, limit: int = 50) -> list[Entity]:
-        return self.people[:limit]
+    async def list_people(self, limit: int = 50, offset: int = 0) -> list[Entity]:
+        return self.people[offset : offset + limit]
 
     async def notes_for(self, identity_id: int, limit: int = 10) -> list[EntityNote]:
         return self.notes.get(identity_id, [])[:limit]
@@ -1178,8 +1178,8 @@ class FakeSchedulerStore:
     def __init__(self, actions: list[ScheduledAction] | None = None):
         self.actions = actions or []
 
-    async def list(self, limit: int = 50) -> list[ScheduledAction]:
-        return self.actions[:limit]
+    async def list(self, limit: int = 50, offset: int = 0) -> list[ScheduledAction]:
+        return self.actions[offset : offset + limit]
 
 
 class FakeAlertRow:
@@ -1200,8 +1200,8 @@ class FakeAlertStore:
     def __init__(self, rows: list[FakeAlertRow] | None = None) -> None:
         self.rows = rows or [FakeAlertRow()]
 
-    async def list(self, limit: int = 50):
-        return self.rows[:limit]
+    async def list(self, limit: int = 50, offset: int = 0):
+        return self.rows[offset : offset + limit]
 
 
 class FakeAlertEngine:
@@ -2266,3 +2266,78 @@ async def test_workspace_export_is_token_guarded(db) -> None:
     async with _client(_app(None, workspace=ws)) as client:
         exported = await client.post("/api/workspace/export", json={"passphrase": "pw"})
     assert exported.status_code == 401
+
+
+async def test_events_feed_caps_the_page_and_revalidates_with_etag() -> None:
+    base = datetime(2026, 9, 25, tzinfo=UTC)
+    store = FakeEventStore(
+        {
+            i: Event(
+                id=i,
+                source="telegram",
+                kind="chat_message",
+                occurred_at=base + timedelta(minutes=i),
+                payload={"text": f"number {i}"},
+                salience_score=5.0,
+                memorable=False,
+                meta={},
+            )
+            for i in range(1, 301)
+        }
+    )
+    async with _client(_app(events=store)) as client:
+        # a caller cannot ask for more than the configured page cap
+        first = await client.get("/api/events", params={"token": "secret", "limit": 5000})
+        assert first.status_code == 200
+        assert len(first.json()["events"]) == 100
+        etag = first.headers["etag"]
+        assert etag
+
+        unchanged = await client.get(
+            "/api/events",
+            params={"token": "secret", "limit": 5000},
+            headers={"if-none-match": etag},
+        )
+        assert unchanged.status_code == 304
+        assert unchanged.content == b""
+
+        # a page that moved gets a fresh body and a new ETag
+        changed = await client.get(
+            "/api/events",
+            params={"token": "secret", "limit": 100, "offset": 0},
+        )
+        assert changed.status_code == 200
+        assert changed.headers["etag"] != changed.request.headers.get("if-none-match")
+
+
+async def test_approvals_feed_is_paginated_and_capped() -> None:
+    approvals = FakeApprovals()
+    for number in range(3):
+        await approvals.create(tool_name=f"tool_{number}", params={"n": number})
+    async with _client(_app(approvals=approvals)) as client:
+        page = await client.get("/api/approvals", params={"token": "secret", "limit": 2})
+        assert page.status_code == 200
+        assert len(page.json()["pending"]) == 2
+        second = await client.get(
+            "/api/approvals", params={"token": "secret", "limit": 2, "offset": 2}
+        )
+        assert len(second.json()["pending"]) == 1
+
+
+async def test_pool_creation_releases_idle_connections(monkeypatch) -> None:
+    from aether.api.routes import PANEL_PAGE_SIZE
+    from aether.memory import db as db_module
+
+    captured: dict = {}
+
+    async def fake_create_pool(url, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(db_module.asyncpg, "create_pool", fake_create_pool)
+    await db_module.create_pool("postgresql:///aether_scratch_x")
+    assert captured["min_size"] == 0
+    assert captured["max_size"] == 5
+    assert captured["max_inactive_connection_lifetime"] == 60.0
+    # the MeteredPool wrapper is what main.py then stores
+    assert PANEL_PAGE_SIZE == 100

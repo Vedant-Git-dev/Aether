@@ -105,6 +105,23 @@ MODEL_DEFAULT = "default"
 MODEL_OFF = "off"
 
 
+class DatabaseConfig(BaseModel):
+    """Database behavior: the background cadence and optional-work budgets.
+
+    The query meter is in process memory; it holds counts and estimated
+    response bytes, never parameters or rows. Only optional background work
+    reads the budgets, so they can never delay an interactive message.
+    """
+
+    # non-urgent background work (expiry, delivery checks, reminders,
+    # observations) runs in bursts this far apart
+    background_window_minutes: float = 15.0
+    # the day's allowance for optional work; a spent day pauses the vector
+    # backfill until the next UTC day
+    daily_query_budget: int = 2500
+    daily_response_budget_mb: float = 120.0
+
+
 class LLMConfig(BaseModel):
     provider: Literal["anthropic", "openai", "gemini", "ollama", "nvidia", "groq"] = "anthropic"
     model: str = "claude-opus-5"
@@ -195,6 +212,10 @@ class MemoryConfig(BaseModel):
     hot_events: int = 2_000
     hot_chunks: int = 8_000
     cold_batch: int = 500
+    # the resident vector matrix: recall ranks in process over the newest
+    # chunks instead of scanning the table. Hitting this cap drops the
+    # oldest chunks from the cache, not from the database.
+    vector_cache_max_chunks: int = 8_000
     # write-time enrichment: one cheap model turn per event reading out
     # urgency, deadlines, commitments and a one-line summary, so "anything
     # urgent?" and "what's due?" are lookups. On by default after the
@@ -509,6 +530,7 @@ class ProvidersConfig(BaseModel):
 
 class AppConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    db: DatabaseConfig = Field(default_factory=DatabaseConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     salience: SalienceConfig = Field(default_factory=SalienceConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)

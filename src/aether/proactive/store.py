@@ -42,6 +42,14 @@ APPROVED = "approved"
 REVISED = "revised"
 DISCARDED = "discarded"
 
+# Every row the panel or the worker reads, named explicitly. `SELECT *`
+# would silently start fetching future sealed columns the caller never uses.
+_TASK_COLUMNS = (
+    "id, skill, status, label_enc, meta_enc, opportunity_enc, plan_enc,"
+    " result_enc, feedback, feedback_note_enc, provider, media_id,"
+    " created_at, updated_at"
+)
+
 
 def _aad(column: str, task_id: int) -> str:
     return f"proactive_tasks:{column}:{task_id}"
@@ -165,7 +173,7 @@ class ProactiveStore:
         crash these are the re-armed rows; during a cycle they are the ones
         about to run."""
         rows = await self._pool.fetch(
-            "SELECT * FROM proactive_tasks WHERE status = 'pending' ORDER BY id"
+            f"SELECT {_TASK_COLUMNS} FROM proactive_tasks WHERE status = 'pending' ORDER BY id"
         )
         return [self._to_task(r) for r in rows]
 
@@ -296,13 +304,17 @@ class ProactiveStore:
         return {skill: min(2.0, max(0.25, 1.0 + 0.15 * delta)) for skill, delta in deltas.items()}
 
     async def get(self, task_id: int) -> ProactiveTask | None:
-        row = await self._pool.fetchrow("SELECT * FROM proactive_tasks WHERE id = $1", task_id)
+        row = await self._pool.fetchrow(
+            f"SELECT {_TASK_COLUMNS} FROM proactive_tasks WHERE id = $1", task_id
+        )
         return self._to_task(row) if row else None
 
-    async def list(self, limit: int = 50) -> list[ProactiveTask]:
+    async def list(self, limit: int = 50, offset: int = 0) -> list[ProactiveTask]:
         """Newest first, any status — the panel's view."""
         rows = await self._pool.fetch(
-            "SELECT * FROM proactive_tasks ORDER BY id DESC LIMIT $1", limit
+            f"SELECT {_TASK_COLUMNS} FROM proactive_tasks ORDER BY id DESC LIMIT $1 OFFSET $2",
+            limit,
+            max(0, offset),
         )
         return [self._to_task(r) for r in rows]
 

@@ -209,15 +209,23 @@ class AuditLog:
         return seq
 
     async def verify_chain(self) -> ChainVerification:
+        """Verify the whole chain — the tamper evidence the panel shows.
+
+        This is deliberately a full walk: an incremental check would miss
+        an edit to an old row while the process is running. It now runs
+        only when the panel is opened or refreshed, not on a timer.
+        """
         rows = await self._pool.fetch(
             "SELECT seq, actor, tool_name, decision, rules_matched, params_digest,"
             " outcome, prev_hash, entry_hash, created_at FROM audit_log ORDER BY seq"
         )
         return verify_entries(rows)
 
-    async def recent(self, limit: int = 100) -> list[asyncpg.Record]:
+    async def recent(self, limit: int = 100, offset: int = 0) -> list[asyncpg.Record]:
         return await self._pool.fetch(
             "SELECT seq, actor, tool_name, decision, rules_matched, params_digest,"
-            " outcome, entry_hash, created_at FROM audit_log ORDER BY seq DESC LIMIT $1",
+            " outcome, entry_hash, created_at FROM audit_log ORDER BY seq DESC"
+            " LIMIT $1 OFFSET $2",
             limit,
+            max(0, offset),
         )

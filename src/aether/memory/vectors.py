@@ -27,6 +27,7 @@ tick, and a missing embedder turns the whole layer into a quiet no-op
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
@@ -35,8 +36,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import asyncpg
+import numpy as np
 
-from ..llm.embeddings import Embedder, pack_vector, unpack_vector, vector_norm
+from ..llm.embeddings import Embedder, pack_vector, unpack_vector
+from .budget import DailyBudget
 from .crypto import Cipher
 from .mail import MAIL_KIND, parse_addresses, strip_quoted
 
@@ -46,6 +49,10 @@ log = logging.getLogger("aether.memory.vectors")
 # processor indexes the full document text, so the generic event hook must
 # not double-chunk the payload preview
 _RICH_INDEX_KINDS = frozenset({"shared_doc"})
+
+# what one backfill batch may read and write, roughly: 50 event payloads plus
+# their chunk rows. Only the optional-work budget consumes this estimate.
+_BACKFILL_ESTIMATE_BYTES = 256 * 1024
 
 # A chunk is the unit retrieval reasons over, so its size is a retrieval
 # choice: about 250-400 tokens with 15% overlap, which keeps a
@@ -112,6 +119,10 @@ def chunk_header(*, name: str = "", location: str = "", sender: str = "", when: 
     return f"[{' | '.join(parts)}]" if parts else ""
 
 
+# rows read per cache-load query; the boot load walks the table in these
+CACHE_BATCH = 1_000
+
+
 def _stamp(when: Any) -> str:
     if isinstance(when, datetime):
         return f"{when.astimezone(UTC):%Y-%m-%d %H:%M} UTC"
@@ -121,10 +132,19 @@ def _stamp(when: Any) -> str:
 class VectorMemory:
     """The chunked, embedded, searchable half of the event store."""
 
-    def __init__(self, pool: asyncpg.Pool, cipher: Cipher, embedder: Embedder | None) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        cipher: Cipher,
+        embedder: Embedder | None,
+        budget: DailyBudget | None = None,
+    ) -> None:
         self._pool = pool
         self._cipher = cipher
         self._embedder = embedder
+        # optional-work guard: the backfill pauses when the day is spent.
+        # Nothing interactive consults this.
+        self._budget = budget
         # background index tasks in flight — tracked so the loop is never
         # garbage-collected mid-await and shutdown can drain them
         self._inflight: set[asyncio.Task[None]] = set()
@@ -132,21 +152,201 @@ class VectorMemory:
         # BM25 index registers here). One callback per commit — the only
         # chunk writer there is, so no index can drift from the store.
         self._chunk_listeners: list[Callable[[dict[str, Any]], None]] = []
+        # the backfill loop waits here instead of polling: a failed
+        # background index pass is the one thing that needs a retry
+        self._backfill_wake = asyncio.Event()
+        # the resident vector matrix: ids, event ids and float32 rows, loaded
+        # once in bounded batches and kept current by the one chunk writer.
+        # Recall then ranks in process without reading memory_chunks at all.
+        self._cache_ids: list[int] = []
+        self._cache_events: list[int] = []
+        self._cache_vectors: list[np.ndarray] = []
+        self._cache_id_set: set[int] = set()
+        self._cache_matrix: np.ndarray | None = None
+        self._cache_norms: np.ndarray | None = None
+        self._cache_loaded = False
+        self._cache_watermark = 0
+        self._cache_dims = 0
+        self._cache_batch = CACHE_BATCH
+        self._cache_max_chunks = 8_000
+
+    def wake_backfill(self) -> None:
+        """Ask the loop's backfill pass to run now (boot and failed indexes)."""
+        self._backfill_wake.set()
+
+    async def wait_backfill(self, timeout: float) -> None:
+        """Sleep until a retry is needed or the fallback interval passes."""
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self._backfill_wake.wait(), timeout=max(0.05, timeout))
+        self._backfill_wake.clear()
 
     def add_chunk_listener(self, listener: Callable[[dict[str, Any]], None]) -> None:
         """An in-memory index that wants every committed chunk. The event
-        says "add" with (chunk_id, ordinal, location, text, source, kind,
-        filename, occurred_at) or "remove" with just event_id. Callbacks
+        says "add" with (chunk_id, ordinal, location, text, vector, source,
+        kind, filename, occurred_at) or "remove" with just event_id. The
+        vector rides along so the resident matrix needs no re-read. Callbacks
         are synchronous and in-memory: they run inside the indexing task,
         and a raising listener never fails the write."""
         self._chunk_listeners.append(listener)
 
     def _notify(self, event: dict[str, Any]) -> None:
+        self._cache_apply(event)
         for listener in self._chunk_listeners:
             try:
                 listener(event)
             except Exception:
                 log.warning("chunk listener failed — its index may be behind", exc_info=True)
+
+    # -- vector cache ----------------------------------------------------------
+
+    async def load_cache(self, *, batch: int = CACHE_BATCH, max_chunks: int = 8_000) -> None:
+        """Load the resident vector matrix, newest first, in bounded batches.
+
+        Only ids and sealed vectors are read; text and metadata stay on the
+        database until a hit is actually cited. The newest `max_chunks` are
+        kept when the table is larger, and recall simply cannot cite chunks
+        older than it.
+        """
+        if not self.enabled or self._cache_loaded:
+            return
+        self._cache_batch = max(1, int(batch))
+        self._cache_max_chunks = max(1, int(max_chunks))
+        token = self._cipher.blind_token("embed_model", self._embedder.model)
+        ids: list[int] = []
+        events: list[int] = []
+        vectors: list[np.ndarray] = []
+        before: int | None = None
+        capped = False
+        while len(ids) < self._cache_max_chunks:
+            limit = min(self._cache_batch, self._cache_max_chunks - len(ids))
+            if before is None:
+                rows = await self._pool.fetch(
+                    "SELECT id, event_id, embedding_enc FROM memory_chunks"
+                    " WHERE embed_model_token = $1 AND embedding_enc IS NOT NULL"
+                    " ORDER BY id DESC LIMIT $2",
+                    token,
+                    limit,
+                )
+            else:
+                rows = await self._pool.fetch(
+                    "SELECT id, event_id, embedding_enc FROM memory_chunks"
+                    " WHERE embed_model_token = $1 AND embedding_enc IS NOT NULL"
+                    " AND id < $2 ORDER BY id DESC LIMIT $3",
+                    token,
+                    before,
+                    limit,
+                )
+            if not rows:
+                break
+            for row in rows:
+                vector = self._open_vector(row)
+                if vector is None:
+                    continue
+                if self._cache_dims and len(vector) != self._cache_dims:
+                    log.warning(
+                        "chunk %s has %d dims, expected %d — left out of the cache",
+                        row["id"],
+                        len(vector),
+                        self._cache_dims,
+                    )
+                    continue
+                self._cache_dims = len(vector)
+                ids.append(int(row["id"]))
+                events.append(int(row["event_id"]))
+                vectors.append(vector)
+            before = int(rows[-1]["id"])
+            if len(rows) < limit:
+                break
+        if len(ids) >= self._cache_max_chunks:
+            capped = True
+        # the query walked newest to oldest; keep the cache oldest to newest
+        # so hitting the cap evicts from the front (the oldest chunk) and the
+        # watermark stays the highest id either way
+        ids.reverse()
+        events.reverse()
+        vectors.reverse()
+        self._cache_ids = ids
+        self._cache_events = events
+        self._cache_vectors = vectors
+        self._cache_id_set = set(ids)
+        self._cache_watermark = max(ids, default=0)
+        self._cache_loaded = True
+        self._cache_matrix = None
+        self._cache_norms = None
+        log.info(
+            "vector cache loaded: %d chunk(s), %d dims%s",
+            len(ids),
+            self._cache_dims,
+            " (capped)" if capped else "",
+        )
+
+    def _open_vector(self, row: Any) -> np.ndarray | None:
+        try:
+            values = unpack_vector(
+                self._cipher.decrypt_bytes(
+                    row["embedding_enc"], aad=f"chunks:embedding_enc:{row['id']}"
+                )
+            )
+        except Exception:
+            log.warning("chunk %s vector undecryptable — skipped", row["id"])
+            return None
+        if not values:
+            return None
+        return np.asarray(values, dtype=np.float32)
+
+    def _cache_apply(self, event: dict[str, Any]) -> None:
+        if not self._cache_loaded:
+            return
+        if event.get("action") == "remove":
+            self._cache_remove_event(int(event["event_id"]))
+            return
+        vector = event.get("vector")
+        chunk_id = event.get("chunk_id")
+        if vector is None or chunk_id is None:
+            return
+        self._cache_add(int(chunk_id), int(event["event_id"]), np.asarray(vector, dtype=np.float32))
+
+    def _cache_add(self, chunk_id: int, event_id: int, vector: np.ndarray) -> None:
+        if chunk_id in self._cache_id_set:
+            return
+        if self._cache_dims and vector.shape[0] != self._cache_dims:
+            return
+        self._cache_dims = int(vector.shape[0])
+        if len(self._cache_ids) >= self._cache_max_chunks:
+            # keep the newest: drop the oldest row rather than grow forever
+            self._cache_id_set.discard(self._cache_ids[0])
+            del self._cache_ids[0]
+            del self._cache_events[0]
+            del self._cache_vectors[0]
+        self._cache_ids.append(chunk_id)
+        self._cache_events.append(event_id)
+        self._cache_vectors.append(vector)
+        self._cache_id_set.add(chunk_id)
+        self._cache_watermark = max(self._cache_watermark, chunk_id)
+        self._cache_matrix = None
+        self._cache_norms = None
+
+    def _cache_remove_event(self, event_id: int) -> None:
+        keep = [index for index, value in enumerate(self._cache_events) if value != event_id]
+        if len(keep) == len(self._cache_ids):
+            return
+        self._cache_ids = [self._cache_ids[index] for index in keep]
+        self._cache_events = [self._cache_events[index] for index in keep]
+        self._cache_vectors = [self._cache_vectors[index] for index in keep]
+        self._cache_id_set = set(self._cache_ids)
+        self._cache_matrix = None
+        self._cache_norms = None
+
+    def _ensure_matrix(self) -> None:
+        if self._cache_matrix is not None:
+            return
+        if not self._cache_vectors:
+            self._cache_matrix = np.empty((0, 0), dtype=np.float32)
+            self._cache_norms = np.empty(0, dtype=np.float32)
+            return
+        self._cache_matrix = np.vstack(self._cache_vectors).astype(np.float32, copy=False)
+        norms = np.linalg.norm(self._cache_matrix, axis=1).astype(np.float32)
+        self._cache_norms = np.maximum(norms, np.float32(1e-12))
 
     @property
     def enabled(self) -> bool:
@@ -195,6 +395,7 @@ class VectorMemory:
         if not task.cancelled() and (exc := task.exception()) is not None:
             # the event stays indexed_at NULL — backfill retries it
             log.warning("background event indexing failed — backfill will retry", exc_info=exc)
+            self.wake_backfill()
 
     async def wait_idle(self) -> None:
         """Every background index currently in flight — shutdowns and tests
@@ -330,6 +531,7 @@ class VectorMemory:
                         "ordinal": ordinal,
                         "location": location,
                         "text": text,
+                        "vector": vector,
                     }
                 )
         # the transaction has committed — declare the chunks to whichever
@@ -363,6 +565,10 @@ class VectorMemory:
         the bytes were never stored, so the preview is all that exists.
         Returns how many were handled, or None when caught up."""
         if not self.enabled:
+            return None
+        if self._budget is not None and not self._budget.can_spend(
+            queries=1, bytes_estimate=_BACKFILL_ESTIMATE_BYTES
+        ):
             return None
         rows = await self._pool.fetch(
             "SELECT id, payload_enc, meta_enc, created_at FROM events"
@@ -405,9 +611,9 @@ class VectorMemory:
     async def search(
         self, query: str, limit: int = 8, min_similarity: float = 0.35
     ) -> list[MemoryHit]:
-        """Semantic search: embed the question, rank every chunk by cosine.
-        The ranking happens in `search_vector`, over decrypted vectors —
-        hits under the bar drop."""
+        """Semantic search: embed the question, rank the resident matrix by
+        cosine. The ranking happens in `search_vector`, in process — hits
+        under the bar drop."""
         q = await self.embed_query(query)
         if q is None:
             return []
@@ -430,60 +636,72 @@ class VectorMemory:
     async def search_vector(
         self, q: list[float], limit: int = 8, min_similarity: float = 0.35
     ) -> list[MemoryHit]:
-        """The ranking half: cosine of every chunk of this model's space
-        against an already-embedded query. Vectors are encrypted, so the
-        math happens here — every row decrypts to its packed vector, and
-        only the top-k pay for a text decryption too. Only sealed vectors
-        are read: a row without one was never searchable and is left out
-        of the scan rather than warned about on every query."""
+        """The ranking half: cosine of every cached chunk of this model's
+        space against an already-embedded query.
+
+        Vectors are resident (sealed at rest, decrypted once at boot), so
+        ranking is one matrix-vector product in process. Only the top-k rows
+        fetch their text and metadata by id. A warm query reads no
+        memory_chunks rows for ranking at all.
+        """
         if self._embedder is None:
             return []
-        token = self._cipher.blind_token("embed_model", self._embedder.model)
-        rows = await self._pool.fetch(
-            "SELECT id, event_id, text_enc, embedding_enc, meta_enc"
-            " FROM memory_chunks WHERE embed_model_token = $1 AND embedding_enc IS NOT NULL",
-            token,
-        )
-        qnorm = vector_norm(q) or 1.0
-        ranked: list[tuple[float, asyncpg.Record]] = []
-        for row in rows:
-            try:
-                vector = unpack_vector(
-                    self._cipher.decrypt_bytes(
-                        row["embedding_enc"], aad=f"chunks:embedding_enc:{row['id']}"
-                    )
-                )
-                if not vector:
-                    continue
-                score = sum(u * v for u, v in zip(q, vector, strict=False)) / (
-                    qnorm * vector_norm(vector)
-                )
-            except Exception:
-                log.warning("chunk %s vector undecryptable — skipped", row["id"])
-                continue
-            if score >= min_similarity:
-                ranked.append((float(score), row))
-        ranked.sort(key=lambda pair: pair[0], reverse=True)
+        if not self._cache_loaded:
+            await self.load_cache(batch=self._cache_batch, max_chunks=self._cache_max_chunks)
+        if not self._cache_ids:
+            return []
+        self._ensure_matrix()
+        assert self._cache_matrix is not None and self._cache_norms is not None
+        q_arr = np.asarray(q, dtype=np.float32)
+        if self._cache_dims and q_arr.shape[0] != self._cache_dims:
+            log.warning(
+                "query has %d dims, cached vectors have %d — no vector recall",
+                q_arr.shape[0],
+                self._cache_dims,
+            )
+            return []
+        qnorm = float(np.linalg.norm(q_arr)) or 1.0
+        scores = (self._cache_matrix @ q_arr) / (self._cache_norms * np.float32(qnorm))
+        candidates = np.flatnonzero(scores >= min_similarity)
+        if candidates.size == 0:
+            return []
+        if candidates.size > limit:
+            part = np.argpartition(-scores[candidates], limit - 1)[:limit]
+            candidates = candidates[part]
+        order = candidates[np.argsort(-scores[candidates])]
+        top = order[:limit]
+        details: dict[int, asyncpg.Record] = {}
+        if top.size:
+            detail_rows = await self._pool.fetch(
+                "SELECT id, text_enc, meta_enc FROM memory_chunks WHERE id = ANY($1::bigint[])",
+                [int(self._cache_ids[int(index)]) for index in top],
+            )
+            details = {row["id"]: row for row in detail_rows}
         hits: list[MemoryHit] = []
-        for score, row in ranked[:limit]:
+        for index in top:
+            chunk_id = int(self._cache_ids[int(index)])
+            detail = details.get(chunk_id)
+            if detail is None:
+                log.warning("chunk %s disappeared before its text could be read", chunk_id)
+                continue
             try:
                 text = self._cipher.decrypt_text(
-                    row["text_enc"], aad=f"chunks:text_enc:{row['id']}"
+                    detail["text_enc"], aad=f"chunks:text_enc:{chunk_id}"
                 )
             except Exception:
-                log.warning("chunk %s undecryptable — skipped", row["id"])
+                log.warning("chunk %s undecryptable — skipped", chunk_id)
                 continue
-            meta = self._chunk_meta(row)
+            meta = self._chunk_meta(detail)
             hits.append(
                 MemoryHit(
-                    event_id=row["event_id"],
-                    chunk_id=row["id"],
+                    event_id=int(self._cache_events[int(index)]),
+                    chunk_id=chunk_id,
                     source=str(meta.get("source", "")),
                     kind=str(meta.get("kind", "")),
                     filename=str(meta.get("filename", "")),
                     location=str(meta.get("location", "")),
                     text=text,
-                    score=score,
+                    score=float(scores[int(index)]),
                     occurred_at=_meta_time(meta.get("occurred_at")),
                 )
             )

@@ -273,13 +273,17 @@ class Approvals:
                 return approval
         return None
 
-    async def list_pending(self) -> list[Approval]:
-        rows = await self._pool.fetch(
+    async def list_pending(self, limit: int | None = None, offset: int = 0) -> list[Approval]:
+        query = (
             "SELECT id, tool_name, status, created_at, expires_at, decided_at,"
             " decided_by, rules_matched_enc, note_enc, params_enc"
             " FROM pending_approvals WHERE status = 'pending' AND expires_at > now()"
             " ORDER BY created_at"
         )
+        if limit is None:
+            rows = await self._pool.fetch(query)
+        else:
+            rows = await self._pool.fetch(query + " LIMIT $1 OFFSET $2", limit, max(0, offset))
         approvals: list[Approval] = []
         for row in rows:
             try:

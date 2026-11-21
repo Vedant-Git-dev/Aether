@@ -8,7 +8,7 @@ const hostLabel = () => {
   return !host || host === "localhost" || host === "127.0.0.1" ? "local" : host;
 };
 
-export default function Topbar({ title, onMenu }) {
+export default function Topbar({ title, onMenu, onRefresh }) {
   const { theme, toggle } = useTheme();
   const themeLabel = theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
   const iconBtn =
@@ -34,6 +34,15 @@ export default function Topbar({ title, onMenu }) {
 
       <div className="ml-auto flex items-center gap-2">
         <Clock />
+        <button
+          type="button"
+          onClick={onRefresh}
+          aria-label="Refresh the data on this page"
+          title="Refresh"
+          className={iconBtn}
+        >
+          <Icon name="refresh" className="h-4 w-4" />
+        </button>
         <button
           type="button"
           onClick={toggle}

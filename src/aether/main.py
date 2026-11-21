@@ -47,6 +47,7 @@ from .connectors.mcp_host import MCPHost
 from .connectors.registry import ToolRegistry
 from .connectors.screenvision import ScreenVision
 from .counters import DailyCounters
+from .db_resilience import CircuitBreaker
 from .llm.base import ProviderError
 from .llm.embeddings import GeminiEmbedder
 from .llm.model_list import ModelCatalog, is_sentinel
@@ -57,6 +58,7 @@ from .media.frames import FrameWatcher
 from .media.generate import ImageGenerator
 from .media.store import MediaStore
 from .media.voice import GroqTranscriber
+from .memory.budget import DailyBudget
 from .memory.commitments import Commitments
 from .memory.conclusions import Conclusions
 from .memory.context import ContextBuilder
@@ -175,7 +177,10 @@ def create_app(
             )
 
         # --- database ------------------------------------------------------
-        pool = await create_pool(settings.database_url)
+        # one breaker for the one pool: an outage fails fast instead of
+        # retrying through every loop on every tick
+        breaker = CircuitBreaker()
+        pool = await create_pool(settings.database_url, breaker=breaker)
 
         # a deploy seals and cuts over in one boot: the sealer runs between
         # the expand migration and the drop migration, so nobody has to
@@ -245,7 +250,6 @@ def create_app(
         except PolicyError as exc:
             raise StartupError(f"bad authz rule: {exc}") from exc
 
-        app.state.pool = pool
         app.state.cipher = cipher
         app.state.settings = settings
         app.state.config = config
@@ -336,8 +340,18 @@ def create_app(
                         "unavailable until the key is set",
                         exc,
                     )
-        vectors = VectorMemory(pool, cipher, embedder)
-        app.state.vectors = vectors
+        # optional background work pauses once the day's measured use reaches
+        # the configured daily totals; interactive work never consults it
+        budget = DailyBudget(
+            getattr(pool, "meter", None),
+            max_queries=config.db.daily_query_budget,
+            max_bytes=int(config.db.daily_response_budget_mb * 1024 * 1024),
+        )
+        vectors = VectorMemory(pool, cipher, embedder, budget=budget)
+        # the resident vector matrix: recall ranks in process, so this is the
+        # one full read of memory_chunks for the process's lifetime. It reads
+        # ids and sealed vectors only; text stays on disk until a hit cites it
+        await vectors.load_cache(max_chunks=config.memory.vector_cache_max_chunks)
 
         # --- memory + authz ------------------------------------------------
         audit = AuditLog(pool)
@@ -712,6 +726,7 @@ def create_app(
             query_pipeline=query_pipeline,
             summary_job=summary_job,
             counters=counters,
+            db_breaker=breaker,
         )
         app.state.agent = agent
 

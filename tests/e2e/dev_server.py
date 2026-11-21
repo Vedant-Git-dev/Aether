@@ -207,8 +207,9 @@ class FakeApprovals:
             ),
         }
 
-    async def list_pending(self) -> list[Approval]:
-        return [a for a in self._rows.values() if a.status == PENDING]
+    async def list_pending(self, limit: int | None = None, offset: int = 0) -> list[Approval]:
+        rows = [a for a in self._rows.values() if a.status == PENDING]
+        return rows[offset : offset + limit] if limit is not None else rows
 
     async def decide(self, approval_id: int, decision: str) -> Approval | None:
         row = self._rows.get(approval_id)
@@ -306,8 +307,9 @@ class FakeAudit:
             },
         ]
 
-    async def recent(self, limit: int = 100) -> list[dict]:
-        return list(reversed(self.rows))[:limit]  # newest first, matching the real AuditLog
+    async def recent(self, limit: int = 100, offset: int = 0) -> list[dict]:
+        rows = list(reversed(self.rows))  # newest first, matching the real AuditLog
+        return rows[offset : offset + limit]
 
     async def append(
         self,
@@ -526,8 +528,8 @@ class FakeEventStore:
             ),
         ]
 
-    async def recent(self, limit: int = 50) -> list[Event]:
-        return self.rows[:limit]
+    async def recent(self, limit: int = 50, offset: int = 0) -> list[Event]:
+        return self.rows[offset : offset + limit]
 
 
 class FakeChatHistory:
@@ -539,8 +541,10 @@ class FakeChatHistory:
             {"direction": direction, "text": text, "at": datetime.now(UTC).isoformat()}
         )
 
-    async def recent(self, limit: int = 50) -> list[dict]:
-        return self.rows[-limit:]
+    async def recent(self, limit: int = 50, offset: int = 0) -> list[dict]:
+        if offset == 0:
+            return self.rows[-limit:]
+        return self.rows[offset : offset + limit]
 
 
 class FakeChatHub:
@@ -602,8 +606,8 @@ class FakeEntities:
             ],
         }
 
-    async def list_people(self, limit: int = 50) -> list[Entity]:
-        return self.people[:limit]
+    async def list_people(self, limit: int = 50, offset: int = 0) -> list[Entity]:
+        return self.people[offset : offset + limit]
 
     async def notes_for(self, identity_id: int, limit: int = 10) -> list[EntityNote]:
         return self.notes.get(identity_id, [])[:limit]
@@ -662,8 +666,8 @@ class FakeAlertStore:
     def __init__(self, engine: FakeAlertEngine) -> None:
         self.engine = engine
 
-    async def list(self, limit: int = 50):
-        return self.engine.rows[:limit]
+    async def list(self, limit: int = 50, offset: int = 0):
+        return self.engine.rows[offset : offset + limit]
 
 
 class FakeMemoryControl:
@@ -749,8 +753,8 @@ class FakeScheduler:
             ),
         ]
 
-    async def list(self, limit: int = 50) -> list[ScheduledAction]:
-        return self.actions[:limit]
+    async def list(self, limit: int = 50, offset: int = 0) -> list[ScheduledAction]:
+        return self.actions[offset : offset + limit]
 
 
 class FakeTraces:
@@ -910,8 +914,15 @@ class FakeTraces:
             ),
         ]
 
-    async def recent(self, limit: int = 30) -> list[Trace]:
-        return self.rows[:limit]  # already newest first
+    async def recent(self, limit: int = 30, offset: int = 0) -> list[Trace]:
+        return self.rows[offset : offset + limit]  # already newest first
+
+    async def recent_summaries(self, limit: int = 30, offset: int = 0) -> list[Trace]:
+        rows = self.rows[offset : offset + limit]
+        return [
+            Trace(id=t.id, kind=t.kind, label=t.label, payload={}, created_at=t.created_at)
+            for t in rows
+        ]
 
     async def get(self, trace_id: int) -> Trace | None:
         return next((t for t in self.rows if t.id == trace_id), None)
@@ -981,8 +992,8 @@ class FakeProactiveStore:
             ),
         ]
 
-    async def list(self, limit: int = 50) -> list[ProactiveTask]:
-        return self.rows[:limit]  # newest first, matching the real store
+    async def list(self, limit: int = 50, offset: int = 0) -> list[ProactiveTask]:
+        return self.rows[offset : offset + limit]  # newest first, matching the real store
 
     async def record_feedback(self, task_id: int, feedback: str, note: str = "") -> None:
         row = next((r for r in self.rows if r.id == task_id), None)
