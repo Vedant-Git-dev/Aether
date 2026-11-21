@@ -164,7 +164,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Expected: pip finishes with `Successfully installed aether-agent-0.1.0 ...`.
+Expected: pip finishes with `Successfully installed aether-agent-<version> ...`.
 
 #### 2. Create the database
 

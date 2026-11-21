@@ -1,6 +1,6 @@
 [project]
 name = "aether-agent"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Aether — a continuous, cross-platform personal action agent"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -45,8 +45,17 @@ aether = "aether.main:main"
 aether-setup = "aether.setup.cli:run"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+# The version comes from the nearest git tag (`v0.1.0` -> 0.1.0), with dev
+# commits after a tag reported as the next patch plus the commit hash.
+# `fallback_version` keeps a source tarball (no `.git`) buildable.
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+fallback_version = "0.0.0"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aether"]

@@ -14,7 +14,7 @@ from fastapi import FastAPI, Response
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import restart
+from . import __version__, restart
 from .agent import AgentLoop, CaptureRequestBox, SurfaceFanout, register_native_tools
 from .agent.settings import AgentSettings
 from .agent.tools import describe_full
@@ -896,7 +896,7 @@ def create_app(
         await pool.close()
         log.info("aether stopped")
 
-    app = FastAPI(title="Aether", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Aether", version=__version__, lifespan=lifespan)
     app.include_router(api_router)
     app.include_router(chat_router)
     # the panel is a Vite build artifact (source lives in webapp/) — serve it
