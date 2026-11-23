@@ -7,10 +7,10 @@ repositories {
 }
 
 dependencies {
-    implementation("com.nimbusds:nimbus-jose-jwt:9.40")
-    implementation("com.google.crypto.tink:tink:1.14.0")
-    implementation("org.bouncycastle:bcprov-jdk18on:1.80")
-    implementation("org.json:json:20240303")
+    testImplementation("com.nimbusds:nimbus-jose-jwt:9.40")
+    testImplementation("com.google.crypto.tink:tink:1.14.0")
+    testImplementation("org.bouncycastle:bcprov-jdk18on:1.80")
+    testImplementation("org.json:json:20240303")
     testImplementation("junit:junit:4.13.2")
 }
 

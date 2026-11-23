@@ -3,6 +3,7 @@
 `vectors/` is a JVM-only Gradle module. It verifies the shared wire encodings
 between the Python backend and the Kotlin client. It is not packaged into the
 Android application.
+All Kotlin sources and dependencies belong to the test source set.
 
 ## Toolchain
 
