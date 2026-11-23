@@ -1,0 +1,37 @@
+{
+  "private": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+  "body_b64": "eyJkZXZpY2UiOiJFQkVTRXhRVkZoY1lHUm9iSEIwZUh3IiwiZXBvY2giOjEsImlhdCI6MTcwMDAwMDAwMCwibWFuaWZlc3RfZGlnZXN0IjoiSUNFaUl5UWxKaWNvS1NvckxDMHVMekF4TWpNME5UWTNPRGs2T3p3OVBqOCIsIm5vbmNlIjoiUUVGQ1EwUkZSa2RJU1VwTFRFMU9UMUJSVWxOVVZWWlhXRmxhVzF4ZFhsOCIsIm9yaWdpbiI6Imh0dHBzOi8vdmF1bHQuZXhhbXBsZS50ZXN0IiwicGhvbmVfcHViIjoiQkZGY1BXNjU0NWE1Qk5QLXluOVVfYzBNd2VtWHZ6ZGR5bEZhMEtiRHRBTmZSVGEtT2xEekdQdjVwVWRaQXFJaFVDdnZEVmZnakZPeXpBcFc4WDJmazFRIiwic2VydmVyX2tpZCI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgiLCJ0eXBlIjoicGFpciIsInYiOjEsInZhdWx0IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EdyJ9",
+  "envelope": {
+    "protected": "eyJhbGciOiJFUzI1NiIsImtpZCI6IlFtbUlsREhqRXhsbV9LOXFSWEZCbEQ3U3cxdGJrWHJtTExNNVZHOVNOVkUifQ",
+    "signature": "Z9oPjFbOhQSva6tsNKaSOAOY4K6K1M4KROesYX0GZ7YSmDhrbn3XAmWzur9hqmI8ZzhZ0hzvRgZB1Q0Wcw2ATQ",
+    "body": {
+      "phone_pub": "BFFcPW6545a5BNP-yn9U_c0MwemXvzddylFa0KbDtANfRTa-OlDzGPv5pUdZAqIhUCvvDVfgjFOyzApW8X2fk1Q",
+      "server_kid": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "v": 1,
+      "origin": "https://vault.example.test",
+      "epoch": 1,
+      "type": "pair",
+      "device": "EBESExQVFhcYGRobHB0eHw",
+      "iat": 1700000000,
+      "nonce": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+      "manifest_digest": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+      "vault": "AAECAwQFBgcICQoLDA0ODw"
+    }
+  },
+  "public": "BFFcPW6545a5BNP-yn9U_c0MwemXvzddylFa0KbDtANfRTa-OlDzGPv5pUdZAqIhUCvvDVfgjFOyzApW8X2fk1Q",
+  "kid": "QmmIlDHjExlm_K9qRXFBlD7Sw1tbkXrmLLM5VG9SNVE",
+  "signing_input": "eyJhbGciOiJFUzI1NiIsImtpZCI6IlFtbUlsREhqRXhsbV9LOXFSWEZCbEQ3U3cxdGJrWHJtTExNNVZHOVNOVkUifQ.eyJkZXZpY2UiOiJFQkVTRXhRVkZoY1lHUm9iSEIwZUh3IiwiZXBvY2giOjEsImlhdCI6MTcwMDAwMDAwMCwibWFuaWZlc3RfZGlnZXN0IjoiSUNFaUl5UWxKaWNvS1NvckxDMHVMekF4TWpNME5UWTNPRGs2T3p3OVBqOCIsIm5vbmNlIjoiUUVGQ1EwUkZSa2RJU1VwTFRFMU9UMUJSVWxOVVZWWlhXRmxhVzF4ZFhsOCIsIm9yaWdpbiI6Imh0dHBzOi8vdmF1bHQuZXhhbXBsZS50ZXN0IiwicGhvbmVfcHViIjoiQkZGY1BXNjU0NWE1Qk5QLXluOVVfYzBNd2VtWHZ6ZGR5bEZhMEtiRHRBTmZSVGEtT2xEekdQdjVwVWRaQXFJaFVDdnZEVmZnakZPeXpBcFc4WDJmazFRIiwic2VydmVyX2tpZCI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgiLCJ0eXBlIjoicGFpciIsInYiOjEsInZhdWx0IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EdyJ9",
+  "body": {
+    "phone_pub": "BFFcPW6545a5BNP-yn9U_c0MwemXvzddylFa0KbDtANfRTa-OlDzGPv5pUdZAqIhUCvvDVfgjFOyzApW8X2fk1Q",
+    "server_kid": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "v": 1,
+    "origin": "https://vault.example.test",
+    "epoch": 1,
+    "type": "pair",
+    "device": "EBESExQVFhcYGRobHB0eHw",
+    "iat": 1700000000,
+    "nonce": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+    "manifest_digest": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+    "vault": "AAECAwQFBgcICQoLDA0ODw"
+  }
+}

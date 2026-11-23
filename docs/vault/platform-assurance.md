@@ -15,9 +15,17 @@ from a native test harness, a physical handset, and an emulator.
 
 The evidence used OpenSSL for native HPKE, pyhpke for HPKE with associated
 data, joserfc for JWS, rfc8785 for canonical serialization, and mnemonic
-for the recovery phrase. The mobile feasibility selections were Nimbus
-JOSE+JWT and Tink. Bidirectional HPKE with associated data and recovery JWS
-between Python and Kotlin remain to be verified by the implementation.
+for the recovery phrase. The Kotlin selections are Nimbus JOSE+JWT 9.40 for
+JWS and Bouncy Castle 1.80 for HPKE. Bidirectional vectors now pass: Python
+seals HPKE with nonempty associated data and Kotlin opens and reproduces the
+bytes, Kotlin seals and Python opens, and Ed25519 recovery signatures verify
+in both directions. Nimbus uses Tink 1.14 internally for Ed25519.
+
+Tink 1.14's public HPKE primitive always uses empty associated data and maps
+its caller context to the HPKE `info` parameter, so it cannot implement the
+approved AAD-bound grant. Bouncy Castle's RFC 9180 implementation accepts
+both `info` and AAD and is the Kotlin HPKE choice. This is a library
+selection change, not a change to the suite or wire format.
 
 ## Native grant handling and cleanup
 
@@ -77,3 +85,16 @@ through scheduled work or a permitted wake. [Foreground service testing](https:/
 - Delete legacy decryption material at the approved cutover.
 - Release Android first after the agreed scope passes.
 - Keep push send credentials on the backend.
+
+## Task 1a verification scope
+
+The Python suite runs the published RFC 9180 Appendix A.1 base-mode case
+and the Aether AES-256-GCM vectors. The JVM harness independently serializes
+the Aether fixture objects before signing or opening them. The production
+use-case registry starts empty and rejects unknown IDs. Its populated
+shared entries require owner approval before serving code uses them.
+Android app packaging and native serializer checks remain part of native
+integration. The reference cryptography and deterministic inputs live under tests. Live
+key management requires the native adapter and scoped handles.
+
+[RFC 9180 Appendix A.1](https://www.rfc-editor.org/rfc/rfc9180.html#appendix-A.1)

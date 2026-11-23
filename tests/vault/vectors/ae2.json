@@ -1,0 +1,13 @@
+{
+  "cat": "memory",
+  "column": "payload_enc",
+  "envelope": "QUUyAHsiY2F0IjoibWVtb3J5IiwiY3QiOiJtUW5Nek5FSTIwcXFHRktPNFl0dGthYjRSTjZNN1ZBbHB3MnFWb1RXSVB3YTh0c2ItNkUwIiwibiI6IllHRmlZMlJsWm1kb2FXcHIiLCJ2IjoxLCJ2YXVsdCI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHciLCJ2ZXIiOjF9",
+  "key": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+  "nonce": "YGFiY2RlZmdoaWpr",
+  "plaintext": "eyJ0ZXh0IjoiaGVsbG8gYWV0aGVyIn0",
+  "purpose": "content",
+  "row": "42",
+  "table": "events",
+  "vault": "AAECAwQFBgcICQoLDA0ODw",
+  "ver": 1
+}
