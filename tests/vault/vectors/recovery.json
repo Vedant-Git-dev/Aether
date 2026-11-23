@@ -1,0 +1,8 @@
+{
+  "entropy": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "hpke_private": "7W9nlXvr-4NYLdsOMk8zZcOWfuwMnLB8s3V_Z0azw5M",
+  "hpke_public": "hpBYSsjrZa-offMd9iqhDFKDg64-u8FiU7cS6Tt24RU",
+  "sign_public": "J8Dh70Epb3LWXR3d8OdHj8jtBykHfTvvGDnuhEZz92k",
+  "sign_seed": "EFJ0dYczGBUrxdE_y7uIHgxZnOq8RFCOnKZ6JMEU7c0",
+  "vault": "AAECAwQFBgcICQoLDA0ODw"
+}

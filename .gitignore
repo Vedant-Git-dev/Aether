@@ -18,6 +18,7 @@ build/
 
 local.properties
 .gradle/
+.kotlin/
 *.jks
 *.keystore
 google-services.json

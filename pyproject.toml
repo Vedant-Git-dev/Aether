@@ -29,10 +29,14 @@ dependencies = [
     "pypdf>=5.0",  # text extraction from shared PDFs (chat attachments)
     "modal>=1.0",  # the default workbench — one throwaway sandbox per background job
     "vercel>=0.12",  # the fallback sandbox — same throwaway shape, different cloud
+    "rfc8785>=0.1.4",  # canonical JSON for every signed body and AAD
 ]
 
 [project.optional-dependencies]
 dev = [
+    "pyhpke>=0.6.5",  # RFC 9180 HPKE for the phone-held vault
+    "joserfc>=1.7.4",  # detached JWS with pinned algorithms
+    "mnemonic>=0.21",  # recovery phrase encoding and checksum
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "ruff>=0.8",

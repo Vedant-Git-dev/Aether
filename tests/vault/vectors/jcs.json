@@ -1,0 +1,45 @@
+{
+  "cases": [
+    {
+      "canonical": "{\"a\":1,\"b\":2}",
+      "value": {
+        "a": 1,
+        "b": 2
+      }
+    },
+    {
+      "canonical": "[1,2,3]",
+      "value": [
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "canonical": "{\"x\":true,\"y\":null,\"z\":\"text\"}",
+      "value": {
+        "x": true,
+        "y": null,
+        "z": "text"
+      }
+    },
+    {
+      "canonical": "{\"n\":0}",
+      "value": {
+        "n": 0
+      }
+    },
+    {
+      "canonical": "{\"esc\":\"a\\nb\\tc\"}",
+      "value": {
+        "esc": "a\nb\tc"
+      }
+    },
+    {
+      "canonical": "{\"unicode\":\"caf\u00e9\"}",
+      "value": {
+        "unicode": "caf\u00e9"
+      }
+    }
+  ]
+}

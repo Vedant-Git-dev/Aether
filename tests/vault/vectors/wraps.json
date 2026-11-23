@@ -1,0 +1,19 @@
+{
+  "backup": {
+    "ct": "rrwQhbimKbYd-BngPw793P01lqtoJAqwd31KbehrulENe0L4o2BXW7hdhSozyfWT",
+    "enc": "EUS5qKSCGGs7eCYeDLT05MKu_QxlVr3NtaqYRuY4olU"
+  },
+  "cat": "memory",
+  "device": {
+    "alg": "android-keystore-aes-gcm",
+    "blob": "YGFiY2RlZmdoaWprmbbFzpK0HifbfhyedisHW0gl9mcsYiqwKYubHq3rghFC3R32SLfywX49JB1xGwVWD4tYyoVNqAz2TvEXUYwoEcQ0ZULrOoGiFbQMIOAEGNzfCXWPPotEpORqkPCo05s1tlen7ba_F-c8L7EdvQ1cwMLlpelQGAIlg5U9zQlmQ5pUx2r1IVEo9Ms_sDZeuQ"
+  },
+  "ephemeral_private": "bG1ub3BxcnN0dXZ3eHl6e3x9fn-AgYKDhIWGh4iJios",
+  "iv": "YGFiY2RlZmdoaWpr",
+  "key": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+  "master": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+  "recovery_private": "7W9nlXvr-4NYLdsOMk8zZcOWfuwMnLB8s3V_Z0azw5M",
+  "recovery_public": "hpBYSsjrZa-offMd9iqhDFKDg64-u8FiU7cS6Tt24RU",
+  "vault": "AAECAwQFBgcICQoLDA0ODw",
+  "ver": 1
+}

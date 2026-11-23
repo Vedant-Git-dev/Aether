@@ -1,0 +1,36 @@
+{
+  "body": {
+    "boot": "ICEiIyQlJicoKSorLC0uLw",
+    "device": "EBESExQVFhcYGRobHB0eHw",
+    "epoch": 2,
+    "iat": 1700000300,
+    "nonce": "UFFSU1RVVldYWVpbXF1eX2BhYmNkZWZnaGlqa2xtbm8",
+    "reason": "locked",
+    "request": "QEFCQ0RFRkdISUpLTE1OTw",
+    "request_digest": "cHFyc3R1dnd4eXp7fH1-f4CBgoOEhYaHiImKi4yNjo8",
+    "task": "MDEyMzQ1Njc4OTo7PD0-Pw",
+    "type": "lease_denied",
+    "v": 1,
+    "vault": "AAECAwQFBgcICQoLDA0ODw"
+  },
+  "envelope": {
+    "body": {
+      "boot": "ICEiIyQlJicoKSorLC0uLw",
+      "device": "EBESExQVFhcYGRobHB0eHw",
+      "epoch": 2,
+      "iat": 1700000300,
+      "nonce": "UFFSU1RVVldYWVpbXF1eX2BhYmNkZWZnaGlqa2xtbm8",
+      "reason": "locked",
+      "request": "QEFCQ0RFRkdISUpLTE1OTw",
+      "request_digest": "cHFyc3R1dnd4eXp7fH1-f4CBgoOEhYaHiImKi4yNjo8",
+      "task": "MDEyMzQ1Njc4OTo7PD0-Pw",
+      "type": "lease_denied",
+      "v": 1,
+      "vault": "AAECAwQFBgcICQoLDA0ODw"
+    },
+    "protected": "eyJhbGciOiJFUzI1NiIsImtpZCI6Ii1kbmZPY3lnOHc3QzdrV3FoYThLU2NacHM4cU1VWmQwXzFTaGlCZjk5QkUifQ",
+    "signature": "2dWnnrdV162nm-e3CnaXCivV-0W723l5nhJiG5zkVhCnZoE8OC7xgeumiNPe2SWXdfB5sVf69LjPaQw5NEUhnA"
+  },
+  "kid": "-dnfOcyg8w7C7kWqha8KScZps8qMUZd0_1ShiBf99BE",
+  "public": "BMZVnUFt-1avcU8UbZF8JKv4GLL7EhYEEpZJhIIwotJYsqbYLcbGc0zwkv-qn8AS8Q9wCNOVKgjVeX6F_qul2Xc"
+}

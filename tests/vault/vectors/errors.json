@@ -1,0 +1,84 @@
+{
+  "cases": [
+    {
+      "code": "bad_field",
+      "status": 400
+    },
+    {
+      "code": "bad_scope",
+      "status": 403
+    },
+    {
+      "code": "bad_signature",
+      "status": 401
+    },
+    {
+      "code": "bad_version",
+      "status": 400
+    },
+    {
+      "code": "category_unavailable",
+      "status": 423
+    },
+    {
+      "code": "conflict",
+      "status": 409
+    },
+    {
+      "code": "denied",
+      "status": 403
+    },
+    {
+      "code": "duplicate_field",
+      "status": 400
+    },
+    {
+      "code": "expired_challenge",
+      "status": 410
+    },
+    {
+      "code": "expired_request",
+      "status": 410
+    },
+    {
+      "code": "locked",
+      "status": 423
+    },
+    {
+      "code": "malformed",
+      "status": 400
+    },
+    {
+      "code": "rate_limited",
+      "status": 429
+    },
+    {
+      "code": "replay",
+      "status": 409
+    },
+    {
+      "code": "stale_generation",
+      "status": 409
+    },
+    {
+      "code": "stale_manifest",
+      "status": 409
+    },
+    {
+      "code": "transient",
+      "status": 503
+    },
+    {
+      "code": "unauthorized",
+      "status": 401
+    },
+    {
+      "code": "unavailable",
+      "status": 503
+    },
+    {
+      "code": "unpaired",
+      "status": 503
+    }
+  ]
+}

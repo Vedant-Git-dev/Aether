@@ -1,0 +1,23 @@
+{
+  "v": 1,
+  "accept_window_seconds": 30,
+  "clock_skew_seconds": 15,
+  "grant_ceiling_seconds": 300,
+  "grant_ttl_min_seconds": 1,
+  "grant_ttl_max_seconds": 300,
+  "challenge_seconds": 60,
+  "device_session_seconds": 900,
+  "pair_ticket_seconds": 300,
+  "panel_intent_seconds": 120,
+  "ws_ticket_seconds": 30,
+  "rate_per_minute": 30,
+  "rate_burst": 6,
+  "renewal_numerator": 2,
+  "renewal_denominator": 3,
+  "nonce_ledger_seconds": 45,
+  "retry_base_millis": 500,
+  "retry_max_millis": 30000,
+  "retry_jitter": true,
+  "aes_gcm_budget": 4294967296,
+  "aes_gcm_operational_threshold": 2147483648
+}

@@ -1,0 +1,35 @@
+{
+  "body_b64": "eyJjaGFsbGVuZ2UiOiJZR0ZpWTJSbFptZG9hV3ByYkcxdWIzQnhjbk4wZFhaM2VIbDZlM3g5Zm44IiwiZGV2aWNlIjoiRUJFU0V4UVZGaGNZR1JvYkhCMGVIdyIsImVwb2NoIjo3LCJpYXQiOjE3MDAwMDAxMDAsIm5ld19tYW5pZmVzdF9kaWdlc3QiOiJRRUZDUTBSRlJrZElTVXBMVEUxT1QxQlJVbE5VVlZaWFdGbGFXMXhkWGw4IiwibmV3X3Bob25lX3B1YiI6IkJGRmNQVzY1NDVhNUJOUC15bjlVX2MwTXdlbVh2emRkeWxGYTBLYkR0QU5mUlRhLU9sRHpHUHY1cFVkWkFxSWhVQ3Z2RFZmZ2pGT3l6QXBXOFgyZmsxUSIsInByZXZpb3VzX2RpZ2VzdCI6IklDRWlJeVFsSmljb0tTb3JMQzB1THpBeE1qTTBOVFkzT0RrNk96dzlQajgiLCJ0eXBlIjoicmVzdG9yZSIsInYiOjEsInZhdWx0IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EdyJ9",
+  "envelope": {
+    "protected": "eyJhbGciOiJFZDI1NTE5Iiwia2lkIjoiSlBidGFzdi1FQW5BTU5mS1Zud3p5a2d3a1JTWUkydFZZYWJJS3I3RjNpZyJ9",
+    "signature": "78K1Svpcqw3aqylV_87D32c_1n5rK4M9t4N2_ikQHebV00VuSTiYEX0RwV1iiozIuOCLzJkeRkgBX2IFG90FDg",
+    "body": {
+      "new_manifest_digest": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+      "v": 1,
+      "challenge": "YGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn8",
+      "previous_digest": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+      "epoch": 7,
+      "type": "restore",
+      "device": "EBESExQVFhcYGRobHB0eHw",
+      "iat": 1700000100,
+      "vault": "AAECAwQFBgcICQoLDA0ODw",
+      "new_phone_pub": "BFFcPW6545a5BNP-yn9U_c0MwemXvzddylFa0KbDtANfRTa-OlDzGPv5pUdZAqIhUCvvDVfgjFOyzApW8X2fk1Q"
+    }
+  },
+  "seed": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+  "public": "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc",
+  "kid": "JPbtasv-EAnAMNfKVnwzykgwkRSYI2tVYabIKr7F3ig",
+  "signing_input": "eyJhbGciOiJFZDI1NTE5Iiwia2lkIjoiSlBidGFzdi1FQW5BTU5mS1Zud3p5a2d3a1JTWUkydFZZYWJJS3I3RjNpZyJ9.eyJjaGFsbGVuZ2UiOiJZR0ZpWTJSbFptZG9hV3ByYkcxdWIzQnhjbk4wZFhaM2VIbDZlM3g5Zm44IiwiZGV2aWNlIjoiRUJFU0V4UVZGaGNZR1JvYkhCMGVIdyIsImVwb2NoIjo3LCJpYXQiOjE3MDAwMDAxMDAsIm5ld19tYW5pZmVzdF9kaWdlc3QiOiJRRUZDUTBSRlJrZElTVXBMVEUxT1QxQlJVbE5VVlZaWFdGbGFXMXhkWGw4IiwibmV3X3Bob25lX3B1YiI6IkJGRmNQVzY1NDVhNUJOUC15bjlVX2MwTXdlbVh2emRkeWxGYTBLYkR0QU5mUlRhLU9sRHpHUHY1cFVkWkFxSWhVQ3Z2RFZmZ2pGT3l6QXBXOFgyZmsxUSIsInByZXZpb3VzX2RpZ2VzdCI6IklDRWlJeVFsSmljb0tTb3JMQzB1THpBeE1qTTBOVFkzT0RrNk96dzlQajgiLCJ0eXBlIjoicmVzdG9yZSIsInYiOjEsInZhdWx0IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EdyJ9",
+  "body": {
+    "new_manifest_digest": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+    "v": 1,
+    "challenge": "YGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn8",
+    "previous_digest": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+    "epoch": 7,
+    "type": "restore",
+    "device": "EBESExQVFhcYGRobHB0eHw",
+    "iat": 1700000100,
+    "vault": "AAECAwQFBgcICQoLDA0ODw",
+    "new_phone_pub": "BFFcPW6545a5BNP-yn9U_c0MwemXvzddylFa0KbDtANfRTa-OlDzGPv5pUdZAqIhUCvvDVfgjFOyzApW8X2fk1Q"
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "recipient_private": "EBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8",
+  "ephemeral_private": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+  "aad": "eyJib290IjoiSUNFaUl5UWxKaWNvS1NvckxDMHVMdyIsImRldmljZSI6IkVCRVNFeFFWRmhjWUdSb2JIQjBlSHciLCJlcG9jaCI6MywiZXhwIjoxNzAwMDAwMjYwLCJpYXQiOjE3MDAwMDAyMDAsImxlYXNlIjoia0pHU2s1U1ZscGVZbVpxYm5KMmVudyIsIm1hbmlmZXN0X2RpZ2VzdCI6Im9LR2lvNlNscHFlb3FhcXJySzJ1cjdDeHNyTzB0YmEzdUxtNnU3eTl2cjgiLCJub25jZSI6IlVGRlNVMVJWVmxkWVdWcGJYRjFlWDJCaFltTmtaV1puYUdscWEyeHRibTgiLCJyZWZzIjpbeyJjYXQiOiJtZW1vcnkiLCJ2ZXIiOjF9LHsiY2F0Ijoib3BlcmF0aW9ucyIsInZlciI6MX1dLCJyZXF1ZXN0IjoiUUVGQ1EwUkZSa2RJU1VwTFRFMU9UdyIsInJlcXVlc3RfZGlnZXN0IjoiY0hGeWMzUjFkbmQ0ZVhwN2ZIMS1mNENCZ29PRWhZYUhpSW1LaTR5TmpvOCIsInRhc2siOiJNREV5TXpRMU5qYzRPVG83UEQwLVB3IiwidHlwZSI6ImxlYXNlX2dyYW50IiwidiI6MSwidmF1bHQiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R3In0",
+  "usage": "grant",
+  "ephemeral_public": "eaYx7t4b-cmPEgMs3q3Q56B5OY_HhriMyEbsia-FpRo",
+  "header": {
+    "request": "QEFCQ0RFRkdISUpLTE1OTw",
+    "request_digest": "cHFyc3R1dnd4eXp7fH1-f4CBgoOEhYaHiImKi4yNjo8",
+    "epoch": 3,
+    "type": "lease_grant",
+    "nonce": "UFFSU1RVVldYWVpbXF1eX2BhYmNkZWZnaGlqa2xtbm8",
+    "task": "MDEyMzQ1Njc4OTo7PD0-Pw",
+    "refs": [
+      {
+        "ver": 1,
+        "cat": "memory"
+      },
+      {
+        "ver": 1,
+        "cat": "operations"
+      }
+    ],
+    "v": 1,
+    "lease": "kJGSk5SVlpeYmZqbnJ2enw",
+    "boot": "ICEiIyQlJicoKSorLC0uLw",
+    "exp": 1700000260,
+    "device": "EBESExQVFhcYGRobHB0eHw",
+    "iat": 1700000200,
+    "manifest_digest": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+    "vault": "AAECAwQFBgcICQoLDA0ODw"
+  },
+  "recipient_public": "2J47rXlDfb7Z-ENBgwT0YP8Fx_6B_kqVd6gEy5Nn_2Y",
+  "plaintext": "eyJrZXlzIjpbeyJjYXQiOiJtZW1vcnkiLCJrZXkiOiJ3TUhDdzhURnhzZkl5Y3JMek0zT3o5RFIwdFBVMWRiWDJObmEyOXpkM3Q4IiwidmVyIjoxfSx7ImNhdCI6Im9wZXJhdGlvbnMiLCJrZXkiOiI0T0hpNC1UbDV1Zm82ZXJyN08zdTdfRHg4dlAwOWZiMy1QbjYtX3o5X3Y4IiwidmVyIjoxfV19",
+  "box": {
+    "ct": "uQp1oeAxF60KiDXdovz1ZJW_rvx-H7-2rnHN4RECJ-ShKKyf6zQ-z-WLJPmY07cDsAaJI9SNx2WapDRtesQ9k4IILMF8CfAXCc4g4zQt1j_kukbinV-GEE_SHeq-hn8Mfli_w4vbxsaH1sbAG_eWwBH6JC5yb9SArVJmYij0E5aUWNuR7pQDvhYEJTTwCohhp1M2FSgZUnlhjdEXma4ceCBX-B7f2Ze9CZoKuQqN9Ggut2quz2_xcg",
+    "enc": "eaYx7t4b-cmPEgMs3q3Q56B5OY_HhriMyEbsia-FpRo"
+  },
+  "info": "aether/v1/grant"
+}
