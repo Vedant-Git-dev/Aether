@@ -76,6 +76,7 @@ SQL_MODULES = frozenset(
         "src/aether/providers/store.py",
         "src/aether/scheduler/jobs.py",
         "src/aether/secret_store.py",
+        "src/aether/vault/store.py",
         "src/aether/workbench/minutes.py",
         "src/aether/workbench/transfers.py",
     }

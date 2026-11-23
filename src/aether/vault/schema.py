@@ -58,8 +58,8 @@ OPERATION_CATEGORIES: dict[str, frozenset[str]] = {
     "credential_write": frozenset({"credentials"}),
 }
 
-# Serving callers must supply the approved, shared registry. Stage 1a has no
-# serving callers or approved entry-point IDs.
+# Serving callers must supply the approved, shared registry. Entries are
+# added when the corresponding serving entry points are approved.
 USE_CASES: dict[str, tuple[str, frozenset[str]]] = {}
 
 MESSAGE_TYPES = (

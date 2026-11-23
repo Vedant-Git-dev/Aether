@@ -1,9 +1,7 @@
 """Phone-held vault protocol support.
 
-Phase 1a defines the wire schema and policy defaults.
-Later phases add the scoped storage boundary, migrations, audit payloads and
-the migration tooling. Nothing in this package ships a software vault; the
-test double lives under ``tests/vault``.
+Defines the wire schema and policy defaults for the scoped storage boundary.
+The software vault test double lives under ``tests/vault``.
 """
 
 from __future__ import annotations

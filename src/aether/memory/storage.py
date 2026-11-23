@@ -14,12 +14,14 @@ plaintext columns are sealed and dropped. Until then the audit warns, and
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Mapping
 from typing import Any
 
 import asyncpg
 
+from ..vault.scope import KeyScope, Location
 from .allowlist import (
     IDENTIFIER_RE,
     KEY_VERSION,
@@ -42,6 +44,7 @@ __all__ = [
     "LEGACY_PLAINTEXT",
     "PLAINTEXT_ALLOWLIST",
     "SEALED_COLUMNS",
+    "ScopedStore",
     "SealedStore",
     "StorageGuardError",
     "audit_columns",
@@ -205,6 +208,66 @@ class SealedStore:
 
     def unseal(self, blob: bytes, *, table: str, column: str, row_id: Any) -> Any:
         return self._cipher.decrypt_json(blob, aad=f"{table}:{column}:{row_id}")
+
+
+class ScopedStore:
+    """The AE2 write path for one category family.
+
+    It binds the table, column, row and purpose into the authenticated
+    location and never sees a raw key. Callers hold a `KeyScope` acquired for
+    the task; a missing grant raises `VaultLocked` here, before any query.
+    """
+
+    def __init__(self, scope: KeyScope, *, cat: str, ver: int) -> None:
+        self._scope = scope
+        self._cat = cat
+        self._ver = ver
+
+    def location(
+        self, *, table: str, column: str, row_id: Any, purpose: str = "content"
+    ) -> Location:
+        return Location(
+            cat=self._cat,
+            ver=self._ver,
+            table=table,
+            column=column,
+            row=str(row_id),
+            purpose=purpose,
+        )
+
+    def seal(
+        self, value: Any, *, table: str, column: str, row_id: Any, purpose: str = "content"
+    ) -> bytes:
+        plaintext = json.dumps(value, ensure_ascii=False).encode("utf-8")
+        return self._scope.seal(
+            self.location(table=table, column=column, row_id=row_id, purpose=purpose),
+            plaintext,
+        )
+
+    def unseal(
+        self, blob: bytes, *, table: str, column: str, row_id: Any, purpose: str = "content"
+    ) -> Any:
+        plaintext = self._scope.open(
+            self.location(table=table, column=column, row_id=row_id, purpose=purpose),
+            blob,
+        )
+        return json.loads(plaintext)
+
+    def seal_bytes(
+        self, value: bytes, *, table: str, column: str, row_id: Any, purpose: str = "content"
+    ) -> bytes:
+        return self._scope.seal(
+            self.location(table=table, column=column, row_id=row_id, purpose=purpose),
+            value,
+        )
+
+    def unseal_bytes(
+        self, blob: bytes, *, table: str, column: str, row_id: Any, purpose: str = "content"
+    ) -> bytes:
+        return self._scope.open(
+            self.location(table=table, column=column, row_id=row_id, purpose=purpose),
+            blob,
+        )
 
 
 # ---------------------------------------------------------------------------

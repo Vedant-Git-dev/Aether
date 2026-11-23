@@ -28,7 +28,9 @@ _TABLES = (
     "provider_sync_state, facts, commitments, commitment_reminders, alerts, "
     "alert_notifications, summaries, "
     "focus, forgotten_events, "
-    "conclusions, deliveries, held_notes, workspace_files, inbound_messages"
+    "conclusions, deliveries, held_notes, workspace_files, inbound_messages, "
+    "vault_ingress_part, vault_ingress_queue, vault_manifest, vault_aead_budget, vault_state, "
+    "vault_ticket, vault_challenge, vault_session, vault_migration_journal"
 )
 
 

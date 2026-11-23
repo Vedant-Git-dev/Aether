@@ -38,13 +38,13 @@ Facts that matter for the vault:
 - No key material is currently in the database, which is the one property the
   vault design preserves: only wraps and public pins may live in the database.
 
-## 2. Storage registry (final schema, 38 application tables + migration bookkeeping + 1 view)
+## 2. Storage registry (final schema, 38 application tables + vault/migration bookkeeping + 1 view)
 
 Classes are `plaintext` (allowlisted opaque value), `sealed` (ciphertext,
 `bytea`), or `token` (keyed blind index, allowlisted because it is opaque).
 The authoritative machine-readable list is `memory/allowlist.py`; this table is
 the human reconciliation. Every sealed column is written through a store that
-holds a `Cipher` today; after 1d the handle comes from a `KeyScope`.
+holds a `Cipher` today; converted stores will use a `KeyScope`.
 
 Categories follow the approved category table.
 
@@ -67,7 +67,7 @@ Categories follow the approved category table.
 | `forgotten_events` | `dedup_mac` | `forgotten_at` | — | `dedup_mac`, `source_token` | — |
 | `held_notes` | `id` | `id`, `created_at`, `key_version` | `body_enc` | — | `held_notes:<col>:<id>` |
 
-`commitment_reminders` stores scheduling metadata. Its linkage and timing require a target classification in 1d.
+`commitment_reminders` stores scheduling metadata. Classify its linkage and timing before converting the store.
 `forgotten_events` is the one place a tombstone must survive with no
 reconstructible plaintext; rotation must preserve suppression (a risk noted
 in the approved design).
@@ -104,9 +104,9 @@ content key. Export bundles are user files and must be treated as sensitive.
 | `daily_counters` | `day` | all columns | — | — | — |
 | `agent_settings` | `id` | `id`, `updated_at`, `key_version` | `personality_enc` | — | `agent_settings:<col>:<id>` |
 | `config_overrides` | `path` | `path`, `updated_at`, `key_version` | `value_enc` | — | `config_overrides:value_enc:<path>` |
-| `audit_log` | `seq` | `seq`, `actor`, `tool_name`, `decision`, `rules_matched`, `params_digest`, `outcome`, `prev_hash`, `entry_hash`, `created_at` | — (1e adds a sealed canonical payload) | — | chain hash |
+| `audit_log` | `seq` | `seq`, `actor`, `tool_name`, `decision`, `rules_matched`, `params_digest`, `outcome`, `prev_hash`, `entry_hash`, `created_at` | — (target is a sealed canonical payload) | — | chain hash |
 
-`daily_counters` and `workbench_minutes` are aggregate usage records. `processed_updates.update_id` is a source-provided ID and requires protection under the approved design. `audit_log` accepts caller-provided strings: for example, approval outcomes interpolate `decided_by`. Its unkeyed parameter digest allows offline guesses. Task 1e must seal original canonical entries and anchor the legacy head.
+`daily_counters` and `workbench_minutes` are aggregate usage records. `processed_updates.update_id` is a source-provided ID and requires protection under the approved design. `audit_log` accepts caller-provided strings: for example, approval outcomes interpolate `decided_by`. Its unkeyed parameter digest allows offline guesses. The audit conversion must seal original canonical entries and anchor the legacy head.
 
 ### media
 
@@ -128,17 +128,37 @@ Metadata (filename, media type, dimensions, duration) is inside `meta_enc`;
 | `oauth_tokens` | `provider` | `provider`, `scopes`, `expires_at`, `updated_at`, `key_version` | `access_enc`, `refresh_enc` | — | `oauth_tokens:<col>:<provider>` |
 | `app_secrets` | `name` | `name`, `updated_at`, `key_version` | `value_enc` | — | `app_secrets:value:<name>` |
 
-`provider_connections.scopes`, `provider_oauth_states.scopes` and
-`app_secrets.name` are configuration vocabulary, not user content. Provider
-scopes can still reveal which services are connected; the residual-metadata
-disclosure must name them.
+`provider_connections.scopes` and `provider_oauth_states.scopes` are provider
+vocabulary that can reveal which services are connected. Include them in the
+residual-metadata disclosure. Treat caller-supplied `app_secrets.name` as
+sensitive during migration.
 
 ### bookkeeping (no category lease)
 
-`schema_migrations` (public schema version) and the new `vault_*` tables
-(public pins, signed manifests, hashed tickets/challenges/sessions, opaque
-queue ciphertext) carry no user content and no private key. `vault_*` is
-introduced by 1c.
+`schema_migrations` (public schema version) and the `vault_*` tables carry no
+user content and no private key. Every column is either public protocol
+metadata, an opaque hash, a status vocabulary word, a counter, or an encrypted
+envelope.
+
+| Table | Plain columns | Sealed columns | Purpose |
+|---|---|---|---|
+| `vault_state` | `vault_id`, `device_id`, `epoch`, `revision`, `digest`, `manifest`, `pins`, `state`, `generation`, `updated_at` | — | One installation. `manifest` and `pins` hold signed public metadata and wraps only. |
+| `vault_manifest` | `vault_id`, `revision`, `digest`, `previous_digest`, `manifest`, `created_at` | — | Append-only signed manifest history; primary key `(vault_id, revision)`, unique digest. |
+| `vault_aead_budget` | `vault_id`, `category`, `version`, `reserved` | — | Cumulative AE2 write reservations per category key. A reservation commits before key use and is never refunded. |
+| `vault_ticket` | `ticket_hash`, `vault_id`, `expires_at`, `consumed_at`, `created_at` | — | Pair tickets stored only as SHA-256 verifiers; one use. |
+| `vault_challenge` | `challenge_hash`, `vault_id`, `device_id`, `purpose`, `expires_at`, `consumed_at`, `created_at` | — | One-use challenges bound to purpose and device. |
+| `vault_session` | `session_hash`, `vault_id`, `device_id`, `kind`, `epoch`, `expires_at`, `revoked_at`, `created_at` | — | Device and panel sessions stored only as hashes. |
+| `vault_ingress_queue` | `queue_id`, `vault_id`, `ingress_ver`, `complete`, `created_at`, `updated_at` | `ciphertext_enc` | Queue id reserved before sealing; the column holds an HPKE envelope. |
+| `vault_ingress_part` | `queue_id`, `part`, `kind`, `created_at` | `ciphertext_enc` | Ordered chunk/end envelopes; primary key `(queue_id, part)`. |
+| `vault_migration_journal` | `job_id`, `vault_id`, `table_name`, `stable_id`, `state`, `created_at`, `updated_at` | `detail_enc` | Progress uses an opaque 32-byte stable reference. Use a random reference with a sealed mapping or a keyed reference to a sensitive source ID. Keep any original ID in sealed detail. |
+
+The SQL lives in `src/aether/vault/store.py`, which is registered in the
+storage-guard `SQL_MODULES` list. Manifest publication compares revision,
+digest, epoch and generation while appending the successor in one
+transaction. Controls compare epoch and generation and enforce a permitted
+state transition. Ticket and challenge consumption each return a row only
+once. Queue writers serialize on the parent row and finalization freezes
+the record. The ingress receiver must authenticate the encrypted end record before acknowledging receipt.
 
 ## 3. Keyed-lookup and join inventory
 
@@ -178,8 +198,8 @@ vault design removes; the matrix below is the target principal per surface.
 |---|---|---|---|
 | Panel reads (`/api/events`, `/memory*`, `/workspace*`, `/tasks`, `/alerts`, `/traces`, `/audit`, `/profile`) | `api/routes.py` | memory, workspace, operations | `panel_read` after session validation, typed projection |
 | Panel mutations (`/approvals/*/decide`, `/memory/forget`, `/workspace/{file}`, `/contacts*`, `/settings*`, `/alerts/{id}`, `/proactive/*/decide`) | `api/routes.py` | operations, workspace, config | `panel_write` (credentials via `credential_write`) |
-| Chat WS | `chat/ws.py` | chat messages, memory | `panel_read`/`panel_write` equivalent, one-use WS ticket (4a) |
-| Screen capture / media upload | `api/screen-capture`, `/api/media`, `/api/workbench/*` | media | `panel_write` with media; multipart must not spool (2d) |
+| Chat WS | `chat/ws.py` | chat messages, memory | `panel_read`/`panel_write` equivalent, one-use WS ticket |
+| Screen capture / media upload | `api/screen-capture`, `/api/media`, `/api/workbench/*` | media | `panel_write` with media; multipart must not spool |
 | Media download | `/api/media/{id}` | media | `panel_read` for one concrete item |
 | Agent turn | `agent/loop.py` | memory, workspace, operations | `turn`, bound to conversation and origin |
 | Approved tool dispatch | `agent/tools.py`, `authz/policy.py`, `outbound.py`, `tools/grants.py` | operations + credentials + media | `approved_dispatch`, exact sink and payload |
@@ -210,7 +230,7 @@ commitments/alerts/summaries/views/focus/conclusions/deliveries/inbound ->
 workspace import/scaffold -> chat history -> agent -> alerts refresh ->
 proactive refresh -> native tools -> proactive worker -> connectors start.
 
-Consequences for 2c: a cold boot currently needs the content key before it can
+A cold boot currently needs the content key before it can
 answer anything. The vault design splits public boot (health, schema, pairing,
 ingress) from admitted keyed work. Indexes hold decrypted state in process
 memory and must be dropped on lease expiry and rebuilt on reacquire. The
@@ -223,10 +243,10 @@ residencies.
 |---|---|---|
 | `aether-workspace/*.md`, `aether-workspace/memory/*.md` | `Workspace.import_from_disk` (legacy), operator edits | user content |
 | `webapp/` build output `src/aether/web/` | `npm run build` | public assets; must contain no keys or fixtures |
-| multipart `UploadFile` spool | Starlette/FastAPI before endpoint code | attachment bytes; must move to streamed ingress (2d) |
+| multipart `UploadFile` spool | Starlette/FastAPI before endpoint code | attachment bytes; must move to streamed ingress |
 | workspace export bundle | `workspace/transfer.py` | passphrase-encrypted user content |
 | workbench transfer payload | `workbench/transfers.py` | sealed in DB, single-use URL |
-| `.env`, `deploy-secrets*`, setup artifacts | setup/deploy scripts | **live keys today**; removed from the server path in 8b |
+| `.env`, `deploy-secrets*`, setup artifacts | setup/deploy scripts | **live keys today**; remove from the server path at cutover |
 
 ## 7. Connector acknowledgement and catch-up
 
@@ -240,7 +260,7 @@ residencies.
 | Messaging source without an adapter | no dedicated adapter in `src/aether/connectors/` | — | parity must not be promised until inventoried |
 
 The target is `vault_ingress_queue` + parts, write-before-ack, stable source
-identity inside the envelope, and an outbox for the lock notice (2d/2e).
+identity inside the envelope, and an outbox for the lock notice.
 
 ## 8. Key provisioning, backups and bootstrap exceptions
 
@@ -265,25 +285,24 @@ Old backup owners (all retain pre-cutover decryption ability until retired):
 | Password manager | backed-up keys | apply section 12 at signed-off cutover |
 | Setup wizard artifacts | base64 config bundles | stop generating private config |
 
-Bootstrap exceptions that may stay unauthenticated (each must be re-scoped in
-4a/2f): `/healthz`, `/health`, `/v1/models`, `/` panel shell,
+Bootstrap exceptions that may stay unauthenticated after route authorization is scoped: `/healthz`, `/health`, `/v1/models`, `/` panel shell,
 `/api/workbench/{kind}/{token}` (single-use capability), and
 `/api/oauth/{provider}/callback` (state-bound). Everything else is currently
 behind the shared bearer and must become a scoped session.
 
-## 9. Decision check (D1-D9)
+## 9. Decision check
 
 | Decision | Finding | Verdict |
 |---|---|---|
-| D1 direct shells | No `mobile/` tree exists; panel is a Vite build served by FastAPI. Direct Kotlin WebView is compatible. | proceed |
-| D2 automatic delivery | The existing messaging handlers run in-process. Background push and foreground-service handling are separate vault components. | wake and fetch observed on a physical handset; complete unattended grant remains a product integration check |
-| D3 HPKE + ES256 | Feasibility selected HPKE with associated data and JWS with pinned algorithms. | Python vectors and native synthetic grant opening passed. See the platform assurance record. |
-| D4 custody | No native code yet. Recovery wraps restore the data keys under a fresh non-exportable device master. | TEE custody observed on a physical handset |
-| D5 scopes | Existing code has no lease; stores hold a long-lived `Cipher`. The proposed categories map to the inventory. Verify required lookups and task boundaries before converting each family. | proceed with scoped discovery |
-| D6 pairing | Only the shared `AETHER_TOKEN` exists; no enrollment, challenge, session or panel consent. | proceed (4a) |
-| D7 recovery | No phrase or recovery kit. BIP39 provides phrase encoding and checksum. | proceed (6a) |
-| D8 catch-up | Connector markers are written before ingestion; no queue or independent receiver. | blocked per source (2e.1) |
-| D9 assurance | Hardware and background behavior verified on one phone; more devices would broaden coverage. | proceed; Android first |
+| Direct shells | No `mobile/` tree exists; panel is a Vite build served by FastAPI. Direct Kotlin WebView is compatible. | proceed |
+| Automatic delivery | The existing messaging handlers run in-process. Background push and foreground-service handling are separate vault components. | wake and fetch observed on a physical handset; complete unattended grant remains a product integration check |
+| HPKE + ES256 | Feasibility selected HPKE with associated data and JWS with pinned algorithms. | Python vectors and native synthetic grant opening passed. See the platform assurance record. |
+| Custody | No native code yet. Recovery wraps restore the data keys under a fresh non-exportable device master. | TEE custody observed on a physical handset |
+| Scopes | Existing code has no lease; stores hold a long-lived `Cipher`. The proposed categories map to the inventory. Verify required lookups and task boundaries before converting each family. | proceed with scoped discovery |
+| Pairing | Only the shared `AETHER_TOKEN` exists; no enrollment, challenge, session or panel consent. | proceed |
+| Recovery | No phrase or recovery kit. BIP39 provides phrase encoding and checksum. | proceed |
+| Catch-up | Connector markers are written before ingestion; no queue or independent receiver. | blocked per source |
+| Assurance | Hardware and background behavior verified on one phone; more devices would broaden coverage. | proceed; Android first |
 
 ## 10. Ownership and test IDs
 
@@ -308,13 +327,13 @@ IDs. An entry with no test is marked `pending` and blocks its conversion work.
 | credentials: provider tokens | `providers/store.py`, `providers/oauth.py` | `test_provider_store.py`, `test_provider_oauth.py` | covered |
 | credentials: app secrets | `secret_store.py` | `test_secret_store.py` | covered |
 | credentials: PKCE state | `providers/store.py` | `test_provider_store.py`, `test_provider_oauth.py` | covered |
-| ingress queue | none yet | `pending` (2d) | blocked |
+| ingress queue | `vault/store.py` | `test_vault_store.py` | storage covered, connector receipt pending |
 | routes/WS auth | `api/routes.py`, `chat/ws.py` | `test_api_routes.py`, `test_chat_ws.py`, `tests/e2e/test_plain_language.py` | covered |
 | connectors/ack | `connectors/` polling, gateway, and receipt handlers | `test_polling.py`, `test_connectors_registry.py` | partial (pre-ingest marker) |
 | boot/index residency | `main.py` | `test_main_app.py`, `test_required_config.py` | covered |
 | schema guard | `memory/allowlist.py`, `memory/storage.py` | `test_storage_guard.py`, `scripts/check_storage_guard.py --strict` | covered |
 | canary/leak scan | `agent/leaks.py`, `logging_setup.py` | `test_canary.py`, `test_logging_setup.py` | covered |
-| setup/deploy key provisioning | `setup/*`, `scripts/deploy.*`, the deployment blueprint | `test_setup_wizard.py`, `test_setup_requirements.py` | covered (to be removed in 8b) |
+| setup/deploy key provisioning | `setup/*`, `scripts/deploy.*`, the deployment blueprint | `test_setup_wizard.py`, `test_setup_requirements.py` | covered until cutover |
 
 ## 11. Unclassified values, risks and conclusion
 
@@ -330,7 +349,7 @@ a compatibility view. The following are *candidate residual metadata* for owner 
 - origin host and port in the pairing pin.
 
 This reconciliation is provisional. The present-day schema is recorded here.
-Before a store family enters 1d or a route/sink enters 2f, record its explicit
+Before converting a store family or applying scoped authorization, record its
 target classifications and source-level lookup, authorization and test
 evidence. The owner accepted the public metadata list above.
 In particular, classify `config_overrides.path`, `app_secrets.name`,
@@ -343,7 +362,7 @@ equality is needed.
 
 | Decision | Choice |
 |---|---|
-| Residual metadata | Accepted as listed in section 11; removing an item later becomes a 1d/1e task with a test. |
+| Residual metadata | Accepted as listed in section 11; any later removal needs a regression test. |
 | Legacy backup retention | Delete old decryption material at cutover. Serving environment keys, database backups, `.env`/`deploy-secrets`, password-manager copies and setup artifacts are destroyed when the cutover is signed off. Pre-cutover copies remain exposed until then. |
 | Android before iOS | Android first; production only after the agreed Android scope passes. |
 | Ambiguous field classification, route/sink matrix, per-source acknowledgement contract, UI/egress inventory | Owner accepted the proposed approach; these are ledger work items, not open decisions. |
@@ -351,7 +370,7 @@ equality is needed.
 
 ## 13. Route, sink and source matrix
 
-### Route principals (target for 2f)
+### Target route principals
 
 Generated from the `@router` decorators in `src/aether/api/routes.py` plus the
 chat WebSocket. Today all of these share one bearer; the target column is the
@@ -443,22 +462,22 @@ Every sink is authorised by destination and payload, not by model intent.
 
 | Source | Ack point today | Durable record | Gap and target |
 |---|---|---|---|
-| Long-poll messaging | `ProcessedUpdates.record` runs before ingestion completes; SDK offset is in memory | `processed_updates` | Crash between mark and ingest loses the update. Target: write the sealed queue record before ack (2d), then advance the processed marker in the drain transaction (2e). |
+| Long-poll messaging | `ProcessedUpdates.record` runs before ingestion completes; SDK offset is in memory | `processed_updates` | Crash between mark and ingest loses the update. Target: write the sealed queue record before ack, then advance the processed marker in the drain transaction. |
 | Gateway messaging | Gateway event handled in-process | no durable gateway receipt | Preserve the original source message ID. Target: the same queue-then-write order; record the gateway replay window. |
-| Mail/provider polling | Cursor advanced after processing in `providers/runtime.py`; a lookback sweep exists | `provider_sync_state`, `processed_updates` | Attachment URL expiry and partial pages are unproven. Target: page checkpoint after every event and attachment has a durable encrypted receipt, previous checkpoint kept on failure (2e.1). |
+| Mail/provider polling | Cursor advanced after processing in `providers/runtime.py`; a lookback sweep exists | `provider_sync_state`, `processed_updates` | Attachment URL expiry and partial pages are unproven. Target: page checkpoint after every event and attachment has a durable encrypted receipt, previous checkpoint kept on failure. |
 | Messaging source without an adapter | No adapter in `src/aether/connectors/` | none | Unsupported until inventoried; do not claim messenger parity. |
 
 ### UI and egress inventory
 
 | Path | Behaviour | Target |
 |---|---|---|
-| `webapp/src/lib/api.js` | sends `x-aether-token` from `localStorage` | one-use WS ticket plus scoped session; no token in web storage (3a/4a) |
+| `webapp/src/lib/api.js` | sends `x-aether-token` from `localStorage` | one-use WS ticket plus scoped session; no token in web storage |
 | `webapp/src/pages/Settings.jsx` | persists the token | remove persistence; memory-only session |
-| `webapp/src/store.jsx` | keeps prior results, ETags and page state | drop data and inflight responses on lock/logout/background (3a) |
-| Cloud file picker | loads remote scripts | replace with a scoped backend list/select using granted scopes (4c) |
-| media object URLs | blob URLs held by the page | revoke on lock and navigation (3a) |
-| `webapp/src/pages/*` (Tasks, Alerts, Audit, Memory) | wide desktop layouts | mobile cards retaining all actions (3b) |
-| `tests/e2e/test_plain_language.py` | enforces the no-raw-JSON contract | extend for locked/offline/loading states (3a) |
+| `webapp/src/store.jsx` | keeps prior results, ETags and page state | drop data and inflight responses on lock/logout/background |
+| Cloud file picker | loads remote scripts | replace with a scoped backend list/select using granted scopes |
+| media object URLs | blob URLs held by the page | revoke on lock and navigation |
+| `webapp/src/pages/*` (Tasks, Alerts, Audit, Memory) | wide desktop layouts | mobile cards retaining all actions |
+| `tests/e2e/test_plain_language.py` | enforces the no-raw-JSON contract | extend for locked/offline/loading states |
 
 ### Ambiguous field classification
 
@@ -481,4 +500,4 @@ ciphertext.
 | `inbound_messages.surface` | `memory/inbound.py` | plaintext | surface vocabulary |
 
 All other user-derived values are already keyed tokens or sealed columns per
-`memory/allowlist.py`. Register and migrate the secret-name and source-update lookup domains in 1d/2e.
+`memory/allowlist.py`. Register and migrate the secret-name and source-update lookup domains with their stores.

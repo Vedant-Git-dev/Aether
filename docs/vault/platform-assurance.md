@@ -86,7 +86,7 @@ through scheduled work or a permitted wake. [Foreground service testing](https:/
 - Release Android first after the agreed scope passes.
 - Keep push send credentials on the backend.
 
-## Task 1a verification scope
+## Wire verification
 
 The Python suite runs the published RFC 9180 Appendix A.1 base-mode case
 and the Aether AES-256-GCM vectors. The JVM harness independently serializes
@@ -96,5 +96,26 @@ shared entries require owner approval before serving code uses them.
 Android app packaging and native serializer checks remain part of native
 integration. The reference cryptography and deterministic inputs live under tests. Live
 key management requires the native adapter and scoped handles.
+
+## Native AE2 storage
+
+The storage adapter uses system libsodium for HKDF-SHA256, AES-256-GCM and
+HMAC-SHA256. It requires a Linux host with libsodium's HKDF API, AES-GCM CPU
+support, and permission to lock the anonymous key pages. The adapter
+fails closed when any of those requirements is missing. The local vector and
+cleanup tests used libsodium 1.0.22. At deployment, verify the target host
+supports the same operations and can lock the expected number of concurrent
+key pages. Generic test runners may skip native vectors if the library or
+CPU capability is absent.
+
+The category key, derived subkeys, and caller-owned crypto state stay in a
+native page marked locked, non-dumpable and non-inheritable. The adapter
+cleans the derivation area after each use and wipes the page before close.
+The grant installer must write directly into the owned native slot.
+Before granting a write-capable handle, reserve its encryption count in
+Postgres using the admitted category and version. Unused counts remain
+spent after restart. Backups used with the same key versions must preserve
+the latest reservation high-water marks or rotate the affected keys before
+allowing AE2 writes.
 
 [RFC 9180 Appendix A.1](https://www.rfc-editor.org/rfc/rfc9180.html#appendix-A.1)

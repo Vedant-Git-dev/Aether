@@ -244,6 +244,74 @@ PLAINTEXT_ALLOWLIST: dict[str, frozenset[str]] = {
             "key_version",
         }
     ),
+    # vault bookkeeping: public protocol metadata, opaque hashes and sealed
+    # envelopes. No private key or user-derived clear value lives here.
+    "vault_state": frozenset(
+        {
+            "vault_id",
+            "device_id",
+            "epoch",
+            "revision",
+            "digest",
+            "manifest",
+            "pins",
+            "state",
+            "generation",
+            "updated_at",
+        }
+    ),
+    "vault_manifest": frozenset(
+        {"vault_id", "revision", "digest", "previous_digest", "manifest", "created_at"}
+    ),
+    "vault_aead_budget": frozenset({"vault_id", "category", "version", "reserved"}),
+    "vault_ticket": frozenset(
+        {"ticket_hash", "vault_id", "expires_at", "consumed_at", "created_at"}
+    ),
+    "vault_challenge": frozenset(
+        {
+            "challenge_hash",
+            "vault_id",
+            "device_id",
+            "purpose",
+            "expires_at",
+            "consumed_at",
+            "created_at",
+        }
+    ),
+    "vault_session": frozenset(
+        {
+            "session_hash",
+            "vault_id",
+            "device_id",
+            "kind",
+            "epoch",
+            "expires_at",
+            "revoked_at",
+            "created_at",
+        }
+    ),
+    "vault_ingress_queue": frozenset(
+        {
+            "queue_id",
+            "vault_id",
+            "ingress_ver",
+            "complete",
+            "created_at",
+            "updated_at",
+        }
+    ),
+    "vault_ingress_part": frozenset({"queue_id", "part", "kind", "created_at"}),
+    "vault_migration_journal": frozenset(
+        {
+            "job_id",
+            "vault_id",
+            "table_name",
+            "stable_id",
+            "state",
+            "created_at",
+            "updated_at",
+        }
+    ),
 }
 
 # Columns that must be ciphertext. The boot audit also checks their SQL
@@ -292,6 +360,9 @@ SEALED_COLUMNS: dict[str, frozenset[str]] = {
     "held_notes": frozenset({"body_enc"}),
     "workspace_files": frozenset({"name_enc", "content_enc"}),
     "inbound_messages": frozenset({"reason_enc", "outcome_enc"}),
+    "vault_ingress_queue": frozenset({"ciphertext_enc"}),
+    "vault_ingress_part": frozenset({"ciphertext_enc"}),
+    "vault_migration_journal": frozenset({"detail_enc"}),
 }
 
 # The migration ledger is now empty: `018_sealed_cutover.sql` dropped every
