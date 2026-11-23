@@ -294,7 +294,7 @@ script prints this and opens the Blueprint page:
 2. In Render, choose **New > Blueprint** (or **New > Web Service**).
 3. When Render asks for a Git provider, authorize GitHub and grant it access to
    the repository.
-4. Pick the repository and branch. Render reads `render.yaml` from the root.
+4. Pick the repository and its deployment source. Render reads `render.yaml` from the root.
 5. Paste the `sync: false` values when prompted.
 
 Both deploy-source choices use the Render API. The **public** choice uses
@@ -371,8 +371,8 @@ the Blueprint.
   the instance, so it is treated as a shared secret, not a user account.
 - The token-encryption keyring (`AETHER_TOKEN_ENCRYPTION_KEY` and its id) is always generated, even with no direct app chosen, so apps can be connected later with `/apps`.
 - The wizard writes every collected secret to `~/.aether-setup/secrets.env`
-  (owner-only), so the deploy engine does not re-ask. Back it up, and do not
-  commit it.
+  (owner-only), so the deploy engine does not re-ask. Back it up privately and keep it out
+  of source control.
 
 ## Verification
 

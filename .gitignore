@@ -16,6 +16,14 @@ build/
 *.docx
 /Design Themed UI Layout/
 
+local.properties
+.gradle/
+*.jks
+*.keystore
+google-services.json
+*firebase-adminsdk*.json
+service-account*.json
+
 # web panel — Vite build output (source lives in webapp/)
 /src/aether/web/
 /webapp/node_modules/

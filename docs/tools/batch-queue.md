@@ -52,7 +52,7 @@ after collecting anyway.
 
 ## Setup
 
-### 1. Commit the two files
+### 1. Add the two files to the repository
 
 `.github/workflows/aether-batch.yml`:
 
@@ -174,7 +174,7 @@ In the settings, switch the batch queue on and fill in:
 
 - the repository (`owner/name`),
 - the workflow file name (`aether-batch.yml`),
-- the branch it dispatches on (`main`, unless yours differs),
+- the repository reference to run the workflow against,
 - Aether's own public address (already set for the panel — the runner
   uses it to reach the transfer routes),
 - the monthly minutes cap.
