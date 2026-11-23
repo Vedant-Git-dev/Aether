@@ -1,7 +1,7 @@
 [project]
 name = "aether-agent"
 dynamic = ["version"]
-description = "Aether — a continuous, cross-platform personal action agent"
+description = "Aether — Your own personal agent"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

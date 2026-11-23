@@ -396,7 +396,7 @@ to the message catalog sentence. Off, every notification is the catalog sentence
 | `job_timeout_minutes` | `10` | One job's ceiling |
 | `actions_repo` | empty | `owner/name` for the batch queue |
 | `actions_workflow` | empty | Workflow file in that repository |
-| `actions_ref` | `main` | Branch to dispatch on |
+| `actions_ref` | Built-in repository reference | Set this to the reference that contains the workflow |
 
 ### `media`
 

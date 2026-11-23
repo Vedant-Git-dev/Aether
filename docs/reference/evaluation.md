@@ -8,7 +8,7 @@ read_when:
 
 # The evaluation: what the numbers say
 
-Plan.md section 11 asks for an evaluation that decides what ships: whether the
+This evaluation decides what ships: whether the
 optional embedding path stays, whether write-time enrichment earns its
 per-event model cost, and whether the routed query pipeline holds up. This
 document records the corpus, the measurements and the decisions. The
@@ -19,7 +19,7 @@ build.
 ## The corpus
 
 `tests/eval_golden.py` is the golden set: 19 cases, each the smallest world
-that poses one of the questions plan.md names. Every case carries a `subset`
+that poses one of the evaluation questions. Every case carries a `subset`
 tag, so the metrics report per question shape instead of one blended number:
 
 | subset | cases | what it asks |
