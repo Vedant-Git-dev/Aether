@@ -28,6 +28,7 @@ from aether.memory.db import run_migrations
 from aether.memory.deliveries import Deliveries
 from aether.memory.events import EventStore, content_hash
 from aether.memory.storage import ScopedStore
+from aether.proactive.store import ProactiveStore
 from aether.providers.crypto import TokenKeyring
 from aether.providers.store import ProviderStore
 from aether.providers.types import ProviderConnection
@@ -384,6 +385,59 @@ async def test_workbench_transfer_survives_migration_and_remains_single_use(db, 
         transfers = TransferStore.scoped(shadow, scope)
         assert await transfers.take_bundle(ticket.token) == {"text": "synthetic"}
         assert await transfers.take_bundle(ticket.token) is None
+
+
+async def test_provider_sync_cursors_with_shared_provider_survive_resume(db, shadow) -> None:
+    old = _legacy_cipher()
+    provider = ProviderStore(db, _keyring(), old)
+    await provider.set_sync("google", "mail", "cursor", "synthetic-mail-cursor")
+    await provider.set_sync("google", "calendar", "cursor", "synthetic-calendar-cursor")
+    async with FakeVault(vault_id=VAULT_ID).acquire(TASK, "maintenance", ALL_REFS) as scope:
+        args = {
+            "scope": scope,
+            "keys": LegacyKeys(old),
+            "job_id": JOB,
+            "tables": ["provider_sync_state"],
+        }
+        assert (await migrate(db, shadow, **args)).tables[0].migrated == 2
+        assert (await migrate(db, shadow, **args)).tables[0].resumed == 2
+        scoped = ProviderStore.scoped(shadow, scope)
+        assert await scoped.get_sync("google", "mail", "cursor") == "synthetic-mail-cursor"
+        assert await scoped.get_sync("google", "calendar", "cursor") == "synthetic-calendar-cursor"
+
+
+async def test_proactive_claim_remains_unique_after_migration(db, shadow) -> None:
+    old = _legacy_cipher()
+    source = ProactiveStore(db, old, AuditLog(db))
+    task = await source.claim(
+        skill="mail",
+        key="synthetic-thread",
+        label="Synthetic task",
+        opportunity={"message": "synthetic"},
+        day="2026-11-24",
+    )
+    assert task is not None
+    async with FakeVault(vault_id=VAULT_ID).acquire(TASK, "maintenance", ALL_REFS) as scope:
+        args = {
+            "scope": scope,
+            "keys": LegacyKeys(old),
+            "job_id": JOB,
+            "tables": ["proactive_tasks"],
+        }
+        assert (await migrate(db, shadow, **args)).tables[0].migrated == 1
+        assert (await migrate(db, shadow, **args)).tables[0].resumed == 1
+        target = ProactiveStore.scoped(shadow, scope, AuditLog(shadow))
+        assert (await target.get(task.id)).opportunity == {"message": "synthetic"}
+        assert (
+            await target.claim(
+                skill="mail",
+                key="synthetic-thread",
+                label="Duplicate",
+                opportunity={"message": "changed"},
+                day="2026-11-24",
+            )
+            is None
+        )
 
 
 async def test_pre_cutover_unprefixed_event_copies_to_fresh_target(db, shadow) -> None:

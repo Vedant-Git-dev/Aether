@@ -113,6 +113,7 @@ class TableSpec:
     # a companion table whose rows are tombstone inputs that cannot be
     # reconstructed — its presence can stop the job
     tombstone: str | None = None
+    extra_keys: tuple[str, ...] = ()
 
 
 def _plain_aad(table: str, column: str, key: str = "id") -> Callable[[asyncpg.Record], str]:
@@ -414,6 +415,49 @@ SPECS: dict[str, TableSpec] = {
             ),
         ),
     ),
+    "provider_sync_state": TableSpec(
+        "provider_sync_state",
+        "provider",
+        "credentials",
+        (
+            SealedColumn(
+                "value_enc",
+                "text",
+                lambda row: (
+                    f"provider_sync_state:value_enc:{row['provider']}\x1f"
+                    f"{row['app']}\x1f{row['key']}"
+                ),
+            ),
+        ),
+        extra_keys=("app", "key"),
+    ),
+    "proactive_tasks": _row_spec(
+        "proactive_tasks",
+        (
+            ("label_enc", "text"),
+            ("meta_enc", "json"),
+            ("opportunity_enc", "json"),
+            ("plan_enc", "json"),
+            ("result_enc", "text"),
+            ("feedback_note_enc", "text"),
+        ),
+        tokens=(
+            TokenColumn(
+                "opportunity_token",
+                "proactive.opportunity",
+                "opportunity",
+                lambda plains, _: (
+                    f"{plains['meta_enc']['skill']}\x1f{plains['meta_enc']['opportunity_key']}"
+                ),
+            ),
+            TokenColumn(
+                "day_token",
+                "proactive.day",
+                "day",
+                lambda plains, _: plains["meta_enc"]["day"],
+            ),
+        ),
+    ),
 }
 
 _AUDIT_SPEC = TableSpec("audit_log", "seq", "operations", ())
@@ -659,21 +703,33 @@ async def _migrate_table(
             raise MaintenanceRefused("the identity merge references contain a cycle")
         rows = [{key: value for key, value in row.items() if key != "depth"} for row in rows]
     else:
-        rows = await old.fetch(f"SELECT * FROM {table} ORDER BY {pk_name}") if exists else []  # noqa: S608
+        order = ", ".join((pk_name, *spec.extra_keys))
+        rows = await old.fetch(f"SELECT * FROM {table} ORDER BY {order}") if exists else []  # noqa: S608
     report.rows = len(rows)
     storage = ScopedStore(scope, cat=spec.cat, ver=spec.ver)
     for row in rows:
         _check_scope(scope, [spec])
+        primary_keys = (pk_name, *spec.extra_keys)
+        key_values = tuple(row[name] for name in primary_keys)
         pk = row[pk_name]
+        row_id = bytes(pk).hex() if isinstance(pk, (bytes, bytearray)) else pk
+        journal_id = pk
+        if spec.extra_keys:
+            joined = "\x1f".join(key_values)
+            row_id = hashlib.sha256(joined.encode()).hexdigest()
+            journal_id = json.dumps(key_values, ensure_ascii=False, separators=(",", ":"))
         entry_args = {
             "vault_id": scope.vault_id,
             "job_id": job_id,
             "table_name": table,
-            "stable_id": stable_id(table, pk),
+            "stable_id": stable_id(table, journal_id),
             "connection": new,
         }
         entry = await journal.journal_entry(**entry_args)
-        existing = await new.fetchrow(f"SELECT * FROM {table} WHERE {pk_name} = $1", pk)  # noqa: S608
+        condition = " AND ".join(
+            f"{name} = ${index}" for index, name in enumerate(primary_keys, start=1)
+        )
+        existing = await new.fetchrow(f"SELECT * FROM {table} WHERE {condition}", *key_values)  # noqa: S608
         if (entry is None) != (existing is None) or (
             entry is not None and entry["state"] != "done"
         ):
@@ -688,7 +744,6 @@ async def _migrate_table(
             copied[name] = None
             if raw is not None:
                 plains[name] = _decode(raw, column.codec)
-                row_id = bytes(pk).hex() if isinstance(pk, (bytes, bytearray)) else pk
                 location = {"table": table, "column": name, "row_id": row_id}
                 blob = (
                     existing[name] if existing is not None else storage.seal_bytes(raw, **location)
@@ -735,7 +790,7 @@ async def _migrate_table(
 
     if await new.fetchval(f"SELECT count(*) FROM {table}") != report.rows:  # noqa: S608
         raise MaintenanceRefused(f"{table} source and target counts differ")
-    if exists:
+    if exists and not spec.extra_keys:
         sequence = await new.fetchval("SELECT pg_get_serial_sequence($1, $2)", table, pk_name)
         if sequence is not None:
             source_last = await old.fetchval(

@@ -71,8 +71,9 @@ Categories follow the approved category table.
 `commitment_reminders` stores scheduling metadata. Classify its linkage and timing before converting the store.
 `forgotten_events` is the one place a tombstone must survive with no
 reconstructible plaintext. The operator stops when a migration encounters
-forgotten-event markers. A historical lookup needs an owner decision and
-proof that each marker format still suppresses replay.
+forgotten-event markers. The owner approved a restricted historical lookup
+key to preserve suppression. Its custody and every historical marker format
+must be verified before the migration can accept those markers.
 
 ### workspace
 
@@ -397,7 +398,7 @@ equality is needed.
 | Legacy backup retention | Delete old decryption material at cutover. Serving environment keys, database backups, `.env`/`deploy-secrets`, password-manager copies and setup artifacts are destroyed when the cutover is signed off. Pre-cutover copies remain exposed until then. |
 | Android before iOS | Android first; production only after the agreed Android scope passes. |
 | Ambiguous field classification, route/sink matrix, per-source acknowledgement contract, UI/egress inventory | Owner accepted the proposed approach; these are ledger work items, not open decisions. |
-| Forgotten-event tombstones across the key change | The stored tag cannot be re-derived after its input has been destroyed. The operator refuses migration when these markers exist. Confirm any restricted historical lookup policy with the owner and prove replay suppression across each historical marker format before cutover. |
+| Forgotten-event tombstones across the key change | The owner approved retaining a restricted historical lookup key to preserve suppression. The stored tag cannot be re-derived after its input has been destroyed. The operator continues to refuse migration when these markers exist until restricted custody and replay suppression across historical formats have been proven. |
 
 
 ## 13. Route, sink and source matrix
