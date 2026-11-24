@@ -402,6 +402,18 @@ SPECS: dict[str, TableSpec] = {
             ),
         ),
     ),
+    "workbench_transfers": TableSpec(
+        "workbench_transfers",
+        "token_hash",
+        "operations",
+        (
+            SealedColumn(
+                "payload_enc",
+                "json",
+                lambda row: f"workbench:transfer:{bytes(row['token_hash']).hex()}",
+            ),
+        ),
+    ),
 }
 
 _AUDIT_SPEC = TableSpec("audit_log", "seq", "operations", ())
@@ -676,7 +688,8 @@ async def _migrate_table(
             copied[name] = None
             if raw is not None:
                 plains[name] = _decode(raw, column.codec)
-                location = {"table": table, "column": name, "row_id": pk}
+                row_id = bytes(pk).hex() if isinstance(pk, (bytes, bytearray)) else pk
+                location = {"table": table, "column": name, "row_id": row_id}
                 blob = (
                     existing[name] if existing is not None else storage.seal_bytes(raw, **location)
                 )

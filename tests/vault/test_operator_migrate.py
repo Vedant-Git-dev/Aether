@@ -39,6 +39,7 @@ from aether.vault.operator_migrate import (
 from aether.vault.schema import AE2_MAGIC, CATEGORIES
 from aether.vault.scope import VaultLocked
 from aether.vault.store import VaultStore
+from aether.workbench.transfers import TransferStore
 from aether.workspace.store import Workspace
 
 pytestmark = pytest.mark.integration
@@ -363,6 +364,26 @@ async def test_legacy_connector_receipts_and_historical_oauth_tokens(db, shadow)
             )
             == b"historical access"
         )
+
+
+async def test_workbench_transfer_survives_migration_and_remains_single_use(db, shadow) -> None:
+    old = _legacy_cipher()
+    ticket = await TransferStore(db, old).mint(
+        kind="bundle", payload={"text": "synthetic"}, ttl_seconds=300
+    )
+    async with FakeVault(vault_id=VAULT_ID).acquire(TASK, "maintenance", ALL_REFS) as scope:
+        args = {
+            "scope": scope,
+            "keys": LegacyKeys(old),
+            "job_id": JOB,
+            "tables": ["workbench_transfers"],
+        }
+        await migrate(db, shadow, **args)
+        report = await migrate(db, shadow, **args)
+        assert report.tables[0].resumed == 1
+        transfers = TransferStore.scoped(shadow, scope)
+        assert await transfers.take_bundle(ticket.token) == {"text": "synthetic"}
+        assert await transfers.take_bundle(ticket.token) is None
 
 
 async def test_pre_cutover_unprefixed_event_copies_to_fresh_target(db, shadow) -> None:
