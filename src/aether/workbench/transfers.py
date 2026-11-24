@@ -22,6 +22,8 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from ..memory.crypto import Cipher
+from ..memory.rows import CipherRows, Rows, ScopedRows
+from ..vault.scope import KeyScope
 
 log = logging.getLogger("aether.workbench.transfers")
 
@@ -53,18 +55,33 @@ def _aad(token_hash: bytes) -> str:
 class TransferStore:
     """Single-use transfers in Postgres — one atomic statement per use."""
 
-    def __init__(self, pool: Any, cipher: Cipher) -> None:
+    def __init__(self, pool: Any, cipher: Cipher | None, *, rows: Rows | None = None) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("TransferStore needs exactly one of cipher or rows")
+        self._rows: Rows = rows if rows is not None else CipherRows(cipher)
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
+
+    @classmethod
+    def scoped(cls, pool: Any, scope: KeyScope, *, ver: int = 1) -> TransferStore:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(pool, None, rows=ScopedRows(scope, cat="operations", ver=ver))
 
     async def mint(self, *, kind: str, payload: dict, ttl_seconds: int) -> TransferTicket:
         """One fresh transfer: a random 32-byte token, its hash on the
         row, the payload encrypted against that hash."""
         if kind not in KINDS:
             raise TransferError(f"unknown transfer kind {kind!r}")
+        self._rows.preflight()
         token = secrets.token_urlsafe(32)
         token_hash = _digest(token)
-        blob = self._cipher.encrypt_json(payload, aad=_aad(token_hash))
+        blob = self._rows.seal(
+            payload,
+            table="workbench_transfers",
+            column="payload_enc",
+            row_id=token_hash.hex(),
+            aad=_aad(token_hash),
+        )
         expires_at = datetime.now() + timedelta(seconds=ttl_seconds)
         async with self._pool.acquire() as conn:
             await conn.execute(
@@ -81,6 +98,7 @@ class TransferStore:
         """Serve the bundle exactly once: the same statement that hands
         the payload over marks it used. None when the URL is unknown,
         already spent, or past its minutes."""
+        self._rows.preflight()
         row = await self._pool.fetchrow(
             "UPDATE workbench_transfers SET used = true"
             " WHERE token_hash = $1 AND kind = 'bundle' AND used = false AND expires_at > now()"
@@ -89,13 +107,26 @@ class TransferStore:
         )
         if row is None:
             return None
-        return self._cipher.decrypt_json(row["payload_enc"], aad=_aad(_digest(token)))
+        return self._rows.open(
+            row["payload_enc"],
+            table="workbench_transfers",
+            column="payload_enc",
+            row_id=_digest(token).hex(),
+            aad=_aad(_digest(token)),
+        )
 
     async def post_result(self, token: str, result: dict[str, Any]) -> bool:
         """Accept the job's outcome exactly once, into the row the job's
         own result URL names. False when the URL is unknown, spent, or
         expired — the runner's answer to that is to give up, not retry."""
-        blob = self._cipher.encrypt_json(result, aad=_aad(_digest(token)))
+        self._rows.preflight()
+        blob = self._rows.seal(
+            result,
+            table="workbench_transfers",
+            column="payload_enc",
+            row_id=_digest(token).hex(),
+            aad=_aad(_digest(token)),
+        )
         row = await self._pool.fetchrow(
             "UPDATE workbench_transfers SET payload_enc = $2, used = true"
             " WHERE token_hash = $1 AND kind = 'result' AND used = false AND expires_at > now()"
@@ -108,6 +139,7 @@ class TransferStore:
     async def collect_result(self, token: str) -> dict[str, Any] | None:
         """The posted outcome for one result URL — None until the runner
         has posted it (or ever, if it never did)."""
+        self._rows.preflight()
         row = await self._pool.fetchrow(
             "SELECT payload_enc FROM workbench_transfers"
             " WHERE token_hash = $1 AND kind = 'result' AND used = true",
@@ -115,7 +147,13 @@ class TransferStore:
         )
         if row is None:
             return None
-        return self._cipher.decrypt_json(row["payload_enc"], aad=_aad(_digest(token)))
+        return self._rows.open(
+            row["payload_enc"],
+            table="workbench_transfers",
+            column="payload_enc",
+            row_id=_digest(token).hex(),
+            aad=_aad(_digest(token)),
+        )
 
     async def drop_expired(self) -> None:
         """Best-effort prune of dead rows — a failed prune never fails

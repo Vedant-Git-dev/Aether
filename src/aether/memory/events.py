@@ -31,10 +31,12 @@ import asyncpg
 
 from ..authz.audit import AuditLog
 from ..config import ContactsConfig
+from ..vault.scope import KeyScope
 from .commitments import Commitments
 from .crypto import Cipher
 from .enrich import Enricher, ExtractedFact, enrichment_text, heuristic_floor
 from .entities import Entities, Sender, normalize_handle
+from .event_rows import CipherEventRows, EventRows, ScopedEventRows
 from .facts import Facts
 from .indexes import IndexedEvent, MemoryIndex, decode_event_row, decode_extra
 from .mail import MAIL_KIND, parse_addresses
@@ -140,7 +142,7 @@ class EventStore:
     def __init__(
         self,
         pool: asyncpg.Pool,
-        cipher: Cipher,
+        cipher: Cipher | None,
         audit: AuditLog,
         contacts: ContactsConfig,
         indexer: VectorMemory | None = None,
@@ -151,9 +153,24 @@ class EventStore:
         enricher: Enricher | None = None,
         facts: Facts | None = None,
         enrichment: bool = False,
+        *,
+        rows: EventRows | None = None,
     ) -> None:
+        if cipher is not None and rows is not None:
+            raise ValueError("EventStore takes either cipher or rows, not both")
+        self._rows: EventRows = rows if rows is not None else CipherEventRows(cipher)
+        self._scoped = self._rows.scoped
+        if self._scoped:
+            # A scoped task reads and writes straight against the database.
+            # The app-wide plaintext index and detached enrichment belong to
+            # the legacy serving path: sharing them would leak scoped
+            # plaintext into a cache that outlives the task, or run legacy
+            # stores under a scope that never authorized them.
+            if index is not None or indexer is not None:
+                raise ValueError("a scoped event store must not be given the shared index")
+            if entities or commitments or enricher or facts or enrichment:
+                raise ValueError("a scoped event store does not run detached enrichment")
         self._pool = pool
-        self._cipher = cipher
         self._audit = audit
         self._contacts = contacts
         self._indexer = indexer
@@ -176,6 +193,34 @@ class EventStore:
         # racing would silently drop whichever finished first. Writes are a
         # couple per event, so one lock costs nothing worth measuring.
         self._meta_lock = asyncio.Lock()
+
+    @classmethod
+    def scoped(
+        cls,
+        pool: asyncpg.Pool,
+        scope: KeyScope,
+        audit: AuditLog,
+        contacts: ContactsConfig,
+        *,
+        cat: str = "memory",
+        ver: int = 1,
+        cold_batch: int = 500,
+        index: MemoryIndex | None = None,
+        indexer: VectorMemory | None = None,
+    ) -> EventStore:
+        """Explicit scoped construction. The caller owns the task and its
+        scope and passes it in; giving a scoped store the shared index is a
+        configuration error, not a silent fallback."""
+        return cls(
+            pool,
+            None,
+            audit,
+            contacts,
+            indexer=indexer,
+            index=index,
+            cold_batch=cold_batch,
+            rows=ScopedEventRows(scope, cat=cat, ver=ver),
+        )
 
     async def wait_idle(self) -> None:
         """Every enrichment currently in flight.
@@ -223,6 +268,8 @@ class EventStore:
         so the evaluator lives on the same task that already links
         addresses and classifies: a match never delays ingest, and
         ``wait_idle`` covers it."""
+        if self._scoped:
+            raise ValueError("a scoped event store does not run detached enrichment")
         self._proactive = proactive
 
     def attach_enrichment(
@@ -242,6 +289,8 @@ class EventStore:
         ingest stores exactly what it stored before: the floor still runs
         (it needs nothing), but nothing is linked and nothing is classified.
         """
+        if self._scoped:
+            raise ValueError("a scoped event store does not run detached enrichment")
         self._entities = entities
         self._commitments = commitments
         self._enricher = enricher
@@ -261,6 +310,7 @@ class EventStore:
         meta: dict[str, Any] | None = None,
         dedup_key: str | None = None,
     ) -> IngestResult:
+        self._rows.preflight()
         if sender is not None and not is_allowlisted(self._contacts, sender.platform, sender):
             await self._audit.append(
                 actor="system",
@@ -302,12 +352,12 @@ class EventStore:
         if dedup_key is not None:
             # the source's own identity for this thing (a provider message
             # id), tagged on its own instead of over the payload — a refetch
-            # that changed the body is still the same message, and the poll
-            # and the tool path agree on it. The key is hashed into the tag
-            # and never stored; only the HMAC reaches the column.
-            dedup_tag = self._cipher.dedup_mac(b"dedup:" + dedup_key.encode("utf-8"))
+            # that changed the body is still the same message. Keep the exact
+            # input inside sealed metadata so a later key change can retag it.
+            sealed_meta["dedup_key"] = dedup_key
+            dedup_tag = self._rows.dedup_tag(b"dedup:" + dedup_key.encode("utf-8"))
         else:
-            dedup_tag = self._cipher.dedup_mac(canonical_payload(kind, stored_payload))
+            dedup_tag = self._rows.dedup_tag(canonical_payload(kind, stored_payload))
 
         async with self._pool.acquire() as conn, conn.transaction():
             # a forgotten item stays forgotten: the poller re-fetches the same
@@ -326,17 +376,15 @@ class EventStore:
                 " RETURNING id",
                 b"",  # placeholder until the id exists; replaced below, same transaction
                 b"",
-                self._cipher.key_id,
-                self._cipher.blind_token("source", source),
+                self._rows.key_version,
+                self._rows.source_token(source),
                 dedup_tag,
             )
             if row is None:
                 return IngestResult(stored=False, reason="duplicate")
             event_id = row["id"]
-            blob = self._cipher.encrypt_json(stored_payload, aad=f"events:payload_enc:{event_id}")
-            sealed_meta_blob = self._cipher.encrypt_json(
-                sealed_meta, aad=f"events:meta_enc:{event_id}"
-            )
+            blob = self._rows.seal(stored_payload, column="payload_enc", row_id=event_id)
+            sealed_meta_blob = self._rows.seal(sealed_meta, column="meta_enc", row_id=event_id)
             await conn.execute(
                 "UPDATE events SET payload_enc = $1, meta_enc = $2 WHERE id = $3",
                 blob,
@@ -377,7 +425,7 @@ class EventStore:
                 log.warning(
                     "indexing failed for event %s — backfill will retry", event_id, exc_info=True
                 )
-        if (
+        if not self._scoped and (
             self._entities is not None
             or (self._enricher is not None and self._enrichment)
             or self._proactive is not None
@@ -577,40 +625,34 @@ class EventStore:
         salience: float | None = None,
         memorable: bool | None = None,
     ) -> None:
-        """Fold fields into one event's sealed meta, under one lock.
-
-        Salience and enrichment both read-modify-write that single blob, so
-        they share this method rather than each re-implementing the merge —
-        otherwise whichever writer finished second would silently erase the
-        other's fields.
-        """
+        """Merge against the current database row across task instances."""
+        self._rows.preflight()
         async with self._meta_lock:
-            current = await self.get(event_id)
-            if current is None:
-                return
-            merged = {**current.meta, **extra}
-            score = current.salience_score if salience is None else float(salience)
-            keep = current.memorable if memorable is None else bool(memorable)
-            sealed_meta = {
-                "source": current.source,
-                "kind": current.kind,
-                "occurred_at": current.occurred_at.isoformat(),
-                "salience": score,
-                "memorable": keep,
-                "extra": merged,
-            }
-            await self._pool.execute(
-                "UPDATE events SET meta_enc = $1, key_version = $2 WHERE id = $3",
-                self._cipher.encrypt_json(sealed_meta, aad=f"events:meta_enc:{event_id}"),
-                self._cipher.key_id,
-                event_id,
-            )
+            async with self._pool.acquire() as conn, conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT meta_enc FROM events WHERE id = $1 FOR UPDATE",
+                    event_id,
+                )
+                if row is None:
+                    return
+                sealed_meta = self._rows.open(row["meta_enc"], column="meta_enc", row_id=event_id)
+                merged = {**(sealed_meta.get("extra") or {}), **extra}
+                score = float(sealed_meta.get("salience", 0.0) if salience is None else salience)
+                keep = bool(sealed_meta.get("memorable", False) if memorable is None else memorable)
+                sealed_meta.update(extra=merged, salience=score, memorable=keep)
+                await conn.execute(
+                    "UPDATE events SET meta_enc = $1, key_version = $2 WHERE id = $3",
+                    self._rows.seal(sealed_meta, column="meta_enc", row_id=event_id),
+                    self._rows.key_version,
+                    event_id,
+                )
             if self._index is not None:
                 self._index.update_salience(event_id, score, keep, merged)
 
     # -- reads ----------------------------------------------------------------
 
     async def get(self, event_id: int) -> Event | None:
+        self._rows.preflight()
         if self._index is not None:
             indexed = self._index.get(event_id)
             if indexed is not None:
@@ -624,11 +666,12 @@ class EventStore:
         return self._to_event(row)
 
     async def recent_memorable(self, limit: int = 50, hours: float | None = None) -> list[Event]:
+        self._rows.preflight()
         if self._index is not None:
             since = datetime.now(UTC) - timedelta(hours=hours) if hours is not None else None
             if since is not None:
                 await self._index.ensure_since(
-                    self._pool, self._cipher, since, batch=self._cold_batch
+                    self._pool, self._rows, since, batch=self._cold_batch
                 )
             events = self._index.recent_memorable(limit * 4)
             if since is not None:
@@ -647,9 +690,10 @@ class EventStore:
         return events[:limit]
 
     async def count_recent(self, source: str, hours: float = 1.0) -> int:
+        self._rows.preflight()
         if self._index is not None:
             since = datetime.now(UTC) - timedelta(hours=hours)
-            await self._index.ensure_since(self._pool, self._cipher, since, batch=self._cold_batch)
+            await self._index.ensure_since(self._pool, self._rows, since, batch=self._cold_batch)
             return self._index.count_since(source, since)
         rows = await self._pool.fetch(
             "SELECT id, payload_enc, meta_enc, created_at FROM events ORDER BY id DESC LIMIT 5000"
@@ -666,6 +710,7 @@ class EventStore:
         """Events ingested after an id, oldest first — the agent loop's
         observation stream; `after_id` starts at max_id() on boot so the
         agent never replays its whole history."""
+        self._rows.preflight()
         rows = await self._pool.fetch(
             "SELECT id, payload_enc, meta_enc, created_at FROM events"
             " WHERE id > $1 ORDER BY id LIMIT $2",
@@ -675,12 +720,14 @@ class EventStore:
         return [self._to_event(r) for r in rows]
 
     async def max_id(self) -> int:
+        self._rows.preflight()
         if self._index is not None and self._index.max_id:
             return self._index.max_id
         return await self._pool.fetchval("SELECT COALESCE(MAX(id), 0) FROM events")
 
     async def recent(self, limit: int = 50, offset: int = 0) -> list[Event]:
         """Newest events, memorable or not — the web feed's source."""
+        self._rows.preflight()
         rows = await self._pool.fetch(
             "SELECT id, payload_enc, meta_enc, created_at FROM events ORDER BY id DESC"
             " LIMIT $1 OFFSET $2",
@@ -690,8 +737,9 @@ class EventStore:
         return [self._to_event(r) for r in rows]
 
     async def count_memorable_since(self, since: datetime) -> int:
+        self._rows.preflight()
         if self._index is not None:
-            await self._index.ensure_since(self._pool, self._cipher, since, batch=self._cold_batch)
+            await self._index.ensure_since(self._pool, self._rows, since, batch=self._cold_batch)
             return self._index.count_memorable_since(since)
         rows = await self._pool.fetch(
             "SELECT id, payload_enc, meta_enc, created_at FROM events ORDER BY id DESC LIMIT 5000"
@@ -740,8 +788,13 @@ class EventStore:
         )
 
     def _to_event(self, row: asyncpg.Record) -> Event:
+        if self._scoped:
+            # A scoped read fails closed: a missing grant, a corrupt or a
+            # wrong-version AE2 row raises rather than degrading to an empty
+            # event that would hide the problem.
+            return self._from_index(decode_event_row(self._rows, row))
         try:
-            return self._from_index(decode_event_row(self._cipher, row))
+            return self._from_index(decode_event_row(self._rows, row))
         except Exception:
             log.warning("event %s undecryptable — payload replaced with {}", row["id"])
             return Event(

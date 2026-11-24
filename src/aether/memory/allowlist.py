@@ -158,7 +158,7 @@ PLAINTEXT_ALLOWLIST: dict[str, frozenset[str]] = {
     "media_blobs": frozenset(
         {"id", "size", "dedup_mac", "origin_token", "created_at", "last_used_at", "key_version"}
     ),
-    "processed_updates": frozenset({"id", "source", "update_id", "created_at"}),
+    "processed_updates": frozenset({"id", "source", "update_id", "dedup_token", "created_at"}),
     "provider_connections": frozenset(
         {
             "provider",
@@ -357,12 +357,64 @@ SEALED_COLUMNS: dict[str, frozenset[str]] = {
     "focus": frozenset({"state_enc"}),
     "conclusions": frozenset({"value_enc"}),
     "deliveries": frozenset({"body_enc", "message_id_enc", "error_enc"}),
+    # the sealed canonical audit entry; legacy rows keep their plaintext
+    # columns and are verified with the legacy hash formula
+    "audit_log": frozenset({"payload_enc"}),
     "held_notes": frozenset({"body_enc"}),
     "workspace_files": frozenset({"name_enc", "content_enc"}),
     "inbound_messages": frozenset({"reason_enc", "outcome_enc"}),
     "vault_ingress_queue": frozenset({"ciphertext_enc"}),
     "vault_ingress_part": frozenset({"ciphertext_enc"}),
     "vault_migration_journal": frozenset({"detail_enc"}),
+}
+
+# Category ownership for application rows. Vault control and queue records
+# have separate storage APIs and never pass through the content store.
+STORAGE_CATEGORIES = {
+    table: category
+    for category, tables in {
+        "memory": (
+            "events",
+            "identities",
+            "identity_handles",
+            "entity_notes",
+            "chat_messages",
+            "memory_chunks",
+            "facts",
+            "summaries",
+            "commitments",
+            "conclusions",
+            "focus",
+            "held_notes",
+        ),
+        "operations": (
+            "pending_approvals",
+            "scheduled_actions",
+            "routines_legacy",
+            "alerts",
+            "alert_notifications",
+            "decision_traces",
+            "deliveries",
+            "proactive_tasks",
+            "inbound_messages",
+            "processed_updates",
+            "connector_cursors",
+            "workbench_transfers",
+            "agent_settings",
+            "config_overrides",
+            "audit_log",
+        ),
+        "credentials": (
+            "provider_connections",
+            "provider_oauth_states",
+            "provider_sync_state",
+            "oauth_tokens",
+            "app_secrets",
+        ),
+        "workspace": ("workspace_files",),
+        "media": ("media_blobs",),
+    }.items()
+    for table in tables
 }
 
 # The migration ledger is now empty: `018_sealed_cutover.sql` dropped every

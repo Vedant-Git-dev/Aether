@@ -19,7 +19,9 @@ from typing import Any
 
 import asyncpg
 
+from ..vault.scope import KeyScope
 from .crypto import Cipher
+from .rows import CipherRows, Rows, ScopedRows
 
 log = logging.getLogger("aether.memory.focus")
 
@@ -108,12 +110,22 @@ def _dict_or_none(value: Any) -> dict[str, Any] | None:
 class Focus:
     """Database-backed store for one chat's focus object."""
 
-    def __init__(self, pool: asyncpg.Pool, cipher: Cipher) -> None:
+    def __init__(
+        self, pool: asyncpg.Pool, cipher: Cipher | None, *, rows: Rows | None = None
+    ) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("Focus needs exactly one of cipher or rows")
+        self._rows: Rows = rows if rows is not None else CipherRows(cipher)
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
+
+    @classmethod
+    def scoped(cls, pool: asyncpg.Pool, scope: KeyScope, *, ver: int = 1) -> Focus:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(pool, None, rows=ScopedRows(scope, cat="memory", ver=ver))
 
     def _token(self, chat_ref: str) -> bytes:
-        return self._cipher.blind_token("focus", chat_ref or "")
+        return self._rows.token("focus.chat", "focus", chat_ref or "")
 
     def _aad(self, token: bytes) -> str:
         return f"focus:state_enc:{token.hex()}"
@@ -121,6 +133,7 @@ class Focus:
     async def get(self, chat_ref: str) -> FocusState | None:
         """The current state, or None when there is none (or it cannot be
         read — a lost object costs a reference, never the turn)."""
+        self._rows.preflight()
         token = self._token(chat_ref)
         row = await self._pool.fetchrow(
             "SELECT state_enc FROM focus WHERE chat_ref_token = $1", token
@@ -129,13 +142,22 @@ class Focus:
             return None
         try:
             return FocusState.from_payload(
-                self._cipher.decrypt_json(row["state_enc"], aad=self._aad(token))
+                self._rows.open(
+                    row["state_enc"],
+                    table="focus",
+                    column="state_enc",
+                    row_id=token.hex(),
+                    aad=self._aad(token),
+                )
             )
         except Exception:
+            if self._scoped:
+                raise
             log.warning("focus state undecryptable — treated as empty")
             return None
 
     async def save(self, chat_ref: str, state: FocusState) -> None:
+        self._rows.preflight()
         token = self._token(chat_ref)
         state.updated_at = datetime.now(UTC)
         await self._pool.execute(
@@ -145,8 +167,14 @@ class Focus:
             " state_enc = EXCLUDED.state_enc, key_version = EXCLUDED.key_version,"
             " updated_at = now()",
             token,
-            self._cipher.encrypt_json(state.to_payload(), aad=self._aad(token)),
-            self._cipher.key_id,
+            self._rows.seal(
+                state.to_payload(),
+                table="focus",
+                column="state_enc",
+                row_id=token.hex(),
+                aad=self._aad(token),
+            ),
+            self._rows.key_version,
         )
 
     async def record_turn(

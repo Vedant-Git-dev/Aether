@@ -22,7 +22,9 @@ from typing import Any
 
 import asyncpg
 
+from ..vault.scope import KeyScope
 from .crypto import Cipher
+from .rows import CipherRows, Rows, ScopedRows
 
 log = logging.getLogger("aether.memory.conclusions")
 
@@ -59,14 +61,39 @@ class Conclusions:
     """The sealed, time-bounded cache of live-state answers."""
 
     def __init__(
-        self, pool: asyncpg.Pool, cipher: Cipher, *, ttl_seconds: int = DEFAULT_TTL_SECONDS
+        self,
+        pool: asyncpg.Pool,
+        cipher: Cipher | None,
+        *,
+        ttl_seconds: int = DEFAULT_TTL_SECONDS,
+        rows: Rows | None = None,
     ) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("Conclusions needs exactly one of cipher or rows")
+        self._rows: Rows = rows if rows is not None else CipherRows(cipher)
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
         self._ttl_seconds = max(1, int(ttl_seconds))
 
+    @classmethod
+    def scoped(
+        cls,
+        pool: asyncpg.Pool,
+        scope: KeyScope,
+        *,
+        ttl_seconds: int = DEFAULT_TTL_SECONDS,
+        ver: int = 1,
+    ) -> Conclusions:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(
+            pool,
+            None,
+            ttl_seconds=ttl_seconds,
+            rows=ScopedRows(scope, cat="memory", ver=ver),
+        )
+
     def _token(self, key: str) -> bytes:
-        return self._cipher.blind_token("conclusion", key or "")
+        return self._rows.token("conclusion.key", "conclusion", key or "")
 
     def _aad(self, token: bytes) -> str:
         return f"conclusions:value_enc:{token.hex()}"
@@ -81,6 +108,7 @@ class Conclusions:
         ttl_seconds: int | None = None,
     ) -> Conclusion:
         """Record one answer about now, valid for its window."""
+        self._rows.preflight()
         now = as_of or datetime.now(UTC)
         ttl = self._ttl_seconds if ttl_seconds is None else max(1, int(ttl_seconds))
         valid_until = now + timedelta(seconds=ttl)
@@ -98,13 +126,20 @@ class Conclusions:
             " value_enc = EXCLUDED.value_enc, key_version = EXCLUDED.key_version,"
             " created_at = now()",
             token,
-            self._cipher.encrypt_json(body, aad=self._aad(token)),
-            self._cipher.key_id,
+            self._rows.seal(
+                body,
+                table="conclusions",
+                column="value_enc",
+                row_id=token.hex(),
+                aad=self._aad(token),
+            ),
+            self._rows.key_version,
         )
         return Conclusion(key=key, value=value, as_of=now, valid_until=valid_until, source=source)
 
     async def get(self, key: str) -> Conclusion | None:
         """The stored conclusion whatever its age, or None when unreadable."""
+        self._rows.preflight()
         token = self._token(key)
         row = await self._pool.fetchrow(
             "SELECT value_enc FROM conclusions WHERE key_token = $1", token
@@ -112,8 +147,16 @@ class Conclusions:
         if row is None:
             return None
         try:
-            body = self._cipher.decrypt_json(row["value_enc"], aad=self._aad(token))
+            body = self._rows.open(
+                row["value_enc"],
+                table="conclusions",
+                column="value_enc",
+                row_id=token.hex(),
+                aad=self._aad(token),
+            )
         except Exception:
+            if self._scoped:
+                raise
             log.warning("conclusion undecryptable — treated as absent")
             return None
         if not isinstance(body, dict):
@@ -141,4 +184,5 @@ class Conclusions:
         return found
 
     async def forget(self, key: str) -> None:
+        self._rows.preflight()
         await self._pool.execute("DELETE FROM conclusions WHERE key_token = $1", self._token(key))

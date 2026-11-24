@@ -129,6 +129,7 @@ async def test_retokenize_moves_blind_indexes_to_the_new_key(db) -> None:
     from aether.authz.audit import AuditLog
     from aether.config import ContactsConfig
     from aether.memory.events import EventStore
+    from aether.memory.rows import CipherRows
     from aether.memory.seal_migrate import retokenize
     from aether.memory.storage import upsert_workspace_file, workspace_row
 
@@ -138,7 +139,7 @@ async def test_retokenize_moves_blind_indexes_to_the_new_key(db) -> None:
 
     await upsert_workspace_file(
         db,
-        old,
+        CipherRows(old),
         token=old.blind_token("workspace", "USER.md"),
         name="USER.md",
         content="a preference",

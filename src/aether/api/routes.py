@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from .. import restart
 from ..agent.tools import with_plain_calls, with_plain_event
 from ..apps_catalog import CATALOG, recipe_for
+from ..authz.audit import AuditPayloadUnreadable
 from ..config import is_legacy_composio_server
 from ..connectors.base import Attachment, InboundMessage, classify_attachment
 from ..memory.crypto import CryptoError
@@ -881,11 +882,17 @@ async def audit_feed(
         raise HTTPException(status_code=401, detail="bad or missing token")
     audit = request.app.state.audit
     page = _page_limit(limit, default=100)
-    rows = await audit.recent(limit=page, offset=offset)
     chain = await audit.verify_chain()
+    problem = chain.problem
+    try:
+        rows = await audit.recent(limit=page, offset=offset)
+    except AuditPayloadUnreadable as exc:
+        rows = []
+        problem = problem or str(exc)
+    ok = chain.ok and problem is None
     head_seq = max((r["seq"] for r in rows), default=0)
     etag = (
-        f'W/"audit-{head_seq}-{len(rows)}-{offset}-{int(chain.ok)}-'
+        f'W/"audit-{head_seq}-{len(rows)}-{offset}-{int(ok)}-'
         f'{chain.entries}-{chain.first_bad_seq or 0}"'
     )
     if (not_modified := _conditional(request, etag)) is not None:
@@ -907,12 +914,11 @@ async def audit_feed(
             for r in rows
         ],
         "chain": {
-            "ok": chain.ok,
+            "ok": ok,
             "entries": chain.entries,
             "first_bad_seq": chain.first_bad_seq,
-            "problem": chain.problem,
-            # rows are newest-first, so the first row's hash is the current chain head
-            "head_hash": rows[0]["entry_hash"] if rows else None,
+            "problem": problem,
+            "head_hash": chain.head_hash,
         },
     }
 

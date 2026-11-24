@@ -32,7 +32,7 @@ from typing import Any
 import asyncpg
 from rapidfuzz import process as fuzz_process
 
-from .crypto import Cipher
+from .rows import Rows
 from .storage import newest_chunk_rows, older_chunk_rows
 
 log = logging.getLogger("aether.memory.lexical")
@@ -346,11 +346,12 @@ class LexicalIndex:
 
     # -- building -----------------------------------------------------------
 
-    async def rebuild(self, pool: asyncpg.Pool, cipher: Cipher) -> int:
+    async def rebuild(self, pool: asyncpg.Pool, rows_by: Rows) -> int:
         """Load the newest `hot_chunks` chunk rows at boot — decrypted, in
         memory, same pattern as the event index."""
+        rows_by.preflight()
         rows = await newest_chunk_rows(pool, self._hot_chunks)
-        loaded = self._ingest_rows(cipher, rows)
+        loaded = self._ingest_rows(rows_by, rows)
         if rows:
             self._covers_below = int(rows[-1]["id"])
         log.info(
@@ -361,7 +362,7 @@ class LexicalIndex:
         )
         return loaded
 
-    async def grow(self, pool: asyncpg.Pool, cipher: Cipher) -> bool:
+    async def grow(self, pool: asyncpg.Pool, rows_by: Rows) -> bool:
         """One bounded batch of older chunks cold-scanned in. True when a
         batch arrived — the caller decides whether to keep going."""
         if (
@@ -370,26 +371,39 @@ class LexicalIndex:
             or len(self._docs) >= self._hot_chunks
         ):
             return False
+        rows_by.preflight()
         rows = await older_chunk_rows(pool, self._covers_below, self._cold_batch)
         if not rows:
             self._covers_below = 1
             return False
-        self._ingest_rows(cipher, rows)
+        self._ingest_rows(rows_by, rows)
         self._covers_below = int(rows[-1]["id"])
         return True
 
-    def _ingest_rows(self, cipher: Cipher, rows: list[asyncpg.Record]) -> int:
+    def _ingest_rows(self, rows_by: Rows, rows: list[asyncpg.Record]) -> int:
         loaded = 0
         for row in rows:
             chunk_id = int(row["id"])
             if chunk_id in self._docs:
                 continue
             try:
-                text = cipher.decrypt_text(row["text_enc"], aad=f"chunks:text_enc:{chunk_id}")
-                meta = cipher.decrypt_json(
-                    row["meta_enc"], aad=f"memory_chunks:meta_enc:{chunk_id}"
+                text = rows_by.open_bytes(
+                    row["text_enc"],
+                    table="memory_chunks",
+                    column="text_enc",
+                    row_id=chunk_id,
+                    aad=f"chunks:text_enc:{chunk_id}",
+                ).decode("utf-8")
+                meta = rows_by.open(
+                    row["meta_enc"],
+                    table="memory_chunks",
+                    column="meta_enc",
+                    row_id=chunk_id,
+                    aad=f"memory_chunks:meta_enc:{chunk_id}",
                 )
             except Exception:
+                if rows_by.scoped:
+                    raise
                 self.skipped += 1
                 log.warning("chunk %s undecryptable — left out of the lexical index", chunk_id)
                 continue

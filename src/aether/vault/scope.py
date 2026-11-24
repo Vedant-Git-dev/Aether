@@ -183,6 +183,10 @@ class KeyScope:
             raise VaultFormatError("dedup needs bytes")
         return handle.dedup(entry.namespace, bytes(value))
 
+    def require(self, cat: str, ver: int) -> None:
+        """Raise unless the scope is open and holds this key."""
+        self._handle(cat, ver)
+
     def close(self) -> None:
         if self._closed:
             return

@@ -17,17 +17,18 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import asyncpg
 
-from ..vault.scope import KeyScope, Location
+from ..vault.scope import KeyScope, Location, VaultFormatError
 from .allowlist import (
     IDENTIFIER_RE,
     KEY_VERSION,
     LEGACY_PLAINTEXT,
     PLAINTEXT_ALLOWLIST,
     SEALED_COLUMNS,
+    STORAGE_CATEGORIES,
     StorageGuardError,
     audit_columns,
     check_identifier,
@@ -35,6 +36,9 @@ from .allowlist import (
     classify,
 )
 from .crypto import Cipher
+
+if TYPE_CHECKING:
+    from .rows import Rows
 
 log = logging.getLogger("aether.memory.storage")
 
@@ -105,9 +109,18 @@ class SealedStore:
     user-derived value into a plain column by accident.
     """
 
-    def __init__(self, pool: asyncpg.Pool, cipher: Cipher) -> None:
+    def __init__(
+        self, pool: asyncpg.Pool, cipher: Cipher | None = None, *, rows: Rows | None = None
+    ) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("SealedStore needs exactly one of cipher or rows")
+        if rows is None:
+            from .rows import CipherRows  # local import: rows imports this module
+
+            rows = CipherRows(cipher)
+        self._rows: Rows = rows
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
         self._columns: dict[str, frozenset[str]] = {}
 
     async def _existing_columns(self, table: str) -> frozenset[str]:
@@ -133,9 +146,10 @@ class SealedStore:
         sealed: Mapping[str, Any] | None = None,
         returning: str = "id",
     ) -> asyncpg.Record:
+        self.preflight()
         plain = dict(plaintext or {})
         if KEY_VERSION in await self._existing_columns(table):
-            plain.setdefault(KEY_VERSION, self._cipher.key_id)
+            plain.setdefault(KEY_VERSION, self._rows.key_version)
         check_write(table, plain)
         for column in sealed or {}:
             if classify(table, column) != "sealed":
@@ -180,6 +194,7 @@ class SealedStore:
         sealed: Mapping[str, Any] | None = None,
         key: str = "id",
     ) -> None:
+        self.preflight()
         check_identifier(key)
         plain = dict(plaintext or {})
         check_write(table, plain)
@@ -204,10 +219,13 @@ class SealedStore:
 
     def seal(self, value: Any, *, table: str, column: str, row_id: Any) -> bytes:
         """Seal one value under the row's own AAD."""
-        return self._cipher.encrypt_json(value, aad=f"{table}:{column}:{row_id}")
+        return self._rows.seal(value, table=table, column=column, row_id=row_id)
 
     def unseal(self, blob: bytes, *, table: str, column: str, row_id: Any) -> Any:
-        return self._cipher.decrypt_json(blob, aad=f"{table}:{column}:{row_id}")
+        return self._rows.open(blob, table=table, column=column, row_id=row_id)
+
+    def preflight(self) -> None:
+        self._rows.preflight()
 
 
 class ScopedStore:
@@ -226,6 +244,10 @@ class ScopedStore:
     def location(
         self, *, table: str, column: str, row_id: Any, purpose: str = "content"
     ) -> Location:
+        if STORAGE_CATEGORIES.get(table) != self._cat or column not in SEALED_COLUMNS.get(
+            table, ()
+        ):
+            raise VaultFormatError("field is not registered for this storage category")
         return Location(
             cat=self._cat,
             ver=self._ver,
@@ -315,7 +337,7 @@ async def workspace_rows(pool: asyncpg.Pool) -> list[asyncpg.Record]:
 
 
 async def upsert_workspace_file(
-    pool: asyncpg.Pool, cipher: Cipher, *, token: bytes, name: str, content: str
+    pool: asyncpg.Pool, rows: Rows, *, token: bytes, name: str, content: str
 ) -> None:
     """Insert the row first so the AAD can bind to its id, then seal both
     the display name and the content."""
@@ -328,15 +350,25 @@ async def upsert_workspace_file(
                 token,
                 b"",
                 b"",
-                cipher.key_id,
+                rows.key_version,
             )
         row_id = row["id"]
         await conn.execute(
             "UPDATE workspace_files SET name_enc = $1, content_enc = $2,"
             " key_version = $3, updated_at = now() WHERE id = $4",
-            cipher.encrypt_text(name, aad=f"workspace_files:name_enc:{row_id}"),
-            cipher.encrypt_text(content, aad=f"workspace_files:content_enc:{row_id}"),
-            cipher.key_id,
+            rows.seal_bytes(
+                name.encode("utf-8"),
+                table="workspace_files",
+                column="name_enc",
+                row_id=row_id,
+            ),
+            rows.seal_bytes(
+                content.encode("utf-8"),
+                table="workspace_files",
+                column="content_enc",
+                row_id=row_id,
+            ),
+            rows.key_version,
             row_id,
         )
 

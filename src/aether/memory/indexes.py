@@ -23,7 +23,8 @@ from typing import Any
 
 import asyncpg
 
-from .crypto import Cipher, CryptoError
+from .crypto import CryptoError
+from .event_rows import EventRows
 
 log = logging.getLogger("aether.memory.indexes")
 
@@ -93,14 +94,14 @@ def decode_extra(extra: Any) -> dict[str, Any]:
     }
 
 
-def decode_event_row(cipher: Cipher, row: asyncpg.Record) -> IndexedEvent:
-    """One events row, sealed only. Raises CryptoError on unreadable content
-    so callers can skip and count it."""
+def decode_event_row(rows: EventRows, row: asyncpg.Record) -> IndexedEvent:
+    """One events row, sealed only. Raises on unreadable content so callers
+    can skip and count it. Takes the internal row interface, never a Cipher."""
     event_id = int(row["id"])
-    payload = cipher.decrypt_json(row["payload_enc"], aad=f"events:payload_enc:{event_id}")
+    payload = rows.open(row["payload_enc"], column="payload_enc", row_id=event_id)
     if not row.get("meta_enc"):
         raise CryptoError(f"event {event_id} has no sealed metadata")
-    meta = cipher.decrypt_json(row["meta_enc"], aad=f"events:meta_enc:{event_id}")
+    meta = rows.open(row["meta_enc"], column="meta_enc", row_id=event_id)
     extra = dict(meta.get("extra") or {})
     return IndexedEvent(
         id=event_id,
@@ -306,7 +307,9 @@ class MemoryIndex:
 
     # -- building from the database ----------------------------------------
 
-    async def rebuild(self, pool: asyncpg.Pool, cipher: Cipher, *, hot_limit: int = 2_000) -> int:
+    async def rebuild(
+        self, pool: asyncpg.Pool, event_rows: EventRows, *, hot_limit: int = 2_000
+    ) -> int:
         """Load the newest events by sequence — the boot pass. Returns how
         many rows were read (undecryptable ones are skipped and counted)."""
         rows = await pool.fetch(
@@ -321,7 +324,7 @@ class MemoryIndex:
         self.skipped = 0
         for row in reversed(rows):
             try:
-                self.upsert(decode_event_row(cipher, row))
+                self.upsert(decode_event_row(event_rows, row))
             except Exception:
                 self.skipped += 1
                 log.warning("event %s undecryptable — left out of the index", row["id"])
@@ -337,7 +340,7 @@ class MemoryIndex:
     async def ensure_since(
         self,
         pool: asyncpg.Pool,
-        cipher: Cipher,
+        event_rows: EventRows,
         since: datetime,
         *,
         batch: int = 500,
@@ -364,7 +367,7 @@ class MemoryIndex:
             oldest: datetime | None = None
             for row in reversed(rows):
                 try:
-                    event = decode_event_row(cipher, row)
+                    event = decode_event_row(event_rows, row)
                 except Exception:
                     self.skipped += 1
                     log.warning("event %s undecryptable — left out of the index", row["id"])

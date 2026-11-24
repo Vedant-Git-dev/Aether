@@ -68,6 +68,7 @@ from .memory.db import create_pool, run_migrations
 from .memory.deliveries import Deliveries
 from .memory.enrich import Enricher, LLMClassifier
 from .memory.entities import Entities, LLMSamePersonJudge
+from .memory.event_rows import CipherEventRows
 from .memory.events import EventStore
 from .memory.facts import Facts
 from .memory.focus import Focus
@@ -76,6 +77,7 @@ from .memory.inbound import DbInboundStates
 from .memory.indexes import MemoryIndex
 from .memory.lexical import LexicalIndex
 from .memory.pipeline import QueryPipeline, retrieval_config_from
+from .memory.rows import CipherRows
 from .memory.salience import LLMJudge, Salience
 from .memory.seal_migrate import seal_for_cutover
 from .memory.storage import StorageGuardError, enforce_schema
@@ -359,7 +361,9 @@ def create_app(
         # sealed columns in SQL, so the hot set is decrypted once at boot
         # and kept current by every ingest and salience write
         memory_index = MemoryIndex()
-        await memory_index.rebuild(pool, cipher, hot_limit=config.memory.hot_events)
+        await memory_index.rebuild(
+            pool, CipherEventRows(cipher), hot_limit=config.memory.hot_events
+        )
         app.state.memory_index = memory_index
         # the lexical half of retrieval: an in-memory BM25 index over the
         # same sealed chunks, rebuilt at boot and kept current by the one
@@ -369,7 +373,7 @@ def create_app(
             hot_chunks=config.memory.hot_chunks,
             cold_batch=config.memory.cold_batch,
         )
-        await lexical.rebuild(pool, cipher)
+        await lexical.rebuild(pool, CipherRows(cipher))
         app.state.lexical_index = lexical
 
         def _chunk_listener(chunk: dict[str, Any]) -> None:

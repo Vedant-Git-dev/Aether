@@ -387,12 +387,14 @@ class VaultStore:
         stable_id: bytes,
         state: str,
         detail_enc: bytes | None = None,
+        connection: asyncpg.Connection | None = None,
     ) -> None:
         if state not in _JOURNAL_STATES:
             raise ValueError(f"unknown journal state {state!r}")
         if table_name not in SEALED_COLUMNS and table_name not in PLAINTEXT_ALLOWLIST:
             raise ValueError("unknown journal table")
-        await self._pool.execute(
+        executor = self._pool if connection is None else connection
+        await executor.execute(
             "INSERT INTO vault_migration_journal"
             " (job_id, vault_id, table_name, stable_id, state, detail_enc)"
             " VALUES ($1, $2, $3, $4, $5, $6)"
@@ -408,9 +410,16 @@ class VaultStore:
         )
 
     async def journal_entry(
-        self, *, vault_id: bytes, job_id: bytes, table_name: str, stable_id: bytes
+        self,
+        *,
+        vault_id: bytes,
+        job_id: bytes,
+        table_name: str,
+        stable_id: bytes,
+        connection: asyncpg.Connection | None = None,
     ) -> asyncpg.Record | None:
-        return await self._pool.fetchrow(
+        executor = self._pool if connection is None else connection
+        return await executor.fetchrow(
             "SELECT job_id, vault_id, table_name, stable_id, state, detail_enc, updated_at"
             " FROM vault_migration_journal"
             " WHERE vault_id = $1 AND job_id = $2 AND table_name = $3 AND stable_id = $4",

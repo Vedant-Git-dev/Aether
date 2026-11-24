@@ -23,6 +23,8 @@ import asyncpg
 
 from ..authz.audit import AuditLog
 from ..memory.crypto import Cipher
+from ..memory.rows import CipherRows, Rows, ScopedRows
+from ..vault.scope import KeyScope
 
 log = logging.getLogger("aether.scheduler")
 
@@ -52,9 +54,19 @@ class ScheduledAction:
 class Scheduler:
     """Database-backed store for scheduled actions."""
 
-    def __init__(self, pool: asyncpg.Pool, cipher: Cipher, audit: AuditLog) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        cipher: Cipher | None,
+        audit: AuditLog,
+        *,
+        rows: Rows | None = None,
+    ) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("Scheduler needs exactly one of cipher or rows")
+        self._rows: Rows = rows if rows is not None else CipherRows(cipher)
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
         self._audit = audit
         # the earliest pending run time, kept current by create/claim — the
         # 20-second worker asks a datetime instead of the database when
@@ -62,22 +74,39 @@ class Scheduler:
         self._next_due: datetime | None = None
         self._schedule_loaded = False
 
+    @classmethod
+    def scoped(
+        cls, pool: asyncpg.Pool, scope: KeyScope, audit: AuditLog, *, ver: int = 1
+    ) -> Scheduler:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(pool, None, audit, rows=ScopedRows(scope, cat="operations", ver=ver))
+
     async def create(
         self, *, label: str, run_at: datetime, payload: dict[str, Any], actor: str = "agent"
     ) -> ScheduledAction:
         """Persist one action. The row exists the moment this returns —
         a crash between here and fire time loses nothing."""
+        self._rows.preflight()
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "INSERT INTO scheduled_actions (status, payload_enc, key_version)"
                 " VALUES ('pending', $1, $2) RETURNING id, created_at",
                 b"",  # placeholder until the id exists; replaced below, same transaction
-                self._cipher.key_id,
+                self._rows.key_version,
             )
             action_id = row["id"]
-            blob = self._cipher.encrypt_json(payload, aad=_aad(action_id))
-            meta_blob = self._cipher.encrypt_json(
+            blob = self._rows.seal(
+                payload,
+                table="scheduled_actions",
+                column="payload_enc",
+                row_id=action_id,
+                aad=_aad(action_id),
+            )
+            meta_blob = self._rows.seal(
                 {"label": label, "run_at": run_at.isoformat()},
+                table="scheduled_actions",
+                column="meta_enc",
+                row_id=action_id,
                 aad=f"scheduled_actions:meta_enc:{action_id}",
             )
             await conn.execute(
@@ -106,6 +135,7 @@ class Scheduler:
         )
 
     async def get(self, action_id: int) -> ScheduledAction | None:
+        self._rows.preflight()
         row = await self._pool.fetchrow(
             "SELECT id, meta_enc, status, payload_enc, created_at"
             " FROM scheduled_actions WHERE id = $1",
@@ -119,6 +149,7 @@ class Scheduler:
         the pending set is small enough to decrypt, and the claim still
         flips status in the same statement that selects the rows. When the
         in-memory schedule says nothing can be due, this costs no query."""
+        self._rows.preflight()
         now = datetime.now(UTC)
         if self._schedule_loaded and (self._next_due is None or now < self._next_due):
             return []
@@ -153,6 +184,7 @@ class Scheduler:
         keeps re_arm read-only and safe to call anytime). This is also the
         boot read that teaches the in-memory schedule when the next action
         can possibly be due."""
+        self._rows.preflight()
         now = datetime.now(UTC)
         rows = await self._pool.fetch(
             "SELECT id, meta_enc, status, payload_enc, created_at"
@@ -166,6 +198,7 @@ class Scheduler:
         return actions
 
     async def mark(self, action_id: int, status: str, result_digest: str = "") -> None:
+        self._rows.preflight()
         await self._pool.execute(
             "UPDATE scheduled_actions SET status = $1, result_digest = $2 WHERE id = $3",
             status,
@@ -175,6 +208,7 @@ class Scheduler:
 
     async def list(self, limit: int = 50, offset: int = 0) -> list[ScheduledAction]:
         """Newest first, any status — the web panel's view."""
+        self._rows.preflight()
         rows = await self._pool.fetch(
             "SELECT id, meta_enc, status, payload_enc, created_at"
             " FROM scheduled_actions ORDER BY id DESC LIMIT $1 OFFSET $2",
@@ -184,17 +218,29 @@ class Scheduler:
         return [self._to_action(r) for r in rows]
 
     def _to_action(self, row: asyncpg.Record) -> ScheduledAction:
-        payload = self._cipher.decrypt_json(row["payload_enc"], aad=_aad(row["id"]))
+        payload = self._rows.open(
+            row["payload_enc"],
+            table="scheduled_actions",
+            column="payload_enc",
+            row_id=row["id"],
+            aad=_aad(row["id"]),
+        )
         label, run_at = "", row["created_at"]
         blob = row.get("meta_enc")
         if blob:
             try:
-                meta = self._cipher.decrypt_json(
-                    blob, aad=f"scheduled_actions:meta_enc:{row['id']}"
+                meta = self._rows.open(
+                    blob,
+                    table="scheduled_actions",
+                    column="meta_enc",
+                    row_id=row["id"],
+                    aad=f"scheduled_actions:meta_enc:{row['id']}",
                 )
                 label = str(meta.get("label", ""))
                 run_at = datetime.fromisoformat(str(meta.get("run_at", row["created_at"])))
             except Exception:
+                if self._scoped:
+                    raise
                 log.warning("scheduled action %s meta undecryptable — treated as empty", row["id"])
         return ScheduledAction(
             id=row["id"],

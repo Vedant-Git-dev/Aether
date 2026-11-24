@@ -31,6 +31,8 @@ from typing import Any
 
 from ..config import MediaConfig
 from ..memory.crypto import Cipher, CryptoError
+from ..memory.rows import CipherRows, Rows, ScopedRows
+from ..vault.scope import KeyScope
 
 log = logging.getLogger("aether.media")
 
@@ -130,10 +132,20 @@ _PROTECTED_SQL = """
 class MediaStore:
     """Encrypted blobs in Postgres, kept under a live-read quota."""
 
-    def __init__(self, pool: Any, cipher: Cipher, config: MediaConfig) -> None:
+    def __init__(
+        self, pool: Any, cipher: Cipher | None, config: MediaConfig, *, rows: Rows | None = None
+    ) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("MediaStore needs exactly one of cipher or rows")
+        self._rows: Rows = rows if rows is not None else CipherRows(cipher)
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
         self._config = config
+
+    @classmethod
+    def scoped(cls, pool: Any, scope: KeyScope, config: MediaConfig, *, ver: int = 1) -> MediaStore:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(pool, None, config, rows=ScopedRows(scope, cat="media", ver=ver))
 
     @property
     def quota_bytes(self) -> int:
@@ -154,7 +166,8 @@ class MediaStore:
         evictable left."""
         if not data:
             raise ValueError("the media store refuses empty bytes")
-        mac = self._cipher.dedup_mac(data)
+        self._rows.preflight()
+        mac = self._rows.dedup("media.content", data)
         media_type = sniff_media_type(data)
         async with self._pool.acquire() as conn, conn.transaction():
             # one statement settles the race: the first same-bytes put
@@ -171,8 +184,8 @@ class MediaStore:
                 mac,
                 b"",
                 b"",
-                self._cipher.blind_token("source", origin),
-                self._cipher.key_id,
+                self._rows.token("media.origin", "source", origin),
+                self._rows.key_version,
             )
             media_id = int(row["id"])
             if not row["inserted"]:  # dedup hit — the bytes already exist
@@ -187,8 +200,14 @@ class MediaStore:
             # the total, must never count it as eviction fodder, and on
             # refusal the surrounding transaction rolls the insert back
             await self._make_room(conn, media_id)
-            blob = self._cipher.encrypt_bytes(data, aad=f"media:{AAD_COLUMN}:{media_id}")
-            meta_blob = self._cipher.encrypt_json(
+            blob = self._rows.seal_bytes(
+                data,
+                table="media_blobs",
+                column="bytes_enc",
+                row_id=media_id,
+                aad=f"media:{AAD_COLUMN}:{media_id}",
+            )
+            meta_blob = self._rows.seal(
                 {
                     "filename": filename,
                     "media_type": media_type,
@@ -197,6 +216,9 @@ class MediaStore:
                     "duration_s": duration_s,
                     "origin": origin,
                 },
+                table="media_blobs",
+                column="meta_enc",
+                row_id=media_id,
                 aad=f"media_blobs:meta_enc:{media_id}",
             )
             await conn.execute(
@@ -211,6 +233,7 @@ class MediaStore:
         """One blob opened, its last use refreshed. None means the caller
         should say the plain words — gone, evicted, or unreadable all
         read the same from the outside and never raise."""
+        self._rows.preflight()
         row = await self._pool.fetchrow(
             "SELECT size, bytes_enc, meta_enc FROM media_blobs WHERE id = $1",
             media_id,
@@ -218,10 +241,16 @@ class MediaStore:
         if row is None:
             return None
         try:
-            data = self._cipher.decrypt_bytes(
-                row["bytes_enc"], aad=f"media:{AAD_COLUMN}:{media_id}"
+            data = self._rows.open_bytes(
+                row["bytes_enc"],
+                table="media_blobs",
+                column="bytes_enc",
+                row_id=media_id,
+                aad=f"media:{AAD_COLUMN}:{media_id}",
             )
         except CryptoError:
+            if self._scoped:
+                raise
             log.warning("media %s is undecryptable — reading as no longer stored", media_id)
             return None
         await self._pool.execute(
@@ -243,6 +272,7 @@ class MediaStore:
         resolver's eyes: which files exist, what each sniffed as, and
         how new it is, so a "the video I sent" resolves by fact and
         never by a guessed id."""
+        self._rows.preflight()
         rows = await self._pool.fetch(
             "SELECT id, size, created_at, meta_enc"
             " FROM media_blobs ORDER BY created_at DESC, id DESC LIMIT $1",
@@ -270,13 +300,22 @@ class MediaStore:
         if not blob:
             return {}
         try:
-            return self._cipher.decrypt_json(blob, aad=f"media_blobs:meta_enc:{media_id}")
+            return self._rows.open(
+                blob,
+                table="media_blobs",
+                column="meta_enc",
+                row_id=media_id,
+                aad=f"media_blobs:meta_enc:{media_id}",
+            )
         except Exception:
+            if self._scoped:
+                raise
             log.warning("media %s metadata undecryptable — treated as empty", media_id)
             return {}
 
     async def total_bytes(self) -> int:
         """Everything currently kept — the quota's other side."""
+        self._rows.preflight()
         row = await self._pool.fetchrow("SELECT COALESCE(SUM(size), 0) AS total FROM media_blobs")
         return int(row["total"]) if row else 0
 

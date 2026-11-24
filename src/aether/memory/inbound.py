@@ -24,6 +24,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from ..vault.scope import KeyScope
+from .rows import CipherRows, Rows, ScopedRows
+
 log = logging.getLogger("aether.memory.inbound")
 
 RECEIVED = "received"
@@ -170,16 +173,25 @@ class DbInboundStates:
     under an AAD bound to the row id; only blind tokens and status words are
     plaintext."""
 
-    def __init__(self, pool: Any, cipher: Any) -> None:
+    def __init__(self, pool: Any, cipher: Any, *, rows: Rows | None = None) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("DbInboundStates needs exactly one of cipher or rows")
+        self._rows: Rows = rows if rows is not None else CipherRows(cipher)
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
+
+    @classmethod
+    def scoped(cls, pool: Any, scope: KeyScope, *, ver: int = 1) -> DbInboundStates:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(pool, None, rows=ScopedRows(scope, cat="operations", ver=ver))
 
     def _token(self, purpose: str, value: str) -> bytes:
-        return self._cipher.blind_token(f"inbound-{purpose}", value)
+        return self._rows.token(f"inbound.{purpose}", f"inbound-{purpose}", value)
 
     async def record(
         self, surface: str, chat_ref: str, message_id: str = "", *, key: str = ""
     ) -> Inbound | None:
+        self._rows.preflight()
         token = key or inbound_key(
             surface, message_id, f"{surface}:{datetime.now(UTC).timestamp()}"
         )
@@ -194,7 +206,7 @@ class DbInboundStates:
             self._token("message", message_id or ""),
             self._token("key", token),
             RECEIVED,
-            self._cipher.key_id,
+            self._rows.key_version,
         )
         if row is None:
             return None
@@ -205,6 +217,7 @@ class DbInboundStates:
     ) -> None:
         if status not in _STATUSES:
             raise ValueError(f"unknown inbound status: {status!r}")
+        self._rows.preflight()
         await self._pool.execute(
             "UPDATE inbound_messages SET status = $1, updated_at = now()"
             " WHERE id = $2 AND status = $3",
@@ -215,13 +228,25 @@ class DbInboundStates:
         if reason:
             await self._pool.execute(
                 "UPDATE inbound_messages SET reason_enc = $1 WHERE id = $2",
-                self._cipher.encrypt_text(reason, aad=self._aad("reason_enc", inbound_id)),
+                self._rows.seal_bytes(
+                    reason.encode("utf-8"),
+                    table="inbound_messages",
+                    column="reason_enc",
+                    row_id=inbound_id,
+                    aad=self._aad("reason_enc", inbound_id),
+                ),
                 inbound_id,
             )
         if outcome:
             await self._pool.execute(
                 "UPDATE inbound_messages SET outcome_enc = $1 WHERE id = $2",
-                self._cipher.encrypt_text(outcome, aad=self._aad("outcome_enc", inbound_id)),
+                self._rows.seal_bytes(
+                    outcome.encode("utf-8"),
+                    table="inbound_messages",
+                    column="outcome_enc",
+                    row_id=inbound_id,
+                    aad=self._aad("outcome_enc", inbound_id),
+                ),
                 inbound_id,
             )
 
@@ -238,18 +263,21 @@ class DbInboundStates:
         await self._set(inbound_id, EXPIRED)
 
     async def mark_checked(self, inbound_id: int) -> None:
+        self._rows.preflight()
         await self._pool.execute(
             "UPDATE inbound_messages SET checked = true, updated_at = now() WHERE id = $1",
             inbound_id,
         )
 
     async def get(self, inbound_id: int) -> Inbound | None:
+        self._rows.preflight()
         row = await self._pool.fetchrow(
             f"SELECT {_COLUMNS} FROM inbound_messages WHERE id = $1", inbound_id
         )
         return self._to_inbound(row) if row is not None else None
 
     async def pending(self, limit: int = 20) -> list[Inbound]:
+        self._rows.preflight()
         rows = await self._pool.fetch(
             f"SELECT {_COLUMNS} FROM inbound_messages WHERE status = $1 ORDER BY id ASC LIMIT $2",
             RECEIVED,
@@ -258,6 +286,7 @@ class DbInboundStates:
         return [self._to_inbound(row) for row in rows]
 
     async def stale_unchecked(self, cutoff: datetime, limit: int = 20) -> list[Inbound]:
+        self._rows.preflight()
         rows = await self._pool.fetch(
             f"SELECT {_COLUMNS} FROM inbound_messages"
             " WHERE status = $1 AND checked = false AND created_at <= $2"
@@ -269,6 +298,7 @@ class DbInboundStates:
         return [self._to_inbound(row) for row in rows]
 
     async def recent(self, limit: int = 20) -> list[Inbound]:
+        self._rows.preflight()
         rows = await self._pool.fetch(
             f"SELECT {_COLUMNS} FROM inbound_messages ORDER BY id DESC LIMIT $1", limit
         )
@@ -292,7 +322,15 @@ class DbInboundStates:
         if not blob:
             return ""
         try:
-            return self._cipher.decrypt_text(blob, aad=self._aad(column, inbound_id))
+            return self._rows.open_bytes(
+                blob,
+                table="inbound_messages",
+                column=column,
+                row_id=inbound_id,
+                aad=self._aad(column, inbound_id),
+            ).decode("utf-8")
         except Exception:
+            if self._scoped:
+                raise
             log.warning("inbound field undecryptable — treated as empty")
             return ""

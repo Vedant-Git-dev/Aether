@@ -22,6 +22,8 @@ from datetime import datetime
 import asyncpg
 
 from ..memory.crypto import Cipher
+from ..memory.rows import CipherRows, Rows, ScopedRows
+from ..vault.scope import KeyScope
 from .spec import AlertEvent, dedupe_key
 
 log = logging.getLogger("aether.alerts")
@@ -58,14 +60,25 @@ class Notification:
 class AlertNotifications:
     """The sealed notification queue and told-state ledger."""
 
-    def __init__(self, pool: asyncpg.Pool, cipher: Cipher) -> None:
+    def __init__(
+        self, pool: asyncpg.Pool, cipher: Cipher | None, *, rows: Rows | None = None
+    ) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("AlertNotifications needs exactly one of cipher or rows")
+        self._rows: Rows = rows if rows is not None else CipherRows(cipher)
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
+
+    @classmethod
+    def scoped(cls, pool: asyncpg.Pool, scope: KeyScope, *, ver: int = 1) -> AlertNotifications:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(pool, None, rows=ScopedRows(scope, cat="operations", ver=ver))
 
     async def enqueue(self, event: AlertEvent, *, style: str, key: str = "") -> int | None:
         """Queue one candidate. A repeated match for the same alert and item
         collides on its keyed token and produces no second row."""
         key = key or dedupe_key(event.alert_id, event.event_id)
+        self._rows.preflight()
         try:
             async with self._pool.acquire() as conn, conn.transaction():
                 row = await conn.fetchrow(
@@ -80,16 +93,20 @@ class AlertNotifications:
                     style,
                     event.urgency,
                     b"",
-                    self._cipher.blind_token("alert_notification", key),
-                    self._cipher.key_id,
+                    self._rows.token("alert.notification", "alert_notification", key),
+                    self._rows.key_version,
                 )
                 if row is None:
                     return None
                 notification_id = int(row["id"])
                 await conn.execute(
                     "UPDATE alert_notifications SET event_enc = $1 WHERE id = $2",
-                    self._cipher.encrypt_json(
-                        event.to_payload(), aad=_aad("event_enc", notification_id)
+                    self._rows.seal(
+                        event.to_payload(),
+                        table="alert_notifications",
+                        column="event_enc",
+                        row_id=notification_id,
+                        aad=_aad("event_enc", notification_id),
                     ),
                     notification_id,
                 )
@@ -99,6 +116,7 @@ class AlertNotifications:
         return notification_id
 
     async def pending(self, now: datetime, limit: int = 50) -> list[Notification]:
+        self._rows.preflight()
         rows = await self._pool.fetch(
             f"SELECT {_COLUMNS} FROM alert_notifications"
             " WHERE status = ANY($1)"
@@ -111,6 +129,7 @@ class AlertNotifications:
         return [self._to_notification(row) for row in rows]
 
     async def for_alert(self, alert_id: int, statuses: list[str]) -> list[Notification]:
+        self._rows.preflight()
         rows = await self._pool.fetch(
             f"SELECT {_COLUMNS} FROM alert_notifications"
             " WHERE alert_id = $1 AND status = ANY($2) ORDER BY id",
@@ -120,6 +139,7 @@ class AlertNotifications:
         return [self._to_notification(row) for row in rows]
 
     async def last_sent(self, alert_id: int) -> datetime | None:
+        self._rows.preflight()
         value = await self._pool.fetchval(
             "SELECT max(updated_at) FROM alert_notifications WHERE alert_id = $1 AND status = $2",
             alert_id,
@@ -128,6 +148,7 @@ class AlertNotifications:
         return value
 
     async def sent_between(self, start: datetime, end: datetime) -> int:
+        self._rows.preflight()
         """How many notifications actually landed in a window — the daily
         cap reads this, never a guess from the queue."""
         value = await self._pool.fetchval(
@@ -140,6 +161,7 @@ class AlertNotifications:
         return int(value or 0)
 
     async def mark_sent(self, notification_ids: list[int]) -> None:
+        self._rows.preflight()
         if not notification_ids:
             return
         await self._pool.execute(
@@ -149,6 +171,7 @@ class AlertNotifications:
         )
 
     async def mark_held(self, notification_ids: list[int], until: datetime) -> None:
+        self._rows.preflight()
         if not notification_ids:
             return
         await self._pool.execute(
@@ -160,6 +183,7 @@ class AlertNotifications:
         )
 
     async def mark_suppressed(self, notification_ids: list[int], reason: str) -> None:
+        self._rows.preflight()
         if not notification_ids:
             return
         await self._pool.execute(
@@ -171,6 +195,7 @@ class AlertNotifications:
         )
 
     async def mark_failed(self, notification_ids: list[int], *, next_try_at: datetime) -> None:
+        self._rows.preflight()
         if not notification_ids:
             return
         await self._pool.execute(
@@ -182,6 +207,7 @@ class AlertNotifications:
         )
 
     async def recent(self, limit: int = 30) -> list[Notification]:
+        self._rows.preflight()
         rows = await self._pool.fetch(
             f"SELECT {_COLUMNS} FROM alert_notifications ORDER BY id DESC LIMIT $1", limit
         )
@@ -192,9 +218,17 @@ class AlertNotifications:
         event = AlertEvent(alert_id=int(row["alert_id"]), event_id=0, source="", kind="")
         try:
             event = AlertEvent.from_payload(
-                self._cipher.decrypt_json(row["event_enc"], aad=_aad("event_enc", notification_id))
+                self._rows.open(
+                    row["event_enc"],
+                    table="alert_notifications",
+                    column="event_enc",
+                    row_id=notification_id,
+                    aad=_aad("event_enc", notification_id),
+                )
             )
         except Exception:
+            if self._scoped:
+                raise
             log.warning(
                 "notification %s snapshot undecryptable — treated as empty", notification_id
             )

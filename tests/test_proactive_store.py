@@ -209,7 +209,8 @@ async def test_feedback_weights_derive_from_the_window(db) -> None:
 async def test_rows_survive_a_restart(db) -> None:
     """A brand-new store over the same database reads what the old one
     wrote — nothing carries over but the rows (and the key)."""
-    first = _make_store(db)
+    cipher = Cipher.from_b64(generate_key_b64())
+    first = ProactiveStore(db, cipher, AuditLog(db))
     task = await _claim(
         first,
         skill="followups",
@@ -221,7 +222,7 @@ async def test_rows_survive_a_restart(db) -> None:
     await first.mark_running(task.id)
     await first.set_plan(task.id, {"step": "send"})
 
-    second = ProactiveStore(db, first._cipher, AuditLog(db))
+    second = ProactiveStore(db, cipher, AuditLog(db))
     assert await second.requeue_running() == 1
     row = await _get(second, task.id)
     assert row.status == PENDING
