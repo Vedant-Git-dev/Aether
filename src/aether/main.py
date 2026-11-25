@@ -102,6 +102,10 @@ from .secret_store import SecretStore
 from .skills import build_skills
 from .tools.grants import BackendHealth
 from .tools.manifest import audit_native_manifests
+from .vault.http import router as vault_router
+from .vault.runtime import VaultRuntime
+from .vault.signing import RequestSigner
+from .vault.store import VaultStore
 from .web import WebTools, build_client
 from .workbench import Workbench, ordered
 from .workbench import run as run_workbench
@@ -163,6 +167,16 @@ def create_app(
         problems = startup_problems(settings, config, require_keys=False)
         if problems:
             raise StartupError(format_startup_problems(problems))
+        try:
+            vault_signer = (
+                RequestSigner.from_scalar(settings.vault_request_signing_key)
+                if settings.vault_request_signing_key
+                else None
+            )
+        except ValueError:
+            raise StartupError(
+                "AETHER_VAULT_REQUEST_SIGNING_KEY must be a valid P-256 scalar"
+            ) from None
         cipher = _build_cipher(settings)
         try:
             token_keyring = TokenKeyring.from_values(
@@ -885,24 +899,30 @@ def create_app(
             "".join(f", {c.name}" for c in connectors),
         )
 
-        yield
-
-        await proactive_worker.stop()
-        await worker.stop()
-        if actions is not None:
-            await actions.aclose()
-        await agent.stop()
-        for connector in connectors:
-            await connector.stop()
-        await host.stop()
-        await web_client.aclose()
-        await provider_http.aclose()
-        await pool.close()
-        log.info("aether stopped")
+        try:
+            async with VaultRuntime(
+                VaultStore(pool), vault_signer, pending_wait=settings.vault_pending_wait_seconds
+            ) as vault_runtime:
+                app.state.vault_runtime = vault_runtime
+                yield
+        finally:
+            await proactive_worker.stop()
+            await worker.stop()
+            if actions is not None:
+                await actions.aclose()
+            await agent.stop()
+            for connector in connectors:
+                await connector.stop()
+            await host.stop()
+            await web_client.aclose()
+            await provider_http.aclose()
+            await pool.close()
+            log.info("aether stopped")
 
     app = FastAPI(title="Aether", version=__version__, lifespan=lifespan)
     app.include_router(api_router)
     app.include_router(chat_router)
+    app.include_router(vault_router)
     # the panel is a Vite build artifact (source lives in webapp/) — serve it
     # when present, and say so plainly when it isn't, so a fresh checkout
     # boots without the mount crashing on a directory it doesn't have

@@ -7,6 +7,7 @@ import asyncpg
 import pytest
 
 from aether.memory.storage import schema_violations
+from aether.vault.errors import VaultProtocolError
 from aether.vault.policy import policy
 from aether.vault.scope import VaultExhausted
 from aether.vault.store import VaultStore, queue_is_complete
@@ -35,6 +36,53 @@ async def seed(store: VaultStore) -> None:
         manifest=MANIFEST1,
         pins=PINS,
     )
+
+
+async def test_serving_boot_excludes_and_fences_the_previous_generation(db) -> None:
+    store = VaultStore(db)
+    await seed(store)
+    assert await store.set_state(VAULT_ID, "available", expected_epoch=1, expected_generation=1)
+    async with store.serving_boot() as first:
+        state = await store.load(VAULT_ID)
+        fence = {"vault_id": VAULT_ID, "generation": 3, "epoch": 2, "manifest_digest": DIGEST1}
+        assert state["generation"] == fence["generation"]
+        with pytest.raises(VaultProtocolError, match="^unavailable$"):
+            async with store.serving_boot():
+                pytest.fail("two sessions held serving leadership")
+        async with first.transaction(**fence):
+            pass
+    assert first.lost.is_set()
+
+    async with store.serving_boot() as second:
+        assert (await store.load(VAULT_ID))["generation"] == 4
+        for boot, snapshot in ((first, fence | {"generation": 4}), (second, fence)):
+            with pytest.raises(VaultProtocolError, match="^stale_generation$"):
+                async with boot.transaction(**snapshot):
+                    pytest.fail("stale boot or snapshot opened a write transaction")
+        async with second.transaction(**(fence | {"generation": 4})):
+            pass
+
+
+async def test_serving_session_loss_rolls_back_uncommitted_effects(db) -> None:
+    store = VaultStore(db)
+    await seed(store)
+    assert await store.set_state(VAULT_ID, "available", expected_epoch=1, expected_generation=1)
+    ticket_hash = b"\x99" * 32
+    async with store.serving_boot() as boot:
+        with pytest.raises(VaultProtocolError, match="^stale_generation$"):
+            async with boot.transaction(
+                vault_id=VAULT_ID, generation=3, epoch=2, manifest_digest=DIGEST1
+            ) as conn:
+                await conn.execute(
+                    "INSERT INTO vault_ticket (ticket_hash, vault_id, expires_at) VALUES ($1,$2,$3)",
+                    ticket_hash,
+                    VAULT_ID,
+                    now() + timedelta(minutes=1),
+                )
+                pid = boot._connection.get_server_pid()
+                assert await conn.fetchval("SELECT pg_terminate_backend($1)", pid)
+                await asyncio.wait_for(boot.lost.wait(), timeout=5)
+    assert await store.consume_ticket(ticket_hash) is None
 
 
 async def test_create_and_load(db) -> None:

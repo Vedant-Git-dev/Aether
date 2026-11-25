@@ -7,11 +7,15 @@ single conditional UPDATE, so two writers cannot both advance the manifest.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 import asyncpg
 
 from ..memory.allowlist import PLAINTEXT_ALLOWLIST, SEALED_COLUMNS
+from .errors import VaultProtocolError
 from .policy import policy
 from .schema import CATEGORIES, DIGEST_BYTES, ID_BYTES, MAX_SAFE_INTEGER
 from .scope import ReservedWrites, VaultExhausted
@@ -24,6 +28,7 @@ _CONTROL_FROM = {
 }
 _SESSION_KINDS = ("device", "panel")
 _JOURNAL_STATES = ("pending", "done", "failed")
+_SERVING_LOCK = (0x41455448, 1)
 
 
 def _id(value: Any, name: str) -> bytes:
@@ -47,6 +52,28 @@ def _bytes(value: Any, name: str) -> bytes:
 class VaultStore:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
+
+    @asynccontextmanager
+    async def serving_boot(self) -> AsyncIterator[ServingBoot]:
+        """Hold the installation lock on one checked-out PostgreSQL session."""
+        async with self._pool.acquire() as conn:
+            if not await conn.fetchval("SELECT pg_try_advisory_lock($1, $2)", *_SERVING_LOCK):
+                raise VaultProtocolError("unavailable")
+            boot = ServingBoot(conn, self._pool)
+            conn.add_termination_listener(boot._connection_lost)
+            try:
+                async with conn.transaction():
+                    await boot.check()
+                    await conn.execute(
+                        "UPDATE vault_state SET generation = generation + 1, updated_at = now()"
+                    )
+                yield boot
+            finally:
+                boot.lost.set()
+                # Pool release resets the session, including its advisory locks.
+                # Asyncpg may already have detached the proxy on connection loss.
+                with suppress(asyncpg.InterfaceError):
+                    conn.remove_termination_listener(boot._connection_lost)
 
     async def create(
         self,
@@ -100,6 +127,29 @@ class VaultStore:
             _id(vault_id, "vault_id"),
         )
 
+    async def installation(self) -> asyncpg.Record | None:
+        return await self._pool.fetchrow(
+            "SELECT vault_id, device_id, epoch, revision, digest, manifest, pins, state, generation"
+            " FROM vault_state"
+        )
+
+    @asynccontextmanager
+    async def _mutation(self, boot: ServingBoot | None) -> AsyncIterator[asyncpg.Connection]:
+        if boot is not None:
+            if boot._pool is not self._pool:
+                raise VaultProtocolError("stale_generation")
+            async with boot.mutation() as conn:
+                yield conn
+        else:
+            async with self._pool.acquire() as conn, conn.transaction():
+                # Offline writers still arbitrate through the row CAS. Their shared
+                # lock excludes a serving boot without excluding each other.
+                if not await conn.fetchval(
+                    "SELECT pg_try_advisory_xact_lock_shared($1, $2)", *_SERVING_LOCK
+                ):
+                    raise VaultProtocolError("unavailable")
+                yield conn
+
     async def publish_manifest(
         self,
         *,
@@ -112,8 +162,9 @@ class VaultStore:
         digest: bytes,
         previous_digest: bytes,
         manifest: bytes,
+        boot: ServingBoot | None = None,
     ) -> bool:
-        """CAS the current manifest. Returns False for a stale writer."""
+        """CAS the current manifest under the serving boot or offline leadership lock."""
         vault_id = _id(vault_id, "vault_id")
         expected_digest = _digest(expected_digest, "expected_digest")
         digest = _digest(digest, "digest")
@@ -121,7 +172,7 @@ class VaultStore:
         manifest = _bytes(manifest, "manifest")
         if revision != expected_revision + 1 or previous_digest != expected_digest:
             return False
-        async with self._pool.acquire() as conn, conn.transaction():
+        async with self._mutation(boot) as conn:
             row = await conn.fetchrow(
                 "UPDATE vault_state SET revision = $1, digest = $2, manifest = $3,"
                 " generation = generation + 1, updated_at = now()"
@@ -149,15 +200,23 @@ class VaultStore:
                 previous_digest,
                 manifest,
             )
+            if boot is not None:
+                boot.authorization_revision += 1
             return True
 
     async def set_state(
-        self, vault_id: bytes, state: str, *, expected_epoch: int, expected_generation: int
+        self,
+        vault_id: bytes,
+        state: str,
+        *,
+        expected_epoch: int,
+        expected_generation: int,
+        boot: ServingBoot | None = None,
     ) -> bool:
-        """Apply a verified control against the state it was admitted under."""
+        """Apply a verified control under the serving boot or offline leadership lock."""
         if state not in _CONTROL_FROM:
             raise ValueError(f"unknown control target {state!r}")
-        async with self._pool.acquire() as conn:
+        async with self._mutation(boot) as conn:
             row = await conn.fetchrow(
                 "UPDATE vault_state SET state = $1, epoch = epoch + 1,"
                 " generation = generation + 1, updated_at = now()"
@@ -169,10 +228,18 @@ class VaultStore:
                 expected_generation,
                 _CONTROL_FROM[state],
             )
-        return row is not None
+            if row is not None and boot is not None:
+                boot.authorization_revision += 1
+            return row is not None
 
     async def reserve_aead(
-        self, *, vault_id: bytes, cat: str, ver: int, count: int
+        self,
+        *,
+        vault_id: bytes,
+        cat: str,
+        ver: int,
+        count: int,
+        connection: asyncpg.Connection | None = None,
     ) -> ReservedWrites:
         """Reserve writes before sealing. Unused writes are burned on failure or restart."""
         vault_id = _id(vault_id, "vault_id")
@@ -185,7 +252,8 @@ class VaultStore:
         limit = policy().aes_gcm_operational_threshold
         if count > limit:
             raise VaultExhausted("the requested encryption budget exceeds the key limit")
-        balance = await self._pool.fetchval(
+        executor = self._pool if connection is None else connection
+        balance = await executor.fetchval(
             "INSERT INTO vault_aead_budget (vault_id, category, version, reserved)"
             " VALUES ($1, $2, $3, $4)"
             " ON CONFLICT (vault_id, category, version) DO UPDATE"
@@ -286,6 +354,16 @@ class VaultStore:
             _digest(session_hash, "session_hash"),
         )
         return row is not None
+
+    async def device_session(self, session_hash: bytes) -> asyncpg.Record | None:
+        return await self._pool.fetchrow(
+            "SELECT v.vault_id, v.device_id, v.epoch, v.generation, v.state"
+            " FROM vault_session s JOIN vault_state v ON v.vault_id = s.vault_id"
+            " AND v.device_id = s.device_id AND v.epoch = s.epoch"
+            " WHERE s.session_hash = $1 AND s.kind = 'device' AND s.revoked_at IS NULL"
+            " AND s.expires_at > now() AND v.state IN ('locked', 'available')",
+            _digest(session_hash, "session_hash"),
+        )
 
     # -- ingress queue -----------------------------------------------------
 
@@ -428,6 +506,80 @@ class VaultStore:
             table_name,
             _digest(stable_id, "stable_id"),
         )
+
+
+class ServingBoot:
+    """Revocable session ownership for one serving boot."""
+
+    def __init__(self, connection: asyncpg.Connection, pool: asyncpg.Pool) -> None:
+        self._connection = connection
+        self._pool = pool
+        self._checks = asyncio.Lock()
+        self.lost = asyncio.Event()
+        self.publication = asyncio.Lock()
+        self.authorization_revision = 0
+
+    def _connection_lost(self, _connection: asyncpg.Connection) -> None:
+        self.lost.set()
+
+    async def check(self) -> None:
+        """Confirm the lock is still held by this session, including through poolers."""
+        async with self._checks:
+            await self._check_lock()
+
+    async def _check_lock(self) -> None:
+        if self.lost.is_set():
+            raise VaultProtocolError("stale_generation")
+        try:
+            held = await self._connection.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory'"
+                " AND pid = pg_backend_pid() AND classid = $1::oid AND objid = $2::oid"
+                " AND objsubid = 2 AND mode = 'ExclusiveLock' AND granted)",
+                *_SERVING_LOCK,
+                timeout=2.0,
+            )
+        except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError):
+            self.lost.set()
+            raise VaultProtocolError("stale_generation") from None
+        if not held or self.lost.is_set():
+            self.lost.set()
+            raise VaultProtocolError("stale_generation")
+
+    @asynccontextmanager
+    async def mutation(self) -> AsyncIterator[asyncpg.Connection]:
+        async with self.publication:
+            await self.check()
+            async with self._pool.acquire() as conn, conn.transaction():
+                yield conn
+                await self.check()
+
+    @asynccontextmanager
+    async def transaction(
+        self,
+        *,
+        vault_id: bytes,
+        generation: int,
+        epoch: int,
+        manifest_digest: bytes,
+        check: Callable[[], None] | None = None,
+    ) -> AsyncIterator[asyncpg.Connection]:
+        """Fence effects against takeover, an epoch change or a new manifest."""
+        await self.check()
+        async with self._pool.acquire() as conn, conn.transaction():
+            current = await conn.fetchval(
+                "SELECT generation FROM vault_state WHERE vault_id = $1 AND generation = $2"
+                " AND epoch = $3 AND digest = $4 AND state = 'available' FOR SHARE",
+                vault_id,
+                generation,
+                epoch,
+                manifest_digest,
+            )
+            if current is None:
+                raise VaultProtocolError("stale_generation")
+            yield conn
+            await self.check()
+            if check is not None:
+                check()
 
 
 def queue_is_complete(row: asyncpg.Record | None, parts: list[asyncpg.Record]) -> bool:

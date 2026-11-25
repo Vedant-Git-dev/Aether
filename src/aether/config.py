@@ -49,6 +49,12 @@ class Settings(BaseSettings):
         default="", validation_alias="AETHER_TOKEN_ENCRYPTION_KEY_PREVIOUS_ID"
     )
     api_token: str = Field(default="", validation_alias="AETHER_TOKEN")
+    vault_request_signing_key: str = Field(
+        default="", validation_alias="AETHER_VAULT_REQUEST_SIGNING_KEY", repr=False
+    )
+    vault_pending_wait_seconds: int = Field(
+        default=15, ge=0, le=30, validation_alias="AETHER_VAULT_PENDING_WAIT_SECONDS"
+    )
     dev_ephemeral_key: bool = Field(default=False, validation_alias="AETHER_DEV_EPHEMERAL_KEY")
 
     database_url: str = ""
