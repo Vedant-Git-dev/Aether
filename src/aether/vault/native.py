@@ -151,6 +151,41 @@ class _KeySlot:
             self._claimed = True
 
 
+class NativeHistoricalLookup:
+    """A protected HMAC key for one historical lookup domain.
+
+    The slot holds a previously derived HMAC subkey. The handle can calculate
+    a lookup tag and cannot decrypt legacy content.
+    """
+
+    def __init__(self, slot: _KeySlot) -> None:
+        slot.claim()
+        self._slot = slot
+
+    def tag(self, value: bytes) -> bytes:
+        if not isinstance(value, bytes):
+            raise VaultFormatError("historical lookup needs bytes")
+        if not self._slot.owned_by_current_process():
+            raise VaultClosed("the native key slot belongs to a different process")
+        with self._slot.lock:
+            key = self._slot.address
+            state = key + KEY_BYTES
+            out = c.create_string_buffer(KEY_BYTES)
+            try:
+                if (
+                    self._slot.lib.crypto_auth_hmacsha256_init(state, key, KEY_BYTES) != 0
+                    or self._slot.lib.crypto_auth_hmacsha256_update(state, value, len(value)) != 0
+                    or self._slot.lib.crypto_auth_hmacsha256_final(state, out) != 0
+                ):
+                    raise VaultFormatError("historical lookup failed")
+                return out.raw
+            finally:
+                self._slot.lib.sodium_memzero(state, mmap.PAGESIZE - KEY_BYTES)
+
+    def close(self) -> None:
+        self._slot.close()
+
+
 class NativeKeyHandle:
     """A single-owner handle. A read grant can omit the reserved write balance."""
 

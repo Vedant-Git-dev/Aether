@@ -8,9 +8,12 @@ target with no legacy pages.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import secrets
+import warnings
 from datetime import UTC, datetime, timedelta
+from getpass import GetPassWarning
 from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
@@ -18,24 +21,36 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fake_vault import FakeVault
+from software_vault import VaultDenied, open_grant
+from test_software_vault import NOW, boot_pair, make_request, new_vault, pin_operator
 
+from aether.alerts.notifications import AlertNotifications
+from aether.alerts.spec import AlertEvent, AlertSpec
+from aether.alerts.store import AlertStore
 from aether.authz.audit import AuditLog, checkpoint_bytes, matches_checkpoint
 from aether.config import ContactsConfig, MediaConfig
 from aether.connectors.processed import ProcessedUpdates
 from aether.media.store import MediaStore
+from aether.memory.conclusions import Conclusions
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.db import run_migrations
 from aether.memory.deliveries import Deliveries
 from aether.memory.events import EventStore, content_hash
+from aether.memory.focus import Focus, FocusState
+from aether.memory.inbound import DbInboundStates
 from aether.memory.storage import ScopedStore
+from aether.origin import owner_message
 from aether.proactive.store import ProactiveStore
 from aether.providers.crypto import TokenKeyring
 from aether.providers.store import ProviderStore
 from aether.providers.types import ProviderConnection
 from aether.vault.operator_migrate import (
+    LegacyKeyIds,
     LegacyKeys,
     MaintenanceRefused,
     migrate,
+    migrate_workspace_disk,
+    read_legacy_keys,
 )
 from aether.vault.schema import AE2_MAGIC, CATEGORIES
 from aether.vault.scope import VaultLocked
@@ -101,6 +116,26 @@ def _legacy_cipher() -> Cipher:
 
 def _keyring() -> TokenKeyring:
     return TokenKeyring(active_id="k1", active_key_b64=generate_key_b64())
+
+
+async def test_legacy_key_input_refuses_echo_and_unapproved_tasks(monkeypatch) -> None:
+    def echo_fallback(_prompt):
+        warnings.warn("cannot disable echo", GetPassWarning, stacklevel=2)
+        pytest.fail("fallback must never read a legacy key")
+
+    monkeypatch.setattr("aether.vault.operator_migrate.getpass", echo_fallback)
+    vault = FakeVault(vault_id=VAULT_ID)
+    async with vault.acquire(TASK, "turn", [("memory", 1)]) as scope:
+        with pytest.raises(MaintenanceRefused, match="open maintenance scope"):
+            read_legacy_keys(scope, active_id="k1")
+    async with vault.acquire(TASK, "maintenance", [("memory", 1)]) as scope:
+        with pytest.raises(MaintenanceRefused, match="protected input"):
+            read_legacy_keys(scope, active_id="k1")
+        key = generate_key_b64()
+        monkeypatch.setattr("aether.vault.operator_migrate.getpass", lambda _: key)
+        keys = read_legacy_keys(scope, active_id="old")
+        blob = Cipher.from_b64(key, key_id="old").encrypt_bytes(b"sample", "sample:aad")
+        assert keys.active.decrypt_bytes(blob, "sample:aad") == b"sample"
 
 
 async def _seed_legacy(db, active: Cipher, previous: Cipher, keyring: TokenKeyring) -> None:
@@ -286,6 +321,68 @@ async def test_migration_requires_the_maintenance_categories(db, shadow) -> None
             )
 
 
+async def test_owner_consented_test_vault_grant_migrates_delivery(db, shadow, monkeypatch) -> None:
+    legacy_key = generate_key_b64()
+    old = Cipher.from_b64(legacy_key)
+    await Deliveries(db, old).record_queued("telegram", "synthetic pending reply")
+    phone = new_vault()
+    private, public = boot_pair()
+    request, body = make_request(
+        phone,
+        epk=public,
+        operation="maintenance",
+        use_case="maintenance",
+        refs=[{"cat": "operations", "ver": 1}],
+        task=TASK,
+    )
+    request, origin = pin_operator(phone, body)
+    with pytest.raises(VaultDenied) as denied:
+        phone.issue(request, now=NOW, origin=origin)
+    assert denied.value.reason == "user_required"
+    phone.consent(request, origin=origin)
+    grant = phone.issue(request, now=NOW, origin=origin)
+    _, keys = open_grant(
+        grant.envelope,
+        body,
+        phone_public=phone.phone_public,
+        boot_private=private.private_bytes_raw(),
+        now=NOW,
+    )
+    vault = FakeVault(vault_id=VAULT_ID, keys=keys)
+    monkeypatch.setattr("aether.vault.operator_migrate.getpass", lambda _: legacy_key)
+    async with vault.acquire(TASK, "maintenance", list(keys)) as scope:
+        await migrate(
+            db,
+            shadow,
+            scope=scope,
+            key_ids=LegacyKeyIds(old.key_id),
+            job_id=JOB,
+            tables=["deliveries"],
+        )
+        pending = await Deliveries.scoped(shadow, scope).undelivered()
+        assert pending[0].body == "synthetic pending reply"
+    with pytest.raises(VaultDenied):
+        phone.issue(request, now=NOW, origin=origin)
+    phone.end_maintenance()
+
+
+async def test_full_empty_migration_accepts_initialized_shadow_vault(db, shadow) -> None:
+    store = VaultStore(shadow)
+    await store.create(
+        vault_id=VAULT_ID,
+        device_id=TASK,
+        digest=bytes(32),
+        manifest=b"synthetic manifest",
+        pins=b"synthetic pins",
+    )
+    async with FakeVault(vault_id=VAULT_ID).acquire(TASK, "maintenance", ALL_REFS) as scope:
+        result = await migrate(
+            db, shadow, scope=scope, keys=LegacyKeys(_legacy_cipher()), job_id=JOB
+        )
+        assert all(report.rows == 0 for report in result.tables)
+        assert await store.load(VAULT_ID) is not None
+
+
 async def test_migration_rolls_back_row_when_journal_fails_and_resumes(db, shadow) -> None:
     old = _legacy_cipher()
     await Deliveries(db, old).record_queued("telegram", "first")
@@ -387,6 +484,86 @@ async def test_workbench_transfer_survives_migration_and_remains_single_use(db, 
         assert await transfers.take_bundle(ticket.token) is None
 
 
+async def test_disk_workspace_copy_is_repeatable_and_preserves_source(db, shadow, tmp_path) -> None:
+    old = _legacy_cipher()
+    user = tmp_path / "USER.md"
+    user.write_text("synthetic preference", encoding="utf-8")
+    daily = tmp_path / "memory"
+    daily.mkdir()
+    note = daily / "2026-11-24.md"
+    original = b"aether-workspace\x01" + old.encrypt_text(
+        "synthetic daily note", aad="workspace:file:memory/2026-11-24.md"
+    )
+    note.write_bytes(original)
+    async with FakeVault(vault_id=VAULT_ID).acquire(TASK, "maintenance", ALL_REFS) as scope:
+        args = {"scope": scope, "keys": LegacyKeys(old), "job_id": JOB}
+        first = await migrate_workspace_disk(shadow, tmp_path, **args)
+        assert (first.rows, first.migrated) == (2, 2)
+        second = await migrate_workspace_disk(shadow, tmp_path, **args)
+        assert (second.rows, second.resumed) == (2, 2)
+        workspace = Workspace.scoped(shadow, scope)
+        assert await workspace.read("user") == "synthetic preference"
+        assert await workspace.read("daily", date_str="2026-11-24") == "synthetic daily note"
+        user.write_text("changed source", encoding="utf-8")
+        with pytest.raises(MaintenanceRefused, match="conflicts"):
+            await migrate_workspace_disk(shadow, tmp_path, **args)
+    assert note.read_bytes() == original
+
+
+async def test_ciphertext_only_backup_restores_pending_delivery(db, shadow, shadow_dsn) -> None:
+    old = _legacy_cipher()
+    canary = "synthetic-restore-canary-4a73"
+    await Deliveries(db, old).record_queued("telegram", canary)
+    vault = FakeVault(vault_id=VAULT_ID)
+    async with vault.acquire(TASK, "maintenance", ALL_REFS) as scope:
+        await migrate(
+            db, shadow, scope=scope, keys=LegacyKeys(old), job_id=JOB, tables=["deliveries"]
+        )
+        dump = await asyncio.create_subprocess_exec(
+            "pg_dump",
+            "--no-owner",
+            "--no-acl",
+            "--dbname",
+            shadow_dsn,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        backup, error = await dump.communicate()
+        assert dump.returncode == 0, error.decode(errors="replace")
+        assert canary.encode() not in backup
+
+        name = f"aether_test_restore_{secrets.token_hex(8)}"
+        await db.execute(f"CREATE DATABASE {name}")  # noqa: S608 - generated identifier
+        restored = None
+        try:
+            parsed = urlsplit(shadow_dsn)
+            restore_url = (
+                urlunsplit(parsed._replace(path=f"/{name}"))
+                if parsed.netloc
+                else f"{parsed.scheme}:///{name}?{parsed.query}"
+            )
+            restore = await asyncio.create_subprocess_exec(
+                "psql",
+                "-X",
+                "--set",
+                "ON_ERROR_STOP=1",
+                "--dbname",
+                restore_url,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, error = await restore.communicate(backup)
+            assert restore.returncode == 0, error.decode(errors="replace")
+            restored = await asyncpg.create_pool(restore_url, min_size=1, max_size=2)
+            rows = await Deliveries.scoped(restored, scope).undelivered()
+            assert len(rows) == 1 and rows[0].body == canary
+        finally:
+            if restored is not None:
+                await restored.close()
+            await db.execute(f"DROP DATABASE {name} WITH (FORCE)", timeout=300)  # noqa: S608
+
+
 async def test_provider_sync_cursors_with_shared_provider_survive_resume(db, shadow) -> None:
     old = _legacy_cipher()
     provider = ProviderStore(db, _keyring(), old)
@@ -404,6 +581,141 @@ async def test_provider_sync_cursors_with_shared_provider_survive_resume(db, sha
         scoped = ProviderStore.scoped(shadow, scope)
         assert await scoped.get_sync("google", "mail", "cursor") == "synthetic-mail-cursor"
         assert await scoped.get_sync("google", "calendar", "cursor") == "synthetic-calendar-cursor"
+
+
+async def test_counters_survive_shadow_migration_and_resume(db, shadow) -> None:
+    await db.execute(
+        "INSERT INTO daily_counters (day, searches, tasks) VALUES ('2026-11-24', 8, 3)"
+    )
+    await db.execute("INSERT INTO workbench_minutes (month, seconds) VALUES ('2026-11', 120)")
+    async with FakeVault(vault_id=VAULT_ID).acquire(TASK, "maintenance", ALL_REFS) as scope:
+        args = {
+            "scope": scope,
+            "keys": LegacyKeys(_legacy_cipher()),
+            "job_id": JOB,
+            "tables": ["daily_counters", "workbench_minutes"],
+        }
+        first = await migrate(db, shadow, **args)
+        assert all(table.migrated == 1 for table in first.tables)
+        second = await migrate(db, shadow, **args)
+        assert all(table.resumed == 1 for table in second.tables)
+        assert await shadow.fetchval("SELECT searches FROM daily_counters") == 8
+        assert await shadow.fetchval("SELECT seconds FROM workbench_minutes") == 120
+
+
+async def test_alerts_keep_conditions_and_legacy_watch_aad(db, shadow) -> None:
+    old = _legacy_cipher()
+    source = AlertStore(db, old, AuditLog(db))
+    alert = await source.create(
+        spec=AlertSpec(title="Synthetic invoice", scope="mail", contains="invoice"),
+        origin=owner_message(),
+    )
+    assert alert is not None
+    await db.execute(
+        "UPDATE alerts SET spec_enc = $1 WHERE id = $2",
+        old.encrypt_json(alert.spec.to_payload(), aad=f"watches:spec_enc:{alert.id}"),
+        alert.id,
+    )
+    async with FakeVault(vault_id=VAULT_ID).acquire(TASK, "maintenance", ALL_REFS) as scope:
+        args = {
+            "scope": scope,
+            "keys": LegacyKeys(old),
+            "job_id": JOB,
+            "tables": ["alerts"],
+        }
+        assert (await migrate(db, shadow, **args)).tables[0].migrated == 1
+        assert (await migrate(db, shadow, **args)).tables[0].resumed == 1
+        target = AlertStore.scoped(shadow, scope, AuditLog(shadow))
+        restored = await target.get(alert.id)
+        assert restored and restored.spec.contains == "invoice"
+
+
+async def test_notification_queue_and_dedup_survive_migration(db, shadow) -> None:
+    old = _legacy_cipher()
+    alert = await AlertStore(db, old, AuditLog(db)).create(
+        spec=AlertSpec(title="Synthetic", scope="mail", contains="invoice"),
+        origin=owner_message(),
+    )
+    assert alert is not None
+    event = AlertEvent(alert_id=alert.id, event_id=42, source="mail", kind="message")
+    assert await AlertNotifications(db, old).enqueue(event, style="immediate")
+    async with FakeVault(vault_id=VAULT_ID).acquire(TASK, "maintenance", ALL_REFS) as scope:
+        args = {
+            "scope": scope,
+            "keys": LegacyKeys(old),
+            "job_id": JOB,
+            "tables": ["alerts", "alert_notifications"],
+        }
+        await migrate(db, shadow, **args)
+        assert all(report.resumed == 1 for report in (await migrate(db, shadow, **args)).tables)
+        notifications = AlertNotifications.scoped(shadow, scope)
+        assert len(await notifications.recent()) == 1
+        assert await notifications.enqueue(event, style="immediate") is None
+
+
+async def test_notification_with_unrecoverable_custom_key_is_refused(db, shadow) -> None:
+    old = _legacy_cipher()
+    alert = await AlertStore(db, old, AuditLog(db)).create(
+        spec=AlertSpec(title="Synthetic", scope="mail", contains="invoice"),
+        origin=owner_message(),
+    )
+    assert alert is not None
+    event = AlertEvent(alert_id=alert.id, event_id=42, source="mail", kind="message")
+    notification_id = await AlertNotifications(db, old).enqueue(
+        event, style="immediate", key="synthetic-custom-key"
+    )
+    assert notification_id is not None
+    aad = f"alert_notifications:event_enc:{notification_id}"
+    blob = await db.fetchval(
+        "SELECT event_enc FROM alert_notifications WHERE id = $1", notification_id
+    )
+    legacy = old.decrypt_json(blob, aad)
+    del legacy["dedup_key"]
+    await db.execute(
+        "UPDATE alert_notifications SET event_enc = $1 WHERE id = $2",
+        old.encrypt_json(legacy, aad),
+        notification_id,
+    )
+    async with FakeVault(vault_id=VAULT_ID).acquire(TASK, "maintenance", ALL_REFS) as scope:
+        await migrate(db, shadow, scope=scope, keys=LegacyKeys(old), job_id=JOB, tables=["alerts"])
+        with pytest.raises(MaintenanceRefused, match="key_token input"):
+            await migrate(
+                db,
+                shadow,
+                scope=scope,
+                keys=LegacyKeys(old),
+                job_id=JOB,
+                tables=["alert_notifications"],
+            )
+    assert await shadow.fetchval("SELECT count(*) FROM alert_notifications") == 0
+
+
+async def test_notification_with_recorded_custom_key_remains_deduplicated(db, shadow) -> None:
+    old = _legacy_cipher()
+    alert = await AlertStore(db, old, AuditLog(db)).create(
+        spec=AlertSpec(title="Synthetic", scope="mail", contains="invoice"),
+        origin=owner_message(),
+    )
+    assert alert is not None
+    event = AlertEvent(alert_id=alert.id, event_id=42, source="mail", kind="message")
+    assert await AlertNotifications(db, old).enqueue(
+        event, style="immediate", key="synthetic-custom-key"
+    )
+    async with FakeVault(vault_id=VAULT_ID).acquire(TASK, "maintenance", ALL_REFS) as scope:
+        await migrate(
+            db,
+            shadow,
+            scope=scope,
+            keys=LegacyKeys(old),
+            job_id=JOB,
+            tables=["alerts", "alert_notifications"],
+        )
+        notifications = AlertNotifications.scoped(shadow, scope)
+        assert len(await notifications.recent()) == 1
+        assert (
+            await notifications.enqueue(event, style="immediate", key="synthetic-custom-key")
+            is None
+        )
 
 
 async def test_proactive_claim_remains_unique_after_migration(db, shadow) -> None:
@@ -438,6 +750,164 @@ async def test_proactive_claim_remains_unique_after_migration(db, shadow) -> Non
             )
             is None
         )
+
+
+async def test_inbound_identity_survives_migration_and_replay(db, shadow) -> None:
+    old = _legacy_cipher()
+    source = DbInboundStates(db, old)
+    inbound = await source.record("telegram", "synthetic-chat", "synthetic-message")
+    assert inbound is not None
+    async with FakeVault(vault_id=VAULT_ID).acquire(TASK, "maintenance", ALL_REFS) as scope:
+        args = {
+            "scope": scope,
+            "keys": LegacyKeys(old),
+            "job_id": JOB,
+            "tables": ["inbound_messages"],
+        }
+        assert (await migrate(db, shadow, **args)).tables[0].migrated == 1
+        assert (await migrate(db, shadow, **args)).tables[0].resumed == 1
+        target = DbInboundStates.scoped(shadow, scope)
+        assert (await target.get(inbound.id)).status == "received"
+        assert await target.record("telegram", "synthetic-chat", "synthetic-message") is None
+
+
+async def test_focus_and_conclusion_lookups_survive_migration(db, shadow) -> None:
+    old = _legacy_cipher()
+    await Focus(db, old).save("synthetic-chat", FocusState(open_task={"text": "synthetic"}))
+    await Conclusions(db, old).set("synthetic-question", {"answer": "synthetic"})
+    async with FakeVault(vault_id=VAULT_ID).acquire(TASK, "maintenance", ALL_REFS) as scope:
+        args = {
+            "scope": scope,
+            "keys": LegacyKeys(old),
+            "job_id": JOB,
+            "tables": ["focus", "conclusions"],
+        }
+        assert all(item.migrated == 1 for item in (await migrate(db, shadow, **args)).tables)
+        assert all(item.resumed == 1 for item in (await migrate(db, shadow, **args)).tables)
+        focus = await Focus.scoped(shadow, scope).get("synthetic-chat")
+        conclusion = await Conclusions.scoped(shadow, scope).get("synthetic-question")
+        assert focus and focus.open_task == {"text": "synthetic"}
+        assert conclusion and conclusion.value == {"answer": "synthetic"}
+
+
+async def test_legacy_focus_without_lookup_input_is_preserved_on_refusal(db, shadow) -> None:
+    old = _legacy_cipher()
+    await Focus(db, old).save("synthetic-chat", FocusState(open_task={"text": "synthetic"}))
+    row = await db.fetchrow("SELECT chat_ref_token, state_enc FROM focus")
+    aad = f"focus:state_enc:{bytes(row['chat_ref_token']).hex()}"
+    body = old.decrypt_json(row["state_enc"], aad)
+    del body["lookup_chat"]
+    legacy = old.encrypt_json(body, aad)
+    await db.execute("UPDATE focus SET state_enc = $1", legacy)
+    async with FakeVault(vault_id=VAULT_ID).acquire(TASK, "maintenance", ALL_REFS) as scope:
+        with pytest.raises(MaintenanceRefused, match="lookup input"):
+            await migrate(
+                db, shadow, scope=scope, keys=LegacyKeys(old), job_id=JOB, tables=["focus"]
+            )
+    assert await db.fetchval("SELECT state_enc FROM focus") == legacy
+    assert await shadow.fetchval("SELECT count(*) FROM focus") == 0
+
+
+async def test_confirmed_historical_tags_survive_migration_and_replay(db, shadow) -> None:
+    old = _legacy_cipher()
+    previous = Cipher.from_b64(generate_key_b64(), key_id="previous")
+    chat = "synthetic-chat"
+    key = "synthetic-answer"
+    await Focus(db, old).save(chat, FocusState(open_task={"text": "synthetic"}))
+    await Conclusions(db, old).set(key, "previous answer")
+    await DbInboundStates(db, old).record("telegram", chat, "42")
+    await db.execute("UPDATE inbound_messages SET identity_enc = NULL")
+    for table, column, tag, field in (
+        ("focus", "state_enc", old.blind_token("focus", chat), "lookup_chat"),
+        ("conclusions", "value_enc", old.blind_token("conclusion", key), "lookup_key"),
+    ):
+        encrypted = await db.fetchval(f"SELECT {column} FROM {table}")  # noqa: S608
+        aad = f"{table}:{column}:{tag.hex()}"
+        body = old.decrypt_json(encrypted, aad)
+        del body[field]
+        await db.execute(
+            f"UPDATE {table} SET {column} = $1",
+            old.encrypt_json(body, aad),  # noqa: S608
+        )
+    await db.execute(
+        "INSERT INTO forgotten_events (dedup_mac, source_token) VALUES ($1, $2)",
+        previous.dedup_mac(b"dedup:synthetic-forgotten"),
+        previous.blind_token("source", "gmail"),
+    )
+
+    class Lookup:
+        def __init__(self, cipher, purpose):
+            self.cipher = cipher
+            self.purpose = purpose
+
+        def tag(self, value):
+            if self.purpose:
+                return self.cipher.blind_token(self.purpose, value)
+            return self.cipher.dedup_mac(value)
+
+        def close(self):
+            pass
+
+    vault = FakeVault(vault_id=VAULT_ID)
+    args = {
+        "job_id": JOB,
+        "keys": LegacyKeys(old, previous),
+        "historical_source_complete": True,
+        "tables": ["events", "focus", "conclusions", "inbound_messages"],
+    }
+    async with vault.acquire(TASK, "maintenance", ALL_REFS) as scope:
+        with pytest.raises(MaintenanceRefused, match="missing a historical lookup key"):
+            await migrate(db, shadow, scope=scope, **args)
+        domains = {
+            "event.dedup": None,
+            "focus.chat": "focus",
+            "conclusion.key": "conclusion",
+            "inbound.key": "inbound-key",
+            "inbound.chat": "inbound-chat",
+            "inbound.message": "inbound-message",
+        }
+        scope._historical.update(
+            {
+                domain: (Lookup(old, purpose), Lookup(previous, purpose))
+                for domain, purpose in domains.items()
+            }
+        )
+        assert (await migrate(db, shadow, scope=scope, **args)).for_table(
+            "forgotten_events"
+        ).migrated == 1
+        assert (await migrate(db, shadow, scope=scope, **args)).for_table(
+            "forgotten_events"
+        ).resumed == 1
+        store = EventStore.scoped(shadow, scope, AuditLog(shadow), ContactsConfig())
+        replay = await store.ingest(
+            source="gmail", kind="message", payload={}, dedup_key="synthetic-forgotten"
+        )
+        assert replay.reason == "forgotten"
+        assert await DbInboundStates.scoped(shadow, scope).record("telegram", chat, "42") is None
+        focus = Focus.scoped(shadow, scope)
+        assert (await focus.get(chat)).open_task == {"text": "synthetic"}
+        await focus.save(chat, FocusState())
+        assert (await focus.get(chat)).open_task is None
+        conclusions = Conclusions.scoped(shadow, scope)
+        assert (await conclusions.get(key)).value == "previous answer"
+        await conclusions.forget(key)
+        assert await conclusions.get(key) is None
+        await conclusions.set(key, "current answer")
+        assert (await conclusions.get(key)).value == "current answer"
+        assert await shadow.fetchval("SELECT count(*) FROM focus") == 1
+        assert await shadow.fetchval("SELECT count(*) FROM conclusions") == 1
+
+    async with vault.acquire(TASK, "turn", [("memory", 1), ("operations", 1)]) as scope:
+        store = EventStore.scoped(shadow, scope, AuditLog(shadow), ContactsConfig())
+        scope._historical["event.dedup"] = (Lookup(old, None),)
+        with pytest.raises(VaultLocked, match="historical"):
+            await store.ingest(
+                source="gmail", kind="message", payload={}, dedup_key="synthetic-forgotten"
+            )
+        with pytest.raises(VaultLocked, match="historical"):
+            await Focus.scoped(shadow, scope).get(chat)
+        with pytest.raises(VaultLocked, match="historical"):
+            await DbInboundStates.scoped(shadow, scope).record("telegram", chat, "42")
 
 
 async def test_pre_cutover_unprefixed_event_copies_to_fresh_target(db, shadow) -> None:

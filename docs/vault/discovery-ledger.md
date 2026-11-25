@@ -69,11 +69,11 @@ Categories follow the approved category table.
 | `held_notes` | `id` | `id`, `created_at`, `key_version` | `body_enc` | — | `held_notes:<col>:<id>` |
 
 `commitment_reminders` stores scheduling metadata. Classify its linkage and timing before converting the store.
-`forgotten_events` is the one place a tombstone must survive with no
-reconstructible plaintext. The operator stops when a migration encounters
-forgotten-event markers. The owner approved a restricted historical lookup
-key to preserve suppression. Its custody and every historical marker format
-must be verified before the migration can accept those markers.
+`forgotten_events` keeps opaque markers after their inputs are deleted. The
+operator can retain those markers when source key coverage is independently
+confirmed and the maintenance grant can prove it holds the restricted lookup
+keys. The shadow records the required HMAC proofs with the markers. A scoped
+task without those keys cannot ingest events into the shadow.
 
 ### workspace
 
@@ -398,7 +398,8 @@ equality is needed.
 | Legacy backup retention | Delete old decryption material at cutover. Serving environment keys, database backups, `.env`/`deploy-secrets`, password-manager copies and setup artifacts are destroyed when the cutover is signed off. Pre-cutover copies remain exposed until then. |
 | Android before iOS | Android first; production only after the agreed Android scope passes. |
 | Ambiguous field classification, route/sink matrix, per-source acknowledgement contract, UI/egress inventory | Owner accepted the proposed approach; these are ledger work items, not open decisions. |
-| Forgotten-event tombstones across the key change | The owner approved retaining a restricted historical lookup key to preserve suppression. The stored tag cannot be re-derived after its input has been destroyed. The operator continues to refuse migration when these markers exist until restricted custody and replay suppression across historical formats have been proven. |
+| Forgotten-event tombstones across the key change | The owner approved retaining restricted lookup keys to preserve suppression. For an actual source, confirm the active and previous keys cover its rotation history before enabling retention. Markers cannot establish their own key provenance. |
+| Historical inbound, focus and conclusion lookups | The owner approved retaining the restricted lookup keys. The shadow retains old tags when inputs are absent, checks the required key proofs, and reseals recoverable content. If coverage is incomplete or unknown, refuse the affected migration. |
 
 
 ## 13. Route, sink and source matrix

@@ -16,7 +16,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from ..vault.scope import KeyScope
 from .crypto import Cipher
-from .storage import ScopedStore
+from .storage import ScopedStore, historical_lookup_proofs
 
 
 @runtime_checkable
@@ -68,6 +68,10 @@ class Rows(Protocol):
 
     def token(self, domain: str, legacy_purpose: str, value: str | bytes) -> bytes: ...
 
+    async def historical_tokens(
+        self, db: Any, domain: str, value: str | bytes
+    ) -> tuple[bytes, ...]: ...
+
     def dedup(self, domain: str, data: bytes) -> bytes: ...
 
 
@@ -75,6 +79,11 @@ class CipherRows:
     """The legacy serving path; byte-for-byte the existing Cipher calls."""
 
     scoped = False
+
+    async def historical_tokens(
+        self, db: Any, domain: str, value: str | bytes
+    ) -> tuple[bytes, ...]:
+        return ()
 
     def __init__(self, cipher: Cipher) -> None:
         self._cipher = cipher
@@ -157,6 +166,15 @@ class ScopedRows:
 
     def token(self, domain: str, legacy_purpose: str, value: str | bytes) -> bytes:
         return self._scope.token(domain, value)
+
+    async def historical_tokens(
+        self, db: Any, domain: str, value: str | bytes
+    ) -> tuple[bytes, ...]:
+        required = await historical_lookup_proofs(db, domain)
+        if not required:
+            return ()
+        self._scope.require_historical(domain, required)
+        return self._scope.historical_tags(domain, value)
 
     def dedup(self, domain: str, data: bytes) -> bytes:
         return self._scope.dedup(domain, data)

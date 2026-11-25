@@ -228,6 +228,7 @@ PLAINTEXT_ALLOWLIST: dict[str, frozenset[str]] = {
     "workspace_files": frozenset({"id", "name_token", "updated_at", "key_version"}),
     # a forgotten event's tombstone: two keyed blind tokens and a stamp
     "forgotten_events": frozenset({"dedup_mac", "source_token", "forgotten_at"}),
+    "historical_lookup_requirements": frozenset({"domain", "proofs"}),
     # the inbound ledger: the surface name and the status word are config
     # vocabulary, everything user-derived is a keyed token or sealed
     "inbound_messages": frozenset(
@@ -362,7 +363,7 @@ SEALED_COLUMNS: dict[str, frozenset[str]] = {
     "audit_log": frozenset({"payload_enc"}),
     "held_notes": frozenset({"body_enc"}),
     "workspace_files": frozenset({"name_enc", "content_enc"}),
-    "inbound_messages": frozenset({"reason_enc", "outcome_enc"}),
+    "inbound_messages": frozenset({"reason_enc", "outcome_enc", "identity_enc"}),
     "vault_ingress_queue": frozenset({"ciphertext_enc"}),
     "vault_ingress_part": frozenset({"ciphertext_enc"}),
     "vault_migration_journal": frozenset({"detail_enc"}),

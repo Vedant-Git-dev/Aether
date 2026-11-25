@@ -135,11 +135,16 @@ class Focus:
         read — a lost object costs a reference, never the turn)."""
         self._rows.preflight()
         token = self._token(chat_ref)
+        history = await self._rows.historical_tokens(self._pool, "focus.chat", chat_ref or "")
         row = await self._pool.fetchrow(
-            "SELECT state_enc FROM focus WHERE chat_ref_token = $1", token
+            "SELECT chat_ref_token, state_enc FROM focus WHERE chat_ref_token = ANY($2::bytea[])"
+            " ORDER BY (chat_ref_token = $1) DESC, updated_at DESC, chat_ref_token LIMIT 1",
+            token,
+            [token, *history],
         )
         if row is None:
             return None
+        token = row["chat_ref_token"]
         try:
             return FocusState.from_payload(
                 self._rows.open(
@@ -159,8 +164,11 @@ class Focus:
     async def save(self, chat_ref: str, state: FocusState) -> None:
         self._rows.preflight()
         token = self._token(chat_ref)
+        history = await self._rows.historical_tokens(self._pool, "focus.chat", chat_ref or "")
         state.updated_at = datetime.now(UTC)
         await self._pool.execute(
+            "WITH retired AS (DELETE FROM focus"
+            " WHERE chat_ref_token = ANY($4::bytea[]) AND chat_ref_token <> $1)"
             "INSERT INTO focus (chat_ref_token, state_enc, key_version, updated_at)"
             " VALUES ($1, $2, $3, now())"
             " ON CONFLICT (chat_ref_token) DO UPDATE SET"
@@ -168,13 +176,14 @@ class Focus:
             " updated_at = now()",
             token,
             self._rows.seal(
-                state.to_payload(),
+                {**state.to_payload(), "lookup_chat": chat_ref or ""},
                 table="focus",
                 column="state_enc",
                 row_id=token.hex(),
                 aad=self._aad(token),
             ),
             self._rows.key_version,
+            list(history),
         )
 
     async def record_turn(

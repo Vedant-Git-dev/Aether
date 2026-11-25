@@ -102,7 +102,7 @@ class AlertNotifications:
                 await conn.execute(
                     "UPDATE alert_notifications SET event_enc = $1 WHERE id = $2",
                     self._rows.seal(
-                        event.to_payload(),
+                        {**event.to_payload(), "dedup_key": key},
                         table="alert_notifications",
                         column="event_enc",
                         row_id=notification_id,

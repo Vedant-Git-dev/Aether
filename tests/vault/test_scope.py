@@ -151,6 +151,29 @@ async def test_dedup_is_domain_separated_and_needs_its_grant() -> None:
             scope.dedup("media.content", b"same")
 
 
+async def test_historical_lookup_requires_its_category_and_closes() -> None:
+    class Lookup:
+        closed = False
+
+        def tag(self, value: bytes) -> bytes:
+            return b"tag:" + value
+
+        def close(self) -> None:
+            self.closed = True
+
+    lookup = Lookup()
+    vault = FakeVault(vault_id=VAULT_ID)
+    async with vault.acquire(TASK, "turn", [("operations", 1)]) as scope:
+        scope._historical["event.dedup"] = (lookup,)
+        with pytest.raises(VaultLocked):
+            scope.historical_tags("event.dedup", b"synthetic")
+        with pytest.raises(VaultProtocolError):
+            scope.token("unregistered", "synthetic")
+    assert lookup.closed
+    with pytest.raises(VaultClosed):
+        scope.historical_tags("event.dedup", b"synthetic")
+
+
 async def test_close_retires_every_handle_even_when_one_fails() -> None:
     class Handle:
         def __init__(self, cat: str, broken: bool = False) -> None:

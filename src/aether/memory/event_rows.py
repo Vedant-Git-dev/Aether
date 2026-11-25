@@ -17,7 +17,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from ..vault.scope import KeyScope
 from .crypto import Cipher
-from .storage import ScopedStore
+from .storage import ScopedStore, historical_lookup_proofs
 
 _TABLE = "events"
 
@@ -38,6 +38,10 @@ class EventRows(Protocol):
     def source_token(self, source: str) -> bytes: ...
 
     def dedup_tag(self, data: bytes) -> bytes: ...
+
+    def historical_dedup_tags(self, data: bytes) -> tuple[bytes, ...]: ...
+
+    async def verify_historical_dedup(self, connection: Any) -> None: ...
 
 
 class CipherEventRows:
@@ -66,6 +70,12 @@ class CipherEventRows:
 
     def dedup_tag(self, data: bytes) -> bytes:
         return self._cipher.dedup_mac(data)
+
+    def historical_dedup_tags(self, data: bytes) -> tuple[bytes, ...]:
+        return ()
+
+    async def verify_historical_dedup(self, connection: Any) -> None:
+        pass
 
 
 class ScopedEventRows:
@@ -104,3 +114,11 @@ class ScopedEventRows:
 
     def dedup_tag(self, data: bytes) -> bytes:
         return self._scope.dedup("event.dedup", data)
+
+    def historical_dedup_tags(self, data: bytes) -> tuple[bytes, ...]:
+        return self._scope.historical_tags("event.dedup", data)
+
+    async def verify_historical_dedup(self, connection: Any) -> None:
+        required = await historical_lookup_proofs(connection, "event.dedup")
+        if required:
+            self._scope.require_historical("event.dedup", required)

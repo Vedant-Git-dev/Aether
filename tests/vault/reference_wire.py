@@ -399,10 +399,11 @@ def device_wrap(
     *,
     iv: bytes | None = None,
     alg: str = "android-keystore-aes-gcm",
+    historical_id: str | None = None,
 ) -> dict[str, str]:
     if alg != "android-keystore-aes-gcm":
         raise VaultProtocolError("bad_field", "software device wrap only implements Android")
-    header = wrap_header(vault_id, cat, ver)
+    header = _wrap_context(vault_id, cat, ver, historical_id)
     plaintext = canonical_bytes({"header": header, "key": b64u_encode(category_key)})
     iv = secrets.token_bytes(IV_BYTES) if iv is None else iv
     if len(iv) != IV_BYTES:
@@ -411,14 +412,34 @@ def device_wrap(
     return {"alg": alg, "blob": b64u_encode(blob)}
 
 
-def device_unwrap(master_key: bytes, vault_id: bytes, cat: str, ver: int, wrap: Any) -> bytes:
+def _wrap_context(vault_id: bytes, cat: str, ver: int, historical_id: str | None) -> dict:
+    if historical_id is None:
+        return wrap_header(vault_id, cat, ver)
+    return {
+        "v": PROTOCOL_VERSION,
+        "vault": b64u_encode(vault_id),
+        "domain": cat,
+        "id": historical_id,
+        "type": "historical_lookup",
+    }
+
+
+def device_unwrap(
+    master_key: bytes,
+    vault_id: bytes,
+    cat: str,
+    ver: int,
+    wrap: Any,
+    *,
+    historical_id: str | None = None,
+) -> bytes:
     data = _exact(wrap, ("alg", "blob"), "device wrap")
     if data["alg"] != "android-keystore-aes-gcm":
         raise VaultProtocolError("bad_field", "unknown device wrap algorithm")
     blob = b64u_decode(data["blob"], field="device wrap blob")
     if len(blob) < IV_BYTES + GCM_TAG_BYTES:
         raise VaultProtocolError("bad_field", "device wrap is too short")
-    header = wrap_header(vault_id, cat, ver)
+    header = _wrap_context(vault_id, cat, ver, historical_id)
     try:
         plaintext = AESGCM(master_key).decrypt(
             blob[:IV_BYTES], blob[IV_BYTES:], canonical_bytes(header)
@@ -439,8 +460,9 @@ def backup_wrap(
     category_key: bytes,
     *,
     ephemeral_private: bytes | None = None,
+    historical_id: str | None = None,
 ) -> dict[str, str]:
-    header = wrap_header(vault_id, cat, ver)
+    header = _wrap_context(vault_id, cat, ver, historical_id)
     if len(category_key) != KEY_BYTES:
         raise VaultProtocolError("bad_field", "backup key has the wrong length")
     return hpke_seal(
@@ -448,8 +470,16 @@ def backup_wrap(
     )
 
 
-def backup_unwrap(recovery_private: bytes, vault_id: bytes, cat: str, ver: int, box: Any) -> bytes:
-    header = wrap_header(vault_id, cat, ver)
+def backup_unwrap(
+    recovery_private: bytes,
+    vault_id: bytes,
+    cat: str,
+    ver: int,
+    box: Any,
+    *,
+    historical_id: str | None = None,
+) -> bytes:
+    header = _wrap_context(vault_id, cat, ver, historical_id)
     key = hpke_open(recovery_private, "recovery", header, box)
     if len(key) != KEY_BYTES:
         raise VaultProtocolError("bad_field", "backup key has the wrong length")

@@ -64,7 +64,7 @@ def make_request(
         "v": 1,
         "type": "lease_request",
         "vault": schema.b64u_encode(VAULT_ID),
-        "device": schema.b64u_encode(DEVICE_ID),
+        "device": schema.b64u_encode(vault.device_id),
         "epoch": vault.epoch if epoch is None else epoch,
         "boot": schema.b64u_encode(boot or bytes(range(96, 112))),
         "task": schema.b64u_encode(task or bytes(range(112, 128))),
@@ -93,6 +93,17 @@ def make_request(
 def boot_pair() -> tuple[X25519PrivateKey, bytes]:
     private = X25519PrivateKey.generate()
     return private, private.public_key().public_bytes_raw()
+
+
+def pin_operator(vault: SoftwareVault, body: dict) -> tuple[dict, str]:
+    private = ec.generate_private_key(ec.SECP256R1())
+    public = private.public_key().public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
+    origin = "https://operator.example.test"
+    vault.pin_maintenance(public, origin, schema.b64u_decode(body["task"], field="task"))
+    raw = private.private_numbers().private_value.to_bytes(32, "big")
+    return wire.sign_body(
+        body, wire.ec_private_key(raw), alg="ES256", kid=wire.signer_id(public)
+    ), origin
 
 
 def test_enroll_manifest_is_signed_and_complete() -> None:
@@ -391,21 +402,88 @@ def test_issue_rejects_wrong_pairing_pin(field: str) -> None:
 def test_sensitive_grant_requires_local_consent(operation: str) -> None:
     vault = new_vault()
     _, epk = boot_pair()
-    request, _ = make_request(
+    request, body = make_request(
         vault,
         epk=epk,
         operation=operation,
         use_case=operation,
         refs=[{"cat": "credentials", "ver": 1}],
     )
+    origin = None
+    if operation == "maintenance":
+        request, origin = pin_operator(vault, body)
     with pytest.raises(VaultDenied) as caught:
-        vault.issue(request, now=NOW)
+        vault.issue(request, now=NOW, origin=origin)
     assert caught.value.reason == "user_required"
-    vault.consent(request)
-    assert vault.issue(request, now=NOW).body["refs"] == [{"cat": "credentials", "ver": 1}]
+    vault.consent(request, origin=origin)
+    assert vault.issue(request, now=NOW, origin=origin).body["refs"] == [
+        {"cat": "credentials", "ver": 1}
+    ]
     with pytest.raises(VaultDenied) as replay:
-        vault.issue(request, now=NOW)
+        vault.issue(request, now=NOW, origin=origin)
     assert replay.value.reason == "stale"
+
+
+def test_maintenance_pin_rejects_wrong_host_signer_and_task_and_expires() -> None:
+    vault = new_vault()
+    _, epk = boot_pair()
+    server_request, body = make_request(
+        vault, epk=epk, operation="maintenance", use_case="maintenance"
+    )
+    with pytest.raises(VaultProtocolError):
+        vault.consent(server_request)
+    request, origin = pin_operator(vault, body)
+    with pytest.raises(VaultProtocolError):
+        vault.consent(server_request, origin=origin)
+    with pytest.raises(VaultProtocolError):
+        vault.consent(request, origin="https://other.example.test")
+    public = vault._maintenance_pin[0]
+    vault.pin_maintenance(public, origin, bytes(16))
+    with pytest.raises(VaultProtocolError):
+        vault.consent(request, origin=origin)
+    vault.pin_maintenance(public, origin, schema.b64u_decode(body["task"], field="task"))
+    vault.consent(request, origin=origin)
+    vault.end_maintenance()
+    with pytest.raises(VaultProtocolError):
+        vault.issue(request, now=NOW, origin=origin)
+
+
+def test_historical_lookup_grants_are_scoped_and_survive_restore() -> None:
+    vault = new_vault()
+    boot, epk = boot_pair()
+    _, maintenance = make_request(vault, epk=epk, operation="maintenance", use_case="maintenance")
+    task = schema.b64u_decode(maintenance["task"], field="task")
+    fixtures = {("event.dedup", bytes(16)): b"m" * 32, ("inbound.key", bytes(16)): b"o" * 32}
+    with pytest.raises(VaultProtocolError, match="pinned maintenance"):
+        vault.import_historical(task, fixtures)
+    pin_operator(vault, maintenance)
+    vault.import_historical(task, fixtures)
+    vault.end_maintenance()
+
+    def check_grant() -> None:
+        request, body = make_request(vault, epk=epk)
+        grant = vault.issue(request, now=NOW)
+        args = {
+            "phone_public": vault.phone_public,
+            "boot_private": boot.private_bytes_raw(),
+            "now": NOW,
+        }
+        with pytest.raises(VaultProtocolError, match="grant payload"):
+            open_grant(grant.envelope, body, **args)
+        historical = {}
+        open_grant(
+            grant.envelope,
+            body,
+            pinned_manifest=vault.manifest_body,
+            historical_keys=historical,
+            **args,
+        )
+        assert historical == {("event.dedup", schema.b64u_encode(bytes(16))): b"m" * 32}
+
+    check_grant()
+    vault.restore(vault.phrase, vault.manifest, new_device_id=bytes(16), now=NOW)
+    vault.enable()
+    check_grant()
 
 
 def test_issue_denies_elapsed_ttl_inside_accept_window() -> None:

@@ -5,8 +5,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from getpass import GetPassWarning, getpass
+from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -26,7 +29,8 @@ from ..memory.entities import normalize_handle
 from ..memory.events import canonical_payload
 from ..memory.storage import ScopedStore
 from ..providers.crypto import TokenKeyError, TokenKeyring
-from .scope import KeyScope
+from ..workspace.store import _ENC_MAGIC, _FILE_BY_KEY, Workspace
+from .scope import KeyScope, VaultLocked, historical_challenge
 from .store import VaultStore
 
 
@@ -42,6 +46,55 @@ class LegacyKeys:
     active: Cipher
     previous: Cipher | None = None
     keyring: TokenKeyring | None = None
+
+
+@dataclass(frozen=True)
+class LegacyKeyIds:
+    """Only nonsecret identifiers travel through the operator arguments."""
+
+    active: str
+    previous: str | None = None
+    token: str | None = None
+    previous_token: str | None = None
+
+
+def read_legacy_keys(
+    scope: KeyScope,
+    *,
+    active_id: str,
+    previous_id: str | None = None,
+    token_id: str | None = None,
+    previous_token_id: str | None = None,
+) -> LegacyKeys:
+    """Read legacy material without allowing getpass to fall back to echoed input."""
+    if scope.operation != "maintenance" or scope.closed or not scope.refs:
+        raise MaintenanceRefused("legacy key input needs an open maintenance scope")
+    if previous_id == active_id or (previous_token_id and not token_id):
+        raise MaintenanceRefused("the legacy key identifiers are inconsistent")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", GetPassWarning)
+            active = Cipher.from_b64(getpass("Legacy active content key: "), key_id=active_id)
+            previous = (
+                Cipher.from_b64(getpass("Legacy previous content key: "), key_id=previous_id)
+                if previous_id
+                else None
+            )
+            keyring = (
+                TokenKeyring(
+                    active_id=token_id,
+                    active_key_b64=getpass("Legacy active token key: "),
+                    previous_id=previous_token_id or "",
+                    previous_key_b64=(
+                        getpass("Legacy previous token key: ") if previous_token_id else ""
+                    ),
+                )
+                if token_id
+                else None
+            )
+    except (EOFError, OSError, GetPassWarning, CryptoError, TokenKeyError, ValueError):
+        raise MaintenanceRefused("legacy keys could not be read from protected input") from None
+    return LegacyKeys(active, previous, keyring)
 
 
 def _decode(raw: bytes, codec: str) -> Any:
@@ -361,13 +414,107 @@ SPECS: dict[str, TableSpec] = {
         ),
     ),
     "commitments": _row_spec("commitments", (("body_enc", "json"),)),
+    "commitment_reminders": TableSpec("commitment_reminders", "id", "memory", ()),
+    "daily_counters": TableSpec("daily_counters", "day", "operations", ()),
+    "workbench_minutes": TableSpec("workbench_minutes", "month", "operations", ()),
     "held_notes": _row_spec("held_notes", (("body_enc", "json"),)),
+    "focus": TableSpec(
+        "focus",
+        "chat_ref_token",
+        "memory",
+        (
+            SealedColumn(
+                "state_enc",
+                "json",
+                lambda row: f"focus:state_enc:{bytes(row['chat_ref_token']).hex()}",
+            ),
+        ),
+        (
+            TokenColumn(
+                "chat_ref_token",
+                "focus.chat",
+                "focus",
+                lambda plains, _: plains["state_enc"]["lookup_chat"],
+            ),
+        ),
+    ),
+    "conclusions": TableSpec(
+        "conclusions",
+        "key_token",
+        "memory",
+        (
+            SealedColumn(
+                "value_enc",
+                "json",
+                lambda row: f"conclusions:value_enc:{bytes(row['key_token']).hex()}",
+            ),
+        ),
+        (
+            TokenColumn(
+                "key_token",
+                "conclusion.key",
+                "conclusion",
+                lambda plains, _: plains["value_enc"]["lookup_key"],
+            ),
+        ),
+    ),
     "pending_approvals": _row_spec(
         "pending_approvals",
         (("params_enc", "json"), ("rules_matched_enc", "text"), ("note_enc", "text")),
     ),
     "scheduled_actions": _row_spec(
         "scheduled_actions", (("payload_enc", "json"), ("meta_enc", "json"))
+    ),
+    "alerts": _row_spec(
+        "alerts",
+        (("spec_enc", "json"), ("origin_enc", "json")),
+        tokens=(
+            TokenColumn(
+                "scope_token",
+                "alert.scope",
+                "alert_scope",
+                lambda plains, _: str(plains["spec_enc"].get("scope", "")),
+            ),
+        ),
+    ),
+    "alert_notifications": _row_spec(
+        "alert_notifications",
+        (("event_enc", "json"),),
+        tokens=(
+            TokenColumn(
+                "key_token",
+                "alert.notification",
+                "alert_notification",
+                lambda plains, _: (
+                    plains["event_enc"].get("dedup_key")
+                    or f"{plains['event_enc']['alert_id']}:{plains['event_enc']['event_id']}"
+                ),
+            ),
+        ),
+    ),
+    "inbound_messages": _row_spec(
+        "inbound_messages",
+        (("reason_enc", "text"), ("outcome_enc", "text"), ("identity_enc", "json")),
+        tokens=(
+            TokenColumn(
+                "chat_token",
+                "inbound.chat",
+                "inbound-chat",
+                lambda plains, _: plains["identity_enc"]["chat"],
+            ),
+            TokenColumn(
+                "message_token",
+                "inbound.message",
+                "inbound-message",
+                lambda plains, _: plains["identity_enc"]["message"],
+            ),
+            TokenColumn(
+                "key_token",
+                "inbound.key",
+                "inbound-key",
+                lambda plains, _: plains["identity_enc"]["key"],
+            ),
+        ),
     ),
     "decision_traces": _row_spec("decision_traces", (("label_enc", "text"), ("trace_enc", "json"))),
     "agent_settings": _row_spec("agent_settings", (("personality_enc", "json"),)),
@@ -489,6 +636,97 @@ def stable_id(table: str, pk: Any) -> bytes:
     return hashlib.sha256(f"{table}:{pk}".encode()).digest()
 
 
+async def migrate_workspace_disk(
+    target: asyncpg.Pool,
+    root: str | Path,
+    *,
+    scope: KeyScope,
+    keys: LegacyKeys,
+    job_id: bytes,
+) -> TableReport:
+    """Copy a legacy disk workspace into the encrypted shadow, retaining files."""
+    _check_scope(scope, [SPECS["workspace_files"]])
+    root = Path(root)
+    if root.is_symlink() or not root.is_dir():
+        raise MaintenanceRefused("the legacy workspace directory is unavailable")
+    names = set(_FILE_BY_KEY.values())
+    files: list[tuple[str, Path]] = []
+    for entry in sorted(root.iterdir()):
+        if entry.is_symlink():
+            raise MaintenanceRefused("the legacy workspace contains a symbolic link")
+        if entry.name == "memory" and entry.is_dir():
+            for item in sorted(entry.iterdir()):
+                if item.is_symlink() or not item.is_file() or item.suffix != ".md":
+                    raise MaintenanceRefused("the legacy workspace contains an unknown item")
+                try:
+                    from datetime import date
+
+                    if date.fromisoformat(item.stem).isoformat() != item.stem:
+                        raise ValueError
+                except ValueError:
+                    raise MaintenanceRefused(
+                        "a legacy daily workspace filename is invalid"
+                    ) from None
+                files.append((f"memory/{item.name}", item))
+        elif entry.name in names and entry.is_file():
+            files.append((entry.name, entry))
+        else:
+            raise MaintenanceRefused("the legacy workspace contains an unknown item")
+    workspace = Workspace.scoped(target, scope)
+    journal = VaultStore(target)
+    report = TableReport(table="workspace_files", rows=len(files))
+    async with target.acquire() as connection:
+        locked = await connection.fetchval(
+            "SELECT pg_try_advisory_lock(hashtextextended(current_schema(), 41307))"
+        )
+        if not locked:
+            raise MaintenanceRefused("the shadow database already has a migration in progress")
+        try:
+            for name, path in files:
+                _check_scope(scope, [SPECS["workspace_files"]])
+                raw = path.read_bytes()
+                if raw.startswith(_ENC_MAGIC):
+                    raw = open_legacy(keys, raw[len(_ENC_MAGIC) :], f"workspace:file:{name}")
+                try:
+                    content = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    raise MaintenanceRefused("a legacy workspace file is not UTF-8") from None
+                stable = scope.token("workspace.name", name)
+                entry = await journal.journal_entry(
+                    vault_id=scope.vault_id,
+                    job_id=job_id,
+                    table_name="workspace_files",
+                    stable_id=stable,
+                    connection=connection,
+                )
+                row = await workspace._row(name)
+                if row is not None:
+                    if await workspace._read_name(name) != content:
+                        raise MaintenanceRefused("a workspace file conflicts with the shadow")
+                    report.resumed += 1
+                else:
+                    if entry is not None:
+                        raise MaintenanceRefused("a workspace journal entry has no matching row")
+                    await workspace._put(name, content)
+                    if await workspace._read_name(name) != content:
+                        raise MaintenanceRefused("a workspace file failed its round trip")
+                    report.migrated += 1
+                _check_scope(scope, [SPECS["workspace_files"]])
+                await journal.journal(
+                    vault_id=scope.vault_id,
+                    job_id=job_id,
+                    table_name="workspace_files",
+                    stable_id=stable,
+                    state="done",
+                    connection=connection,
+                )
+        finally:
+            await connection.fetchval(
+                "SELECT pg_advisory_unlock(hashtextextended(current_schema(), 41307))"
+            )
+    return report
+
+
 async def _table_inventory(conn: asyncpg.Connection) -> set[str]:
     return {
         row["tablename"]
@@ -547,7 +785,14 @@ def _legacy_value(spec: TableSpec, column: SealedColumn, row, keys: LegacyKeys) 
     blob = row.get(column.column)
     if blob:
         key_id = row[spec.key_id_column] if spec.key_id_column else None
-        return open_legacy(keys, bytes(blob), column.aad(row), family=column.family, key_id=key_id)
+        try:
+            return open_legacy(
+                keys, bytes(blob), column.aad(row), family=column.family, key_id=key_id
+            )
+        except MaintenanceRefused:
+            if spec.table != "alerts" or column.column != "spec_enc":
+                raise
+            return open_legacy(keys, bytes(blob), f"watches:spec_enc:{row['id']}")
     if spec.table == "events" and column.column == "meta_enc" and "source" in row:
         return json.dumps(
             {
@@ -570,17 +815,21 @@ async def migrate(
     target: asyncpg.Pool,
     *,
     scope: KeyScope,
-    keys: LegacyKeys,
+    keys: LegacyKeys | None = None,
+    key_ids: LegacyKeyIds | None = None,
     job_id: bytes,
     store: VaultStore | None = None,
     tables: list[str] | None = None,
     audit_signer: Ed25519PublicKey | None = None,
     audit_signature: bytes | None = None,
+    historical_source_complete: bool = False,
 ) -> MigrationReport:
     """Copy supported records with atomic row/journal writes and verified resume.
 
     Explicit table selections are partial rehearsals. A full run refuses
-    nonempty families with no conversion rule.
+    nonempty families with no conversion rule. Set historical_source_complete
+    only after independently reconciling all source key versions with the
+    provided active and previous keys.
     """
     registry = {**SPECS, "audit_log": _AUDIT_SPEC}
     names = list(registry) if tables is None else tables
@@ -588,6 +837,18 @@ async def migrate(
         raise MaintenanceRefused("the selected migration tables must be unique and registered")
     specs = [registry[name] for name in names]
     _check_scope(scope, specs)
+    if (keys is None) == (key_ids is None):
+        raise MaintenanceRefused("supply either legacy keys or protected input identifiers")
+    if keys is None:
+        assert key_ids is not None
+        keys = read_legacy_keys(
+            scope,
+            active_id=key_ids.active,
+            previous_id=key_ids.previous,
+            token_id=key_ids.token,
+            previous_token_id=key_ids.previous_token,
+        )
+        _check_scope(scope, specs)
     report = MigrationReport()
     journal = store or VaultStore(target)
     async with source.acquire() as old, target.acquire() as new:
@@ -622,11 +883,21 @@ async def migrate(
                     for table in sorted(
                         target_inventory
                         - set(registry)
-                        - {"schema_migrations", "vault_migration_journal"}
+                        - {
+                            "schema_migrations",
+                            "vault_migration_journal",
+                            "vault_state",
+                            "vault_manifest",
+                            "vault_aead_budget",
+                            "historical_lookup_requirements",
+                            "forgotten_events",
+                        }
                     ):
                         await _refuse_rows(new, table, "is outside the conversion")
-                for table in sorted(companions):
-                    await _refuse_rows(old, table, "contains unreconstructible tombstones")
+                if "forgotten_events" in companions:
+                    await _migrate_forgotten(
+                        old, new, scope, keys, historical_source_complete, report, journal, job_id
+                    )
                 if "audit_log" in names:
                     await _archive_audit(
                         old,
@@ -651,6 +922,7 @@ async def migrate(
                         spec,
                         report.for_table(spec.table),
                         exists=spec.table in inventory,
+                        history_confirmed=historical_source_complete,
                     )
                 _check_scope(scope, specs)
         finally:
@@ -669,6 +941,102 @@ async def _refuse_rows(conn: asyncpg.Connection, table: str, reason: str) -> Non
         raise MaintenanceRefused(f"{table} {reason}")
 
 
+async def _migrate_forgotten(
+    old: asyncpg.Connection,
+    new: asyncpg.Connection,
+    scope: KeyScope,
+    keys: LegacyKeys,
+    history_confirmed: bool,
+    report: MigrationReport,
+    journal: VaultStore,
+    job_id: bytes,
+) -> None:
+    query = "SELECT dedup_mac, source_token, forgotten_at FROM forgotten_events ORDER BY dedup_mac"
+    rows = await old.fetch(query)
+    if not rows:
+        await _refuse_rows(new, "forgotten_events", "has no matching source tombstones")
+        return
+    proofs = _historical_proofs(scope, keys, "event.dedup", None, history_confirmed)
+    if any(len(row["dedup_mac"]) != 32 or len(row["source_token"]) != 32 for row in rows):
+        raise MaintenanceRefused("forgotten events contain a malformed legacy tag")
+
+    info = report.for_table("forgotten_events")
+    info.rows = len(rows)
+    async with new.transaction():
+        await _save_proofs(new, "event.dedup", proofs)
+        current = await new.fetch(query)
+        if current:
+            if current != rows:
+                raise MaintenanceRefused("shadow tombstones do not match the source")
+            info.resumed = len(rows)
+        else:
+            await new.executemany(
+                "INSERT INTO forgotten_events (dedup_mac, source_token, forgotten_at)"
+                " VALUES ($1, $2, $3)",
+                [tuple(row.values()) for row in rows],
+            )
+            if await new.fetch(query) != rows:
+                raise MaintenanceRefused("shadow tombstones do not match the source")
+            info.migrated = len(rows)
+        for row in rows:
+            args = {
+                "vault_id": scope.vault_id,
+                "job_id": job_id,
+                "table_name": "forgotten_events",
+                "stable_id": stable_id("forgotten_events", row["dedup_mac"].hex()),
+                "connection": new,
+            }
+            entry = await journal.journal_entry(**args)
+            if current:
+                if entry is None or entry["state"] != "done":
+                    raise MaintenanceRefused("shadow tombstone does not match its journal")
+            else:
+                if entry is not None:
+                    raise MaintenanceRefused("tombstone journal entry has no matching shadow row")
+                await journal.journal(**args, state="done")
+        scope.require_historical("event.dedup", proofs)
+
+
+def _historical_proofs(
+    scope: KeyScope, keys: LegacyKeys, domain: str, purpose: str | None, confirmed: bool
+) -> list[bytes]:
+    if not confirmed:
+        raise MaintenanceRefused("historical records need independently confirmed key coverage")
+    challenge = historical_challenge(scope.vault_id, domain)
+    proofs = sorted(
+        {
+            cipher.dedup_mac(challenge)
+            if purpose is None
+            else cipher.blind_token(purpose, challenge)
+            for cipher in (keys.active, keys.previous)
+            if cipher is not None
+        }
+    )
+    try:
+        scope.require_historical(domain, proofs)
+    except VaultLocked:
+        raise MaintenanceRefused(
+            "the maintenance grant is missing a historical lookup key"
+        ) from None
+    return proofs
+
+
+async def _save_proofs(conn: asyncpg.Connection, domain: str, proofs: list[bytes]) -> None:
+    await conn.execute(
+        "INSERT INTO historical_lookup_requirements (domain, proofs) VALUES ($1, $2)"
+        " ON CONFLICT (domain) DO NOTHING",
+        domain,
+        proofs,
+    )
+    if (
+        await conn.fetchval(
+            "SELECT proofs FROM historical_lookup_requirements WHERE domain = $1", domain
+        )
+        != proofs
+    ):
+        raise MaintenanceRefused("shadow historical lookup requirements do not match the source")
+
+
 async def _migrate_table(
     old: asyncpg.Connection,
     new: asyncpg.Connection,
@@ -680,6 +1048,7 @@ async def _migrate_table(
     report: TableReport,
     *,
     exists: bool,
+    history_confirmed: bool,
 ) -> None:
     # All identifiers here belong to the checked registry.
     table = spec.table
@@ -714,6 +1083,31 @@ async def _migrate_table(
         pk = row[pk_name]
         row_id = bytes(pk).hex() if isinstance(pk, (bytes, bytearray)) else pk
         journal_id = pk
+        target_key_values = key_values
+        retained: dict[str, list[bytes]] = {}
+        if table in ("focus", "conclusions"):
+            column = spec.columns[0]
+            raw = _legacy_value(spec, column, row, keys)
+            if raw is None:
+                raise MaintenanceRefused(f"{table} lookup input cannot be reconstructed")
+            body = _decode(raw, column.codec)
+            token = spec.tokens[0]
+            try:
+                value = token.derive({column.column: body}, row)
+            except KeyError:
+                if not history_confirmed or not isinstance(pk, bytes) or len(pk) != 32:
+                    raise MaintenanceRefused(
+                        f"{table} lookup input cannot be reconstructed"
+                    ) from None
+                retained[token.domain] = _historical_proofs(
+                    scope, keys, token.domain, token.legacy_purpose, history_confirmed
+                )
+            else:
+                if not isinstance(value, str) or not _verified_token(keys, spec, token, row, value):
+                    raise MaintenanceRefused(f"{table} lookup input cannot be reconstructed")
+                target_pk = scope.token(token.domain, value)
+                target_key_values = (target_pk,)
+                row_id = target_pk.hex()
         if spec.extra_keys:
             joined = "\x1f".join(key_values)
             row_id = hashlib.sha256(joined.encode()).hexdigest()
@@ -729,12 +1123,16 @@ async def _migrate_table(
         condition = " AND ".join(
             f"{name} = ${index}" for index, name in enumerate(primary_keys, start=1)
         )
-        existing = await new.fetchrow(f"SELECT * FROM {table} WHERE {condition}", *key_values)  # noqa: S608
+        existing = await new.fetchrow(
+            f"SELECT * FROM {table} WHERE {condition}", *target_key_values
+        )  # noqa: S608
         if (entry is None) != (existing is None) or (
             entry is not None and entry["state"] != "done"
         ):
             raise MaintenanceRefused(f"{table} shadow row does not match its journal")
         copied = {column: row[column] for column in columns if column in row}
+        if table in ("focus", "conclusions"):
+            copied[pk_name] = target_key_values[0]
         if set(row.keys()) - set(columns) and spec.table != "events":
             raise MaintenanceRefused(f"{table} legacy schema needs a conversion rule")
         plains = {}
@@ -752,6 +1150,16 @@ async def _migrate_table(
                     raise MaintenanceRefused(f"{table}.{name} failed verification")
                 copied[name] = blob
         for token in spec.tokens:
+            if token.domain in retained:
+                continue
+            if table == "inbound_messages" and "identity_enc" not in plains and history_confirmed:
+                old_tag = row.get(token.column)
+                if not isinstance(old_tag, bytes) or len(old_tag) != 32:
+                    raise MaintenanceRefused("inbound message has a malformed historical tag")
+                retained[token.domain] = _historical_proofs(
+                    scope, keys, token.domain, token.legacy_purpose, history_confirmed
+                )
+                continue
             try:
                 value = token.derive(plains, row)
             except (AttributeError, KeyError, TypeError, ValueError) as exc:
@@ -774,11 +1182,22 @@ async def _migrate_table(
         if existing is not None:
             if any(existing[name] != value for name, value in copied.items()):
                 raise MaintenanceRefused(f"{table} shadow row does not match the source")
+            for domain, proofs in retained.items():
+                if (
+                    await new.fetchval(
+                        "SELECT proofs FROM historical_lookup_requirements WHERE domain = $1",
+                        domain,
+                    )
+                    != proofs
+                ):
+                    raise MaintenanceRefused("shadow historical lookup requirements are missing")
             report.resumed += 1
             continue
 
         placeholders = ", ".join(f"${index}" for index in range(1, len(copied) + 1))
         async with new.transaction():
+            for domain, proofs in retained.items():
+                await _save_proofs(new, domain, proofs)
             await new.execute(
                 f"INSERT INTO {table} ({', '.join(copied)}) VALUES ({placeholders})",  # noqa: S608
                 *copied.values(),

@@ -195,21 +195,36 @@ class DbInboundStates:
         token = key or inbound_key(
             surface, message_id, f"{surface}:{datetime.now(UTC).timestamp()}"
         )
-        row = await self._pool.fetchrow(
-            "INSERT INTO inbound_messages"
-            " (surface, chat_token, message_token, key_token, status, key_version)"
-            " VALUES ($1, $2, $3, $4, $5, $6)"
-            " ON CONFLICT (key_token) DO NOTHING"
-            " RETURNING id, created_at, updated_at",
-            surface,
-            self._token("chat", chat_ref or surface),
-            self._token("message", message_id or ""),
-            self._token("key", token),
-            RECEIVED,
-            self._rows.key_version,
-        )
-        if row is None:
-            return None
+        async with self._pool.acquire() as conn, conn.transaction():
+            history = await self._rows.historical_tokens(conn, "inbound.key", token)
+            row = await conn.fetchrow(
+                "INSERT INTO inbound_messages"
+                " (surface, chat_token, message_token, key_token, status, key_version)"
+                " SELECT $1, $2, $3, $4, $5, $6"
+                " WHERE NOT EXISTS (SELECT 1 FROM inbound_messages"
+                " WHERE key_token = ANY($7::bytea[]))"
+                " ON CONFLICT (key_token) DO NOTHING"
+                " RETURNING id, created_at, updated_at",
+                surface,
+                self._token("chat", chat_ref or surface),
+                self._token("message", message_id or ""),
+                self._token("key", token),
+                RECEIVED,
+                self._rows.key_version,
+                list(history),
+            )
+            if row is None:
+                return None
+            await conn.execute(
+                "UPDATE inbound_messages SET identity_enc = $1 WHERE id = $2",
+                self._rows.seal(
+                    {"chat": chat_ref or surface, "message": message_id or "", "key": token},
+                    table="inbound_messages",
+                    column="identity_enc",
+                    row_id=row["id"],
+                ),
+                row["id"],
+            )
         return await self.get(int(row["id"]))
 
     async def _set(

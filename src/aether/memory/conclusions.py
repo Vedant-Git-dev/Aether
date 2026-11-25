@@ -113,13 +113,17 @@ class Conclusions:
         ttl = self._ttl_seconds if ttl_seconds is None else max(1, int(ttl_seconds))
         valid_until = now + timedelta(seconds=ttl)
         token = self._token(key)
+        history = await self._rows.historical_tokens(self._pool, "conclusion.key", key or "")
         body = {
             "value": value,
+            "lookup_key": key or "",
             "as_of": now.isoformat(),
             "valid_until": valid_until.isoformat(),
             "source": source,
         }
         await self._pool.execute(
+            "WITH retired AS (DELETE FROM conclusions"
+            " WHERE key_token = ANY($4::bytea[]) AND key_token <> $1)"
             "INSERT INTO conclusions (key_token, value_enc, key_version, created_at)"
             " VALUES ($1, $2, $3, now())"
             " ON CONFLICT (key_token) DO UPDATE SET"
@@ -134,6 +138,7 @@ class Conclusions:
                 aad=self._aad(token),
             ),
             self._rows.key_version,
+            list(history),
         )
         return Conclusion(key=key, value=value, as_of=now, valid_until=valid_until, source=source)
 
@@ -141,11 +146,16 @@ class Conclusions:
         """The stored conclusion whatever its age, or None when unreadable."""
         self._rows.preflight()
         token = self._token(key)
+        history = await self._rows.historical_tokens(self._pool, "conclusion.key", key or "")
         row = await self._pool.fetchrow(
-            "SELECT value_enc FROM conclusions WHERE key_token = $1", token
+            "SELECT key_token, value_enc FROM conclusions WHERE key_token = ANY($2::bytea[])"
+            " ORDER BY (key_token = $1) DESC, created_at DESC, key_token LIMIT 1",
+            token,
+            [token, *history],
         )
         if row is None:
             return None
+        token = row["key_token"]
         try:
             body = self._rows.open(
                 row["value_enc"],
@@ -185,4 +195,8 @@ class Conclusions:
 
     async def forget(self, key: str) -> None:
         self._rows.preflight()
-        await self._pool.execute("DELETE FROM conclusions WHERE key_token = $1", self._token(key))
+        token = self._token(key)
+        history = await self._rows.historical_tokens(self._pool, "conclusion.key", key or "")
+        await self._pool.execute(
+            "DELETE FROM conclusions WHERE key_token = ANY($1::bytea[])", [token, *history]
+        )

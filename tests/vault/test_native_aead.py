@@ -8,6 +8,7 @@ import pytest
 import reference_wire as wire
 from test_wire_vectors import load
 
+from aether.memory.crypto import Cipher
 from aether.memory.storage import ScopedStore
 from aether.vault import native, schema
 from aether.vault.errors import VaultProtocolError
@@ -105,3 +106,16 @@ def test_native_keys_refuse_failed_memory_protection(monkeypatch):
     monkeypatch.setattr(lib, "sodium_mlock", lambda *_: -1)
     with pytest.raises(VaultLocked, match="could not lock native vault memory"):
         native._KeySlot()
+
+
+def test_historical_lookup_matches_legacy_tag_and_closes(native_slot):
+    legacy = Cipher(bytes(range(32)))
+    ctypes.memmove(native_slot.address, legacy._dedup_key, schema.KEY_BYTES)
+    handle = native.NativeHistoricalLookup(native_slot)
+    assert handle.tag(b"synthetic event") == legacy.dedup_mac(b"synthetic event")
+    assert ctypes.string_at(
+        native_slot.address + schema.KEY_BYTES, mmap.PAGESIZE - schema.KEY_BYTES
+    ) == bytes(mmap.PAGESIZE - schema.KEY_BYTES)
+    handle.close()
+    with pytest.raises(VaultClosed):
+        handle.tag(b"synthetic event")

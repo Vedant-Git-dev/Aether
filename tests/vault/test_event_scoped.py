@@ -11,10 +11,13 @@ change is left open for the owner's cutover decision.
 from __future__ import annotations
 
 import asyncio
+import hmac
 from datetime import UTC, datetime
 
 import pytest
 from fake_vault import FakeVault
+from software_vault import open_grant
+from test_software_vault import NOW, boot_pair, make_request, new_vault, pin_operator
 
 from aether.authz.audit import AuditLog
 from aether.config import ContactsConfig
@@ -111,6 +114,58 @@ async def test_newly_forgotten_event_stays_forgotten(db) -> None:
         await db.execute("DELETE FROM events WHERE id = $1", result.event_id)
         replay = await store.ingest(source="gmail", kind="message", payload={"text": "forget me"})
         assert not replay.stored and replay.reason == "forgotten"
+
+
+async def test_scoped_ingest_checks_restricted_historical_marker(db) -> None:
+    legacy = Cipher.from_b64(generate_key_b64())
+    payload = {"text": "synthetic historical item"}
+    marker = legacy.dedup_mac(canonical_payload("message", payload))
+    await db.execute(
+        "INSERT INTO forgotten_events (dedup_mac, source_token) VALUES ($1, $2)",
+        marker,
+        b"synthetic",
+    )
+
+    phone = new_vault()
+    boot, epk = boot_pair()
+    _, maintenance = make_request(
+        phone, epk=epk, operation="maintenance", use_case="maintenance", task=TASK
+    )
+    pin_operator(phone, maintenance)
+    phone.import_historical(TASK, {("event.dedup", bytes(16)): legacy._dedup_key})
+    phone.end_maintenance()
+    request, body = make_request(phone, epk=epk, task=TASK)
+    grant = phone.issue(request, now=NOW)
+    historical = {}
+    _, keys = open_grant(
+        grant.envelope,
+        body,
+        phone_public=phone.phone_public,
+        boot_private=boot.private_bytes_raw(),
+        now=NOW,
+        pinned_manifest=phone.manifest_body,
+        historical_keys=historical,
+    )
+    (lookup_key,) = historical.values()
+
+    class Historical:
+        closed = False
+
+        def tag(self, value: bytes) -> bytes:
+            return hmac.digest(lookup_key, value, "sha256")
+
+        def close(self) -> None:
+            self.closed = True
+
+    handle = Historical()
+    vault = FakeVault(vault_id=VAULT_ID, keys=keys)
+    async with vault.acquire(TASK, "turn", [("memory", 1)]) as scope:
+        scope._historical["event.dedup"] = (handle,)
+        store = EventStore.scoped(db, scope, AuditLog(db), ContactsConfig())
+        result = await store.ingest(source="gmail", kind="message", payload=payload)
+        assert result.reason == "forgotten"
+        assert await db.fetchval("SELECT count(*) FROM events") == 0
+    assert handle.closed
 
 
 async def test_scoped_write_without_a_valid_scope_fails(db) -> None:

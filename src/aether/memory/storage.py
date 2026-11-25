@@ -42,6 +42,17 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("aether.memory.storage")
 
+
+async def historical_lookup_proofs(db: Any, domain: str) -> list[bytes]:
+    """Read the key proofs required to use one historical lookup domain."""
+    return (
+        await db.fetchval(
+            "SELECT proofs FROM historical_lookup_requirements WHERE domain = $1", domain
+        )
+        or []
+    )
+
+
 __all__ = [
     "IDENTIFIER_RE",
     "KEY_VERSION",

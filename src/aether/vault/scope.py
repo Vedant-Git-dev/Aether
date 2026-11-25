@@ -18,7 +18,14 @@ from typing import Protocol, runtime_checkable
 
 from .errors import VaultProtocolError
 from .registry import resolve_dedup, resolve_token
-from .schema import AE2_MAGIC, CATEGORIES, MAX_SAFE_INTEGER, OPERATION_CATEGORIES, OPERATIONS
+from .schema import (
+    AE2_MAGIC,
+    CATEGORIES,
+    HISTORICAL_LOOKUP_CATEGORIES,
+    MAX_SAFE_INTEGER,
+    OPERATION_CATEGORIES,
+    OPERATIONS,
+)
 
 _ROW_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _PURPOSE_RE = re.compile(r"^[a-z][a-z0-9_.:-]{0,32}$")
@@ -116,6 +123,19 @@ class KeyHandle(Protocol):
 
 
 @runtime_checkable
+class HistoricalLookup(Protocol):
+    """A restricted handle for one historical keyed lookup."""
+
+    def tag(self, value: bytes) -> bytes: ...
+
+    def close(self) -> None: ...
+
+
+def historical_challenge(vault_id: bytes, domain: str) -> bytes:
+    return b"aether:historical-lookup-proof:v1\x00" + vault_id + domain.encode("ascii")
+
+
+@runtime_checkable
 class Vault(Protocol):
     """The async context manager a store acquires keys from."""
 
@@ -134,11 +154,15 @@ class KeyScope:
         task: bytes,
         operation: str,
         handles: Mapping[tuple[str, int], KeyHandle],
+        historical: Mapping[str, tuple[HistoricalLookup, ...]] | None = None,
     ) -> None:
         self.vault_id = vault_id
         self.task = task
         self.operation = operation
         self._handles = dict(handles)
+        self._historical = dict(historical or {})
+        if any(domain not in HISTORICAL_LOOKUP_CATEGORIES for domain in self._historical):
+            raise VaultFormatError("unknown historical lookup domain")
         self._closed = False
 
     @property
@@ -187,6 +211,28 @@ class KeyScope:
         """Raise unless the scope is open and holds this key."""
         self._handle(cat, ver)
 
+    def historical_tags(self, domain: str, value: str | bytes) -> tuple[bytes, ...]:
+        """Calculate historical tags only while their category is granted."""
+        category = HISTORICAL_LOOKUP_CATEGORIES.get(domain)
+        if category is None:
+            raise VaultFormatError("unknown historical lookup domain")
+        if self._closed:
+            raise VaultClosed("the key scope is closed")
+        if not any(cat == category for cat, _ in self._handles):
+            raise VaultLocked(f"{category} is not granted to this task")
+        if isinstance(value, str):
+            raw = value.encode("utf-8")
+        elif isinstance(value, bytes):
+            raw = value
+        else:
+            raise VaultFormatError("historical lookup needs text or bytes")
+        return tuple(handle.tag(raw) for handle in self._historical.get(domain, ()))
+
+    def require_historical(self, domain: str, required: Iterable[bytes]) -> None:
+        proofs = self.historical_tags(domain, historical_challenge(self.vault_id, domain))
+        if not set(required).issubset(proofs):
+            raise VaultLocked("the task is missing required historical lookup keys")
+
     def close(self) -> None:
         if self._closed:
             return
@@ -195,7 +241,9 @@ class KeyScope:
         # noisy close.
         self._closed = True
         handles = list(self._handles.values())
+        handles.extend(handle for group in self._historical.values() for handle in group)
         self._handles.clear()
+        self._historical.clear()
         first_error: BaseException | None = None
         for handle in handles:
             try:

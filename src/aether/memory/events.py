@@ -355,15 +355,19 @@ class EventStore:
             # that changed the body is still the same message. Keep the exact
             # input inside sealed metadata so a later key change can retag it.
             sealed_meta["dedup_key"] = dedup_key
-            dedup_tag = self._rows.dedup_tag(b"dedup:" + dedup_key.encode("utf-8"))
+            dedup_input = b"dedup:" + dedup_key.encode("utf-8")
         else:
-            dedup_tag = self._rows.dedup_tag(canonical_payload(kind, stored_payload))
+            dedup_input = canonical_payload(kind, stored_payload)
+        dedup_tag = self._rows.dedup_tag(dedup_input)
+        forgotten_tags = (dedup_tag, *self._rows.historical_dedup_tags(dedup_input))
 
         async with self._pool.acquire() as conn, conn.transaction():
+            await self._rows.verify_historical_dedup(conn)
             # a forgotten item stays forgotten: the poller re-fetches the same
             # message, and the tombstone is the only thing that can refuse it
             if await conn.fetchval(
-                "SELECT 1 FROM forgotten_events WHERE dedup_mac = $1", dedup_tag
+                "SELECT 1 FROM forgotten_events WHERE dedup_mac = ANY($1::bytea[])",
+                list(forgotten_tags),
             ):
                 return IngestResult(stored=False, reason="forgotten")
             row = await conn.fetchrow(
