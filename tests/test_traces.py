@@ -487,13 +487,18 @@ async def test_explain_with_no_arguments_lists_recent_traces() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _traces_cipher() -> Cipher:
+    return Cipher.from_b64(generate_key_b64())
+
+
 def _make_traces(db) -> Traces:
-    return Traces(db, Cipher.from_b64(generate_key_b64()))
+    return Traces(db, _traces_cipher())
 
 
 @pytest.mark.integration
 async def test_traces_persist_encrypted_and_roundtrip(db) -> None:
-    store = _make_traces(db)
+    cipher = _traces_cipher()
+    store = Traces(db, cipher)
     trace = await store.create(
         kind="turn", label="unread check", payload={"reply": "2 unread", "calls": []}
     )
@@ -505,7 +510,7 @@ async def test_traces_persist_encrypted_and_roundtrip(db) -> None:
 
     # a fresh store instance over the same key reads it back — restart
     # survival for the "why" (a restart re-reads the same env key)
-    fresh = Traces(db, store._cipher)
+    fresh = Traces(db, cipher)
     back = await fresh.get(trace.id)
     assert back is not None
     assert back.kind == "turn"

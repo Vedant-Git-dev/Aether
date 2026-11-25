@@ -16,6 +16,8 @@ from typing import Any
 import asyncpg
 
 from ..memory.crypto import Cipher, CryptoError
+from ..memory.rows import CipherRows, Rows, ScopedRows
+from ..vault.scope import KeyScope
 from .audit import AuditLog
 
 log = logging.getLogger("aether.authz.approvals")
@@ -33,11 +35,13 @@ def _aad(approval_id: int) -> str:
     return f"pending_approvals:params_enc:{approval_id}"
 
 
-def _sealed_text(cipher: Cipher, blob: Any, aad: str) -> str:
+def _sealed_text(rows: Rows, table: str, column: str, row_id: Any, blob: Any, aad: str) -> str:
     """A sealed string, empty when the row has none or it no longer opens."""
     if blob:
         try:
-            return cipher.decrypt_text(blob, aad=aad)
+            return rows.open_bytes(blob, table=table, column=column, row_id=row_id, aad=aad).decode(
+                "utf-8"
+            )
         except CryptoError:
             log.warning("approval field undecryptable — treated as empty")
     return ""
@@ -67,14 +71,38 @@ class Approvals:
     def __init__(
         self,
         pool: asyncpg.Pool,
-        cipher: Cipher,
+        cipher: Cipher | None,
         audit: AuditLog,
         ttl_hours: float = 24.0,
+        *,
+        rows: Rows | None = None,
     ) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("Approvals needs exactly one of cipher or rows")
+        self._rows: Rows = rows if rows is not None else CipherRows(cipher)
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
         self._audit = audit
         self._ttl = timedelta(hours=ttl_hours)
+
+    @classmethod
+    def scoped(
+        cls,
+        pool: asyncpg.Pool,
+        scope: KeyScope,
+        audit: AuditLog,
+        ttl_hours: float = 24.0,
+        *,
+        ver: int = 1,
+    ) -> Approvals:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(
+            pool,
+            None,
+            audit,
+            ttl_hours,
+            rows=ScopedRows(scope, cat="operations", ver=ver),
+        )
 
     def set_ttl(self, hours: float) -> None:
         """Live-update the approval window — a chat-made change to
@@ -96,6 +124,7 @@ class Approvals:
         stays supported for rows parked before media-carrying calls began
         being refused at the gate — those legacy references keep their
         blobs safe from eviction while their questions still wait."""
+        self._rows.preflight()
         expires_at = datetime.now(UTC) + self._ttl
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
@@ -106,17 +135,35 @@ class Approvals:
                 b"",  # placeholder until the id exists; replaced below, same transaction
                 expires_at,
                 media_id,
-                self._cipher.key_id,
+                self._rows.key_version,
             )
             approval_id = row["id"]
             # encrypt only after the id exists so the AAD can bind to it
-            blob = self._cipher.encrypt_json(params, aad=_aad(approval_id))
+            blob = self._rows.seal(
+                params,
+                table="pending_approvals",
+                column="params_enc",
+                row_id=approval_id,
+                aad=_aad(approval_id),
+            )
             await conn.execute(
                 "UPDATE pending_approvals SET params_enc = $1, rules_matched_enc = $2,"
                 " note_enc = $3 WHERE id = $4",
                 blob,
-                self._cipher.encrypt_text(rules_matched, aad=_AAD_RULES.format(approval_id)),
-                self._cipher.encrypt_text(note, aad=_AAD_NOTE.format(approval_id)),
+                self._rows.seal_bytes(
+                    rules_matched.encode("utf-8"),
+                    table="pending_approvals",
+                    column="rules_matched_enc",
+                    row_id=approval_id,
+                    aad=_AAD_RULES.format(approval_id),
+                ),
+                self._rows.seal_bytes(
+                    note.encode("utf-8"),
+                    table="pending_approvals",
+                    column="note_enc",
+                    row_id=approval_id,
+                    aad=_AAD_NOTE.format(approval_id),
+                ),
                 approval_id,
             )
         # the audit record keeps ids and digests only: the free-text note
@@ -148,6 +195,7 @@ class Approvals:
     ) -> Approval | None:
         """Approve or deny a still-pending, unexpired approval. Returns the
         updated Approval, or None if it was already decided or expired."""
+        self._rows.preflight()
         if decision not in (APPROVED, DENIED):
             raise ValueError(f"decision must be '{APPROVED}' or '{DENIED}', got {decision!r}")
         async with self._pool.acquire() as conn, conn.transaction():
@@ -181,6 +229,7 @@ class Approvals:
 
     async def mark_executed(self, approval_id: int) -> None:
         """Flip an approved call to executed after the tool ran."""
+        self._rows.preflight()
         row = await self._pool.fetchrow(
             "UPDATE pending_approvals SET status = 'executed'"
             " WHERE id = $1 AND status = 'approved' RETURNING tool_name",
@@ -199,6 +248,7 @@ class Approvals:
         """Fail every still-pending approval for one app. Used when a
         provider connection is revoked or needs reconnecting: an approval
         for a tool that no longer exists must not keep offering a run."""
+        self._rows.preflight()
         rows = await self._pool.fetch(
             "UPDATE pending_approvals SET status = 'failed', media_id = NULL"
             " WHERE status = 'pending' AND left(tool_name, length($1)) = $1"
@@ -218,6 +268,7 @@ class Approvals:
         """Flip an approved call to failed — the carried-out run couldn't
         happen, and a broken approval must not linger as if it still owed
         the user a run."""
+        self._rows.preflight()
         row = await self._pool.fetchrow(
             "UPDATE pending_approvals SET status = 'failed'"
             " WHERE id = $1 AND status = 'approved' RETURNING tool_name",
@@ -234,6 +285,7 @@ class Approvals:
 
     async def expire_overdue(self) -> int:
         """Flip pending rows past their TTL to expired; audit each."""
+        self._rows.preflight()
         rows = await self._pool.fetch(
             "UPDATE pending_approvals SET status = 'expired'"
             " WHERE status = 'pending' AND expires_at <= now()"
@@ -241,8 +293,16 @@ class Approvals:
         )
         for row in rows:
             try:
-                params = self._cipher.decrypt_json(row["params_enc"], aad=_aad(row["id"]))
+                params = self._rows.open(
+                    row["params_enc"],
+                    table="pending_approvals",
+                    column="params_enc",
+                    row_id=row["id"],
+                    aad=_aad(row["id"]),
+                )
             except CryptoError:
+                if self._scoped:
+                    raise
                 log.warning("expired approval %s had undecryptable params", row["id"])
                 params = {}
             await self._audit.append(
@@ -255,6 +315,7 @@ class Approvals:
         return len(rows)
 
     async def get(self, approval_id: int) -> Approval | None:
+        self._rows.preflight()
         row = await self._pool.fetchrow(
             "SELECT id, tool_name, status, created_at, expires_at, decided_at,"
             " decided_by, rules_matched_enc, note_enc, params_enc"
@@ -268,12 +329,14 @@ class Approvals:
     async def find_pending(self, tool_name: str, params: dict[str, Any]) -> Approval | None:
         """The still-pending approval for this exact call, if one exists —
         the park path asks the user once per request, never twice."""
+        self._rows.preflight()
         for approval in await self.list_pending():
             if approval.tool_name == tool_name and approval.params == params:
                 return approval
         return None
 
     async def list_pending(self, limit: int | None = None, offset: int = 0) -> list[Approval]:
+        self._rows.preflight()
         query = (
             "SELECT id, tool_name, status, created_at, expires_at, decided_at,"
             " decided_by, rules_matched_enc, note_enc, params_enc"
@@ -293,7 +356,13 @@ class Approvals:
         return approvals
 
     def _to_approval(self, row: asyncpg.Record) -> Approval:
-        params = self._cipher.decrypt_json(row["params_enc"], aad=_aad(row["id"]))
+        params = self._rows.open(
+            row["params_enc"],
+            table="pending_approvals",
+            column="params_enc",
+            row_id=row["id"],
+            aad=_aad(row["id"]),
+        )
         return Approval(
             id=row["id"],
             tool_name=row["tool_name"],
@@ -304,7 +373,19 @@ class Approvals:
             decided_at=row["decided_at"],
             decided_by=row["decided_by"],
             rules_matched=_sealed_text(
-                self._cipher, row.get("rules_matched_enc"), _AAD_RULES.format(row["id"])
+                self._rows,
+                "pending_approvals",
+                "rules_matched_enc",
+                row["id"],
+                row.get("rules_matched_enc"),
+                _AAD_RULES.format(row["id"]),
             ),
-            note=_sealed_text(self._cipher, row.get("note_enc"), _AAD_NOTE.format(row["id"])),
+            note=_sealed_text(
+                self._rows,
+                "pending_approvals",
+                "note_enc",
+                row["id"],
+                row.get("note_enc"),
+                _AAD_NOTE.format(row["id"]),
+            ),
         )

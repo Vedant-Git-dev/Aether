@@ -43,8 +43,9 @@ Facts that matter for the vault:
 Classes are `plaintext` (allowlisted opaque value), `sealed` (ciphertext,
 `bytea`), or `token` (keyed blind index, allowlisted because it is opaque).
 The authoritative machine-readable list is `memory/allowlist.py`; this table is
-the human reconciliation. Every sealed column is written through a store that
-holds a `Cipher` today; converted stores will use a `KeyScope`.
+the human reconciliation. The scoped stores verify that each sealed
+column belongs to their category. The serving application still uses the
+legacy keys and storage format until keyed boot and cutover are available.
 
 Categories follow the approved category table.
 
@@ -68,9 +69,11 @@ Categories follow the approved category table.
 | `held_notes` | `id` | `id`, `created_at`, `key_version` | `body_enc` | — | `held_notes:<col>:<id>` |
 
 `commitment_reminders` stores scheduling metadata. Classify its linkage and timing before converting the store.
-`forgotten_events` is the one place a tombstone must survive with no
-reconstructible plaintext; rotation must preserve suppression (a risk noted
-in the approved design).
+`forgotten_events` keeps opaque markers after their inputs are deleted. The
+operator can retain those markers when source key coverage is independently
+confirmed and the maintenance grant can prove it holds the restricted lookup
+keys. The shadow records the required HMAC proofs with the markers. A scoped
+task without those keys cannot ingest events into the shadow.
 
 ### workspace
 
@@ -159,6 +162,35 @@ transaction. Controls compare epoch and generation and enforce a permitted
 state transition. Ticket and challenge consumption each return a row only
 once. Queue writers serialize on the parent row and finalization freezes
 the record. The ingress receiver must authenticate the encrypted end record before acknowledging receipt.
+
+### Scoped conversion status
+
+The converted stores use legacy row adapters on the serving path and AE2
+adapters for task-scoped calls. Scoped event feeds and vector operations
+check the grant before querying or embedding. Event metadata merges lock
+the current database row, including when separate tasks update it. New
+provider deduplication inputs live inside sealed event metadata so the
+operator can re-derive their exact tokens.
+
+The serving audit writer keeps the deployment-compatible legacy format.
+The offline operator verifies a signed source head before sealing old
+canonical entries or old sealed payloads into the target audit chain. The
+transition records the old head and count. The owner can independently sign
+and verify the new head. An unreadable audit payload leaves the panel's
+chain warning available.
+
+The operator copies supported records to a distinct database under a
+maintenance scope. It holds source table locks, commits each target row with
+its journal entry, and rechecks source values, target ciphertext and lookup
+tokens on resume. It refuses unreconstructible tokens, tombstones and
+nonempty families without conversion rules. The tool accepts a scoped
+maintenance handle from its caller. The operator host authorization
+exchange, remaining historical families and disk imports still need
+rehearsal before cutover.
+
+The source-tree crypto guard rejects direct calls to legacy encryption
+primitives outside its listed boundary modules. The scoped storage adapter
+separately enforces the registered sealed columns and their categories.
 
 ## 3. Keyed-lookup and join inventory
 
@@ -366,6 +398,8 @@ equality is needed.
 | Legacy backup retention | Delete old decryption material at cutover. Serving environment keys, database backups, `.env`/`deploy-secrets`, password-manager copies and setup artifacts are destroyed when the cutover is signed off. Pre-cutover copies remain exposed until then. |
 | Android before iOS | Android first; production only after the agreed Android scope passes. |
 | Ambiguous field classification, route/sink matrix, per-source acknowledgement contract, UI/egress inventory | Owner accepted the proposed approach; these are ledger work items, not open decisions. |
+| Forgotten-event tombstones across the key change | The owner approved retaining restricted lookup keys to preserve suppression. For an actual source, confirm the active and previous keys cover its rotation history before enabling retention. Markers cannot establish their own key provenance. |
+| Historical inbound, focus and conclusion lookups | The owner approved retaining the restricted lookup keys. The shadow retains old tags when inputs are absent, checks the required key proofs, and reseals recoverable content. If coverage is incomplete or unknown, refuse the affected migration. |
 
 
 ## 13. Route, sink and source matrix

@@ -23,7 +23,9 @@ from typing import Any
 import asyncpg
 
 from ..authz.audit import AuditLog
+from ..vault.scope import KeyScope
 from .crypto import Cipher
+from .rows import CipherRows, Rows, ScopedRows
 
 log = logging.getLogger("aether.memory.deliveries")
 
@@ -34,6 +36,7 @@ FAILED = "failed"
 ABANDONED = "abandoned"
 
 _COLUMNS = "id, surface_token, status, body_enc, message_id_enc, error_enc, created_at"
+_TABLE = "deliveries"
 
 
 @dataclass
@@ -47,20 +50,38 @@ class Delivery:
     created_at: datetime
 
 
-def _aad(column: str, delivery_id: int) -> str:
-    return f"deliveries:{column}:{delivery_id}"
-
-
 class Deliveries:
     """The sealed outbound-send log."""
 
-    def __init__(self, pool: asyncpg.Pool, cipher: Cipher, audit: AuditLog | None = None) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        cipher: Cipher | None,
+        audit: AuditLog | None = None,
+        *,
+        rows: Rows | None = None,
+    ) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("Deliveries needs exactly one of cipher or rows")
+        self._rows: Rows = rows if rows is not None else CipherRows(cipher)
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
         self._audit = audit
         # the agent loop watches this: a queued or failed send is worth a
         # tick's attention, and an in-memory flag costs no query
         self._changed: Callable[[], None] | None = None
+
+    @classmethod
+    def scoped(
+        cls,
+        pool: asyncpg.Pool,
+        scope: KeyScope,
+        audit: AuditLog | None = None,
+        *,
+        ver: int = 1,
+    ) -> Deliveries:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(pool, None, audit, rows=ScopedRows(scope, cat="operations", ver=ver))
 
     def watch(self, callback: Callable[[], None]) -> None:
         self._changed = callback
@@ -75,6 +96,7 @@ class Deliveries:
     async def record_queued(self, surface: str, text: str) -> Delivery | None:
         """Open one attempt. An empty body is refused, never stored — the
         same rule the fanout enforces before it calls this."""
+        self._rows.preflight()
         body = (text or "").strip()
         if not body:
             return None
@@ -82,17 +104,19 @@ class Deliveries:
             row = await conn.fetchrow(
                 "INSERT INTO deliveries (surface_token, status, body_enc, key_version)"
                 " VALUES ($1, $2, $3, $4) RETURNING id, created_at",
-                self._cipher.blind_token("delivery", surface or ""),
+                self._rows.token("delivery.surface", "delivery", surface or ""),
                 QUEUED,
                 b"",  # placeholder until the id exists; replaced below, same transaction
-                self._cipher.key_id,
+                self._rows.key_version,
             )
             delivery_id = row["id"]
             await conn.execute(
                 "UPDATE deliveries SET body_enc = $1 WHERE id = $2",
-                self._cipher.encrypt_json(
+                self._rows.seal(
                     {"text": body, "surface": surface},
-                    aad=_aad("body_enc", delivery_id),
+                    table=_TABLE,
+                    column="body_enc",
+                    row_id=delivery_id,
                 ),
                 delivery_id,
             )
@@ -121,19 +145,18 @@ class Deliveries:
     async def _mark(
         self, delivery_id: int, status: str, *, message_id: str = "", error: str = ""
     ) -> None:
+        self._rows.preflight()
         if status not in (QUEUED, SENT, FAILED, ABANDONED):
             raise ValueError(f"unknown delivery status: {status!r}")
         assignments = ["status = $1"]
         values: list[Any] = [status]
         if message_id:
-            values.append(
-                self._cipher.encrypt_text(message_id, aad=_aad("message_id_enc", delivery_id))
-            )
+            values.append(self._seal_text("message_id_enc", delivery_id, message_id))
             assignments.append(f"message_id_enc = ${len(values)}")
         if error:
             # an executor error can quote the content it was carrying; only
             # the hash reaches the log, and the full text only the cipher
-            values.append(self._cipher.encrypt_text(error, aad=_aad("error_enc", delivery_id)))
+            values.append(self._seal_text("error_enc", delivery_id, error))
             assignments.append(f"error_enc = ${len(values)}")
             log.info(
                 "delivery %d %s (error digest %s)",
@@ -150,6 +173,7 @@ class Deliveries:
             self._notify_changed()
 
     async def get(self, delivery_id: int) -> Delivery | None:
+        self._rows.preflight()
         row = await self._pool.fetchrow(
             f"SELECT {_COLUMNS} FROM deliveries WHERE id = $1", delivery_id
         )
@@ -158,6 +182,7 @@ class Deliveries:
     async def undelivered(self, limit: int = 10) -> list[Delivery]:
         """Attempts that never landed — failed first (they need the retry),
         then still-queued rows from a send that died mid-flight."""
+        self._rows.preflight()
         rows = await self._pool.fetch(
             f"SELECT {_COLUMNS} FROM deliveries"
             " WHERE status IN ($1, $2)"
@@ -169,19 +194,18 @@ class Deliveries:
         return [self._to_delivery(row) for row in rows]
 
     async def recent(self, limit: int = 20) -> list[Delivery]:
+        self._rows.preflight()
         rows = await self._pool.fetch(
             f"SELECT {_COLUMNS} FROM deliveries ORDER BY id DESC LIMIT $1", limit
         )
         return [self._to_delivery(row) for row in rows]
 
     def _to_delivery(self, row: asyncpg.Record) -> Delivery:
-        body_data = _open_json(self._cipher, row.get("body_enc"), _aad("body_enc", row["id"]))
+        body_data = self._open_json(row.get("body_enc"), "body_enc", row["id"])
         body = str(body_data.get("text") or "")
         surface = str(body_data.get("surface") or "")
-        message_id = _open(
-            self._cipher, row.get("message_id_enc"), _aad("message_id_enc", row["id"])
-        )
-        error = _open(self._cipher, row.get("error_enc"), _aad("error_enc", row["id"]))
+        message_id = self._open_text(row.get("message_id_enc"), "message_id_enc", row["id"])
+        error = self._open_text(row.get("error_enc"), "error_enc", row["id"])
         return Delivery(
             id=row["id"],
             surface=surface,
@@ -192,23 +216,32 @@ class Deliveries:
             created_at=row["created_at"],
         )
 
+    def _seal_text(self, column: str, row_id: int, value: str) -> bytes:
+        return self._rows.seal_bytes(
+            value.encode("utf-8"), table=_TABLE, column=column, row_id=row_id
+        )
 
-def _open(cipher: Cipher, blob: Any, aad: str) -> str:
-    if not blob:
-        return ""
-    try:
-        return cipher.decrypt_text(blob, aad=aad)
-    except Exception:
-        log.warning("delivery field undecryptable — treated as empty")
-        return ""
+    def _open_text(self, blob: Any, column: str, row_id: int) -> str:
+        if not blob:
+            return ""
+        try:
+            return self._rows.open_bytes(blob, table=_TABLE, column=column, row_id=row_id).decode(
+                "utf-8"
+            )
+        except Exception:
+            if self._scoped:
+                raise
+            log.warning("delivery field undecryptable — treated as empty")
+            return ""
 
-
-def _open_json(cipher: Cipher, blob: Any, aad: str) -> dict[str, Any]:
-    if not blob:
-        return {}
-    try:
-        data = cipher.decrypt_json(blob, aad=aad)
-    except Exception:
-        log.warning("delivery body undecryptable — treated as empty")
-        return {}
-    return data if isinstance(data, dict) else {}
+    def _open_json(self, blob: Any, column: str, row_id: int) -> dict[str, Any]:
+        if not blob:
+            return {}
+        try:
+            data = self._rows.open(blob, table=_TABLE, column=column, row_id=row_id)
+        except Exception:
+            if self._scoped:
+                raise
+            log.warning("delivery body undecryptable — treated as empty")
+            return {}
+        return data if isinstance(data, dict) else {}

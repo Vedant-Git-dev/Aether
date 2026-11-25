@@ -39,9 +39,11 @@ import asyncpg
 import numpy as np
 
 from ..llm.embeddings import Embedder, pack_vector, unpack_vector
+from ..vault.scope import KeyScope
 from .budget import DailyBudget
 from .crypto import Cipher
 from .mail import MAIL_KIND, parse_addresses, strip_quoted
+from .rows import CipherRows, Rows, ScopedRows
 
 log = logging.getLogger("aether.memory.vectors")
 
@@ -135,12 +137,17 @@ class VectorMemory:
     def __init__(
         self,
         pool: asyncpg.Pool,
-        cipher: Cipher,
+        cipher: Cipher | None,
         embedder: Embedder | None,
         budget: DailyBudget | None = None,
+        *,
+        rows: Rows | None = None,
     ) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("VectorMemory needs exactly one of cipher or rows")
+        self._rows: Rows = rows if rows is not None else CipherRows(cipher)
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
         self._embedder = embedder
         # optional-work guard: the backfill pauses when the day is spent.
         # Nothing interactive consults this.
@@ -169,6 +176,25 @@ class VectorMemory:
         self._cache_dims = 0
         self._cache_batch = CACHE_BATCH
         self._cache_max_chunks = 8_000
+
+    @classmethod
+    def scoped(
+        cls,
+        pool: asyncpg.Pool,
+        scope: KeyScope,
+        embedder: Embedder | None,
+        budget: DailyBudget | None = None,
+        *,
+        ver: int = 1,
+    ) -> VectorMemory:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(
+            pool,
+            None,
+            embedder,
+            budget,
+            rows=ScopedRows(scope, cat="memory", ver=ver),
+        )
 
     def wake_backfill(self) -> None:
         """Ask the loop's backfill pass to run now (boot and failed indexes)."""
@@ -211,7 +237,8 @@ class VectorMemory:
             return
         self._cache_batch = max(1, int(batch))
         self._cache_max_chunks = max(1, int(max_chunks))
-        token = self._cipher.blind_token("embed_model", self._embedder.model)
+        self._rows.preflight()
+        token = self._rows.token("embed.model", "embed_model", self._embedder.model)
         ids: list[int] = []
         events: list[int] = []
         vectors: list[np.ndarray] = []
@@ -283,11 +310,17 @@ class VectorMemory:
     def _open_vector(self, row: Any) -> np.ndarray | None:
         try:
             values = unpack_vector(
-                self._cipher.decrypt_bytes(
-                    row["embedding_enc"], aad=f"chunks:embedding_enc:{row['id']}"
+                self._rows.open_bytes(
+                    row["embedding_enc"],
+                    table="memory_chunks",
+                    column="embedding_enc",
+                    row_id=row["id"],
+                    aad=f"chunks:embedding_enc:{row['id']}",
                 )
             )
         except Exception:
+            if self._scoped:
+                raise
             log.warning("chunk %s vector undecryptable — skipped", row["id"])
             return None
         if not values:
@@ -368,10 +401,15 @@ class VectorMemory:
         runs on a background task so ingest returns at once — indexing is
         catch-up work, never part of the reply path. A failure leaves
         indexed_at unset, and the loop's backfill heals it."""
+        self._rows.preflight()
         if not self.enabled or kind in _RICH_INDEX_KINDS:
             return
         parts = _chunk_text(source, kind, payload, occurred_at)
-        self._spawn(self._index_and_mark(event_id, source, kind, "", parts, occurred_at))
+        work = self._index_and_mark(event_id, source, kind, "", parts, occurred_at)
+        if self._scoped:
+            await work
+        else:
+            self._spawn(work)
 
     async def _index_and_mark(
         self,
@@ -436,6 +474,7 @@ class VectorMemory:
         what is kept is the one-line summary, so it stays recallable without
         competing.
         """
+        self._rows.preflight()
         if not self.enabled or not (summary or "").strip():
             return
         row = await self._pool.fetchrow(
@@ -457,6 +496,7 @@ class VectorMemory:
         keeps a listener correct when the vector layer itself is off. Returns
         how many chunk rows were removed.
         """
+        self._rows.preflight()
         result = await self._pool.execute("DELETE FROM memory_chunks WHERE event_id = $1", event_id)
         self._notify({"action": "remove", "event_id": event_id})
         try:
@@ -482,6 +522,7 @@ class VectorMemory:
         assert self._embedder is not None
         if not parts:
             return
+        self._rows.preflight()
         vectors = await self._embedder.embed([text for _, text in parts], task="document")
         committed: list[dict[str, Any]] = []
         async with self._pool.acquire() as conn, conn.transaction():
@@ -492,19 +533,29 @@ class VectorMemory:
                     " VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
                     event_id,
                     b"",
-                    self._cipher.blind_token("embed_model", self._embedder.model),
+                    self._rows.token("embed.model", "embed_model", self._embedder.model),
                     len(vector),
                     ordinal,
-                    self._cipher.key_id,
+                    self._rows.key_version,
                 )
                 if row is None:
                     raise RuntimeError(f"chunk insert for event {event_id} returned no id")
                 chunk_id = row["id"]
-                text_blob = self._cipher.encrypt_text(text, aad=f"chunks:text_enc:{chunk_id}")
-                vec_blob = self._cipher.encrypt_bytes(
-                    pack_vector(vector), aad=f"chunks:embedding_enc:{chunk_id}"
+                text_blob = self._rows.seal_bytes(
+                    text.encode("utf-8"),
+                    table="memory_chunks",
+                    column="text_enc",
+                    row_id=chunk_id,
+                    aad=f"chunks:text_enc:{chunk_id}",
                 )
-                meta_blob = self._cipher.encrypt_json(
+                vec_blob = self._rows.seal_bytes(
+                    pack_vector(vector),
+                    table="memory_chunks",
+                    column="embedding_enc",
+                    row_id=chunk_id,
+                    aad=f"chunks:embedding_enc:{chunk_id}",
+                )
+                meta_blob = self._rows.seal(
                     {
                         "source": source,
                         "kind": kind,
@@ -515,6 +566,9 @@ class VectorMemory:
                         # embed_model_token without re-embedding the chunk
                         "embed_model": self._embedder.model,
                     },
+                    table="memory_chunks",
+                    column="meta_enc",
+                    row_id=chunk_id,
                     aad=f"memory_chunks:meta_enc:{chunk_id}",
                 )
                 await conn.execute(
@@ -551,6 +605,7 @@ class VectorMemory:
             )
 
     async def _mark_indexed(self, event_id: int) -> None:
+        self._rows.preflight()
         await self._pool.execute(
             "UPDATE events SET indexed_at = now() WHERE id = $1 AND indexed_at IS NULL",
             event_id,
@@ -563,9 +618,11 @@ class VectorMemory:
         feature-preexisting event, or one whose realtime embed was refused
         by a rate limit. `shared_doc` rows get their payload preview chunked:
         the bytes were never stored, so the preview is all that exists.
+
         Returns how many were handled, or None when caught up."""
         if not self.enabled:
             return None
+        self._rows.preflight()
         if self._budget is not None and not self._budget.can_spend(
             queries=1, bytes_estimate=_BACKFILL_ESTIMATE_BYTES
         ):
@@ -580,10 +637,16 @@ class VectorMemory:
 
         for row in rows:
             try:
-                payload = self._cipher.decrypt_json(
-                    row["payload_enc"], aad=f"events:payload_enc:{row['id']}"
+                payload = self._rows.open(
+                    row["payload_enc"],
+                    table="events",
+                    column="payload_enc",
+                    row_id=row["id"],
+                    aad=f"events:payload_enc:{row['id']}",
                 )
             except Exception:
+                if self._scoped:
+                    raise
                 payload = {}
             source, kind, occurred_at = self._event_meta(row)
             if kind in _RICH_INDEX_KINDS:
@@ -623,6 +686,7 @@ class VectorMemory:
         """The embedding half of search, on its own so a turn can start it
         early and let the round trip overlap its context assembly. None on
         any failure — that turn simply recalls nothing."""
+        self._rows.preflight()
         if not self.enabled or not query.strip():
             return None
         assert self._embedder is not None
@@ -646,6 +710,7 @@ class VectorMemory:
         """
         if self._embedder is None:
             return []
+        self._rows.preflight()
         if not self._cache_loaded:
             await self.load_cache(batch=self._cache_batch, max_chunks=self._cache_max_chunks)
         if not self._cache_ids:
@@ -685,10 +750,16 @@ class VectorMemory:
                 log.warning("chunk %s disappeared before its text could be read", chunk_id)
                 continue
             try:
-                text = self._cipher.decrypt_text(
-                    detail["text_enc"], aad=f"chunks:text_enc:{chunk_id}"
-                )
+                text = self._rows.open_bytes(
+                    detail["text_enc"],
+                    table="memory_chunks",
+                    column="text_enc",
+                    row_id=chunk_id,
+                    aad=f"chunks:text_enc:{chunk_id}",
+                ).decode("utf-8")
             except Exception:
+                if self._scoped:
+                    raise
                 log.warning("chunk %s undecryptable — skipped", chunk_id)
                 continue
             meta = self._chunk_meta(detail)
@@ -713,12 +784,21 @@ class VectorMemory:
         if not blob:
             return {}
         try:
-            return self._cipher.decrypt_json(blob, aad=f"memory_chunks:meta_enc:{row['id']}")
+            return self._rows.open(
+                blob,
+                table="memory_chunks",
+                column="meta_enc",
+                row_id=row["id"],
+                aad=f"memory_chunks:meta_enc:{row['id']}",
+            )
         except Exception:
+            if self._scoped:
+                raise
             log.warning("chunk %s metadata undecryptable — treating as empty", row["id"])
             return {}
 
     async def _event_time(self, event_id: int) -> datetime:
+        self._rows.preflight()
         row = await self._pool.fetchrow(
             "SELECT id, meta_enc, created_at FROM events WHERE id = $1", event_id
         )
@@ -729,8 +809,12 @@ class VectorMemory:
     def _event_meta(self, row: asyncpg.Record) -> tuple[str, str, datetime]:
         if row.get("meta_enc"):
             try:
-                meta = self._cipher.decrypt_json(
-                    row["meta_enc"], aad=f"events:meta_enc:{row['id']}"
+                meta = self._rows.open(
+                    row["meta_enc"],
+                    table="events",
+                    column="meta_enc",
+                    row_id=row["id"],
+                    aad=f"events:meta_enc:{row['id']}",
                 )
                 return (
                     str(meta.get("source", "")),
@@ -738,6 +822,8 @@ class VectorMemory:
                     _meta_time(meta.get("occurred_at"), row.get("created_at")),
                 )
             except Exception:
+                if self._scoped:
+                    raise
                 log.warning("event %s metadata undecryptable — indexing as unknown", row["id"])
         return "", "", row.get("created_at") or datetime.now(UTC)
 
@@ -750,6 +836,7 @@ class VectorMemory:
         location is prefixed only for the older rows that do not — otherwise
         a page would announce itself twice.
         """
+        self._rows.preflight()
         rows = await self._pool.fetch(
             "SELECT id, text_enc, meta_enc FROM memory_chunks"
             " WHERE event_id = $1 ORDER BY ordinal, id",
@@ -758,10 +845,16 @@ class VectorMemory:
         parts: list[str] = []
         for row in rows:
             try:
-                text = self._cipher.decrypt_text(
-                    row["text_enc"], aad=f"chunks:text_enc:{row['id']}"
-                )
+                text = self._rows.open_bytes(
+                    row["text_enc"],
+                    table="memory_chunks",
+                    column="text_enc",
+                    row_id=row["id"],
+                    aad=f"chunks:text_enc:{row['id']}",
+                ).decode("utf-8")
             except Exception:
+                if self._scoped:
+                    raise
                 continue
             location = str(self._chunk_meta(row).get("location", ""))
             if location and not text.startswith("["):

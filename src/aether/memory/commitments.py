@@ -24,7 +24,9 @@ from typing import Any
 import asyncpg
 
 from ..authz.audit import AuditLog
+from ..vault.scope import KeyScope
 from .crypto import Cipher
+from .rows import CipherRows, Rows, ScopedRows
 
 log = logging.getLogger("aether.memory.commitments")
 
@@ -63,10 +65,32 @@ def _aad(commitment_id: int) -> str:
 class Commitments:
     """Database-backed store for the commitments extracted from events."""
 
-    def __init__(self, pool: asyncpg.Pool, cipher: Cipher, audit: AuditLog) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        cipher: Cipher | None,
+        audit: AuditLog,
+        *,
+        rows: Rows | None = None,
+    ) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("Commitments needs exactly one of cipher or rows")
+        self._rows: Rows = rows if rows is not None else CipherRows(cipher)
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
         self._audit = audit
+
+    @classmethod
+    def scoped(
+        cls,
+        pool: asyncpg.Pool,
+        scope: KeyScope,
+        audit: AuditLog,
+        *,
+        ver: int = 1,
+    ) -> Commitments:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(pool, None, audit, rows=ScopedRows(scope, cat="memory", ver=ver))
 
     async def add(
         self,
@@ -85,6 +109,7 @@ class Commitments:
     ) -> Commitment | None:
         """One commitment, sealed. An empty text is a bug upstream, not a
         row: it is refused rather than stored as a blank promise."""
+        self._rows.preflight()
         body = (text or "").strip()
         if not body:
             return None
@@ -98,14 +123,14 @@ class Commitments:
                 kind,
                 OPEN,
                 b"",  # placeholder until the id exists; replaced below, same transaction
-                self._cipher.key_id,
+                self._rows.key_version,
                 counterparty_identity_id,
                 source_event_id,
             )
             commitment_id = row["id"]
             await conn.execute(
                 "UPDATE commitments SET body_enc = $1 WHERE id = $2",
-                self._cipher.encrypt_json(
+                self._rows.seal(
                     {
                         "text": body[:400],
                         "due_at": due_at.astimezone(UTC).isoformat() if due_at else None,
@@ -117,6 +142,9 @@ class Commitments:
                         "document": str(document or "")[:300],
                         "media_id": int(media_id) if media_id else None,
                     },
+                    table="commitments",
+                    column="body_enc",
+                    row_id=commitment_id,
                     aad=_aad(commitment_id),
                 ),
                 commitment_id,
@@ -181,6 +209,7 @@ class Commitments:
         return out
 
     async def get(self, commitment_id: int) -> Commitment | None:
+        self._rows.preflight()
         row = await self._pool.fetchrow(
             "SELECT id, kind, status, body_enc, counterparty_identity_id,"
             " source_event_id, created_at FROM commitments WHERE id = $1",
@@ -195,6 +224,7 @@ class Commitments:
         and undated commitments sort last, since "no deadline" is not
         "due now".
         """
+        self._rows.preflight()
         rows = await self._pool.fetch(
             "SELECT id, kind, status, body_enc, counterparty_identity_id,"
             " source_event_id, created_at FROM commitments"
@@ -207,6 +237,7 @@ class Commitments:
         return found
 
     async def for_identity(self, identity_id: int, limit: int = 50) -> list[Commitment]:
+        self._rows.preflight()
         rows = await self._pool.fetch(
             "SELECT id, kind, status, body_enc, counterparty_identity_id,"
             " source_event_id, created_at FROM commitments"
@@ -221,6 +252,7 @@ class Commitments:
     async def resolve(self, commitment_id: int, status: str = DONE) -> bool:
         """Close one out. Status only — the body is never rewritten, so
         what was promised survives being done."""
+        self._rows.preflight()
         if status not in (DONE, CANCELLED, OPEN):
             raise ValueError(f"unknown commitment status: {status!r}")
         result = await self._pool.execute(
@@ -233,8 +265,16 @@ class Commitments:
     def _to_commitment(self, row: asyncpg.Record) -> Commitment:
         body: dict[str, Any] = {}
         try:
-            body = self._cipher.decrypt_json(row["body_enc"], aad=_aad(row["id"]))
+            body = self._rows.open(
+                row["body_enc"],
+                table="commitments",
+                column="body_enc",
+                row_id=row["id"],
+                aad=_aad(row["id"]),
+            )
         except Exception:
+            if self._scoped:
+                raise
             log.warning("commitment %s body undecryptable — treated as empty", row["id"])
         try:
             urgency = max(0, min(3, int(body.get("urgency") or 0)))

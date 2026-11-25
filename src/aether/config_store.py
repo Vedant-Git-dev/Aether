@@ -51,6 +51,8 @@ from .config import (
 from .config_validation import REQUIRED_SETTINGS_PATHS, is_missing
 from .connectors import build_messaging_connectors
 from .memory.crypto import Cipher, CryptoError
+from .memory.rows import CipherRows, Rows, ScopedRows
+from .vault.scope import KeyScope
 
 log = logging.getLogger("aether.config_store")
 
@@ -229,27 +231,53 @@ class ConfigOverrides:
     bound to that path. The settings.py one-shot upsert shape — the AAD
     already carries the client-chosen path, so there is no id to wait for."""
 
-    def __init__(self, pool: asyncpg.Pool, cipher: Cipher) -> None:
+    def __init__(
+        self, pool: asyncpg.Pool, cipher: Cipher | None, *, rows: Rows | None = None
+    ) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("ConfigOverrides needs exactly one of cipher or rows")
+        self._rows: Rows = rows if rows is not None else CipherRows(cipher)
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
+
+    @classmethod
+    def scoped(cls, pool: asyncpg.Pool, scope: KeyScope, *, ver: int = 1) -> ConfigOverrides:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(pool, None, rows=ScopedRows(scope, cat="operations", ver=ver))
 
     async def load(self) -> dict[str, Any]:
         """{path: value} for every stored override. A row that can't be
         decrypted (key rotation, drift) is skipped with a warning — boot
         must never crash over a stale row."""
+        self._rows.preflight()
         rows = await self._pool.fetch("SELECT path, value_enc FROM config_overrides")
         out: dict[str, Any] = {}
         for row in rows:
             try:
-                data = self._cipher.decrypt_json(row["value_enc"], aad=_AAD + row["path"])
+                data = self._rows.open(
+                    row["value_enc"],
+                    table="config_overrides",
+                    column="value_enc",
+                    row_id=row["path"],
+                    aad=_AAD + row["path"],
+                )
             except CryptoError:
+                if self._scoped:
+                    raise
                 log.warning("config override %r can't be decrypted — skipping", row["path"])
                 continue
             out[row["path"]] = data.get("value")
         return out
 
     async def upsert(self, path: str, value: Any) -> None:
-        blob = self._cipher.encrypt_json({"value": value}, aad=_AAD + path)
+        self._rows.preflight()
+        blob = self._rows.seal(
+            {"value": value},
+            table="config_overrides",
+            column="value_enc",
+            row_id=path,
+            aad=_AAD + path,
+        )
         await self._pool.execute(
             "INSERT INTO config_overrides (path, value_enc, updated_at)"
             " VALUES ($1, $2, now())"
@@ -259,10 +287,12 @@ class ConfigOverrides:
         )
 
     async def delete(self, path: str) -> None:
+        self._rows.preflight()
         await self._pool.execute("DELETE FROM config_overrides WHERE path = $1", path)
 
     async def delete_prefixed(self, prefix: str) -> None:
         """Every row under ``prefix.`` — the mcp list's item rows."""
+        self._rows.preflight()
         await self._pool.execute(
             "DELETE FROM config_overrides WHERE starts_with(path, $1::text || '.')",
             prefix,

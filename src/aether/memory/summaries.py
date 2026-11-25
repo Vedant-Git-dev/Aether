@@ -25,6 +25,8 @@ from typing import Any, Protocol
 import asyncpg
 
 from ..llm.types import Message
+from ..vault.scope import KeyScope
+from .body_rows import BodyRows, CipherBodyRows, ScopedBodyRows
 from .crypto import Cipher
 
 log = logging.getLogger("aether.memory.summaries")
@@ -35,10 +37,6 @@ WEEKLY = "weekly"
 KINDS = (THREAD, DAILY, WEEKLY)
 
 MAX_SUMMARY_CHARS = 1_200
-
-
-def _aad(summary_id: int) -> str:
-    return f"summaries:body_enc:{summary_id}"
 
 
 @dataclass(frozen=True)
@@ -85,12 +83,39 @@ class LLMSummarizer:
 class Summaries:
     """The sealed store of thread, daily and weekly summaries."""
 
-    def __init__(self, pool: asyncpg.Pool, cipher: Cipher) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        cipher: Cipher | None,
+        *,
+        rows: BodyRows | None = None,
+    ) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("Summaries needs exactly one of cipher or rows")
+        self._rows: BodyRows = (
+            rows if rows is not None else CipherBodyRows(cipher, table="summaries")
+        )
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
+
+    @classmethod
+    def scoped(
+        cls,
+        pool: asyncpg.Pool,
+        scope: KeyScope,
+        *,
+        cat: str = "memory",
+        ver: int = 1,
+    ) -> Summaries:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(
+            pool,
+            None,
+            rows=ScopedBodyRows(scope, table="summaries", cat=cat, ver=ver),
+        )
 
     def _token(self, kind: str, period: str) -> bytes:
-        return self._cipher.blind_token("summary_period", f"{kind}\x1f{period}")
+        return self._rows.token("summary.period", "summary_period", f"{kind}\x1f{period}")
 
     async def upsert(
         self,
@@ -103,6 +128,7 @@ class Summaries:
     ) -> Summary | None:
         """Write one summary, replacing the row for the same (kind, period).
         An empty text is a bug upstream, not a row."""
+        self._rows.preflight()
         clean = " ".join((text or "").split())[:MAX_SUMMARY_CHARS]
         if kind not in KINDS or not period or not clean:
             return None
@@ -125,12 +151,12 @@ class Summaries:
                 kind,
                 token,
                 b"",  # placeholder until the id exists; replaced below, same transaction
-                self._cipher.key_id,
+                self._rows.key_version,
             )
             summary_id = row["id"]
             await conn.execute(
                 "UPDATE summaries SET body_enc = $1 WHERE id = $2",
-                self._cipher.encrypt_json(body, aad=_aad(summary_id)),
+                self._rows.seal(body, row_id=summary_id),
                 summary_id,
             )
         return Summary(
@@ -144,6 +170,7 @@ class Summaries:
         )
 
     async def get(self, kind: str, period: str) -> Summary | None:
+        self._rows.preflight()
         row = await self._pool.fetchrow(
             "SELECT id, kind, period_token, body_enc, created_at FROM summaries"
             " WHERE kind = $1 AND period_token = $2",
@@ -153,6 +180,7 @@ class Summaries:
         return self._to_summary(row) if row else None
 
     async def by_id(self, summary_id: int) -> Summary | None:
+        self._rows.preflight()
         row = await self._pool.fetchrow(
             "SELECT id, kind, period_token, body_enc, created_at FROM summaries WHERE id = $1",
             summary_id,
@@ -162,6 +190,7 @@ class Summaries:
     async def delete(self, summary_id: int) -> bool:
         """Remove one saved synthesis. The raw events it described stay; only
         the derived summary goes."""
+        self._rows.preflight()
         result = await self._pool.execute("DELETE FROM summaries WHERE id = $1", summary_id)
         return result.endswith(" 1")
 
@@ -170,6 +199,7 @@ class Summaries:
         retrieval use. Ordering happens in memory: `created_at` is
         bookkeeping, but the period inside the body is not, so Postgres
         cannot sort by it."""
+        self._rows.preflight()
         rows = await self._pool.fetch(
             "SELECT id, kind, period_token, body_enc, created_at FROM summaries"
             " WHERE kind = $1 ORDER BY created_at DESC LIMIT $2",
@@ -182,8 +212,10 @@ class Summaries:
     def _to_summary(self, row: asyncpg.Record) -> Summary | None:
         summary_id = int(row["id"])
         try:
-            body = self._cipher.decrypt_json(row["body_enc"], aad=_aad(summary_id))
+            body = self._rows.open(row["body_enc"], row_id=summary_id)
         except Exception:
+            if self._scoped:
+                raise
             log.warning("summary %s body undecryptable — skipped", summary_id)
             return None
         if not isinstance(body, dict):

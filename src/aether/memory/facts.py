@@ -36,6 +36,8 @@ from typing import Any
 import asyncpg
 
 from ..authz.audit import AuditLog
+from ..vault.scope import KeyScope
+from .body_rows import BodyRows, CipherBodyRows, ScopedBodyRows
 from .crypto import Cipher
 
 log = logging.getLogger("aether.memory.facts")
@@ -107,10 +109,6 @@ _QUESTION = (
 )
 
 
-def _aad(fact_id: int) -> str:
-    return f"facts:body_enc:{fact_id}"
-
-
 def normalize_key(key: str) -> str:
     """The equality key: lowercased, collapsed, bounded."""
     return " ".join((key or "").split()).lower()[:_KEY_CAP]
@@ -170,26 +168,50 @@ class Facts:
     def __init__(
         self,
         pool: asyncpg.Pool,
-        cipher: Cipher,
+        cipher: Cipher | None,
         audit: AuditLog | None = None,
         *,
         max_active: int = 500,
+        rows: BodyRows | None = None,
     ) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("Facts needs exactly one of cipher or rows")
+        self._rows: BodyRows = rows if rows is not None else CipherBodyRows(cipher, table="facts")
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
         self._audit = audit
         self._max_active = max_active
         # one writer at a time, so a read-modify-write consolidation cannot
         # race another enrichment task into two active claims for one key
         self._lock = asyncio.Lock()
 
+    @classmethod
+    def scoped(
+        cls,
+        pool: asyncpg.Pool,
+        scope: KeyScope,
+        audit: AuditLog | None = None,
+        *,
+        max_active: int = 500,
+        cat: str = "memory",
+        ver: int = 1,
+    ) -> Facts:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(
+            pool,
+            None,
+            audit,
+            max_active=max_active,
+            rows=ScopedBodyRows(scope, table="facts", cat=cat, ver=ver),
+        )
+
     def _token(self, subject_identity_id: int | None, subject: str, key: str) -> bytes:
         """The equality key: the resolved identity when there is one, and the
         normalized subject label otherwise, so two people's same-named key
         never collide."""
         label = " ".join((subject or "").split()).lower()
-        return self._cipher.blind_token(
-            "fact_key", f"{subject_identity_id or 0}\x1f{label}\x1f{key}"
+        return self._rows.token(
+            "fact.subject", "fact_key", f"{subject_identity_id or 0}\x1f{label}\x1f{key}"
         )
 
     # -- consolidation ------------------------------------------------------
@@ -214,6 +236,7 @@ class Facts:
         Provenance is mandatory: a claim that cannot name where it came from
         is refused rather than stored as an orphan belief.
         """
+        self._rows.preflight()
         now = now or datetime.now(UTC)
         clean_key = normalize_key(key)
         clean_value = (value or "").strip()[:_VALUE_CAP]
@@ -353,12 +376,12 @@ class Facts:
                     token,
                     status,
                     b"",  # placeholder until the id exists; replaced below, same transaction
-                    self._cipher.key_id,
+                    self._rows.key_version,
                 )
                 fact_id = row["id"]
                 await conn.execute(
                     "UPDATE facts SET body_enc = $1 WHERE id = $2",
-                    self._cipher.encrypt_json(body, aad=_aad(fact_id)),
+                    self._rows.seal(body, row_id=fact_id),
                     fact_id,
                 )
         except asyncpg.UniqueViolationError:
@@ -389,10 +412,7 @@ class Facts:
             await self._pool.execute(
                 "UPDATE facts SET status = $1, body_enc = $2 WHERE id = $3 AND status = $4",
                 SUPERSEDED,
-                self._cipher.encrypt_json(
-                    _fact_body(fact, valid_until=now),
-                    aad=_aad(fact.id),
-                ),
+                self._rows.seal(_fact_body(fact, valid_until=now), row_id=fact.id),
                 fact.id,
                 ACTIVE,
             )
@@ -400,16 +420,14 @@ class Facts:
     async def forget(self, fact_id: int) -> bool:
         """End one claim for good: it leaves every read, and the row keeps
         only its provenance history. Nothing user-written is rewritten."""
+        self._rows.preflight()
         fact = await self.get(fact_id)
         if fact is None:
             return False
         result = await self._pool.execute(
             "UPDATE facts SET status = $1, body_enc = $2 WHERE id = $3",
             FORGOTTEN,
-            self._cipher.encrypt_json(
-                _fact_body(fact, valid_until=datetime.now(UTC)),
-                aad=_aad(fact.id),
-            ),
+            self._rows.seal(_fact_body(fact, valid_until=datetime.now(UTC)), row_id=fact.id),
             fact.id,
         )
         return result.endswith(" 1")
@@ -421,6 +439,7 @@ class Facts:
         never deleted — the claim's own history still explains itself.
         Returns how many claims ended.
         """
+        self._rows.preflight()
         now = now or datetime.now(UTC)
         rows = await self._pool.fetch(
             "SELECT id, subject_identity_id, status, body_enc, created_at FROM facts"
@@ -456,6 +475,7 @@ class Facts:
 
     async def active(self, now: datetime | None = None, limit: int | None = None) -> list[Fact]:
         """Every active fact valid now — the core-facts block's own read."""
+        self._rows.preflight()
         now = now or datetime.now(UTC)
         rows = await self._pool.fetch(
             "SELECT id, subject_identity_id, status, body_enc, created_at FROM facts"
@@ -469,6 +489,7 @@ class Facts:
     async def for_subject(
         self, subject_identity_id: int, *, now: datetime | None = None, limit: int = 50
     ) -> list[Fact]:
+        self._rows.preflight()
         now = now or datetime.now(UTC)
         rows = await self._pool.fetch(
             "SELECT id, subject_identity_id, status, body_enc, created_at FROM facts"
@@ -481,6 +502,7 @@ class Facts:
         return [fact for fact in facts if fact.is_valid(now)]
 
     async def get(self, fact_id: int) -> Fact | None:
+        self._rows.preflight()
         row = await self._pool.fetchrow(
             "SELECT id, subject_identity_id, status, body_enc, created_at FROM facts WHERE id = $1",
             fact_id,
@@ -491,6 +513,7 @@ class Facts:
 
     async def pending_questions(self, limit: int = 3, now: datetime | None = None) -> list[Fact]:
         """Disputed claims surfaced once, on a human turn only."""
+        self._rows.preflight()
         now = now or datetime.now(UTC)
         rows = await self._pool.fetch(
             "SELECT id, subject_identity_id, status, body_enc, created_at FROM facts"
@@ -505,13 +528,14 @@ class Facts:
     async def mark_asked(self, fact_ids: list[int]) -> None:
         """Record that the one question was put to the user, so it is not
         repeated — the marker rides the sealed body like every other field."""
+        self._rows.preflight()
         for fact_id in fact_ids:
             fact = await self.get(fact_id)
             if fact is None or fact.asked:
                 continue
             await self._pool.execute(
                 "UPDATE facts SET body_enc = $1 WHERE id = $2",
-                self._cipher.encrypt_json(
+                self._rows.seal(
                     {
                         "subject": fact.subject,
                         "key": fact.key,
@@ -524,7 +548,7 @@ class Facts:
                         "trusted": fact.trusted,
                         "asked": True,
                     },
-                    aad=_aad(fact.id),
+                    row_id=fact.id,
                 ),
                 fact_id,
             )
@@ -539,8 +563,10 @@ class Facts:
     def _to_fact(self, row: asyncpg.Record) -> Fact | None:
         fact_id = int(row["id"])
         try:
-            body = self._cipher.decrypt_json(row["body_enc"], aad=_aad(fact_id))
+            body = self._rows.open(row["body_enc"], row_id=fact_id)
         except Exception:
+            if self._scoped:
+                raise
             log.warning("fact %s body undecryptable — skipped", fact_id)
             return None
         if not isinstance(body, dict):

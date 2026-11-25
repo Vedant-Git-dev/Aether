@@ -28,6 +28,8 @@ import asyncpg
 
 from ..authz.audit import AuditLog
 from ..memory.crypto import Cipher
+from ..memory.rows import CipherRows, Rows, ScopedRows
+from ..vault.scope import KeyScope
 
 log = logging.getLogger("aether.proactive")
 
@@ -95,10 +97,27 @@ class ProactiveStore:
     """proactive_tasks rows. Every transition is a single UPDATE, so a
     crash between steps can only ever leave a row that says the truth."""
 
-    def __init__(self, pool: asyncpg.Pool, cipher: Cipher, audit: AuditLog) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        cipher: Cipher | None,
+        audit: AuditLog,
+        *,
+        rows: Rows | None = None,
+    ) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("ProactiveStore needs exactly one of cipher or rows")
+        self._rows: Rows = rows if rows is not None else CipherRows(cipher)
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
         self._audit = audit
+
+    @classmethod
+    def scoped(
+        cls, pool: asyncpg.Pool, scope: KeyScope, audit: AuditLog, *, ver: int = 1
+    ) -> ProactiveStore:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(pool, None, audit, rows=ScopedRows(scope, cat="operations", ver=ver))
 
     async def claim(
         self,
@@ -113,6 +132,7 @@ class ProactiveStore:
         """Take an opportunity: insert a pending row, or return None when
         the key was already taken — the dedup, enforced by the unique
         index, not by a read-then-write race."""
+        self._rows.preflight()
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "INSERT INTO proactive_tasks"
@@ -126,20 +146,35 @@ class ProactiveStore:
                 b"",  # placeholders until the id exists; replaced below, same transaction
                 b"",
                 b"",
-                self._cipher.blind_token("opportunity", f"{skill}\x1f{key}"),
-                self._cipher.blind_token("day", day),
-                self._cipher.key_id,
+                self._rows.token("proactive.opportunity", "opportunity", f"{skill}\x1f{key}"),
+                self._rows.token("proactive.day", "day", day),
+                self._rows.key_version,
             )
             if row is None:
                 return None
-            blob = self._cipher.encrypt_json(opportunity, aad=_aad("opportunity_enc", row["id"]))
+            blob = self._rows.seal(
+                opportunity,
+                table="proactive_tasks",
+                column="opportunity_enc",
+                row_id=row["id"],
+                aad=_aad("opportunity_enc", row["id"]),
+            )
             await conn.execute(
                 "UPDATE proactive_tasks SET opportunity_enc = $1, label_enc = $2,"
                 " meta_enc = $3 WHERE id = $4",
                 blob,
-                self._cipher.encrypt_text(label, aad=_aad("label_enc", row["id"])),
-                self._cipher.encrypt_json(
+                self._rows.seal_bytes(
+                    label.encode("utf-8"),
+                    table="proactive_tasks",
+                    column="label_enc",
+                    row_id=row["id"],
+                    aad=_aad("label_enc", row["id"]),
+                ),
+                self._rows.seal(
                     {"skill": skill, "opportunity_key": key, "day": day},
+                    table="proactive_tasks",
+                    column="meta_enc",
+                    row_id=row["id"],
                     aad=_aad("meta_enc", row["id"]),
                 ),
                 row["id"],
@@ -172,6 +207,7 @@ class ProactiveStore:
         """The queue — claimed but not yet settled, oldest first. After a
         crash these are the re-armed rows; during a cycle they are the ones
         about to run."""
+        self._rows.preflight()
         rows = await self._pool.fetch(
             f"SELECT {_TASK_COLUMNS} FROM proactive_tasks WHERE status = 'pending' ORDER BY id"
         )
@@ -181,6 +217,7 @@ class ProactiveStore:
         """Boot re-arm: rows a crashed boot left 'running' go back to
         pending, so the next cycle retries them instead of stranding them
         (their keys are taken, so detection can never re-claim them)."""
+        self._rows.preflight()
         rows = await self._pool.fetch(
             "UPDATE proactive_tasks SET status = 'pending', updated_at = now()"
             " WHERE status = 'running' RETURNING id"
@@ -188,24 +225,39 @@ class ProactiveStore:
         return len(rows)
 
     async def mark_running(self, task_id: int) -> None:
+        self._rows.preflight()
         await self._mark(task_id, RUNNING)
 
     async def set_plan(self, task_id: int, plan: dict[str, Any]) -> None:
         """Store what the skill decided to do — encrypted, on the row,
         before the run starts, so a crash mid-run leaves the plan readable."""
+        self._rows.preflight()
         await self._pool.execute(
             "UPDATE proactive_tasks SET plan_enc = $1, updated_at = now() WHERE id = $2",
-            self._cipher.encrypt_json(plan, aad=_aad("plan_enc", task_id)),
+            self._rows.seal(
+                plan,
+                table="proactive_tasks",
+                column="plan_enc",
+                row_id=task_id,
+                aad=_aad("plan_enc", task_id),
+            ),
             task_id,
         )
 
     async def finish(
         self, task_id: int, result: str, provider: str = "", actor: str = "worker"
     ) -> None:
+        self._rows.preflight()
         await self._pool.execute(
             "UPDATE proactive_tasks SET status = 'done', result_enc = $1,"
             " provider = $2, updated_at = now() WHERE id = $3",
-            self._cipher.encrypt_text(result, aad=_aad("result_enc", task_id)),
+            self._rows.seal_bytes(
+                result.encode("utf-8"),
+                table="proactive_tasks",
+                column="result_enc",
+                row_id=task_id,
+                aad=_aad("result_enc", task_id),
+            ),
             provider or None,
             task_id,
         )
@@ -221,10 +273,17 @@ class ProactiveStore:
         """A run that didn't produce a result — a crash, a refusal, a
         provider that couldn't take the job. The error text is stored the
         same way a result is, so the row always says what happened."""
+        self._rows.preflight()
         await self._pool.execute(
             "UPDATE proactive_tasks SET status = 'failed', result_enc = $1,"
             " updated_at = now() WHERE id = $2",
-            self._cipher.encrypt_text(error, aad=_aad("result_enc", task_id)),
+            self._rows.seal_bytes(
+                error.encode("utf-8"),
+                table="proactive_tasks",
+                column="result_enc",
+                row_id=task_id,
+                aad=_aad("result_enc", task_id),
+            ),
             task_id,
         )
         await self._audit.append(
@@ -240,6 +299,7 @@ class ProactiveStore:
         out. The link lands in the plan blob — the row's own 'what the
         skill decided' — so it is encrypted and row-bound like everything
         else, and no new column names an approval on a task row."""
+        self._rows.preflight()
         row = await self._pool.fetchrow(
             "SELECT plan_enc FROM proactive_tasks WHERE id = $1", task_id
         )
@@ -247,11 +307,23 @@ class ProactiveStore:
             return
         plan: dict[str, Any] = {}
         if row["plan_enc"]:
-            plan = self._cipher.decrypt_json(row["plan_enc"], aad=_aad("plan_enc", task_id))
+            plan = self._rows.open(
+                row["plan_enc"],
+                table="proactive_tasks",
+                column="plan_enc",
+                row_id=task_id,
+                aad=_aad("plan_enc", task_id),
+            )
         plan["approval_id"] = approval_id
         await self._pool.execute(
             "UPDATE proactive_tasks SET plan_enc = $1, updated_at = now() WHERE id = $2",
-            self._cipher.encrypt_json(plan, aad=_aad("plan_enc", task_id)),
+            self._rows.seal(
+                plan,
+                table="proactive_tasks",
+                column="plan_enc",
+                row_id=task_id,
+                aad=_aad("plan_enc", task_id),
+            ),
             task_id,
         )
 
@@ -261,10 +333,17 @@ class ProactiveStore:
         """The one-tap verdict on a finished task — approved, revised, or
         discarded, with an optional reason. The reason is encrypted; the
         verdict itself is plain, the same trade the status column makes."""
+        self._rows.preflight()
         if feedback not in (APPROVED, REVISED, DISCARDED):
             raise ValueError(f"unknown feedback {feedback!r}")
         note_blob = (
-            self._cipher.encrypt_text(note, aad=_aad("feedback_note_enc", task_id))
+            self._rows.seal_bytes(
+                note.encode("utf-8"),
+                table="proactive_tasks",
+                column="feedback_note_enc",
+                row_id=task_id,
+                aad=_aad("feedback_note_enc", task_id),
+            )
             if note
             else None
         )
@@ -290,6 +369,7 @@ class ProactiveStore:
         of feedback can silence a skill forever or crown one absolutely.
         The arithmetic is deliberately this simple: it is a deterministic
         tie-breaker, not a learned model."""
+        self._rows.preflight()
         rows = await self._pool.fetch(
             "SELECT skill, feedback, COUNT(*) AS n FROM proactive_tasks"
             " WHERE feedback IS NOT NULL"
@@ -304,6 +384,7 @@ class ProactiveStore:
         return {skill: min(2.0, max(0.25, 1.0 + 0.15 * delta)) for skill, delta in deltas.items()}
 
     async def get(self, task_id: int) -> ProactiveTask | None:
+        self._rows.preflight()
         row = await self._pool.fetchrow(
             f"SELECT {_TASK_COLUMNS} FROM proactive_tasks WHERE id = $1", task_id
         )
@@ -311,6 +392,7 @@ class ProactiveStore:
 
     async def list(self, limit: int = 50, offset: int = 0) -> list[ProactiveTask]:
         """Newest first, any status — the panel's view."""
+        self._rows.preflight()
         rows = await self._pool.fetch(
             f"SELECT {_TASK_COLUMNS} FROM proactive_tasks ORDER BY id DESC LIMIT $1 OFFSET $2",
             limit,
@@ -319,6 +401,7 @@ class ProactiveStore:
         return [self._to_task(r) for r in rows]
 
     async def _mark(self, task_id: int, status: str) -> None:
+        self._rows.preflight()
         await self._pool.execute(
             "UPDATE proactive_tasks SET status = $1, updated_at = now() WHERE id = $2",
             status,
@@ -333,11 +416,21 @@ class ProactiveStore:
             if not blob:
                 return {} if json else None
             aad = _aad(column, task_id)
-            return (
-                self._cipher.decrypt_json(blob, aad=aad)
-                if json
-                else self._cipher.decrypt_text(blob, aad=aad)
-            )
+            if json:
+                return self._rows.open(
+                    blob,
+                    table="proactive_tasks",
+                    column=column,
+                    row_id=task_id,
+                    aad=aad,
+                )
+            return self._rows.open_bytes(
+                blob,
+                table="proactive_tasks",
+                column=column,
+                row_id=task_id,
+                aad=aad,
+            ).decode("utf-8")
 
         label = ""
         try:
@@ -345,12 +438,16 @@ class ProactiveStore:
             if sealed_label:
                 label = str(sealed_label)
         except Exception:
+            if self._scoped:
+                raise
             log.warning("task %s label undecryptable — treated as empty", task_id)
 
         meta: dict[str, Any] = {}
         try:
             meta = dec("meta_enc", json=True) or {}
         except Exception:
+            if self._scoped:
+                raise
             log.warning("task %s meta undecryptable — treated as empty", task_id)
 
         return ProactiveTask(

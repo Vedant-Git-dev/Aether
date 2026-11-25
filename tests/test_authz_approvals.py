@@ -52,8 +52,15 @@ async def test_ciphertext_is_bound_to_its_row(db) -> None:
 
     blob_a = await db.fetchval("SELECT params_enc FROM pending_approvals WHERE id = $1", a.id)
     with pytest.raises(CryptoError):
-        # AAD includes the record id — swapping blobs between rows fails
-        approvals._cipher.decrypt_text(blob_a, aad=f"pending_approvals:params_enc:{b.id}")
+        # AAD includes the record id — not even the writing store can open a
+        # blob under another row's id
+        approvals._rows.open_bytes(
+            blob_a,
+            table="pending_approvals",
+            column="params_enc",
+            row_id=b.id,
+            aad=f"pending_approvals:params_enc:{b.id}",
+        )
 
 
 @pytest.mark.integration

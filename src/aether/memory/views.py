@@ -31,6 +31,7 @@ import asyncpg
 
 from .commitments import Commitment, Commitments
 from .crypto import Cipher
+from .event_rows import CipherEventRows
 from .indexes import IndexedEvent, MemoryIndex
 
 log = logging.getLogger("aether.memory.views")
@@ -286,7 +287,7 @@ class Views:
             with contextlib.suppress(Exception):
                 # a cold scan that fails still answers from the hot set
                 await self._index.ensure_since(
-                    self._pool, self._cipher, since, batch=self._cold_batch
+                    self._pool, CipherEventRows(self._cipher), since, batch=self._cold_batch
                 )
         found = self._index.events_for_entity(entity_id)
         if since is not None:

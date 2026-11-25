@@ -289,7 +289,11 @@ class FakeAudit:
             return self.verification
         from aether.authz.audit import ChainVerification
 
-        return ChainVerification(ok=True, entries=len(self.entries))
+        return ChainVerification(
+            ok=True,
+            entries=len(self.entries),
+            head_hash=self.entries[-1]["entry_hash"] if self.entries else None,
+        )
 
 
 class FakeSalience:

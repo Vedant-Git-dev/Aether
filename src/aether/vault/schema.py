@@ -31,6 +31,14 @@ API_PREFIX = "/api/v1/vault"
 
 # ASCII order matters: key refs sort by category name, then version.
 CATEGORIES = ("credentials", "ingress", "media", "memory", "operations", "workspace")
+HISTORICAL_LOOKUP_CATEGORIES = {
+    "conclusion.key": "memory",
+    "event.dedup": "memory",
+    "focus.chat": "memory",
+    "inbound.chat": "operations",
+    "inbound.key": "operations",
+    "inbound.message": "operations",
+}
 
 OPERATIONS = (
     "approved_dispatch",
@@ -396,6 +404,9 @@ def validate_control(body: Any) -> dict[str, Any]:
 
 
 def validate_manifest(body: Any) -> dict[str, Any]:
+    historical_field = (
+        ("historical_lookups",) if isinstance(body, dict) and "historical_lookups" in body else ()
+    )
     data = _exact_body(
         body,
         (
@@ -405,6 +416,7 @@ def validate_manifest(body: Any) -> dict[str, Any]:
             "recovery_public",
             "recovery_verify",
             "entries",
+            *historical_field,
         ),
         "manifest",
     )
@@ -472,7 +484,33 @@ def validate_manifest(body: Any) -> dict[str, Any]:
         raise VaultProtocolError("bad_field", "every category needs exactly one active entry")
     if sorted(ingress_entry_versions) != ingress_versions:
         raise VaultProtocolError("bad_field", "ingress_public does not match the ingress entries")
+    if historical_field:
+        _validate_historical_manifest(data["historical_lookups"], revision)
     return data
+
+
+def _validate_historical_manifest(entries: Any, revision: int) -> None:
+    if revision < 2 or not isinstance(entries, list) or not 1 <= len(entries) <= 32:
+        raise VaultProtocolError("bad_field", "invalid historical lookup manifest entries")
+    refs: list[tuple[str, str]] = []
+    for raw in entries:
+        entry = _exact(raw, ("domain", "id", "wrap", "backup"), "historical lookup")
+        domain = entry["domain"]
+        if not isinstance(domain, str) or domain not in HISTORICAL_LOOKUP_CATEGORIES:
+            raise VaultProtocolError("bad_field", "unknown historical lookup domain")
+        _bytes(entry["id"], "historical lookup ID", ID_BYTES)
+        refs.append((domain, entry["id"]))
+        wrap = _exact(entry["wrap"], ("alg", "blob"), "historical device wrap")
+        if wrap["alg"] not in WRAP_ALGS:
+            raise VaultProtocolError("bad_field", "unknown historical wrap algorithm")
+        _text(wrap["blob"], "historical device wrap", maximum=4096)
+        b64u_decode(wrap["blob"], field="historical device wrap")
+        backup = _exact(entry["backup"], ("enc", "ct"), "historical recovery wrap")
+        _bytes(backup["enc"], "historical recovery encapsulation", X25519_BYTES)
+        _text(backup["ct"], "historical recovery ciphertext", maximum=4096)
+        b64u_decode(backup["ct"], field="historical recovery ciphertext")
+    if refs != sorted(set(refs)):
+        raise VaultProtocolError("bad_field", "historical lookup entries must be unique and sorted")
 
 
 def validate_push_registration(body: Any) -> dict[str, Any]:

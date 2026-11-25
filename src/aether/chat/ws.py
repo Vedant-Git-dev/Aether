@@ -14,6 +14,8 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ..connectors.base import InboundMessage
 from ..memory.crypto import Cipher
+from ..memory.rows import CipherRows, Rows, ScopedRows
+from ..vault.scope import KeyScope
 
 log = logging.getLogger("aether.chat")
 
@@ -23,11 +25,22 @@ router = APIRouter()
 class ChatHistory:
     """The chat transcript, encrypted at rest like everything personal."""
 
-    def __init__(self, pool: asyncpg.Pool, cipher: Cipher) -> None:
+    def __init__(
+        self, pool: asyncpg.Pool, cipher: Cipher | None, *, rows: Rows | None = None
+    ) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("ChatHistory needs exactly one of cipher or rows")
+        self._rows: Rows = rows if rows is not None else CipherRows(cipher)
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
+
+    @classmethod
+    def scoped(cls, pool: asyncpg.Pool, scope: KeyScope, *, ver: int = 1) -> ChatHistory:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(pool, None, rows=ScopedRows(scope, cat="memory", ver=ver))
 
     async def append(self, surface: str, direction: str, text: str) -> None:
+        self._rows.preflight()
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "INSERT INTO chat_messages (direction, payload_enc,"
@@ -35,11 +48,14 @@ class ChatHistory:
                 " VALUES ($1, $2, $3, $4) RETURNING id",
                 direction,
                 b"",  # placeholder until the id exists; replaced below, same transaction
-                self._cipher.blind_token("source", surface),
-                self._cipher.key_id,
+                self._rows.token("chat.surface", "source", surface),
+                self._rows.key_version,
             )
-            blob = self._cipher.encrypt_json(
+            blob = self._rows.seal(
                 {"text": text, "surface": surface},
+                table="chat_messages",
+                column="payload_enc",
+                row_id=row["id"],
                 aad=f"chat_messages:payload_enc:{row['id']}",
             )
             await conn.execute(
@@ -49,6 +65,7 @@ class ChatHistory:
             )
 
     async def recent(self, limit: int = 50) -> list[dict[str, Any]]:
+        self._rows.preflight()
         rows = await self._pool.fetch(
             "SELECT id, direction, created_at, payload_enc"
             " FROM chat_messages ORDER BY id DESC LIMIT $1",
@@ -57,10 +74,16 @@ class ChatHistory:
         out: list[dict[str, Any]] = []
         for row in reversed(rows):  # oldest first for display
             try:
-                payload = self._cipher.decrypt_json(
-                    row["payload_enc"], aad=f"chat_messages:payload_enc:{row['id']}"
+                payload = self._rows.open(
+                    row["payload_enc"],
+                    table="chat_messages",
+                    column="payload_enc",
+                    row_id=row["id"],
+                    aad=f"chat_messages:payload_enc:{row['id']}",
                 )
             except Exception:
+                if self._scoped:
+                    raise
                 continue
             out.append(
                 {

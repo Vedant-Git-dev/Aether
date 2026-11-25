@@ -23,7 +23,9 @@ from rapidfuzz import fuzz
 from ..authz.audit import AuditLog
 from ..llm.json_utils import extract_json
 from ..llm.types import Message
+from ..vault.scope import KeyScope
 from .crypto import Cipher
+from .entity_rows import CipherEntityRows, EntityRows, ScopedEntityRows
 
 log = logging.getLogger("aether.memory.entities")
 
@@ -77,23 +79,23 @@ def normalize_handle(platform: str, handle: str) -> str:
     return f"{platform}:{h.lstrip('@')}"
 
 
-def _identity_profile(cipher: Cipher, row: Any) -> tuple[str, float]:
+def _identity_profile(rows: EntityRows, row: Any) -> tuple[str, float]:
     """Name and confidence from the sealed profile."""
     identity_id = row.get("id", row.get("identity_id"))
-    return _profile_for(cipher, identity_id, row.get("profile_enc"))
+    return _profile_for(rows, identity_id, row.get("profile_enc"))
 
 
-def _profile_for(cipher: Cipher, identity_id: int, blob: Any) -> tuple[str, float]:
-    profile = _profile_data(cipher, identity_id, blob)
+def _profile_for(rows: EntityRows, identity_id: int, blob: Any) -> tuple[str, float]:
+    profile = _profile_data(rows, identity_id, blob)
     return str(profile.get("display_name", "")), float(profile.get("confidence", 1.0))
 
 
-def _profile_data(cipher: Cipher, identity_id: int, blob: Any) -> dict[str, Any]:
+def _profile_data(rows: EntityRows, identity_id: int, blob: Any) -> dict[str, Any]:
     """The whole sealed profile — name, confidence, and whether this
     identity is one of the owner's own addresses."""
     if not blob:
         return {"display_name": "", "confidence": 1.0, "owner": False}
-    data = cipher.decrypt_json(blob, aad=f"identities:profile_enc:{identity_id}")
+    data = rows.open_profile(blob, identity_id=identity_id)
     if not isinstance(data, dict):
         return {"display_name": "", "confidence": 1.0, "owner": False}
     return data
@@ -103,13 +105,13 @@ def _is_owner(profile: dict[str, Any]) -> bool:
     return bool(profile.get("owner", False))
 
 
-def _handle_ref(cipher: Cipher, row: Any) -> tuple[str, str]:
+def _handle_ref(rows: EntityRows, row: Any) -> tuple[str, str]:
     """(platform, raw_handle) for one identity_handles row."""
     blob = row.get("handle_enc")
     if not blob:
         return "", ""
     handle_id = row.get("id", row.get("handle_id"))
-    data = cipher.decrypt_json(blob, aad=f"identity_handles:handle_enc:{handle_id}")
+    data = rows.open_handle(blob, handle_id=handle_id)
     return str(data.get("platform", "")), str(data.get("handle", ""))
 
 
@@ -241,12 +243,17 @@ class Entities:
     def __init__(
         self,
         pool: asyncpg.Pool,
-        cipher: Cipher,
+        cipher: Cipher | None,
         audit: AuditLog,
         judge: SamePersonJudge,
+        *,
+        rows: EntityRows | None = None,
     ) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("Entities needs exactly one of cipher or rows")
+        self._rows: EntityRows = rows if rows is not None else CipherEntityRows(cipher)
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
         self._audit = audit
         self._judge = judge
         # the owner's own addresses, cached — consulted for every rendered
@@ -254,22 +261,44 @@ class Entities:
         self._owners: set[str] | None = None
         self._owner_cache: list[Entity] | None = None
 
+    @classmethod
+    def scoped(
+        cls,
+        pool: asyncpg.Pool,
+        scope: KeyScope,
+        audit: AuditLog,
+        judge: SamePersonJudge,
+        *,
+        cat: str = "memory",
+        ver: int = 1,
+    ) -> Entities:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(
+            pool,
+            None,
+            audit,
+            judge,
+            rows=ScopedEntityRows(scope, cat=cat, ver=ver),
+        )
+
     # -- reads ------------------------------------------------------------
 
     async def resolve_exact(self, platform: str, handle: str) -> Entity | None:
+        self._rows.preflight()
         normalized = normalize_handle(platform, handle)
         if not normalized:
             return None
         return await self._by_normalized(normalized)
 
     async def get(self, identity_id: int) -> Entity | None:
+        self._rows.preflight()
         row = await self._pool.fetchrow(
             "SELECT id, profile_enc FROM identities WHERE id = $1 AND merged_into_id IS NULL",
             identity_id,
         )
         if row is None:
             return None
-        profile = _profile_data(self._cipher, row["id"], row.get("profile_enc"))
+        profile = _profile_data(self._rows, row["id"], row.get("profile_enc"))
         handles = await self._pool.fetch(
             "SELECT id, handle_enc FROM identity_handles WHERE identity_id = $1",
             identity_id,
@@ -278,13 +307,14 @@ class Entities:
             id=row["id"],
             display_name=str(profile.get("display_name", "")),
             confidence=float(profile.get("confidence", 1.0)),
-            handles=[_handle_ref(self._cipher, h) for h in handles],
+            handles=[_handle_ref(self._rows, h) for h in handles],
             owner=_is_owner(profile),
         )
 
     async def list_people(self, limit: int = 50, offset: int = 0) -> list[Entity]:
         """Everyone Aether has resolved an identity for, most recent first —
         the read side of the "who is this" cross-platform linking."""
+        self._rows.preflight()
         rows = await self._pool.fetch(
             "SELECT id, profile_enc FROM identities"
             " WHERE merged_into_id IS NULL ORDER BY created_at DESC LIMIT $1 OFFSET $2",
@@ -301,10 +331,10 @@ class Entities:
         )
         handles_by_id: dict[int, list[tuple[str, str]]] = {}
         for h in handle_rows:
-            handles_by_id.setdefault(h["identity_id"], []).append(_handle_ref(self._cipher, h))
+            handles_by_id.setdefault(h["identity_id"], []).append(_handle_ref(self._rows, h))
         people: list[Entity] = []
         for r in rows:
-            profile = _profile_data(self._cipher, r["id"], r.get("profile_enc"))
+            profile = _profile_data(self._rows, r["id"], r.get("profile_enc"))
             people.append(
                 Entity(
                     id=r["id"],
@@ -324,13 +354,14 @@ class Entities:
         owner's own at that moment — otherwise the answer would sit in a
         note and mean nothing until some later pass noticed it.
         """
+        self._rows.preflight()
         async with self._pool.acquire() as conn, conn.transaction():
             note_id = await conn.fetchval(
                 "INSERT INTO entity_notes (identity_id, payload_enc) VALUES ($1, $2) RETURNING id",
                 identity_id,
                 b"",  # placeholder until the id exists; replaced below, same transaction
             )
-            blob = self._cipher.encrypt_json(payload, aad=f"entity_notes:payload_enc:{note_id}")
+            blob = self._rows.seal_note(payload, note_id=note_id)
             await conn.execute(
                 "UPDATE entity_notes SET payload_enc = $1 WHERE id = $2",
                 blob,
@@ -347,6 +378,7 @@ class Entities:
             await self.mark_owner(identity_id)
 
     async def notes_for(self, identity_id: int, limit: int = 10) -> list[EntityNote]:
+        self._rows.preflight()
         rows = await self._pool.fetch(
             "SELECT id, identity_id, created_at, payload_enc FROM entity_notes"
             " WHERE identity_id = $1 ORDER BY created_at DESC LIMIT $2",
@@ -356,10 +388,10 @@ class Entities:
         notes: list[EntityNote] = []
         for row in rows:
             try:
-                payload = self._cipher.decrypt_json(
-                    row["payload_enc"], aad=f"entity_notes:payload_enc:{row['id']}"
-                )
+                payload = self._rows.open_note(row["payload_enc"], note_id=row["id"])
             except Exception:
+                if self._scoped:
+                    raise
                 log.warning("note %s undecryptable — skipping", row["id"])
                 continue
             notes.append(
@@ -377,6 +409,7 @@ class Entities:
     async def resolve(self, platform: str, handle: str, display_name: str = "") -> Entity:
         """Link a reference to an identity — exact match, fuzzy candidates
         confirmed by the LLM, or a fresh identity."""
+        self._rows.preflight()
         normalized = normalize_handle(platform, handle)
         exact = await self._by_normalized(normalized)
         if exact is not None:
@@ -391,8 +424,8 @@ class Entities:
         )
         candidates: list[tuple[float, int, PersonRef]] = []
         for row in rows:
-            handle_platform, raw_handle = _handle_ref(self._cipher, row)
-            name, _ = _profile_for(self._cipher, row["identity_id"], row["profile_enc"])
+            handle_platform, raw_handle = _handle_ref(self._rows, row)
+            name, _ = _profile_for(self._rows, row["identity_id"], row["profile_enc"])
             ref = PersonRef(handle_platform, raw_handle, name)
             score = candidate_score(new, ref)
             if score >= CANDIDATE_FLOOR:
@@ -444,7 +477,8 @@ class Entities:
     # -- internals -----------------------------------------------------------
 
     async def _by_normalized(self, normalized: str) -> Entity | None:
-        token = self._cipher.blind_token("handle", normalized)
+        self._rows.preflight()
+        token = self._rows.handle_token(normalized)
         row = await self._pool.fetchrow(
             "SELECT ih.identity_id, i.profile_enc"
             " FROM identity_handles ih"
@@ -458,12 +492,12 @@ class Entities:
             "SELECT id, handle_enc FROM identity_handles WHERE identity_id = $1",
             row["identity_id"],
         )
-        profile = _profile_data(self._cipher, row["identity_id"], row.get("profile_enc"))
+        profile = _profile_data(self._rows, row["identity_id"], row.get("profile_enc"))
         return Entity(
             id=row["identity_id"],
             display_name=str(profile.get("display_name", "")),
             confidence=float(profile.get("confidence", 1.0)),
-            handles=[_handle_ref(self._cipher, h) for h in handles],
+            handles=[_handle_ref(self._rows, h) for h in handles],
             owner=_is_owner(profile),
         )
 
@@ -479,18 +513,17 @@ class Entities:
                 " WHERE platform_token IS NOT NULL AND normalized_token IS NOT NULL"
                 " DO NOTHING RETURNING id",
                 identity_id,
-                self._cipher.blind_token("platform", platform),
-                self._cipher.blind_token("handle", normalized),
+                self._rows.platform_token(platform),
+                self._rows.handle_token(normalized),
                 b"",
-                self._cipher.key_id,
+                self._rows.key_version,
             )
             if row is not None:
                 handle_id = row["id"]
                 await conn.execute(
                     "UPDATE identity_handles SET handle_enc = $1 WHERE id = $2",
-                    self._cipher.encrypt_json(
-                        {"platform": platform, "handle": handle},
-                        aad=f"identity_handles:handle_enc:{handle_id}",
+                    self._rows.seal_handle(
+                        {"platform": platform, "handle": handle}, handle_id=handle_id
                     ),
                     handle_id,
                 )
@@ -512,11 +545,11 @@ class Entities:
             )
             await conn.execute(
                 "UPDATE identities SET profile_enc = $1, key_version = $2 WHERE id = $3",
-                self._cipher.encrypt_json(
+                self._rows.seal_profile(
                     {"display_name": display_name or handle, "confidence": 1.0},
-                    aad=f"identities:profile_enc:{identity_id}",
+                    identity_id=identity_id,
                 ),
-                self._cipher.key_id,
+                self._rows.key_version,
                 identity_id,
             )
             handle_row = await conn.fetchrow(
@@ -527,18 +560,17 @@ class Entities:
                 " WHERE platform_token IS NOT NULL AND normalized_token IS NOT NULL"
                 " DO NOTHING RETURNING id",
                 identity_id,
-                self._cipher.blind_token("platform", platform),
-                self._cipher.blind_token("handle", normalized),
+                self._rows.platform_token(platform),
+                self._rows.handle_token(normalized),
                 b"",
-                self._cipher.key_id,
+                self._rows.key_version,
             )
             if handle_row is not None:
                 handle_id = handle_row["id"]
                 await conn.execute(
                     "UPDATE identity_handles SET handle_enc = $1 WHERE id = $2",
-                    self._cipher.encrypt_json(
-                        {"platform": platform, "handle": handle},
-                        aad=f"identity_handles:handle_enc:{handle_id}",
+                    self._rows.seal_handle(
+                        {"platform": platform, "handle": handle}, handle_id=handle_id
                     ),
                     handle_id,
                 )
@@ -573,6 +605,7 @@ class Entities:
         seen, comes back as a candidate so the caller can ask once. The
         sender is never folded into the owner's identity on a guess.
         """
+        self._rows.preflight()
         if not (handle or "").strip():
             return None
         existing = await self.resolve_exact(platform, handle)
@@ -602,6 +635,7 @@ class Entities:
         "(your other address)" and what keeps the sender distinct from the
         owner's primary identity.
         """
+        self._rows.preflight()
         entity = await self.get(identity_id)
         if entity is None:
             return False
@@ -631,6 +665,7 @@ class Entities:
     ) -> Entity | None:
         """Claim an address as the owner's own — the Gmail account address
         on connect, so the first mail already renders correctly."""
+        self._rows.preflight()
         linked = await self.link_address(platform, handle, display_name)
         if linked is None:
             return None
@@ -643,11 +678,12 @@ class Entities:
         Cached: it is consulted for every rendered address and changes only
         when the owner connects another account.
         """
+        self._rows.preflight()
         if self._owners is None:
             rows = await self._pool.fetch("SELECT id, profile_enc FROM identities")
             owner_ids: list[int] = []
             for row in rows:
-                profile = _profile_data(self._cipher, row["id"], row.get("profile_enc"))
+                profile = _profile_data(self._rows, row["id"], row.get("profile_enc"))
                 if _is_owner(profile):
                     owner_ids.append(row["id"])
             keys: set[str] = set()
@@ -658,7 +694,7 @@ class Entities:
                     owner_ids,
                 )
                 for handle_row in handles:
-                    handle_platform, raw = _handle_ref(self._cipher, handle_row)
+                    handle_platform, raw = _handle_ref(self._rows, handle_row)
                     normalized = normalize_handle(handle_platform, raw)
                     if normalized:
                         keys.add(normalized)
@@ -666,6 +702,7 @@ class Entities:
         return set(self._owners)
 
     async def is_owner_address(self, platform: str, handle: str) -> bool:
+        self._rows.preflight()
         normalized = normalize_handle(platform, handle)
         if not normalized:
             return False
@@ -674,6 +711,7 @@ class Entities:
     async def owner_entity(self) -> Entity | None:
         """One of the owner's own identities, when one is known — the
         subject a fact about "the user" belongs to."""
+        self._rows.preflight()
         owners = await self._owner_entities()
         return owners[0] if owners else None
 
@@ -689,6 +727,7 @@ class Entities:
         and read back by `notes_for`, which is what makes "once" true across
         restarts without a new table.
         """
+        self._rows.preflight()
         for note in await self.notes_for(identity_id, limit=50):
             if str(note.payload.get("kind", "")) == ALIAS_QUESTION:
                 return False
@@ -704,6 +743,7 @@ class Entities:
         Surfaced on a human turn only — mail cannot prompt
         the user by itself, and this is a question, not an alert.
         """
+        self._rows.preflight()
         rows = await self._pool.fetch(
             "SELECT id, identity_id, created_at, payload_enc FROM entity_notes"
             " ORDER BY id DESC LIMIT 500"
@@ -713,10 +753,10 @@ class Entities:
         answered: set[int] = set(owned)
         for row in rows:
             try:
-                payload = self._cipher.decrypt_json(
-                    row["payload_enc"], aad=f"entity_notes:payload_enc:{row['id']}"
-                )
+                payload = self._rows.open_note(row["payload_enc"], note_id=row["id"])
             except Exception:
+                if self._scoped:
+                    raise
                 continue
             kind = str(payload.get("kind", ""))
             identity_id = int(row["identity_id"])
@@ -756,10 +796,10 @@ class Entities:
     ) -> None:
         await self._pool.execute(
             "UPDATE identities SET profile_enc = $1, key_version = $2 WHERE id = $3",
-            self._cipher.encrypt_json(
+            self._rows.seal_profile(
                 {"display_name": display_name, "confidence": confidence, "owner": owner},
-                aad=f"identities:profile_enc:{identity_id}",
+                identity_id=identity_id,
             ),
-            self._cipher.key_id,
+            self._rows.key_version,
             identity_id,
         )

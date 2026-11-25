@@ -36,17 +36,20 @@ import secrets
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 import asyncpg
 from rapidfuzz import fuzz
 
 from ..memory.crypto import Cipher, CryptoError
+from ..memory.rows import CipherRows, Rows, ScopedRows
 from ..memory.storage import (
     delete_workspace_file,
     upsert_workspace_file,
     workspace_row,
     workspace_rows,
 )
+from ..vault.scope import KeyScope
 
 log = logging.getLogger("aether.workspace")
 
@@ -418,9 +421,22 @@ class Workspace:
     file workspace is imported once and removed (see `import_from_disk`).
     """
 
-    def __init__(self, pool: asyncpg.Pool, *, cipher: Cipher) -> None:
+    def __init__(
+        self, pool: asyncpg.Pool, *, cipher: Cipher | None = None, rows: Rows | None = None
+    ) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("Workspace needs exactly one of cipher or rows")
+        self._rows: Rows = rows if rows is not None else CipherRows(cipher)
+        self._scoped = self._rows.scoped
+        # only the one-time legacy disk import needs the old cipher; a scoped
+        # store leaves encrypted legacy files for the operator migration
+        self._legacy = cipher
         self._pool = pool
-        self._cipher = cipher
+
+    @classmethod
+    def scoped(cls, pool: asyncpg.Pool, scope: KeyScope, *, ver: int = 1) -> Workspace:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(pool, rows=ScopedRows(scope, cat="workspace", ver=ver))
 
     # -- lifecycle --------------------------------------------------------
 
@@ -465,8 +481,15 @@ class Workspace:
                 continue
             text = ""
             if raw.startswith(_ENC_MAGIC):
+                if self._legacy is None:
+                    log.warning(
+                        "workspace file %s is in the legacy disk format — left for the operator "
+                        "migration",
+                        name,
+                    )
+                    continue
                 try:
-                    text = self._cipher.decrypt_text(raw[len(_ENC_MAGIC) :], aad=_aad(name))
+                    text = self._legacy.decrypt_text(raw[len(_ENC_MAGIC) :], aad=_aad(name))
                 except CryptoError:
                     log.warning("workspace file %s would not decrypt — left on disk", name)
                     continue
@@ -787,32 +810,42 @@ class Workspace:
         return _FILE_BY_KEY.get(key)
 
     def _token(self, name: str) -> bytes:
-        return self._cipher.blind_token("workspace", name)
+        return self._rows.token("workspace.name", "workspace", name)
+
+    def _open_text(self, blob: Any, column: str, row_id: Any) -> str:
+        return self._rows.open_bytes(
+            blob,
+            table="workspace_files",
+            column=column,
+            row_id=row_id,
+        ).decode("utf-8")
 
     async def _row(self, name: str) -> asyncpg.Record | None:
+        self._rows.preflight()
         return await workspace_row(self._pool, self._token(name))
 
     async def _read_all(self) -> dict[str, str]:
         """Every stored file's text from one query — the panel's bulk read.
         A name or content that no longer decrypts degrades to empty on that
         file alone, exactly as a single read would."""
+        self._rows.preflight()
         out: dict[str, str] = {}
         for row in await workspace_rows(self._pool):
             try:
-                name = self._cipher.decrypt_text(
-                    row["name_enc"], aad=f"workspace_files:name_enc:{row['id']}"
-                )
+                name = self._open_text(row["name_enc"], "name_enc", row["id"])
             except CryptoError:
+                if self._scoped:
+                    raise
                 log.warning("workspace row %s has an unreadable name — skipped", row["id"])
                 continue
             if not row["content_enc"]:
                 out[name] = ""
                 continue
             try:
-                out[name] = self._cipher.decrypt_text(
-                    row["content_enc"], aad=f"workspace_files:content_enc:{row['id']}"
-                )
+                out[name] = self._open_text(row["content_enc"], "content_enc", row["id"])
             except CryptoError:
+                if self._scoped:
+                    raise
                 log.warning("workspace file %r would not decrypt — treated as empty", name)
                 out[name] = ""
         return out
@@ -825,20 +858,21 @@ class Workspace:
         if row is None or not row["content_enc"]:
             return ""
         try:
-            return self._cipher.decrypt_text(
-                row["content_enc"], aad=f"workspace_files:content_enc:{row['id']}"
-            )
+            return self._open_text(row["content_enc"], "content_enc", row["id"])
         except CryptoError:
+            if self._scoped:
+                raise
             log.warning("workspace file %r would not decrypt — treated as empty", name)
             return ""
 
     async def _put(self, name: str, content: str) -> None:
         """Upsert one file. Raises WorkspaceWriteError when the database
         refuses — never silently drops a write."""
+        self._rows.preflight()
         try:
             await upsert_workspace_file(
                 self._pool,
-                self._cipher,
+                self._rows,
                 token=self._token(name),
                 name=name,
                 content=content,
@@ -848,22 +882,22 @@ class Workspace:
             raise WorkspaceWriteError(f"could not save {name}: {exc}") from exc
 
     async def _delete(self, name: str) -> None:
+        self._rows.preflight()
         await delete_workspace_file(self._pool, self._token(name))
 
     async def _names(self, *, daily_cap: int | None = 60) -> list[str]:
         """Every stored file name in display order: the fixed set,
         BOOTSTRAP.md if pending, then daily notes most recent first (capped
         for search), then anything else imported by hand."""
+        self._rows.preflight()
         rows = await workspace_rows(self._pool)
         names: list[str] = []
         for row in rows:
             try:
-                names.append(
-                    self._cipher.decrypt_text(
-                        row["name_enc"], aad=f"workspace_files:name_enc:{row['id']}"
-                    )
-                )
+                names.append(self._open_text(row["name_enc"], "name_enc", row["id"]))
             except CryptoError:
+                if self._scoped:
+                    raise
                 log.warning("workspace row %s has an unreadable name — skipped", row["id"])
         present = set(names)
         ordered = [filename for filename, _ in _CONTEXT_FILES if filename in present]

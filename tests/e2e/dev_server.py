@@ -340,7 +340,11 @@ class FakeAudit:
     async def verify_chain(self):
         from aether.authz.audit import ChainVerification
 
-        return ChainVerification(ok=True, entries=len(self.rows), first_bad_seq=None, problem=None)
+        return ChainVerification(
+            ok=True,
+            entries=len(self.rows),
+            head_hash=self.rows[0]["entry_hash"] if self.rows else None,
+        )
 
 
 class FakeMediaStore:

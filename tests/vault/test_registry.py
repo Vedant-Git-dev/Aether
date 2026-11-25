@@ -33,6 +33,7 @@ def test_token_and_dedup_domains_do_not_overlap() -> None:
 
 def test_resolve_returns_the_registered_entry() -> None:
     assert resolve_token("event.source") is TOKEN_DOMAINS["event.source"]
+    assert resolve_token("identity.platform") is TOKEN_DOMAINS["identity.platform"]
     assert resolve_dedup("event.dedup") is DEDUP_DOMAINS["event.dedup"]
 
 

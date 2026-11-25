@@ -96,6 +96,7 @@ class SoftwareVault:
         self._tokens = float(policy().rate_burst)
         self._token_time = 0
         self._leases: dict[bytes, dict[str, Any]] = {}
+        self._maintenance_pin: tuple[bytes, str, bytes] | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -148,18 +149,73 @@ class SoftwareVault:
         self.state = "locked"
         self._leases.clear()
         self._consents.clear()
+        self._maintenance_pin = None
 
     # -- lease exchange ----------------------------------------------------
 
-    def consent(self, request_envelope: Any) -> None:
+    def pin_maintenance(self, public: bytes, origin: str, task: bytes) -> None:
+        """Simulate the owner's local approval of an isolated operator identity."""
+        if self.state != "available" or len(task) != schema.ID_BYTES:
+            raise VaultProtocolError("denied", "maintenance pin is unavailable")
+        if wire.signer_id(public) == self.server_kid:
+            raise VaultProtocolError("denied", "maintenance requires a separate signer")
+        wire.ec_public_key(public)
+        self.end_maintenance()
+        self._maintenance_pin = (public, schema.normalize_origin(origin), bytes(task))
+
+    def end_maintenance(self) -> None:
+        if self._maintenance_pin is not None:
+            self._leases.pop(self._maintenance_pin[2], None)
+        self._maintenance_pin = None
+        self._consents.clear()
+
+    def import_historical(self, task: bytes, keys: dict[tuple[str, bytes], bytes]) -> None:
+        """Simulate local owner import of lookup-only keys on the pinned job."""
+        if self._maintenance_pin is None or self._maintenance_pin[2] != task:
+            raise VaultProtocolError("denied", "historical import needs a pinned maintenance job")
+        entries = {
+            (entry["domain"], entry["id"]): entry
+            for entry in self.manifest_body.get("historical_lookups", [])
+        }
+        for (domain, raw_id), key in keys.items():
+            kid = schema.b64u_encode(raw_id)
+            if (domain, kid) in entries:
+                raise VaultProtocolError("bad_field", "historical lookup ID already exists")
+            entries[domain, kid] = self._historical_entry(self.hardware_master, domain, kid, key)
+        body = {
+            **self.manifest_body,
+            "epoch": self.epoch,
+            "revision": self.manifest_body["revision"] + 1,
+            "previous_digest": schema.b64u_encode(wire.body_digest(self.manifest_body)),
+            "historical_lookups": [entries[ref] for ref in sorted(entries)],
+        }
+        schema.validate_manifest(body)
+        self.manifest = wire.sign_body(
+            body, wire.ec_private_key(self.phone_private), alg="ES256", kid=self.phone_kid
+        )
+        self.manifest_body = body
+        self._leases.clear()
+        self._consents.clear()
+
+    def _historical_entry(self, master: bytes, domain: str, kid: str, key: bytes) -> dict:
+        return {
+            "domain": domain,
+            "id": kid,
+            "wrap": wire.device_wrap(master, self.vault_id, domain, 1, key, historical_id=kid),
+            "backup": wire.backup_wrap(
+                self.recovery.hpke_public, self.vault_id, domain, 1, key, historical_id=kid
+            ),
+        }
+
+    def consent(self, request_envelope: Any, *, origin: str | None = None) -> None:
         """Simulate local owner consent bound to one exact signed request."""
-        body = self._verified_request(request_envelope)
+        body = self._verified_request(request_envelope, origin=origin)
         if self.state != "available" or body["epoch"] != self.epoch:
             raise VaultProtocolError("denied", "request is outside the current enabled epoch")
         self._consents.add(wire.body_digest(body))
 
-    def issue(self, request_envelope: Any, *, now: int) -> Issued:
-        body = self._verified_request(request_envelope)
+    def issue(self, request_envelope: Any, *, now: int, origin: str | None = None) -> Issued:
+        body = self._verified_request(request_envelope, origin=origin)
         reason = self._admission(body, now)
         if reason is not None:
             raise VaultDenied(reason, self.deny(body, reason, now=now))
@@ -185,18 +241,36 @@ class SoftwareVault:
             "refs": [{"cat": cat, "ver": ver} for cat, ver in refs],
             "manifest_digest": schema.b64u_encode(wire.body_digest(self.manifest_body)),
         }
-        plaintext = schema.canonical_bytes(
-            {
-                "keys": [
-                    {
-                        "cat": cat,
-                        "ver": ver,
-                        "key": schema.b64u_encode(self.category_keys[cat, ver]),
-                    }
-                    for cat, ver in refs
-                ]
-            }
-        )
+        payload = {
+            "keys": [
+                {
+                    "cat": cat,
+                    "ver": ver,
+                    "key": schema.b64u_encode(self.category_keys[cat, ver]),
+                }
+                for cat, ver in refs
+            ]
+        }
+        historical = _historical_for_refs(self.manifest_body, refs)
+        if historical:
+            payload["historical_lookups"] = [
+                {
+                    "domain": entry["domain"],
+                    "id": entry["id"],
+                    "key": schema.b64u_encode(
+                        wire.device_unwrap(
+                            self.hardware_master,
+                            self.vault_id,
+                            entry["domain"],
+                            1,
+                            entry["wrap"],
+                            historical_id=entry["id"],
+                        )
+                    ),
+                }
+                for entry in historical
+            ]
+        plaintext = schema.canonical_bytes(payload)
         header["box"] = wire.hpke_seal(
             schema.b64u_decode(body["epk"], field="epk", length=schema.X25519_BYTES),
             "grant",
@@ -314,6 +388,30 @@ class SoftwareVault:
             "previous_digest": schema.b64u_encode(wire.body_digest(body)),
             "entries": entries,
         }
+        required = {
+            (item["domain"], item["id"])
+            for item in self.manifest_body.get("historical_lookups", [])
+        }
+        historical = body.get("historical_lookups", [])
+        if not required <= {(item["domain"], item["id"]) for item in historical}:
+            raise VaultProtocolError("denied", "backup drops required historical lookups")
+        if historical:
+            new_body["historical_lookups"] = [
+                self._historical_entry(
+                    master,
+                    item["domain"],
+                    item["id"],
+                    wire.backup_unwrap(
+                        recovery.hpke_private,
+                        self.vault_id,
+                        item["domain"],
+                        1,
+                        item["backup"],
+                        historical_id=item["id"],
+                    ),
+                )
+                for item in historical
+            ]
         schema.validate_body(new_body)
         manifest = wire.sign_body(new_body, wire.ec_private_key(private), alg="ES256", kid=kid)
 
@@ -331,6 +429,7 @@ class SoftwareVault:
         self._leases.clear()
         self._consents.clear()
         self._consumed.clear()
+        self._maintenance_pin = None
         self.manifest_body, self.manifest = new_body, manifest
         return manifest
 
@@ -345,10 +444,24 @@ class SoftwareVault:
             "backup": wire.backup_wrap(self.recovery.hpke_public, self.vault_id, cat, ver, key),
         }
 
-    def _verified_request(self, envelope: Any) -> dict[str, Any]:
-        body = wire.verify_body(
-            envelope, wire.ec_public_key(self.server_public), expected_kid=self.server_kid
-        )
+    def _verified_request(self, envelope: Any, *, origin: str | None = None) -> dict[str, Any]:
+        candidate = envelope.get("body") if isinstance(envelope, dict) else None
+        if isinstance(candidate, dict) and candidate.get("operation") == "maintenance":
+            if self._maintenance_pin is None or origin is None:
+                raise VaultProtocolError("denied", "maintenance identity is not pinned")
+            public, pinned_origin, task = self._maintenance_pin
+            if schema.normalize_origin(origin) != pinned_origin:
+                raise VaultProtocolError("denied", "maintenance origin does not match")
+            body = wire.verify_body(
+                envelope, wire.ec_public_key(public), expected_kid=wire.signer_id(public)
+            )
+            schema.validate_body(body, expected_type="lease_request")
+            if body["task"] != schema.b64u_encode(task):
+                raise VaultProtocolError("denied", "maintenance task does not match")
+        else:
+            body = wire.verify_body(
+                envelope, wire.ec_public_key(self.server_public), expected_kid=self.server_kid
+            )
         schema.validate_body(body, expected_type="lease_request")
         if body["vault"] != schema.b64u_encode(self.vault_id) or body[
             "device"
@@ -418,6 +531,15 @@ class SoftwareVault:
         return True
 
 
+def _historical_for_refs(manifest: dict[str, Any], refs) -> list[dict]:
+    categories = {cat for cat, _ in refs}
+    return [
+        item
+        for item in manifest.get("historical_lookups", [])
+        if schema.HISTORICAL_LOOKUP_CATEGORIES[item["domain"]] in categories
+    ]
+
+
 def open_grant(
     grant: dict[str, Any],
     request_body: dict[str, Any],
@@ -425,6 +547,8 @@ def open_grant(
     phone_public: bytes,
     boot_private: bytes,
     now: int,
+    pinned_manifest: dict[str, Any] | None = None,
+    historical_keys: dict[tuple[str, str], bytes] | None = None,
 ) -> tuple[dict[str, Any], dict[tuple[str, int], bytes]]:
     """Verify against a current outstanding request before opening its grant."""
     schema.validate_body(request_body, expected_type="lease_request")
@@ -456,9 +580,16 @@ def open_grant(
     plaintext = wire.hpke_open(boot_private, "grant", header, body["box"])
     payload = schema.loads_strict(plaintext)
     refs = schema.validate_refs(body["refs"])
+    historical_refs = []
+    if pinned_manifest is not None:
+        schema.validate_manifest(pinned_manifest)
+        if schema.b64u_encode(wire.body_digest(pinned_manifest)) != body["manifest_digest"]:
+            raise VaultProtocolError("denied", "grant does not match the pinned manifest")
+        historical_refs = _historical_for_refs(pinned_manifest, refs)
+    expected_fields = {"keys", "historical_lookups"} if historical_refs else {"keys"}
     if (
         not isinstance(payload, dict)
-        or payload.keys() != {"keys"}
+        or payload.keys() != expected_fields
         or not isinstance(payload["keys"], list)
         or len(payload["keys"]) != len(refs)
         or schema.canonical_bytes(payload) != plaintext
@@ -475,4 +606,27 @@ def open_grant(
         ):
             raise VaultProtocolError("bad_field", "grant payload key does not match its reference")
         keys[cat, ver] = schema.b64u_decode(item["key"], field="key", length=schema.KEY_BYTES)
+    if historical_refs:
+        group = payload["historical_lookups"]
+        if (
+            historical_keys is None
+            or not isinstance(group, list)
+            or len(group) != len(historical_refs)
+        ):
+            raise VaultProtocolError("bad_field", "historical grant keys do not match the manifest")
+        opened = {}
+        for item, ref in zip(group, historical_refs, strict=True):
+            if (
+                not isinstance(item, dict)
+                or item.keys() != {"domain", "id", "key"}
+                or item["domain"] != ref["domain"]
+                or item["id"] != ref["id"]
+            ):
+                raise VaultProtocolError(
+                    "bad_field", "historical grant key does not match its reference"
+                )
+            opened[ref["domain"], ref["id"]] = schema.b64u_decode(
+                item["key"], field="historical lookup key", length=schema.KEY_BYTES
+            )
+        historical_keys.update(opened)
     return body, keys

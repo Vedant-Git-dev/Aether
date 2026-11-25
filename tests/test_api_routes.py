@@ -22,6 +22,7 @@ from aether import restart
 from aether.agent.loop import CaptureRequestBox
 from aether.api.routes import router
 from aether.authz.approvals import Approval
+from aether.authz.audit import AuditPayloadUnreadable, ChainVerification
 from aether.config import (
     AppConfig,
     AuthzConfig,
@@ -441,6 +442,20 @@ async def test_audit_feed_carries_the_chain_verdict() -> None:
     assert entry["tool"] == "mail__list_messages"
     assert entry["decision"] == "allow"
     assert entry["at"].endswith("+00:00")
+
+
+async def test_audit_feed_reports_corruption_when_payload_cannot_be_read() -> None:
+    class UnreadableAudit(FakeAudit):
+        async def recent(self, **_kwargs):
+            raise AuditPayloadUnreadable("An audit entry could not be read.")
+
+    audit = UnreadableAudit()
+    audit.verification = ChainVerification(False, 1, 1, "The audit chain is damaged.")
+    async with _client(_app(None, audit=audit)) as client:
+        response = await client.get("/api/audit", params={"token": "secret"})
+    assert response.status_code == 200
+    assert response.json()["entries"] == []
+    assert response.json()["chain"]["problem"] == "The audit chain is damaged."
 
 
 # ---------------------------------------------------------------------------
@@ -2211,7 +2226,9 @@ async def test_media_upload_guards_the_same_way_screen_capture_does() -> None:
 async def test_workspace_export_and_import_round_trip(db) -> None:
     import base64
 
-    ws = await _workspace(db)
+    cipher = _ws_cipher()
+    ws = Workspace(db, cipher=cipher)
+    await ws.ensure_scaffold()
     await ws.remember("prefers concise notifications", "preference")
     async with _client(_app(None, workspace=ws)) as client:
         exported = await client.post(
@@ -2234,7 +2251,7 @@ async def test_workspace_export_and_import_round_trip(db) -> None:
         assert imported.status_code == 200
         assert imported.json()["ok"] is True
     # a fresh store over the same database reads the restored files
-    restored = Workspace(db, cipher=ws._cipher)
+    restored = Workspace(db, cipher=cipher)
     assert "prefers concise notifications" in await restored.read("user")
 
 

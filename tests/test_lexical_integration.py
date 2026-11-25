@@ -16,6 +16,7 @@ from aether.config import ContactsConfig
 from aether.memory.crypto import Cipher, generate_key_b64
 from aether.memory.events import EventStore
 from aether.memory.lexical import LexicalIndex
+from aether.memory.rows import CipherRows
 from aether.memory.vectors import VectorMemory
 
 
@@ -79,7 +80,7 @@ async def test_a_restart_rebuilds_the_index_from_sealed_chunks(db) -> None:
     await vectors.wait_idle()
 
     rebuilt = LexicalIndex()
-    loaded = await rebuilt.rebuild(db, cipher)
+    loaded = await rebuilt.rebuild(db, CipherRows(cipher))
 
     assert loaded >= 1
     hits = rebuilt.search("design review")

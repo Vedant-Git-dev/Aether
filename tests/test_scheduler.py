@@ -191,7 +191,8 @@ async def test_overdue_pending_survives_a_restart(db) -> None:
     """The whole point: a row written before a crash is found and run after
     the process comes back up — modeled here as a brand-new Scheduler
     instance over the same database."""
-    first = _make_scheduler(db)
+    cipher = Cipher.from_b64(generate_key_b64())
+    first = Scheduler(db, cipher, AuditLog(db))
     await first.create(
         label="send while I was down",
         run_at=datetime.now(UTC) - timedelta(minutes=30),
@@ -199,7 +200,7 @@ async def test_overdue_pending_survives_a_restart(db) -> None:
     )
 
     # "restart": nothing carries over but the database
-    second = Scheduler(db, first._cipher, AuditLog(db))
+    second = Scheduler(db, cipher, AuditLog(db))
     overdue = await second.overdue_pending()
     assert [a.label for a in overdue] == ["send while I was down"]
 

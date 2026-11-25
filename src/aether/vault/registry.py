@@ -30,6 +30,7 @@ def _domain(cat: str, namespace: str, ver: int = 1) -> Domain:
 # Equality lookup tokens. The namespace is the declared join field, so a token
 # for an event source cannot be compared with a token for a chat surface.
 TOKEN_DOMAINS: dict[str, Domain] = {
+    "identity.platform": _domain("memory", "identity_handles.platform"),
     "identity.handle": _domain("memory", "identity_handles.normalized"),
     "event.source": _domain("memory", "events.source"),
     "chat.surface": _domain("memory", "chat_messages.surface"),
@@ -37,11 +38,14 @@ TOKEN_DOMAINS: dict[str, Domain] = {
     "summary.period": _domain("memory", "summaries.period"),
     "focus.chat": _domain("memory", "focus.chat_ref"),
     "conclusion.key": _domain("memory", "conclusions.key"),
+    "embed.model": _domain("memory", "memory_chunks.embed_model"),
     "inbound.chat": _domain("operations", "inbound_messages.chat"),
     "inbound.message": _domain("operations", "inbound_messages.message"),
     "inbound.key": _domain("operations", "inbound_messages.key"),
     "alert.scope": _domain("operations", "alerts.scope"),
+    "alert.notification": _domain("operations", "alert_notifications.key"),
     "delivery.surface": _domain("operations", "deliveries.surface"),
+    "processed.update": _domain("operations", "processed_updates.update"),
     "proactive.day": _domain("operations", "proactive_tasks.day"),
     "proactive.opportunity": _domain("operations", "proactive_tasks.opportunity"),
     "media.origin": _domain("media", "media_blobs.origin"),

@@ -22,7 +22,9 @@ import asyncpg
 
 from ..authz.audit import AuditLog
 from ..memory.crypto import Cipher
+from ..memory.rows import CipherRows, Rows, ScopedRows
 from ..origin import TurnOrigin
+from ..vault.scope import KeyScope
 from .spec import ACTIVE, PAUSED, Alert, AlertSpec, has_criteria, normalize_spec
 
 log = logging.getLogger("aether.alerts")
@@ -46,10 +48,30 @@ def _clean(value: Any, limit: int = 200) -> str:
 class AlertStore:
     """Database-backed alerts, sealed specs, provenance-gated writes."""
 
-    def __init__(self, pool: asyncpg.Pool, cipher: Cipher, audit: AuditLog) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        cipher: Cipher | None,
+        audit: AuditLog,
+        *,
+        rows: Rows | None = None,
+    ) -> None:
+        if (cipher is None) == (rows is None):
+            raise ValueError("AlertStore needs exactly one of cipher or rows")
+        self._rows: Rows = rows if rows is not None else CipherRows(cipher)
+        self._scoped = self._rows.scoped
         self._pool = pool
-        self._cipher = cipher
         self._audit = audit
+
+    @classmethod
+    def scoped(
+        cls, pool: asyncpg.Pool, scope: KeyScope, audit: AuditLog, *, ver: int = 1
+    ) -> AlertStore:
+        """Explicit scoped construction. The caller owns the task and scope."""
+        return cls(pool, None, audit, rows=ScopedRows(scope, cat="operations", ver=ver))
+
+    def _token(self, value: str) -> bytes:
+        return self._rows.token("alert.scope", "alert_scope", value)
 
     async def create(
         self,
@@ -66,6 +88,7 @@ class AlertStore:
         Creating the same condition twice returns the existing row instead of
         a duplicate, so a repeated "keep checking" is one alert.
         """
+        self._rows.preflight()
         if not origin.may_mutate:
             log.warning("refused an alert write from a %s origin", origin.kind)
             return None
@@ -80,18 +103,30 @@ class AlertStore:
                 "INSERT INTO alerts (scope_token, channel, status, spec_enc,"
                 " converted_from, key_version)"
                 " VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at",
-                self._cipher.blind_token("alert_scope", spec.scope),
+                self._token(spec.scope),
                 spec.channel,
                 ACTIVE,
                 b"",  # placeholder until the id exists; replaced below, same transaction
                 converted_from,
-                self._cipher.key_id,
+                self._rows.key_version,
             )
             alert_id = row["id"]
             await conn.execute(
                 "UPDATE alerts SET spec_enc = $1, origin_enc = $2 WHERE id = $3",
-                self._cipher.encrypt_json(spec.to_payload(), aad=_SPEC_AAD.format(alert_id)),
-                self._cipher.encrypt_json(origin.payload(), aad=_ORIGIN_AAD.format(alert_id)),
+                self._rows.seal(
+                    spec.to_payload(),
+                    table="alerts",
+                    column="spec_enc",
+                    row_id=alert_id,
+                    aad=_SPEC_AAD.format(alert_id),
+                ),
+                self._rows.seal(
+                    origin.payload(),
+                    table="alerts",
+                    column="origin_enc",
+                    row_id=alert_id,
+                    aad=_ORIGIN_AAD.format(alert_id),
+                ),
                 alert_id,
             )
         await self._audit.append(
@@ -120,6 +155,7 @@ class AlertStore:
         The migration reference is recorded as provenance, so the row says
         plainly where it came from. Idempotent: a second import of the same
         source is a no-op."""
+        self._rows.preflight()
         if converted_from:
             existing = await self._pool.fetchval(
                 "SELECT id FROM alerts WHERE converted_from = $1", converted_from
@@ -134,21 +170,30 @@ class AlertStore:
                 " VALUES ($1, $2, $3, $4, $5, $6)"
                 " ON CONFLICT (converted_from) WHERE converted_from IS NOT NULL"
                 " DO NOTHING RETURNING id, created_at",
-                self._cipher.blind_token("alert_scope", spec.scope),
+                self._token(spec.scope),
                 spec.channel,
                 ACTIVE,
                 b"",
                 converted_from,
-                self._cipher.key_id,
+                self._rows.key_version,
             )
             if row is None:
                 return None
             alert_id = int(row["id"])
             await conn.execute(
                 "UPDATE alerts SET spec_enc = $1, origin_enc = $2 WHERE id = $3",
-                self._cipher.encrypt_json(spec.to_payload(), aad=_SPEC_AAD.format(alert_id)),
-                self._cipher.encrypt_json(
+                self._rows.seal(
+                    spec.to_payload(),
+                    table="alerts",
+                    column="spec_enc",
+                    row_id=alert_id,
+                    aad=_SPEC_AAD.format(alert_id),
+                ),
+                self._rows.seal(
                     {"kind": "migration", "reference": dict(reference)},
+                    table="alerts",
+                    column="origin_enc",
+                    row_id=alert_id,
                     aad=_ORIGIN_AAD.format(alert_id),
                 ),
                 alert_id,
@@ -165,6 +210,7 @@ class AlertStore:
         )
 
     async def list(self, limit: int = 50, offset: int = 0) -> list[Alert]:
+        self._rows.preflight()
         rows = await self._pool.fetch(
             f"SELECT {_COLUMNS} FROM alerts ORDER BY id DESC LIMIT $1 OFFSET $2",
             limit,
@@ -173,22 +219,26 @@ class AlertStore:
         return [self._to_alert(row) for row in rows]
 
     async def list_active(self) -> list[Alert]:
+        self._rows.preflight()
         rows = await self._pool.fetch(
             f"SELECT {_COLUMNS} FROM alerts WHERE status = $1 ORDER BY id", ACTIVE
         )
         return [self._to_alert(row) for row in rows]
 
     async def active_count(self) -> int:
+        self._rows.preflight()
         value = await self._pool.fetchval("SELECT count(*) FROM alerts WHERE status = $1", ACTIVE)
         return int(value or 0)
 
     async def get(self, alert_id: int) -> Alert | None:
+        self._rows.preflight()
         row = await self._pool.fetchrow(f"SELECT {_COLUMNS} FROM alerts WHERE id = $1", alert_id)
         return self._to_alert(row) if row else None
 
     async def set_enabled(
         self, alert_id: int, enabled: bool, *, origin: TurnOrigin
     ) -> Alert | None:
+        self._rows.preflight()
         if not origin.may_mutate:
             log.warning("refused an alert change from a %s origin", origin.kind)
             return None
@@ -213,6 +263,7 @@ class AlertStore:
     async def update(self, alert_id: int, *, spec: AlertSpec, origin: TurnOrigin) -> Alert | None:
         """Replace one alert's stored condition. The id and its watermark
         stay; only the sealed spec and the plaintext routing columns move."""
+        self._rows.preflight()
         if not origin.may_mutate:
             log.warning("refused an alert change from a %s origin", origin.kind)
             return None
@@ -220,10 +271,22 @@ class AlertStore:
         row = await self._pool.fetchrow(
             "UPDATE alerts SET spec_enc = $1, channel = $2, scope_token = $3,"
             f" origin_enc = $4 WHERE id = $5 RETURNING {_COLUMNS}",
-            self._cipher.encrypt_json(spec.to_payload(), aad=_SPEC_AAD.format(alert_id)),
+            self._rows.seal(
+                spec.to_payload(),
+                table="alerts",
+                column="spec_enc",
+                row_id=alert_id,
+                aad=_SPEC_AAD.format(alert_id),
+            ),
             spec.channel,
-            self._cipher.blind_token("alert_scope", spec.scope),
-            self._cipher.encrypt_json(origin.payload(), aad=_ORIGIN_AAD.format(alert_id)),
+            self._token(spec.scope),
+            self._rows.seal(
+                origin.payload(),
+                table="alerts",
+                column="origin_enc",
+                row_id=alert_id,
+                aad=_ORIGIN_AAD.format(alert_id),
+            ),
             alert_id,
         )
         if row is None:
@@ -238,6 +301,7 @@ class AlertStore:
         return self._to_alert(row)
 
     async def delete(self, alert_id: int, *, origin: TurnOrigin) -> bool:
+        self._rows.preflight()
         if not origin.may_mutate:
             log.warning("refused an alert delete from a %s origin", origin.kind)
             return False
@@ -256,6 +320,7 @@ class AlertStore:
         """Advance the id watermark for every alert that evaluated this
         event, in one statement. The conditional keeps a concurrent later
         write from being rolled backwards."""
+        self._rows.preflight()
         if not alert_ids:
             return
         await self._pool.execute(
@@ -267,10 +332,12 @@ class AlertStore:
     async def mark_action_fired(self, alert_id: int) -> None:
         """The action's own clock — a separate stamp from the event
         watermark, so a burst of matching events runs the action once."""
+        self._rows.preflight()
         await self._pool.execute("UPDATE alerts SET last_run_at = now() WHERE id = $1", alert_id)
 
     async def complete(self, alert_id: int) -> None:
         """A one-shot reminder that has been delivered stops being armed."""
+        self._rows.preflight()
         row = await self._pool.fetchrow(
             "UPDATE alerts SET status = $1 WHERE id = $2 AND status = $3 RETURNING id",
             PAUSED,
@@ -287,6 +354,7 @@ class AlertStore:
             )
 
     async def mark_notified(self, alert_ids: list[int]) -> None:
+        self._rows.preflight()
         if not alert_ids:
             return
         await self._pool.execute(
@@ -298,11 +366,21 @@ class AlertStore:
         alert_id = int(row["id"])
         for aad in (_SPEC_AAD.format(alert_id), _LEGACY_SPEC_AAD.format(alert_id)):
             try:
-                spec = AlertSpec.from_payload(self._cipher.decrypt_json(row["spec_enc"], aad=aad))
+                spec = AlertSpec.from_payload(
+                    self._rows.open(
+                        row["spec_enc"],
+                        table="alerts",
+                        column="spec_enc",
+                        row_id=alert_id,
+                        aad=aad,
+                    )
+                )
                 break
             except Exception:
                 continue
         else:
+            if self._scoped:
+                raise
             log.warning("alert %s spec undecryptable — treated as empty", alert_id)
         return Alert(
             id=alert_id,

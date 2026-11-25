@@ -11,6 +11,7 @@ import pytest
 from aether.authz.audit import AuditLog
 from aether.config import ContactsConfig
 from aether.memory.crypto import Cipher, generate_key_b64
+from aether.memory.event_rows import CipherEventRows
 from aether.memory.events import EventStore
 from aether.memory.indexes import MemoryIndex
 from aether.memory.views import Views
@@ -67,7 +68,7 @@ async def test_rebuild_restores_time_and_count_views(db) -> None:
     await store.update_salience(first.event_id, 8.0, True, category="work")
 
     index = MemoryIndex()
-    assert await index.rebuild(db, cipher, hot_limit=50) == 2
+    assert await index.rebuild(db, CipherEventRows(cipher), hot_limit=50) == 2
     assert index.max_id == second.event_id
     assert [event.id for event in index.recent(10)] == [second.event_id, first.event_id]
     memorable = index.recent_memorable(10)
@@ -96,9 +97,9 @@ async def test_cold_scan_reaches_older_history(db) -> None:
             source="gmail", kind="message", payload={"text": f"mail {hour}"}, occurred_at=_at(hour)
         )
     index = MemoryIndex()
-    assert await index.rebuild(db, cipher, hot_limit=1) == 1
+    assert await index.rebuild(db, CipherEventRows(cipher), hot_limit=1) == 1
     assert not index.covers(_at(6))
-    await index.ensure_since(db, cipher, _at(6), batch=1)
+    await index.ensure_since(db, CipherEventRows(cipher), _at(6), batch=1)
     assert index.covers(_at(6))
     assert len(index.since_time(_at(6))) == 3
 
@@ -115,9 +116,9 @@ async def test_cold_scan_survives_an_unreadable_event(db) -> None:
     await db.execute("UPDATE events SET meta_enc = $1 WHERE id = $2", b"not sealed", oldest)
 
     index = MemoryIndex()
-    assert await index.rebuild(db, cipher, hot_limit=1) == 1
+    assert await index.rebuild(db, CipherEventRows(cipher), hot_limit=1) == 1
     # the cold scan must skip the bad row, not raise out of ensure_since
-    await index.ensure_since(db, cipher, _at(0), batch=1, max_batches=4)
+    await index.ensure_since(db, CipherEventRows(cipher), _at(0), batch=1, max_batches=4)
     assert index.skipped == 1
     assert index.covers(_at(0))
     assert [event.occurred_at for event in index.since_time(_at(0))] == [_at(8)]
@@ -168,7 +169,7 @@ async def test_recent_hours_cold_scans_before_filtering(db) -> None:
     assert old.event_id is not None
     await store.update_salience(old.event_id, 7.0, True)
     index = MemoryIndex()
-    await index.rebuild(db, cipher, hot_limit=1)
+    await index.rebuild(db, CipherEventRows(cipher), hot_limit=1)
     wired = EventStore(db, cipher, AuditLog(db), ContactsConfig(), index=index)
     assert [event.id for event in await wired.recent_memorable(10, hours=48)] == [old.event_id]
     assert await wired.recent_memorable(10, hours=1) == []
@@ -199,7 +200,7 @@ async def test_attention_view_rebuilds_identically_after_a_restart(db) -> None:
 
     before = Views(index, timezone="Asia/Kolkata").pending_attention(now=_at(12))
     rebuilt = MemoryIndex()
-    assert await rebuilt.rebuild(db, cipher, hot_limit=50) == 4
+    assert await rebuilt.rebuild(db, CipherEventRows(cipher), hot_limit=50) == 4
     after = Views(rebuilt, timezone="Asia/Kolkata").pending_attention(now=_at(12))
 
     assert [(item.event_id, item.urgency) for item in after] == [
@@ -226,7 +227,7 @@ async def test_the_hot_index_stays_within_its_memory_budget(db) -> None:
     index = MemoryIndex()
     tracemalloc.start()
     try:
-        await index.rebuild(db, cipher, hot_limit=200)
+        await index.rebuild(db, CipherEventRows(cipher), hot_limit=200)
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
