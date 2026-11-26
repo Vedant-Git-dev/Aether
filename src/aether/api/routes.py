@@ -46,8 +46,16 @@ PANEL_PAGE_SIZE = 100
 
 
 def _authorized(request: Request, token: str | None) -> bool:
+    if getattr(request.state, "vault_owner", False):
+        return True
     candidate = token or request.headers.get("x-aether-token", "")
     return bool(candidate) and hmac.compare_digest(candidate, request.app.state.settings.api_token)
+
+
+def _service(request: Request, name: str):
+    if getattr(request.state, "vault_owner", False):
+        return getattr(request.state, name, None)
+    return getattr(request.app.state, name, None)
 
 
 def _page_limit(requested: int | None, default: int = 50) -> int:
@@ -191,7 +199,7 @@ async def get_media(request: Request, media_id: int, token: str | None = None) -
     plain note every consumer degrades to — 404, not a broken element."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
-    store = getattr(request.app.state, "media_store", None)
+    store = _service(request, "media_store")
     record = await store.get(media_id) if store is not None else None
     if record is None:
         raise HTTPException(status_code=404, detail="that file is no longer stored")
@@ -258,7 +266,7 @@ async def list_approvals(
     surfaces show buttons for. Paginated, capped, and revalidated by ETag."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
-    approvals = request.app.state.approvals
+    approvals = _service(request, "approvals")
     page = _page_limit(limit)
     pending = await approvals.list_pending(limit=page, offset=offset)
     etag = f'W/"approvals-{max((a.id for a in pending), default=0)}-{len(pending)}-{offset}"'
@@ -315,7 +323,7 @@ async def events_feed(
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
     page = _page_limit(limit)
-    events = await request.app.state.events.recent(limit=page, offset=offset)
+    events = await _service(request, "events").recent(limit=page, offset=offset)
     etag = f'W/"events-{max((e.id for e in events), default=0)}-{len(events)}-{offset}"'
     if (not_modified := _conditional(request, etag)) is not None:
         return not_modified
@@ -1088,7 +1096,7 @@ async def tasks_feed(
     same authorization gate as everything else when they fire."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
-    scheduler = getattr(request.app.state, "scheduler", None)
+    scheduler = _service(request, "scheduler")
     if scheduler is None:
         raise HTTPException(status_code=503, detail="scheduler is not wired")
     page = _page_limit(limit)
@@ -1249,7 +1257,7 @@ async def profile_feed(request: Request, token: str | None = None) -> dict:
     batch the chat confirmation message lists."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
-    workspace = getattr(request.app.state, "workspace", None)
+    workspace = _service(request, "workspace")
     if workspace is None:
         raise HTTPException(status_code=503, detail="workspace is not enabled")
     return {
@@ -1267,7 +1275,7 @@ async def confirm_profile_entries(
     alone, so a stale tap confirms nothing."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
-    workspace = getattr(request.app.state, "workspace", None)
+    workspace = _service(request, "workspace")
     if workspace is None:
         raise HTTPException(status_code=503, detail="workspace is not enabled")
     confirmed = await workspace.confirm_profile(body.ids)
@@ -1292,7 +1300,7 @@ async def workspace_feed(request: Request, token: str | None = None) -> dict:
     content distinctly, plus whether first-run setup is still pending."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
-    workspace = getattr(request.app.state, "workspace", None)
+    workspace = _service(request, "workspace")
     if workspace is None:
         raise HTTPException(status_code=503, detail="workspace is not enabled")
     needs_bootstrap, raw = await workspace.feed()
@@ -1317,7 +1325,7 @@ async def workspace_write(
     the same secret guard as the agent's own writes."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
-    workspace = getattr(request.app.state, "workspace", None)
+    workspace = _service(request, "workspace")
     if workspace is None:
         raise HTTPException(status_code=503, detail="workspace is not enabled")
     try:
@@ -1338,7 +1346,7 @@ async def workspace_daily_feed(
     """One day's working notes — defaults to today."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
-    workspace = getattr(request.app.state, "workspace", None)
+    workspace = _service(request, "workspace")
     if workspace is None:
         raise HTTPException(status_code=503, detail="workspace is not enabled")
     resolved = date or workspace.today()
@@ -1358,7 +1366,7 @@ async def workspace_search_feed(
     recent daily notes."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
-    workspace = getattr(request.app.state, "workspace", None)
+    workspace = _service(request, "workspace")
     if workspace is None:
         raise HTTPException(status_code=503, detail="workspace is not enabled")
     hits = await workspace.search(query, limit=min(limit, 50))
@@ -1376,7 +1384,7 @@ async def workspace_export(
     plaintext exists only in this process; the response is already sealed."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
-    workspace = getattr(request.app.state, "workspace", None)
+    workspace = _service(request, "workspace")
     if workspace is None:
         raise HTTPException(status_code=503, detail="workspace is not enabled")
     try:
@@ -1402,7 +1410,7 @@ async def workspace_import(
     passphrase and a corrupt file read the same: one plain refusal."""
     if not _authorized(request, token):
         raise HTTPException(status_code=401, detail="bad or missing token")
-    workspace = getattr(request.app.state, "workspace", None)
+    workspace = _service(request, "workspace")
     if workspace is None:
         raise HTTPException(status_code=503, detail="workspace is not enabled")
     try:

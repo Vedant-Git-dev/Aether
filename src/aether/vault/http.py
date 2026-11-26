@@ -23,7 +23,7 @@ def _error(error: VaultProtocolError) -> Response:
     return JSONResponse(error.payload(), status_code=error.status, headers=_HEADERS)
 
 
-async def _device(request: Request):
+def bearer_hash(request: Request) -> bytes:
     credentials = request.headers.getlist("authorization")
     if len(credentials) != 1:
         raise VaultProtocolError("unauthorized")
@@ -31,9 +31,13 @@ async def _device(request: Request):
     if scheme.lower() != "bearer":
         raise VaultProtocolError("unauthorized")
     try:
-        token_hash = sha256(b64u_decode(token, field="token", length=NONCE_BYTES)).digest()
+        return sha256(b64u_decode(token, field="token", length=NONCE_BYTES)).digest()
     except VaultProtocolError:
         raise VaultProtocolError("unauthorized") from None
+
+
+async def _device(request: Request):
+    token_hash = bearer_hash(request)
     origins = request.headers.getlist("origin")
     if len(origins) > 1:
         raise VaultProtocolError("unauthorized")
@@ -41,6 +45,27 @@ async def _device(request: Request):
     if runtime is None:
         raise VaultProtocolError("unavailable")
     return runtime, await runtime.device_service(token_hash, origins[0] if origins else None)
+
+
+@router.get(vault_path("status"))
+async def status(request: Request) -> Response:
+    runtime: VaultRuntime = request.app.state.vault_runtime
+    try:
+        if request.headers.getlist("authorization"):
+            token = bearer_hash(request)
+            session = await runtime.store.active_session(token, "device")
+            if session is None:
+                session = await runtime.store.active_session(token, "panel")
+            if session is None:
+                raise VaultProtocolError("unauthorized")
+            body = {"state": session["state"], "epoch": session["epoch"]}
+        else:
+            body = {"pairing_required": await runtime.store.installation() is None}
+        return JSONResponse(body, headers=_HEADERS)
+    except VaultProtocolError as exc:
+        return _error(exc)
+    except STORAGE_ERRORS:
+        return _error(VaultProtocolError("unavailable"))
 
 
 async def _disconnected(request: Request) -> None:

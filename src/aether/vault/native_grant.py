@@ -31,6 +31,7 @@ _SUITE = _Suite(0x0020, 0x0001, 0x0002)
 _BASE_MODE = 0
 _RECEIVER = 1
 _INFO = b"aether/v1/grant"
+_INGRESS_INFO = b"aether/v1/ingress"
 _KEY_TEXT_SIZE = (KEY_BYTES * 8 + 5) // 6
 _URLSAFE_NO_PADDING = 7  # libsodium's sodium_base64_VARIANT_URLSAFE_NO_PADDING
 
@@ -81,6 +82,42 @@ def _openssl() -> c.CDLL:
     return lib
 
 
+@contextmanager
+def _recipient(lib: c.CDLL, private: _KeySlot) -> Iterator[int]:
+    if not private.owned_by_current_process():
+        raise VaultClosed("the HPKE recipient belongs to a different process")
+    with private.lock:
+        recipient = lib.EVP_PKEY_new_raw_private_key_ex(
+            None, b"X25519", None, private.address, X25519_BYTES
+        )
+        if not recipient:
+            lib.ERR_clear_error()
+            raise VaultLocked("could not load the native HPKE recipient")
+        try:
+            yield recipient
+        finally:
+            lib.EVP_PKEY_free(recipient)
+            lib.ERR_clear_error()
+
+
+def _open_box(lib, private, info, enc, ct, aad, output, size) -> None:
+    with _recipient(lib, private) as recipient:
+        context = lib.OSSL_HPKE_CTX_new(_BASE_MODE, _SUITE, _RECEIVER, None, None)
+        if not context:
+            raise VaultLocked("could not initialize the native HPKE receiver")
+        try:
+            length = _SIZE(size)
+            if (
+                lib.OSSL_HPKE_decap(context, enc, len(enc), recipient, info, len(info)) != 1
+                or lib.OSSL_HPKE_open(context, output, c.byref(length), aad, len(aad), ct, len(ct))
+                != 1
+                or length.value != size
+            ):
+                raise VaultProtocolError("denied", "HPKE authentication failed")
+        finally:
+            lib.OSSL_HPKE_CTX_free(context)
+
+
 def _match(clear: _KeySlot, offset: int, expected: bytes) -> int:
     if clear.lib.sodium_memcmp(clear.address + offset, expected, len(expected)) != 0:
         raise VaultProtocolError("bad_field", "grant keys do not match the requested set")
@@ -97,30 +134,13 @@ class NativeBootKey:
             self._private.lib.randombytes_buf(self._private.address, X25519_BYTES)
             public = c.create_string_buffer(X25519_BYTES)
             length = _SIZE(len(public))
-            with self._recipient() as recipient:
+            with _recipient(self._lib, self._private) as recipient:
                 if self._lib.EVP_PKEY_get_raw_public_key(recipient, public, c.byref(length)) != 1:
                     raise VaultLocked("could not derive the HPKE recipient public key")
             self.public = public.raw
         except BaseException:
             self.close()
             raise
-
-    @contextmanager
-    def _recipient(self) -> Iterator[int]:
-        if not self._private.owned_by_current_process():
-            raise VaultClosed("the HPKE recipient belongs to a different process")
-        with self._private.lock:
-            recipient = self._lib.EVP_PKEY_new_raw_private_key_ex(
-                None, b"X25519", None, self._private.address, X25519_BYTES
-            )
-            if not recipient:
-                self._lib.ERR_clear_error()
-                raise VaultLocked("could not load the native HPKE recipient")
-            try:
-                yield recipient
-            finally:
-                self._lib.EVP_PKEY_free(recipient)
-                self._lib.ERR_clear_error()
 
     def close(self) -> None:
         self._private.close()
@@ -181,24 +201,7 @@ class NativeBootKey:
             clear.close()
 
     def _open(self, enc: bytes, ct: bytes, aad: bytes, clear: _KeySlot, size: int) -> None:
-        with self._recipient() as recipient:
-            context = self._lib.OSSL_HPKE_CTX_new(_BASE_MODE, _SUITE, _RECEIVER, None, None)
-            if not context:
-                raise VaultLocked("could not initialize the native HPKE receiver")
-            try:
-                length = _SIZE(size)
-                if (
-                    self._lib.OSSL_HPKE_decap(context, enc, len(enc), recipient, _INFO, len(_INFO))
-                    != 1
-                    or self._lib.OSSL_HPKE_open(
-                        context, clear.address, c.byref(length), aad, len(aad), ct, len(ct)
-                    )
-                    != 1
-                    or length.value != size
-                ):
-                    raise VaultProtocolError("denied", "grant HPKE authentication failed")
-            finally:
-                self._lib.OSSL_HPKE_CTX_free(context)
+        _open_box(self._lib, self._private, _INFO, enc, ct, aad, clear.address, size)
 
 
 class NativeIngressKey:
@@ -213,3 +216,14 @@ class NativeIngressKey:
 
     def close(self) -> None:
         self._slot.close()
+
+    def open_ingress(self, enc: bytes, ct: bytes, aad: bytes) -> bytes:
+        if len(enc) != X25519_BYTES or len(ct) < GCM_TAG_BYTES:
+            raise VaultProtocolError("bad_field")
+        size = len(ct) - GCM_TAG_BYTES
+        clear = c.create_string_buffer(size)
+        try:
+            _open_box(_openssl(), self._slot, _INGRESS_INFO, enc, ct, aad, clear, size)
+            return clear.raw
+        finally:
+            c.memset(clear, 0, size)

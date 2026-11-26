@@ -29,6 +29,7 @@ _CONTROL_FROM = {
 _SESSION_KINDS = ("device", "panel")
 _JOURNAL_STATES = ("pending", "done", "failed")
 _SERVING_LOCK = (0x41455448, 1)
+_INGRESS_LOCK = (0x41455448, 2)
 
 
 def _id(value: Any, name: str) -> bytes:
@@ -356,16 +357,154 @@ class VaultStore:
         return row is not None
 
     async def device_session(self, session_hash: bytes) -> asyncpg.Record | None:
+        return await self.active_session(session_hash, "device")
+
+    async def active_session(
+        self, session_hash: bytes, kind: str, *, for_delivery: bool = False
+    ) -> asyncpg.Record | None:
+        # Hold the session row through delivery so a concurrent revocation
+        # cannot commit between the final authorization check and the send.
+        lock = " FOR SHARE OF s" if for_delivery else ""
         return await self._pool.fetchrow(
             "SELECT v.vault_id, v.device_id, v.epoch, v.generation, v.state"
             " FROM vault_session s JOIN vault_state v ON v.vault_id = s.vault_id"
             " AND v.device_id = s.device_id AND v.epoch = s.epoch"
-            " WHERE s.session_hash = $1 AND s.kind = 'device' AND s.revoked_at IS NULL"
-            " AND s.expires_at > now() AND v.state IN ('locked', 'available')",
+            " WHERE s.session_hash = $1 AND s.kind = $2 AND s.revoked_at IS NULL"
+            " AND s.expires_at > clock_timestamp() AND v.state IN ('locked', 'available')" + lock,
             _digest(session_hash, "session_hash"),
+            kind,
         )
 
     # -- ingress queue -----------------------------------------------------
+
+    @asynccontextmanager
+    async def accepting(self) -> AsyncIterator[asyncpg.Connection]:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock($1, $2)", *_INGRESS_LOCK)
+            yield conn
+
+    @staticmethod
+    async def ingress_installation(conn: asyncpg.Connection) -> asyncpg.Record | None:
+        return await conn.fetchrow(
+            "SELECT * FROM vault_state WHERE state IN ('locked', 'available') LIMIT 1"
+        )
+
+    @staticmethod
+    async def ingress_manifest_is_current(
+        conn: asyncpg.Connection, vault: bytes, digest: bytes
+    ) -> bool:
+        return bool(
+            await conn.fetchval(
+                "SELECT 1 FROM vault_state WHERE vault_id = $1 AND digest = $2"
+                " AND state IN ('locked', 'available') FOR SHARE",
+                vault,
+                digest,
+            )
+        )
+
+    @staticmethod
+    async def ingress_receipt(conn: asyncpg.Connection, vault: bytes, token: bytes) -> bytes | None:
+        return await conn.fetchval(
+            "SELECT queue_id FROM vault_ingress_receipt WHERE vault_id = $1 AND receipt_token = $2",
+            vault,
+            token,
+        )
+
+    @staticmethod
+    async def ingress_bytes(conn: asyncpg.Connection, vault: bytes) -> int:
+        return await conn.fetchval(
+            "SELECT COALESCE(sum(stored_bytes), 0)::bigint FROM vault_ingress_receipt"
+            " WHERE vault_id = $1 AND state <> 'drained'",
+            vault,
+        )
+
+    @staticmethod
+    async def reserve_ingress(
+        conn: asyncpg.Connection, vault: bytes, queue: bytes, version: int
+    ) -> None:
+        await conn.execute(
+            "INSERT INTO vault_ingress_queue (queue_id, vault_id, ingress_ver) VALUES ($1, $2, $3)",
+            queue,
+            vault,
+            version,
+        )
+
+    @staticmethod
+    async def write_ingress_part(
+        conn: asyncpg.Connection, queue: bytes, part: int, kind: str, ciphertext: bytes
+    ) -> None:
+        await conn.execute(
+            "INSERT INTO vault_ingress_part (queue_id, part, kind, ciphertext_enc)"
+            " VALUES ($1, $2, $3, $4)",
+            queue,
+            part,
+            kind,
+            ciphertext,
+        )
+
+    @staticmethod
+    async def complete_ingress(
+        conn: asyncpg.Connection, vault: bytes, token: bytes, queue: bytes, size: int
+    ) -> None:
+        await conn.execute(
+            "UPDATE vault_ingress_queue SET complete = TRUE, updated_at = now() WHERE queue_id = $1",
+            queue,
+        )
+        await conn.execute(
+            "INSERT INTO vault_ingress_receipt (vault_id, receipt_token, queue_id, stored_bytes, state)"
+            " VALUES ($1, $2, $3, $4, 'queued')",
+            vault,
+            token,
+            queue,
+            size,
+        )
+
+    @staticmethod
+    async def next_ingress(conn: asyncpg.Connection, vault: bytes) -> asyncpg.Record | None:
+        return await conn.fetchrow(
+            "SELECT r.queue_id, q.ingress_ver, q.complete FROM vault_ingress_receipt r"
+            " LEFT JOIN vault_ingress_queue q ON q.queue_id = r.queue_id"
+            " WHERE r.vault_id = $1 AND r.state = 'queued'"
+            " ORDER BY r.arrival LIMIT 1 FOR UPDATE OF r",
+            vault,
+        )
+
+    @staticmethod
+    async def ingress_pending(conn: asyncpg.Connection, vault: bytes, queue: bytes) -> bool:
+        return bool(
+            await conn.fetchval(
+                "SELECT 1 FROM vault_ingress_receipt"
+                " WHERE vault_id = $1 AND queue_id = $2 AND state = 'queued'",
+                vault,
+                queue,
+            )
+        )
+
+    @staticmethod
+    async def ingress_part(
+        conn: asyncpg.Connection, queue: bytes, part: int
+    ) -> asyncpg.Record | None:
+        return await conn.fetchrow(
+            "SELECT kind, ciphertext_enc FROM vault_ingress_part WHERE queue_id = $1 AND part = $2",
+            queue,
+            part,
+        )
+
+    @staticmethod
+    async def ingress_part_count(conn: asyncpg.Connection, queue: bytes) -> int:
+        return await conn.fetchval(
+            "SELECT count(*) FROM vault_ingress_part WHERE queue_id = $1", queue
+        )
+
+    @staticmethod
+    async def settle_ingress(conn: asyncpg.Connection, queue: bytes, *, poison: bool) -> None:
+        if not poison:
+            await conn.execute("DELETE FROM vault_ingress_queue WHERE queue_id = $1", queue)
+        await conn.execute(
+            "UPDATE vault_ingress_receipt SET state = $2 WHERE queue_id = $1",
+            queue,
+            "quarantined" if poison else "drained",
+        )
 
     async def reserve_queue(self, *, queue_id: bytes, vault_id: bytes, ingress_ver: int) -> None:
         await self._pool.execute(

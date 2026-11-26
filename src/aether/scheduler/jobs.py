@@ -143,6 +143,37 @@ class Scheduler:
         )
         return self._to_action(row) if row else None
 
+    async def run_pending(self, action_id: int, run: ActionRunner) -> bool:
+        """Run a database-local effect using this scheduler's fenced connection."""
+        if not self._scoped:
+            raise ValueError("a scoped scheduler is required")
+        self._rows.preflight()
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT id, meta_enc, status, payload_enc, created_at"
+                " FROM scheduled_actions WHERE id = $1 AND status = 'pending' FOR UPDATE",
+                action_id,
+            )
+            if row is None:
+                return False
+            action = self._to_action(row)
+            if action.run_at > datetime.now(UTC):
+                return False
+            await run(action)
+            self._rows.preflight()
+            await conn.execute(
+                "UPDATE scheduled_actions SET status = 'done' WHERE id = $1",
+                action_id,
+            )
+        return True
+
+    @staticmethod
+    async def pending_ids(pool: asyncpg.Pool) -> list[int]:
+        rows = await pool.fetch(
+            "SELECT id FROM scheduled_actions WHERE status = 'pending' ORDER BY id"
+        )
+        return [row["id"] for row in rows]
+
     async def claim_due(self, limit: int = 20) -> list[ScheduledAction]:
         """Pick the due pending rows in memory, then claim them atomically.
         The run time lives in the sealed meta, so SQL cannot order by it;

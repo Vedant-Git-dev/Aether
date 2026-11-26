@@ -35,14 +35,13 @@ STORAGE_ERRORS = (
 _CHECK_INTERVAL = 1.0
 
 
-def _installation(row: asyncpg.Record) -> Installation:
+def verified_manifest(row: asyncpg.Record) -> dict:
     pins = loads_strict(row["pins"])
     if not isinstance(pins, dict):
         raise VaultProtocolError("stale_manifest")
     phone = b64u_decode(pins.get("phone_pub"), field="phone_pub", length=P256_PUBLIC_BYTES)
     kid = pins.get("server_kid")
     b64u_decode(kid, field="server_kid", length=DIGEST_BYTES)
-    origin = normalize_origin(pins.get("origin"))
     manifest = verify_es256(
         loads_strict(row["manifest"]), pinned_public=phone, expected_type="manifest"
     )
@@ -54,17 +53,23 @@ def _installation(row: asyncpg.Record) -> Installation:
         or manifest["revision"] != row["revision"]
     ):
         raise VaultProtocolError("stale_manifest")
+    return manifest
+
+
+def _installation(row: asyncpg.Record) -> Installation:
+    manifest = verified_manifest(row)
+    pins = loads_strict(row["pins"])
     return Installation(
         row["vault_id"],
         row["device_id"],
         row["generation"],
         row["epoch"],
         row["digest"],
-        kid,
-        phone,
+        pins["server_kid"],
+        b64u_decode(pins["phone_pub"], field="phone_pub", length=P256_PUBLIC_BYTES),
         {(entry["cat"], entry["ver"]): entry["status"] for entry in manifest["entries"]},
         frozenset(entry["domain"] for entry in manifest.get("historical_lookups", ())),
-        origin,
+        normalize_origin(pins.get("origin")),
     )
 
 

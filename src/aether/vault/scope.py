@@ -215,6 +215,16 @@ class KeyScope:
         """Raise unless the scope is open and holds this key."""
         self._lookup(cat, ver)
 
+    def open_ingress(self, ver: int, enc: bytes, ct: bytes, aad: bytes) -> bytes:
+        if self.operation != "drain":
+            raise VaultLocked("ingress keys are restricted to drain")
+        from .native_grant import NativeIngressKey
+
+        handle = self._lookup("ingress", ver)
+        if not isinstance(handle, NativeIngressKey):
+            raise VaultLocked("the ingress key is unavailable")
+        return handle.open_ingress(enc, ct, aad)
+
     def historical_tags(self, domain: str, value: str | bytes) -> tuple[bytes, ...]:
         """Calculate historical tags only while their category is granted."""
         category = HISTORICAL_LOOKUP_CATEGORIES.get(domain)

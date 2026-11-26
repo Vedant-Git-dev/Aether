@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import math
 import struct
+from collections.abc import Awaitable, Callable
 from typing import Literal, Protocol, runtime_checkable
 
 from google import genai
@@ -27,6 +28,8 @@ from .base import ProviderError
 _BATCH = 50
 # gemini-embedding-001 is Matryoshka: 3072 by default, 768 recommended
 _DEFAULT_DIMS = 768
+EmbedRequest = Callable[[], Awaitable[gtypes.EmbedContentResponse]]
+EmbedDispatch = Callable[[EmbedRequest], Awaitable[gtypes.EmbedContentResponse]]
 
 
 @runtime_checkable
@@ -89,22 +92,26 @@ class GeminiEmbedder:
         return cls(genai.Client(api_key=api_key), model)
 
     async def _embed_batch(
-        self, texts: list[str], task: Literal["query", "document"]
+        self, texts: list[str], task: Literal["query", "document"], dispatch: EmbedDispatch | None
     ) -> list[list[float]]:
         # genai 2.x takes task_type as a plain string
         task_type = "RETRIEVAL_QUERY" if task == "query" else "RETRIEVAL_DOCUMENT"
+
+        async def send() -> gtypes.EmbedContentResponse:
+            return await self.client.aio.models.embed_content(
+                model=self.model,
+                contents=texts,
+                config=gtypes.EmbedContentConfig(
+                    output_dimensionality=self.dims, task_type=task_type
+                ),
+            )
+
         # free-tier 429s carry a "Please retry in Xs" hint — wait it out a
         # couple of times, same as the chat provider
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
-                response = await self.client.aio.models.embed_content(
-                    model=self.model,
-                    contents=texts,
-                    config=gtypes.EmbedContentConfig(
-                        output_dimensionality=self.dims, task_type=task_type
-                    ),
-                )
+                response = await send() if dispatch is None else await dispatch(send)
                 return [list(e.values) for e in response.embeddings]
             except Exception as exc:
                 last_exc = exc
@@ -115,11 +122,17 @@ class GeminiEmbedder:
         raise ProviderError(f"gemini embedding failed: {last_exc}") from last_exc
 
     async def embed(
-        self, texts: list[str], task: Literal["query", "document"] = "document"
+        self,
+        texts: list[str],
+        task: Literal["query", "document"] = "document",
+        *,
+        dispatch: EmbedDispatch | None = None,
     ) -> list[list[float]]:
         # batches fly concurrently — a 200-page pdf is four requests, not
         # four round trips. gather preserves the input order, so callers
         # can still zip results against their parts
         batches = [texts[start : start + _BATCH] for start in range(0, len(texts), _BATCH)]
-        results = await asyncio.gather(*(self._embed_batch(batch, task) for batch in batches))
+        results = await asyncio.gather(
+            *(self._embed_batch(batch, task, dispatch) for batch in batches)
+        )
         return [vector for batch in results for vector in batch]

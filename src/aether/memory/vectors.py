@@ -200,6 +200,17 @@ class VectorMemory:
         """Ask the loop's backfill pass to run now (boot and failed indexes)."""
         self._backfill_wake.set()
 
+    def clear_cache(self) -> None:
+        self._cache_ids.clear()
+        self._cache_events.clear()
+        self._cache_vectors.clear()
+        self._cache_id_set.clear()
+        self._cache_matrix = None
+        self._cache_norms = None
+        self._cache_loaded = False
+        self._cache_watermark = 0
+        self._cache_dims = 0
+
     async def wait_backfill(self, timeout: float) -> None:
         """Sleep until a retry is needed or the fallback interval passes."""
         with contextlib.suppress(TimeoutError):
@@ -693,7 +704,9 @@ class VectorMemory:
         try:
             vectors = await self._embedder.embed([query], task="query")
         except Exception:
-            log.warning("query embedding failed — no semantic recall this turn", exc_info=True)
+            log.warning(
+                "query embedding failed — no semantic recall this turn", exc_info=not self._scoped
+            )
             return None
         return vectors[0] if vectors else None
 

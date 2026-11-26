@@ -11,7 +11,24 @@ from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Settings(BaseSettings):
+class BootstrapSettings(BaseSettings):
+    """Only the infrastructure inputs needed before scoped work is admitted."""
+
+    model_config = SettingsConfigDict(extra="ignore", populate_by_name=True)
+
+    database_url: str = ""
+    vault_request_signing_key: str = Field(
+        default="", validation_alias="AETHER_VAULT_REQUEST_SIGNING_KEY", repr=False
+    )
+    vault_pending_wait_seconds: int = Field(
+        default=15, ge=0, le=30, validation_alias="AETHER_VAULT_PENDING_WAIT_SECONDS"
+    )
+    vault_ingress_quota_bytes: int = Field(
+        default=64 * 1024 * 1024, gt=0, validation_alias="AETHER_VAULT_INGRESS_QUOTA_BYTES"
+    )
+
+
+class Settings(BootstrapSettings):
     """Secrets, loaded from the environment (and an optional .env file).
 
     Aether-specific secrets carry the AETHER_ prefix; everything shared
@@ -49,15 +66,8 @@ class Settings(BaseSettings):
         default="", validation_alias="AETHER_TOKEN_ENCRYPTION_KEY_PREVIOUS_ID"
     )
     api_token: str = Field(default="", validation_alias="AETHER_TOKEN")
-    vault_request_signing_key: str = Field(
-        default="", validation_alias="AETHER_VAULT_REQUEST_SIGNING_KEY", repr=False
-    )
-    vault_pending_wait_seconds: int = Field(
-        default=15, ge=0, le=30, validation_alias="AETHER_VAULT_PENDING_WAIT_SECONDS"
-    )
     dev_ephemeral_key: bool = Field(default=False, validation_alias="AETHER_DEV_EPHEMERAL_KEY")
 
-    database_url: str = ""
     port: int = 8000
 
     # LLM provider credentials
