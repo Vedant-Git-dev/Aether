@@ -99,6 +99,7 @@ from ..restart import pending as restart_pending
 from ..scheduler.jobs import ScheduledAction, Scheduler
 from ..secret_env import EnvResolver
 from ..secret_store import SecretStore
+from ..vault.egress import require_unscoped
 from ..workspace import SecretRejected, WorkspaceWriteError
 from .apps_wizard import AppsWizard
 from .composer import compose_answer, deterministic_compose, unresolved
@@ -460,6 +461,7 @@ class SurfaceFanout:
         and test doubles that never send files see no new kwarg."""
         if not is_deliverable(text):
             return {}
+        require_unscoped()
         refs: dict[str, str] = {}
         landed: list[str] = []
         media = {"attachment": attachment} if attachment is not None else {}

@@ -20,6 +20,7 @@ from typing import Any
 from ..config import MCPServerConfig, PollTool, is_legacy_composio_server
 from ..llm.types import WireSpec, with_plain_param
 from ..secret_env import EnvResolver
+from ..vault.egress import require_unscoped
 from .base import ConnectorUnavailableError, UnknownToolError
 
 log = logging.getLogger("aether.connectors.mcp")
@@ -255,6 +256,7 @@ class MCPServerConnection:
         return specs
 
     async def call(self, tool: str, args: dict[str, Any]) -> str:
+        require_unscoped()
         if self._stopping or self._task is None:
             raise ConnectorUnavailableError(f"mcp server {self.name} is not running")
         if not await self.wait_ready():

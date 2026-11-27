@@ -30,7 +30,7 @@ _TABLES = (
     "alert_notifications, summaries, "
     "focus, forgotten_events, historical_lookup_requirements, "
     "conclusions, deliveries, held_notes, workspace_files, inbound_messages, "
-    "vault_ingress_part, vault_ingress_queue, vault_ingress_receipt, "
+    "vault_ingress_part, vault_ingress_queue, vault_ingress_notice, vault_ingress_receipt, "
     "vault_manifest, vault_aead_budget, vault_state, "
     "vault_ticket, vault_challenge, vault_session, vault_migration_journal"
 )

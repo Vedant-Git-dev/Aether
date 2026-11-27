@@ -15,12 +15,12 @@ from __future__ import annotations
 import asyncio
 import math
 import struct
-from collections.abc import Awaitable, Callable
 from typing import Literal, Protocol, runtime_checkable
 
 from google import genai
 from google.genai import types as gtypes
 
+from ..vault.egress import require_unscoped
 from .base import ProviderError
 
 # embed_content takes a list, but one giant request is a single 429 away
@@ -28,8 +28,6 @@ from .base import ProviderError
 _BATCH = 50
 # gemini-embedding-001 is Matryoshka: 3072 by default, 768 recommended
 _DEFAULT_DIMS = 768
-EmbedRequest = Callable[[], Awaitable[gtypes.EmbedContentResponse]]
-EmbedDispatch = Callable[[EmbedRequest], Awaitable[gtypes.EmbedContentResponse]]
 
 
 @runtime_checkable
@@ -92,7 +90,7 @@ class GeminiEmbedder:
         return cls(genai.Client(api_key=api_key), model)
 
     async def _embed_batch(
-        self, texts: list[str], task: Literal["query", "document"], dispatch: EmbedDispatch | None
+        self, texts: list[str], task: Literal["query", "document"]
     ) -> list[list[float]]:
         # genai 2.x takes task_type as a plain string
         task_type = "RETRIEVAL_QUERY" if task == "query" else "RETRIEVAL_DOCUMENT"
@@ -111,7 +109,7 @@ class GeminiEmbedder:
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
-                response = await send() if dispatch is None else await dispatch(send)
+                response = await send()
                 return [list(e.values) for e in response.embeddings]
             except Exception as exc:
                 last_exc = exc
@@ -125,14 +123,11 @@ class GeminiEmbedder:
         self,
         texts: list[str],
         task: Literal["query", "document"] = "document",
-        *,
-        dispatch: EmbedDispatch | None = None,
     ) -> list[list[float]]:
+        require_unscoped()
         # batches fly concurrently — a 200-page pdf is four requests, not
         # four round trips. gather preserves the input order, so callers
         # can still zip results against their parts
         batches = [texts[start : start + _BATCH] for start in range(0, len(texts), _BATCH)]
-        results = await asyncio.gather(
-            *(self._embed_batch(batch, task, dispatch) for batch in batches)
-        )
+        results = await asyncio.gather(*(self._embed_batch(batch, task) for batch in batches))
         return [vector for batch in results for vector in batch]

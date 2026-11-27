@@ -305,6 +305,9 @@ PLAINTEXT_ALLOWLIST: dict[str, frozenset[str]] = {
     "vault_ingress_receipt": frozenset(
         {"vault_id", "receipt_token", "queue_id", "arrival", "stored_bytes", "state"}
     ),
+    "vault_ingress_notice": frozenset(
+        {"vault_id", "epoch", "conversation_token", "queue_id", "state"}
+    ),
     "vault_migration_journal": frozenset(
         {
             "job_id",

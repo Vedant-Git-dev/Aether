@@ -6,6 +6,7 @@ from typing import Any
 
 from anthropic import AsyncAnthropic
 
+from ..vault.egress import require_unscoped
 from .base import ProviderError
 from .types import (
     AudioBlock,
@@ -216,6 +217,7 @@ class AnthropicProvider:
         messages: list[Message],
         tools: list[WireSpec],
     ) -> Turn:
+        require_unscoped()
         kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,

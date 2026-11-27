@@ -96,12 +96,13 @@ def is_allowlisted(contacts: ContactsConfig, app: str, sender: Sender | None) ->
     rules = list(contacts.allowlist)
     if section is not None:
         rules += section.allowlist
-    sender_norm = normalize_handle(sender.platform, sender.handle)
-    sender_bare = _bare(sender.handle)
+    handles = (sender.handle, *sender.aliases)
+    normalized = {normalize_handle(sender.platform, handle) for handle in handles}
+    bare = {_bare(handle) for handle in handles} - {""}
     for rule in rules:
-        if normalize_handle(rule.platform, rule.handle) == sender_norm:
+        if normalize_handle(rule.platform, rule.handle) in normalized:
             return True
-        if rule.platform == "*" and sender_bare and _bare(rule.handle) == sender_bare:
+        if rule.platform == "*" and _bare(rule.handle) in bare:
             return True
     return False
 

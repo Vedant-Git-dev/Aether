@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from hashlib import sha256
+from hmac import digest
 
 import asyncpg
 
@@ -33,6 +35,15 @@ STORAGE_ERRORS = (
     TimeoutError,
 )
 _CHECK_INTERVAL = 1.0
+log = logging.getLogger("aether.vault.runtime")
+
+
+async def _stop_workers(workers: tuple[asyncio.Task, ...]) -> None:
+    for worker in workers:
+        worker.cancel()
+    for result in await asyncio.gather(*workers, return_exceptions=True):
+        if isinstance(result, Exception):
+            log.warning("A provider capture worker stopped unexpectedly.")
 
 
 def verified_manifest(row: asyncpg.Record) -> dict:
@@ -75,12 +86,20 @@ def _installation(row: asyncpg.Record) -> Installation:
 
 class VaultRuntime:
     def __init__(
-        self, store: VaultStore, signer: RequestSigner | None, *, pending_wait: float = 0
+        self,
+        store: VaultStore,
+        signer: RequestSigner | None,
+        *,
+        pending_wait: float = 0,
+        leader_workers: tuple[Callable[[bytes], Awaitable[None]], ...] = (),
+        ingress_identity_key: bytes | None = None,
     ) -> None:
         self.store = store
         self.pending_wait = pending_wait
         self.pending_poll = asyncio.Lock()
         self._signer = signer
+        self._leader_workers = leader_workers
+        self._ingress_identity_key = ingress_identity_key
         self._service: LeaseService | None = None
         self._retiring: asyncio.Task | None = None
         self._worker: asyncio.Task | None = None
@@ -238,22 +257,50 @@ class VaultRuntime:
             try:
                 async with self.store.serving_boot() as boot:
                     self._leader = boot
+                    workers = ()
+                    capture_vault = None
                     try:
                         while not boot.lost.is_set():
                             async with self._updates:
-                                await self._refresh(boot)
+                                row = await self._refresh(boot)
+                            current = self._capture_vault(row)
+                            if current != capture_vault:
+                                await _stop_workers(workers)
+                                workers = self._start_capture(current, boot)
+                                capture_vault = current
                             try:
                                 await asyncio.wait_for(boot.lost.wait(), _CHECK_INTERVAL)
                             except TimeoutError:
                                 continue
                     finally:
                         self._leader = None
-                        await self._retire()
+                        self._start_retirement()
+                        try:
+                            await _stop_workers(workers)
+                        finally:
+                            await self._retire()
             except (VaultProtocolError, *STORAGE_ERRORS):
                 pass
             await asyncio.sleep(_CHECK_INTERVAL)
 
-    async def _refresh(self, boot: ServingBoot) -> None:
+    def _capture_vault(self, row: asyncpg.Record | None) -> bytes | None:
+        if not self._leader_workers or row is None or row["state"] not in {"locked", "available"}:
+            return None
+        signer = self._signer
+        assert signer is not None
+        pins = loads_strict(row["pins"])
+        if isinstance(pins, dict) and pins.get("server_kid") == signer.kid:
+            return row["vault_id"]
+        return None
+
+    def _start_capture(self, vault_id: bytes | None, boot: ServingBoot) -> tuple[asyncio.Task, ...]:
+        if vault_id is None or self._stopping or boot.lost.is_set():
+            return ()
+        assert self._ingress_identity_key is not None
+        key = digest(self._ingress_identity_key, b"aether/ingress/v1:" + vault_id, "sha256")
+        return tuple(asyncio.create_task(worker(key)) for worker in self._leader_workers)
+
+    async def _refresh(self, boot: ServingBoot) -> asyncpg.Record | None:
         await boot.check()
         row = await self.store.installation()
         service = self._service
@@ -278,6 +325,7 @@ class VaultRuntime:
             assert signer is not None
             with suppress(VaultLocked, ValueError, RecursionError):
                 self._service = LeaseService(self.store, boot, _installation(row), signer)
+        return row
 
     def _start_retirement(self) -> None:
         service, self._service = self._service, None

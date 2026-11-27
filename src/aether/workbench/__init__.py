@@ -21,6 +21,7 @@ The ladder, once through:
 
 from __future__ import annotations
 
+from ..vault.egress import require_unscoped
 from .base import (
     BACKGROUND,
     INTERACTIVE,
@@ -83,6 +84,7 @@ async def run(spec: JobSpec, providers: list[Workbench]) -> JobResult:
     """Route and run, falling through on dispatch failures. Raises
     WorkbenchError when no provider can take the job, or when every one
     that could failed to dispatch — the caller queues in both cases."""
+    require_unscoped()
     last: WorkbenchError | None = None
     for wb in providers:
         if not await wb.available():

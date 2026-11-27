@@ -9,6 +9,7 @@ from sys import exc_info
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from .egress import private_work
 from .errors import VaultProtocolError
 from .scope import KeyScope, VaultClosed, VaultError
 
@@ -41,7 +42,8 @@ class LeaseWork:
             async with self._children:
                 renewal = asyncio.create_task(self._renew_while_progressing())
                 try:
-                    yield self
+                    with private_work():
+                        yield self
                     while self._jobs:
                         await asyncio.wait(tuple(self._jobs))
                 except BaseException:

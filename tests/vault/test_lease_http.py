@@ -590,3 +590,72 @@ async def test_lock_joins_finalizer_already_running_when_owner_is_cancelled(pair
             await asyncio.gather(
                 *(task for task in (owner, control) if task is not None), return_exceptions=True
             )
+
+
+@pytest.mark.parametrize("lose_connection", [False, True])
+async def test_provider_pollers_follow_leadership_while_locked(
+    db, paired, monkeypatch, lose_connection
+):
+    from aether import main
+    from aether.vault import runtime as runtime_module
+
+    _, _, phone = paired
+    await db.execute("UPDATE vault_state SET state = 'locked' WHERE vault_id = $1", phone.vault_id)
+    monkeypatch.setattr(runtime_module, "_CHECK_INTERVAL", 0.05)
+    calls = []
+    active = set()
+    identity_keys = []
+    started = asyncio.Event()
+    settled = asyncio.Event()
+    promoted = asyncio.Event()
+
+    async def transport(ingress, token, owners, identity_key):
+        assert not active
+        assert owners == frozenset({42})
+        identity_keys.append(identity_key)
+        active.add(token)
+        calls.append(("start", token))
+        (started if token == "first" else promoted).set()
+        try:
+            await asyncio.Future()
+        finally:
+            active.remove(token)
+            calls.append(("stop", token))
+            if token == "first":
+                settled.set()
+
+    def app_for(token):
+        return main.create_app(
+            settings=Settings.without_env_file(
+                database_url=os.environ["AETHER_TEST_DATABASE_URL"],
+                vault_request_signing_key=schema.b64u_encode(SERVER_PRIVATE_RAW),
+                vault_ingress_identity_key=schema.b64u_encode(b"i" * 32),
+                telegram_bot_token=token,
+                telegram_ingress_owners=frozenset({42}),
+            )
+        )
+
+    monkeypatch.setattr(main, "watch_telegram", transport)
+    first, second = app_for("first"), app_for("second")
+    from contextlib import AsyncExitStack
+
+    async with AsyncExitStack() as first_life:
+        await first_life.enter_async_context(first.router.lifespan_context(first))
+        await asyncio.wait_for(started.wait(), 3)
+        async with second.router.lifespan_context(second):
+            await asyncio.sleep(0.15)
+            assert calls == [("start", "first")]
+            if lose_connection:
+                leader = first.state.vault_runtime._leader
+                pid = leader._connection.get_server_pid()
+                assert await db.fetchval("SELECT pg_terminate_backend($1)", pid)
+                await asyncio.wait_for(settled.wait(), 3)
+                await first_life.aclose()
+            else:
+                await first_life.aclose()
+            await asyncio.wait_for(promoted.wait(), 3)
+            assert calls == [("start", "first"), ("stop", "first"), ("start", "second")]
+    assert not active
+    assert len(identity_keys) == 2
+    assert identity_keys[0] == identity_keys[1]
+    assert len(identity_keys[0]) == 32

@@ -364,13 +364,15 @@ async def test_production_drain_quarantines_invalid_source_and_advances(db, pair
     config.write_text("{}")
     ingress = Ingress(db, quota_bytes=65536, apply=sealed_destination(str(config)))
 
-    async def accept(source, token):
+    async def accept(source, token, source_id="numbered-event"):
         async def authenticate():
             return TransportDelivery(
                 token * 32,
                 {
                     "source": source,
-                    "source_id": token.hex(),
+                    "source_id": source_id,
+                    "chat_ref": "synthetic-chat",
+                    "message_id": "17",
                     "sender": {"platform": "telegram", "handle": "synthetic-sender"},
                 },
                 0,
@@ -382,32 +384,171 @@ async def test_production_drain_quarantines_invalid_source_and_advances(db, pair
         return await ingress.accept(body(), authenticate)
 
     bad = await accept("mode", b"a")
-    good = await accept("telegram", b"b")
+    await accept("telegram", b"b")
+    await accept("telegram", b"c")
     async with VaultRuntime(store, signer) as runtime, http(runtime) as client:
         service = await until(runtime.serving)
 
-        async def drain(queue_id):
-            async def work():
-                async with service.work(
-                    operation="drain",
-                    use_case="ingress.drain",
-                    refs=[("ingress", 1), ("memory", 1), ("operations", 1)],
-                    writes={("memory", 1): 2},
-                    ttl=10,
-                ) as task:
-                    return await ingress.drain(task, queue_id)
-
-            running = asyncio.create_task(work())
+        async def drain():
+            running = asyncio.create_task(ingress.drain_pending(service))
             proof = await pending(client)
             issued = phone.issue(proof, now=int(time.time())).envelope
             assert (await client.post(GRANT, json=issued)).status_code == 204
             return await running
 
-        assert await drain(bad) == "quarantined"
-        assert await drain(good) == "drained"
+        assert await drain() == "quarantined"
+        assert await drain() == "drained"
+        assert await drain() == "drained"
 
     assert await db.fetchval("SELECT count(*) FROM events") == 1
+    assert await db.fetchval("SELECT count(*) FROM inbound_messages") == 1
     ciphertext = await db.fetchval(
         "SELECT ciphertext_enc FROM vault_ingress_part WHERE queue_id = $1", bad
     )
     assert ciphertext and b"synthetic-sender" not in ciphertext
+
+
+@pytest.mark.parametrize("source", ["telegram", "discord"])
+async def test_provider_backlog_survives_an_interrupted_drain(
+    db, paired, tmp_path, monkeypatch, source
+):
+    from hashlib import sha256
+    from types import SimpleNamespace
+
+    from aether.config import MediaConfig
+    from aether.media.store import MediaStore
+    from aether.vault.discord_ingress import capture_history
+    from aether.vault.ingress import sealed_destination
+    from aether.vault.telegram_ingress import capture_page
+
+    store, signer, phone = paired
+    config = tmp_path / "capture.yaml"
+    config.write_text(
+        f"contacts:\n  mode: enforce\n  {source}:\n    allowlist:\n"
+        f'      - {{platform: {source}, handle: "existing_owner"}}\n'
+    )
+    owner = SimpleNamespace(
+        id=42, bot=False, is_bot=False, username="existing_owner", name="existing_owner"
+    )
+    channel = SimpleNamespace(id=42, type="private")
+    ledger = {}
+    expired = {12}
+
+    def message(number):
+        data = ledger[number]
+
+        async def download():
+            if number in expired:
+                raise OSError("expired attachment URL")
+            return data
+
+        async def get_file():
+            return SimpleNamespace(download_as_bytearray=download)
+
+        attachment = SimpleNamespace(filename="note", size=len(data), read=download)
+        document = SimpleNamespace(file_name="note", file_size=len(data), get_file=get_file)
+        body = SimpleNamespace(
+            id=number,
+            message_id=number,
+            text=f"Numbered event {number}",
+            content=f"Numbered event {number}",
+            date=None,
+            created_at=None,
+            chat=channel,
+            author=owner,
+            attachments=[attachment],
+            document=document,
+            effective_attachment=document,
+            api_kwargs={},
+        )
+        return body
+
+    async def updates(*, offset, **kwargs):
+        return [
+            SimpleNamespace(update_id=number, message=message(number), effective_user=owner)
+            for number in sorted(ledger)
+            if offset is None or number >= offset
+        ]
+
+    async def history(*, limit, after=None, oldest_first=False):
+        for number in sorted(ledger, reverse=not oldest_first):
+            if after is None or number > after.id:
+                yield message(number)
+
+    channel.history = history
+    bot = SimpleNamespace(id=100, get_updates=updates)
+
+    def new_ingress():
+        return Ingress(db, quota_bytes=65536, apply=sealed_destination(str(config)))
+
+    async def capture(ingress, checkpoint=None):
+        if source == "telegram":
+            return await capture_page(bot, ingress, frozenset({owner.id}), b"fixture", checkpoint)
+        return await capture_history(channel, ingress, owner.id, b"fixture", checkpoint)
+
+    # Both senders have a backlog before any host worker or phone grant is live.
+    ledger.update({number: f"attachment {number}".encode() for number in (11, 12)})
+    with pytest.raises(OSError, match="expired attachment"):
+        await capture(new_ingress())
+    assert await db.fetchval("SELECT count(*) FROM vault_ingress_receipt") == 1
+
+    ledger[13] = b"attachment 13"
+    expired.clear()
+    ingress = new_ingress()
+    checkpoint = await capture(ingress)
+    assert await db.fetchval("SELECT count(*) FROM vault_ingress_receipt") == 3
+    await capture(new_ingress())
+    await capture(ingress, checkpoint)
+
+    async def crash(*args, **kwargs):
+        raise RuntimeError("interrupted drain")
+
+    async with VaultRuntime(store, signer) as runtime, http(runtime) as client:
+        service = await until(runtime.serving)
+
+        async def granted(coro):
+            running = asyncio.create_task(coro)
+            try:
+                proof = await pending(client)
+                issued = phone.issue(proof, now=int(time.time())).envelope
+                assert (await client.post(GRANT, json=issued)).status_code == 204
+                return await running
+            finally:
+                if not running.done():
+                    running.cancel()
+                await asyncio.gather(running, return_exceptions=True)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(ingress._store, "settle_ingress", crash)
+            with pytest.RaisesGroup(pytest.RaisesExc(RuntimeError, match="interrupted drain")):
+                await granted(ingress.drain_pending(service))
+        assert await db.fetchval("SELECT count(*) FROM events") == 0
+        assert await db.fetchval("SELECT count(*) FROM media_blobs") == 0
+
+        restarted = new_ingress()
+        for _ in ledger:
+            assert await granted(restarted.drain_pending(service)) == "drained"
+        assert await restarted.drain_pending(service) == "absent"
+
+        async def read_effects():
+            async with service.work(
+                operation="drain",
+                use_case="ingress.drain",
+                refs=[("ingress", 1), ("memory", 1), ("media", 1)],
+                ttl=10,
+            ) as work:
+                events = EventStore.scoped(db, work.scope, None, ContactsConfig())
+                media = MediaStore.scoped(db, work.scope, MediaConfig())
+                return [
+                    (
+                        event.payload["source_id"],
+                        sha256((await media.get(event.payload["media_id"])).data).digest(),
+                    )
+                    for event in await events.list_since(0)
+                ]
+
+        prefix = "100:" if source == "telegram" else "discord:42:"
+        assert await granted(read_effects()) == [
+            (f"{prefix}{number}", sha256(data).digest()) for number, data in ledger.items()
+        ]
+    assert await db.fetchval("SELECT count(*) FROM inbound_messages") == len(ledger)

@@ -384,6 +384,12 @@ class VaultStore:
             yield conn
 
     @staticmethod
+    async def lock_ingress_installation(conn: asyncpg.Connection, vault: bytes) -> bool:
+        return bool(
+            await conn.fetchval("SELECT 1 FROM vault_state WHERE vault_id = $1 FOR SHARE", vault)
+        )
+
+    @staticmethod
     async def ingress_installation(conn: asyncpg.Connection) -> asyncpg.Record | None:
         return await conn.fetchrow(
             "SELECT * FROM vault_state WHERE state IN ('locked', 'available') LIMIT 1"
@@ -408,6 +414,15 @@ class VaultStore:
             "SELECT queue_id FROM vault_ingress_receipt WHERE vault_id = $1 AND receipt_token = $2",
             vault,
             token,
+        )
+
+    async def has_ingress_receipt(self, token: bytes) -> bool:
+        return bool(
+            await self._pool.fetchval(
+                "SELECT 1 FROM vault_ingress_receipt r JOIN vault_state v USING (vault_id)"
+                " WHERE r.receipt_token = $1 AND v.state IN ('locked', 'available')",
+                token,
+            )
         )
 
     @staticmethod
@@ -468,6 +483,46 @@ class VaultStore:
             " ORDER BY r.arrival LIMIT 1 FOR UPDATE OF r",
             vault,
         )
+
+    async def first_ingress(self, vault: bytes) -> asyncpg.Record | None:
+        return await self._pool.fetchrow(
+            "SELECT r.queue_id, q.ingress_ver,"
+            " EXISTS(SELECT 1 FROM vault_ingress_part p WHERE p.queue_id = r.queue_id"
+            " AND p.kind = 'chunk') AS has_media"
+            " FROM vault_ingress_receipt r LEFT JOIN vault_ingress_queue q USING (queue_id)"
+            " WHERE r.vault_id = $1 AND r.state = 'queued' ORDER BY r.arrival LIMIT 1",
+            vault,
+        )
+
+    async def claim_ingress_notice(self, receipt: bytes, conversation: bytes):
+        return await self._pool.fetchrow(
+            "INSERT INTO vault_ingress_notice (vault_id, epoch, conversation_token, queue_id, state)"
+            " SELECT v.vault_id, v.epoch, $2, r.queue_id, 'unconfirmed'"
+            " FROM vault_ingress_receipt r JOIN vault_state v USING (vault_id)"
+            " WHERE r.queue_id = $1 AND v.state = 'locked'"
+            " ON CONFLICT DO NOTHING RETURNING vault_id, epoch",
+            receipt,
+            conversation,
+        )
+
+    @asynccontextmanager
+    async def sending_ingress_notice(self, vault: bytes, epoch: int, conversation: bytes):
+        async with self._pool.acquire() as conn, conn.transaction():
+            admitted = await conn.fetchval(
+                "SELECT 1 FROM vault_state"
+                " WHERE vault_id = $1 AND epoch = $2 AND state = 'locked' FOR SHARE",
+                vault,
+                epoch,
+            )
+            yield bool(admitted)
+            if admitted:
+                await conn.execute(
+                    "UPDATE vault_ingress_notice SET state = 'sent'"
+                    " WHERE vault_id = $1 AND epoch = $2 AND conversation_token = $3",
+                    vault,
+                    epoch,
+                    conversation,
+                )
 
     @staticmethod
     async def ingress_pending(conn: asyncpg.Connection, vault: bytes, queue: bytes) -> bool:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -21,7 +22,8 @@ from ..authz.policy import Policy
 from ..config import AppConfig, Settings, load_config
 from ..config_store import ConfigManager, ConfigOverrides
 from ..connectors.registry import ToolRegistry
-from ..llm.embeddings import EmbedRequest, GeminiEmbedder
+from ..llm.base import ProviderError as ModelProviderError
+from ..llm.embeddings import GeminiEmbedder
 from ..llm.model_list import is_sentinel
 from ..media.store import MediaStore
 from ..memory.commitments import Commitments
@@ -53,12 +55,14 @@ from .store import VaultStore
 _TTL = 30
 _SCHEDULE_INTERVAL = 20
 _REFRESH_INTERVAL = 60
-_LOCAL_SCHEDULE_TOOLS = {
-    "workspace.remember",
-    "workspace.rewrite",
-    "workspace.promote",
-    "workspace.finish_setup",
-}
+_LOCAL_SCHEDULE_TOOLS = frozenset(
+    {
+        "workspace.remember",
+        "workspace.rewrite",
+        "workspace.promote",
+        "workspace.finish_setup",
+    }
+)
 log = logging.getLogger("aether.vault.work")
 
 
@@ -165,7 +169,7 @@ async def run_schedule(service: LeaseService, action_id: int, config_path: str |
                 traces = Traces.scoped(pool, task.scope, ver=operation_ver)
                 surfaces = SurfaceFanout()
                 capture = CaptureRequestBox()
-                tools = ToolRegistry()
+                tools = ToolRegistry(local_tools=_LOCAL_SCHEDULE_TOOLS)
                 register_native_tools(
                     registry=tools,
                     events=None,
@@ -300,18 +304,37 @@ async def watch_provider_refresh(runtime: VaultRuntime, pool) -> None:
             log.warning("a provider refresh remains pending")
 
 
-class _SearchEmbedder:
-    """Use the configured Gemini processor under a separate dispatch lease."""
+def _embedding_http() -> httpx.AsyncClient:
+    return httpx.AsyncClient(follow_redirects=False, trust_env=False, timeout=10.0)
 
-    def __init__(self, service: LeaseService, pool, model: str, panel_token_hash: bytes) -> None:
+
+class _SearchEmbedder:
+    """The configured processor can receive the admitted panel query only."""
+
+    def __init__(
+        self, service: LeaseService, pool, model: str, panel_token_hash: bytes, query: str
+    ) -> None:
+        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]*", model):
+            raise VaultProtocolError("bad_scope")
         self.model = model
         self.dims = GeminiEmbedder.dims
         self._service = service
         self._pool = pool
         self._panel_token_hash = panel_token_hash
+        self._query = query
+        self._url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:embedContent"
+        self._body = httpx.Request(
+            "POST",
+            self._url,
+            json={
+                "content": {"parts": [{"text": query}]},
+                "taskType": "RETRIEVAL_QUERY",
+                "outputDimensionality": self.dims,
+            },
+        ).content
 
     async def embed(self, texts, task="query"):
-        if task != "query" or len(texts) != 1:
+        if task != "query" or texts != [self._query]:
             raise VaultProtocolError("bad_scope")
         versions = active_refs(self._service, ("credentials",))
         async with self._service.work(
@@ -324,16 +347,24 @@ class _SearchEmbedder:
             key = await dispatch.step(lambda: store.get("GEMINI_API_KEY"))
             if not key:
                 return []
-            embedder = GeminiEmbedder.build(key, self.model)
-            dispatch.resources.callback(embedder.client.close)
-            dispatch.resources.push_async_callback(embedder.client.aio.aclose)
-
-            async def send_attempt(send: EmbedRequest):
+            client = await dispatch.resources.enter_async_context(_embedding_http())
+            for attempt in range(3):
                 async with dispatch.transaction() as conn:
                     await _require_delivery_session(conn, self._panel_token_hash, self._service)
-                    return await send()
-
-            return await embedder.embed(texts, task="query", dispatch=send_attempt)
+                    response = await client.send(
+                        httpx.Request(
+                            "POST",
+                            self._url,
+                            content=self._body,
+                            headers={"Content-Type": "application/json", "x-goog-api-key": key},
+                        ),
+                        follow_redirects=False,
+                    )
+                if response.is_success:
+                    return [response.json()["embedding"]["values"]]
+                if response.status_code != 429 or attempt == 2:
+                    raise ModelProviderError("embedding request failed")
+                await asyncio.sleep(1)
 
 
 def _require_panel_binding(session, service: LeaseService) -> None:
@@ -376,7 +407,7 @@ async def memory_search(
         embedder = None
         if model and not is_sentinel(model) and (not separator or provider == "gemini"):
             embedder = _SearchEmbedder(
-                service, pool, specific if separator else model, panel_token_hash
+                service, pool, specific if separator else model, panel_token_hash, query.strip()
             )
         vectors = VectorMemory.scoped(pool, index_task.scope, embedder, ver=ver)
         index_task.finalizers.callback(index.clear)
@@ -423,8 +454,9 @@ class PrivateRoutes:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "websocket" and scope["path"] == "/ws":
-            await receive()
-            await send({"type": "websocket.close", "code": 1008})
+            from .panel_ingress import panel_socket
+
+            await panel_socket(scope, receive, send)
             return
         if scope["type"] != "http":
             await self.app(scope, receive, send)
@@ -457,6 +489,12 @@ class PrivateRoutes:
                 raise VaultProtocolError("unauthorized")
             if session["state"] != "available":
                 raise VaultProtocolError("locked")
+            service = runtime.serving()
+            origins = request.headers.getlist("origin")
+            if origins and origins != [service.installation.origin]:
+                raise VaultProtocolError("unauthorized")
+            _require_panel_binding(session, service)
+
             read = _ROUTES.get(request.url.path) if request.method == "GET" else None
             if request.method == "POST" and request.url.path == "/api/memory/search":
                 read = _MEMORY_SEARCH
@@ -464,11 +502,6 @@ class PrivateRoutes:
                 read = _MEDIA
             if read is None:
                 raise VaultProtocolError("category_unavailable")
-            service = runtime.serving()
-            origins = request.headers.getlist("origin")
-            if origins and origins != [service.installation.origin]:
-                raise VaultProtocolError("unauthorized")
-            _require_panel_binding(session, service)
 
             async def serve() -> None:
                 await self._read(request, service, read, token, receive, track)
@@ -489,7 +522,9 @@ class PrivateRoutes:
         except STORAGE_ERRORS:
             if sent:
                 raise
-            await JSONResponse({"code": "unavailable"}, status_code=503)(scope, receive, send)
+            await JSONResponse(
+                {"code": "unavailable"}, status_code=503, headers={"Cache-Control": "no-store"}
+            )(scope, receive, send)
 
     async def _read(
         self,

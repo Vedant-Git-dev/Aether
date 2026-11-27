@@ -26,6 +26,13 @@ class BootstrapSettings(BaseSettings):
     vault_ingress_quota_bytes: int = Field(
         default=64 * 1024 * 1024, gt=0, validation_alias="AETHER_VAULT_INGRESS_QUOTA_BYTES"
     )
+    vault_ingress_identity_key: str = Field(
+        default="", validation_alias="AETHER_VAULT_INGRESS_IDENTITY_KEY", repr=False
+    )
+    telegram_bot_token: str = Field(default="", repr=False)
+    telegram_ingress_owners: frozenset[int] = Field(default_factory=frozenset, repr=False)
+    discord_bot_token: str = Field(default="", repr=False)
+    discord_ingress_owners: frozenset[int] = Field(default_factory=frozenset, repr=False)
 
 
 class Settings(BootstrapSettings):
@@ -79,10 +86,6 @@ class Settings(BootstrapSettings):
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     groq_api_key: str = ""
     groq_base_url: str = "https://api.groq.com/openai/v1"
-
-    # Messaging connectors
-    telegram_bot_token: str = ""
-    discord_bot_token: str = ""
 
     # this deployment's public address (https://your-app.onrender.com) —
     # where externally-hosted flows would call back; reserved for a future

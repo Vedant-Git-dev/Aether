@@ -35,6 +35,7 @@ import modal
 from modal.exception import Error as ModalError
 from modal.exception import ExecTimeoutError, SandboxTimeoutError
 
+from ..vault.egress import require_unscoped
 from .base import JobResult, JobSpec, KeyResolver, WorkbenchError, clip, validate_names
 
 log = logging.getLogger("aether.workbench.modal")
@@ -126,6 +127,7 @@ class ModalWorkbench:
         return True
 
     async def run_job(self, spec: JobSpec) -> JobResult:
+        require_unscoped()
         token_id = await self._resolver.resolve(_TOKEN_ID)
         token_secret = await self._resolver.resolve(_TOKEN_SECRET)
         if not (token_id and token_secret):

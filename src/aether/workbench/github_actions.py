@@ -38,6 +38,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from ..vault.egress import require_unscoped
 from .base import (
     BACKGROUND,
     ORDINARY,
@@ -186,6 +187,7 @@ class GitHubActionsWorkbench:
         return spec.latency_class == BACKGROUND and spec.sensitivity == ORDINARY
 
     async def run_job(self, spec: JobSpec) -> JobResult:
+        require_unscoped()
         token = await self._resolver.resolve(_TOKEN)
         if not token:
             raise WorkbenchError(

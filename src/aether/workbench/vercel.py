@@ -42,6 +42,7 @@ from vercel.sandbox import (
     SandboxTerminalStateError,
 )
 
+from ..vault.egress import require_unscoped
 from .base import JobResult, JobSpec, KeyResolver, WorkbenchError, clip, validate_names
 
 log = logging.getLogger("aether.workbench.vercel")
@@ -122,6 +123,7 @@ class VercelWorkbench:
         return True
 
     async def run_job(self, spec: JobSpec) -> JobResult:
+        require_unscoped()
         token = await self._resolver.resolve(_TOKEN)
         team_id = await self._resolver.resolve(_TEAM_ID)
         project_id = await self._resolver.resolve(_PROJECT_ID)

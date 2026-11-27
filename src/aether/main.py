@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager, suppress
+from functools import partial
 from pathlib import Path
 
 from fastapi import FastAPI, Response
@@ -20,12 +21,16 @@ from .logging_setup import configure_logging
 from .memory.crypto import Cipher, CryptoError, generate_key_b64
 from .memory.db import create_pool, run_migrations
 from .memory.storage import StorageGuardError, enforce_schema
+from .vault.discord_ingress import watch_discord
+from .vault.errors import VaultProtocolError
 from .vault.http import router as vault_router
-from .vault.ingress import Ingress, sealed_destination
+from .vault.ingress import Ingress, sealed_destination, watch_ingress
 from .vault.keyed_work import PrivateRoutes, watch_provider_refresh, watch_schedules
 from .vault.runtime import VaultRuntime
+from .vault.schema import KEY_BYTES, b64u_decode
 from .vault.signing import RequestSigner
 from .vault.store import VaultStore
+from .vault.telegram_ingress import watch_telegram
 
 log = logging.getLogger("aether.main")
 
@@ -74,6 +79,11 @@ def create_app(
             vault_request_signing_key=settings.vault_request_signing_key,
             vault_pending_wait_seconds=settings.vault_pending_wait_seconds,
             vault_ingress_quota_bytes=settings.vault_ingress_quota_bytes,
+            vault_ingress_identity_key=settings.vault_ingress_identity_key,
+            telegram_bot_token=settings.telegram_bot_token,
+            telegram_ingress_owners=settings.telegram_ingress_owners,
+            discord_bot_token=settings.discord_bot_token,
+            discord_ingress_owners=settings.discord_ingress_owners,
         )
 
     @asynccontextmanager
@@ -89,31 +99,70 @@ def create_app(
         except ValueError:
             raise StartupError("AETHER_VAULT_REQUEST_SIGNING_KEY is invalid.") from None
 
+        telegram_enabled = bootstrap.telegram_bot_token and bootstrap.telegram_ingress_owners
+        discord_enabled = bootstrap.discord_bot_token and bootstrap.discord_ingress_owners
+        identity_key = None
+        if telegram_enabled or discord_enabled:
+            try:
+                identity_key = b64u_decode(
+                    bootstrap.vault_ingress_identity_key, field="ingress identity", length=KEY_BYTES
+                )
+            except VaultProtocolError:
+                raise StartupError(
+                    "AETHER_VAULT_INGRESS_IDENTITY_KEY must be 32 random bytes in unpadded base64url"
+                    " when Telegram or Discord ingress is enabled."
+                ) from None
+
         pool = await create_pool(bootstrap.database_url, breaker=CircuitBreaker())
         try:
             await run_migrations(pool)
             await enforce_schema(pool, "enforce")
+            ingress = Ingress(
+                pool,
+                quota_bytes=bootstrap.vault_ingress_quota_bytes,
+                apply=sealed_destination(config_path),
+            )
+            provider_workers = []
+            if telegram_enabled:
+                provider_workers.append(
+                    partial(
+                        watch_telegram,
+                        ingress,
+                        bootstrap.telegram_bot_token,
+                        bootstrap.telegram_ingress_owners,
+                    )
+                )
+            if discord_enabled:
+                provider_workers.append(
+                    partial(
+                        watch_discord,
+                        ingress,
+                        bootstrap.discord_bot_token,
+                        bootstrap.discord_ingress_owners,
+                    )
+                )
             async with VaultRuntime(
-                VaultStore(pool), signer, pending_wait=bootstrap.vault_pending_wait_seconds
+                VaultStore(pool),
+                signer,
+                pending_wait=bootstrap.vault_pending_wait_seconds,
+                leader_workers=tuple(provider_workers),
+                ingress_identity_key=identity_key,
             ) as runtime:
                 app.state.pool = pool
                 app.state.vault_runtime = runtime
-                app.state.ingress = Ingress(
-                    pool,
-                    quota_bytes=bootstrap.vault_ingress_quota_bytes,
-                    apply=sealed_destination(config_path),
-                )
+                app.state.ingress = ingress
                 schedules = asyncio.create_task(watch_schedules(runtime, pool, config_path))
                 refreshes = asyncio.create_task(watch_provider_refresh(runtime, pool))
+                drain = asyncio.create_task(watch_ingress(runtime, ingress))
+                workers = (schedules, refreshes, drain)
                 try:
                     yield
                 finally:
-                    schedules.cancel()
-                    refreshes.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await schedules
-                    with suppress(asyncio.CancelledError):
-                        await refreshes
+                    for worker in workers:
+                        worker.cancel()
+                    for worker in workers:
+                        with suppress(asyncio.CancelledError):
+                            await worker
         except StorageGuardError as exc:
             raise StartupError(str(exc)) from exc
         finally:
