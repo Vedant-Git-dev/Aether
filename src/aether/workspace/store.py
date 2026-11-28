@@ -440,6 +440,8 @@ class Workspace:
 
     # -- lifecycle --------------------------------------------------------
 
+    SCAFFOLD_WRITES = 2 * (len(_DEFAULTS) + 1)
+
     async def ensure_scaffold(self) -> bool:
         """Write the default files if the workspace is empty. Returns True
         the first time it is created — the caller's cue that first-run
@@ -454,6 +456,9 @@ class Workspace:
         if first_run:
             await self._put("BOOTSTRAP.md", _BOOTSTRAP_DEFAULT)
         return first_run
+
+    async def scaffold_pending(self) -> bool:
+        return not set(_DEFAULTS).issubset(await self._names())
 
     async def import_from_disk(self, root: str | Path) -> int:
         """One-time move of an old file-backed workspace into sealed rows.

@@ -6,9 +6,12 @@ from pathlib import Path
 
 import pytest
 import reference_wire as wire
+from cryptography.hazmat.primitives.asymmetric import ec
 
 from aether.vault import schema
 from aether.vault.errors import ERROR_STATUS, VaultProtocolError
+from aether.vault.policy import policy
+from aether.vault.signing import RequestSigner, verify_es256
 
 VECTORS = Path(__file__).with_name("vectors")
 
@@ -48,6 +51,59 @@ def test_es256_python_vector_rejects_a_changed_body() -> None:
             envelope, wire.ec_public_key(schema.b64u_decode(fixture["public"], field="public"))
         )
     assert caught.value.code == "bad_signature"
+
+
+@pytest.mark.parametrize("name", ["es256_python.json", "kotlin/es256_kotlin.json"])
+def test_server_es256_verifier_accepts_vectors_for_pinned_role_and_type(name) -> None:
+    fixture = load(name)
+    public = schema.b64u_decode(fixture["public"], field="public")
+    envelope = fixture["envelope"]
+    assert verify_es256(envelope, pinned_public=public, expected_type="pair") == fixture["body"]
+    with pytest.raises(VaultProtocolError, match="expected type lease_grant"):
+        verify_es256(envelope, pinned_public=public, expected_type="lease_grant")
+    other = RequestSigner(ec.generate_private_key(ec.SECP256R1()))
+    with pytest.raises(VaultProtocolError, match="^bad_signature$"):
+        verify_es256(envelope, pinned_public=other.public, expected_type="pair")
+    tampered = envelope | {"body": fixture["body"] | {"iat": fixture["body"]["iat"] + 1}}
+    with pytest.raises(VaultProtocolError, match="^bad_signature$"):
+        verify_es256(tampered, pinned_public=public, expected_type="pair")
+
+
+def test_server_signs_a_registered_lease_request(monkeypatch) -> None:
+    signer = RequestSigner(ec.generate_private_key(ec.SECP256R1()))
+    grant = load("hpke_python.json")
+    header = grant["header"]
+    monkeypatch.setitem(schema.USE_CASES, "test.turn", ("turn", frozenset({"memory"})))
+    request = {
+        field: header[field]
+        for field in (
+            "v",
+            "vault",
+            "device",
+            "epoch",
+            "boot",
+            "task",
+            "request",
+            "nonce",
+            "iat",
+            "manifest_digest",
+        )
+    } | {
+        "type": "lease_request",
+        "operation": "turn",
+        "use_case": "test.turn",
+        "accept_until": header["iat"] + policy().accept_window_seconds,
+        "refs": [header["refs"][0]],
+        "ttl": policy().grant_ttl_max_seconds,
+        "epk": grant["recipient_public"],
+    }
+    envelope = signer.sign_request(request)
+    assert (
+        wire.verify_body(envelope, wire.ec_public_key(signer.public), expected_kid=signer.kid)
+        == request
+    )
+    with pytest.raises(VaultProtocolError, match="refs exceed the use-case category set"):
+        signer.sign_request(request | {"refs": header["refs"]})
 
 
 def test_ed25519_python_vector_verifies_and_is_deterministic() -> None:

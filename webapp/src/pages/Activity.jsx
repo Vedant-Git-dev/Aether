@@ -1,6 +1,7 @@
 // The live feed: everything Aether observed or did, newest first, filterable
 // by app, free text and importance. The app is a plain muted prefix — no chip.
 import { useEffect, useMemo, useState } from "react";
+import ChatComposer from "../components/ChatComposer.jsx";
 import MediaBlock from "../components/MediaBlock.jsx";
 import PageHead from "../components/PageHead.jsx";
 import { Card, Field, Select, Toggle } from "../components/ui.jsx";
@@ -41,6 +42,7 @@ export default function ActivityPage() {
         title="Live Activity"
         sub="What Aether has seen and done across your apps, newest first."
       />
+      <ChatComposer />
       {!hasToken() ? (
         <Card><NoToken /></Card>
       ) : (

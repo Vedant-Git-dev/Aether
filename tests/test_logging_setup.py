@@ -87,3 +87,70 @@ def test_home_paths_and_snippets_never_reach_a_log() -> None:
 def test_ids_and_counts_pass_through_the_scrubber() -> None:
     out = _scrubbed("event %d scored %.1f for %s", (42, 7.5, "gmail"))
     assert out == "event 42 scored 7.5 for gmail"
+
+
+async def test_provider_sdk_logs_cannot_emit_capture_secrets_at_debug(caplog, monkeypatch):
+    import json
+    from unittest.mock import AsyncMock
+
+    from telegram import Bot, User
+    from telegram.request import HTTPXRequest
+
+    token = "123456:synthetic-credential"
+    incoming = "pvt-note"
+    payload = {
+        "ok": True,
+        "result": [
+            {
+                "update_id": 17,
+                "message": {
+                    "message_id": 1,
+                    "date": 0,
+                    "chat": {"id": 42, "type": "private"},
+                    "from": {"id": 42, "first_name": "Fixture", "is_bot": False},
+                    "text": incoming,
+                },
+            }
+        ],
+    }
+    monkeypatch.setenv("AETHER_LOG_LEVEL", "DEBUG")
+    with caplog.at_level(logging.DEBUG):
+        configure_logging()
+        request = HTTPXRequest()
+        monkeypatch.setattr(
+            HTTPXRequest, "do_request", AsyncMock(return_value=(200, json.dumps(payload).encode()))
+        )
+        bot = Bot(token, request=request, get_updates_request=request)
+        monkeypatch.setattr(Bot, "bot", property(lambda _: User(7, "Fixture bot", True)))
+        [update] = await bot.get_updates()
+        assert update.message.text == incoming
+        logging.getLogger("discord.http").debug("GET returned %s", {"content": incoming})
+        logging.getLogger("aether.test").debug("Capture debug is enabled.")
+        await request.shutdown()
+
+    assert "Capture debug is enabled." in caplog.text
+    assert all(
+        value not in record.getMessage() for record in caplog.records for value in (incoming, token)
+    )
+
+
+async def test_unprovisioned_provider_capture_fails_before_contacting_storage(monkeypatch):
+    import pytest
+
+    from aether import main
+    from aether.config import Settings
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail("startup reached storage without an ingress identity key")
+
+    monkeypatch.setattr(main, "create_pool", forbidden)
+    app = main.create_app(
+        settings=Settings.without_env_file(
+            database_url="postgresql:///fixture",
+            telegram_bot_token="123456:synthetic-credential",
+            telegram_ingress_owners=frozenset({42}),
+        )
+    )
+    with pytest.raises(main.StartupError, match="AETHER_VAULT_INGRESS_IDENTITY_KEY"):
+        async with app.router.lifespan_context(app):
+            pytest.fail("provider capture started without an ingress identity key")

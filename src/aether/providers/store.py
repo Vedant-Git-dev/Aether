@@ -177,6 +177,25 @@ class ProviderStore:
             return None
         return self._to_connection(row)
 
+    @staticmethod
+    async def refresh_due(pool: asyncpg.Pool) -> list[str]:
+        rows = await pool.fetch(
+            "SELECT provider FROM provider_connections"
+            " WHERE auth_mode = 'oauth' AND status = 'active' AND expires_at <= now()"
+            " ORDER BY provider"
+        )
+        return [row["provider"] for row in rows]
+
+    async def claim_refresh(self, provider: str) -> bool:
+        self._preflight()
+        row = await self._pool.fetchrow(
+            "UPDATE provider_connections SET status = 'refreshing', updated_at = now()"
+            " WHERE provider = $1 AND auth_mode = 'oauth' AND status = 'active'"
+            " AND expires_at <= now() RETURNING provider",
+            provider,
+        )
+        return row is not None
+
     async def list(self) -> list[ProviderConnection]:
         self._preflight()
         rows = await self._pool.fetch(

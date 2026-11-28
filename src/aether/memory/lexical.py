@@ -340,6 +340,17 @@ class LexicalIndex:
     def __len__(self) -> int:
         return len(self._docs)
 
+    def clear(self) -> None:
+        self._docs.clear()
+        self._postings.clear()
+        self._lengths.clear()
+        self._by_event.clear()
+        self._avg_lengths = dict.fromkeys(_FIELDS, 1.0)
+        self._avg_length = 0.0
+        self._avg_dirty = True
+        self._covers_below = None
+        self.skipped = 0
+
     @property
     def exhausted(self) -> bool:
         return self._covers_below is not None and self._covers_below <= 1
@@ -402,6 +413,8 @@ class LexicalIndex:
                     aad=f"memory_chunks:meta_enc:{chunk_id}",
                 )
             except Exception:
+                if rows_by.scoped:
+                    raise
                 if rows_by.scoped:
                     raise
                 self.skipped += 1

@@ -9,12 +9,12 @@ store or cache is touched, so a denied read cannot fall back to plaintext.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from os import getpid
 from threading import Lock
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from .errors import VaultProtocolError
 from .registry import resolve_dedup, resolve_token
@@ -104,12 +104,16 @@ class Location:
             raise VaultFormatError(f"bad purpose {self.purpose!r}")
 
 
-@runtime_checkable
-class KeyHandle(Protocol):
-    """An opaque key use. The implementation never exposes key bytes."""
-
+class KeyResource(Protocol):
     cat: str
     ver: int
+
+    def close(self) -> None: ...
+
+
+@runtime_checkable
+class KeyHandle(KeyResource, Protocol):
+    """An opaque storage key. The implementation never exposes key bytes."""
 
     def seal(self, location: Location, plaintext: bytes) -> bytes: ...
 
@@ -118,8 +122,6 @@ class KeyHandle(Protocol):
     def token(self, namespace: str, value: bytes) -> bytes: ...
 
     def dedup(self, namespace: str, value: bytes) -> bytes: ...
-
-    def close(self) -> None: ...
 
 
 @runtime_checkable
@@ -153,14 +155,16 @@ class KeyScope:
         vault_id: bytes,
         task: bytes,
         operation: str,
-        handles: Mapping[tuple[str, int], KeyHandle],
+        handles: Mapping[tuple[str, int], KeyResource],
         historical: Mapping[str, tuple[HistoricalLookup, ...]] | None = None,
+        guard: Callable[[], None] | None = None,
     ) -> None:
         self.vault_id = vault_id
         self.task = task
         self.operation = operation
         self._handles = dict(handles)
         self._historical = dict(historical or {})
+        self._guard = guard
         if any(domain not in HISTORICAL_LOOKUP_CATEGORIES for domain in self._historical):
             raise VaultFormatError("unknown historical lookup domain")
         self._closed = False
@@ -209,7 +213,17 @@ class KeyScope:
 
     def require(self, cat: str, ver: int) -> None:
         """Raise unless the scope is open and holds this key."""
-        self._handle(cat, ver)
+        self._lookup(cat, ver)
+
+    def open_ingress(self, ver: int, enc: bytes, ct: bytes, aad: bytes) -> bytes:
+        if self.operation != "drain":
+            raise VaultLocked("ingress keys are restricted to drain")
+        from .native_grant import NativeIngressKey
+
+        handle = self._lookup("ingress", ver)
+        if not isinstance(handle, NativeIngressKey):
+            raise VaultLocked("the ingress key is unavailable")
+        return handle.open_ingress(enc, ct, aad)
 
     def historical_tags(self, domain: str, value: str | bytes) -> tuple[bytes, ...]:
         """Calculate historical tags only while their category is granted."""
@@ -218,6 +232,8 @@ class KeyScope:
             raise VaultFormatError("unknown historical lookup domain")
         if self._closed:
             raise VaultClosed("the key scope is closed")
+        if self._guard is not None:
+            self._guard()
         if not any(cat == category for cat, _ in self._handles):
             raise VaultLocked(f"{category} is not granted to this task")
         if isinstance(value, str):
@@ -240,6 +256,7 @@ class KeyScope:
         # handle even if one handler fails: a live handle is worse than a
         # noisy close.
         self._closed = True
+        self._guard = None
         handles = list(self._handles.values())
         handles.extend(handle for group in self._historical.values() for handle in group)
         self._handles.clear()
@@ -253,6 +270,17 @@ class KeyScope:
         if first_error is not None:
             raise first_error
 
+    def _renew(
+        self, handles: Mapping[tuple[str, int], KeyResource], guard: Callable[[], None]
+    ) -> None:
+        if self._closed or set(handles) != self._handles.keys():
+            raise VaultClosed("the task scope cannot be renewed")
+        old = self._handles
+        self._handles = dict(handles)
+        self._guard = guard
+        for handle in old.values():
+            handle.close()
+
     def __enter__(self) -> KeyScope:
         return self
 
@@ -260,8 +288,15 @@ class KeyScope:
         self.close()
 
     def _handle(self, cat: str, ver: int) -> KeyHandle:
+        if cat == "ingress":
+            raise VaultLocked("an ingress key cannot open or seal stored content")
+        return cast(KeyHandle, self._lookup(cat, ver))
+
+    def _lookup(self, cat: str, ver: int) -> KeyResource:
         if self._closed:
             raise VaultClosed("the key scope is closed")
+        if self._guard is not None:
+            self._guard()
         handle = self._handles.get((cat, ver))
         if handle is None:
             raise VaultLocked(f"{cat} v{ver} is not granted to this task")

@@ -68,7 +68,21 @@ OPERATION_CATEGORIES: dict[str, frozenset[str]] = {
 
 # Serving callers must supply the approved, shared registry. Entries are
 # added when the corresponding serving entry points are approved.
-USE_CASES: dict[str, tuple[str, frozenset[str]]] = {}
+USE_CASES: dict[str, tuple[str, frozenset[str]]] = {
+    "ingress.drain": ("drain", OPERATION_CATEGORIES["drain"]),
+    "memory.search_index": ("index", frozenset({"memory"})),
+    "memory.embed_query": ("approved_dispatch", frozenset({"credentials"})),
+    "panel.approvals": ("panel_read", frozenset({"operations"})),
+    "panel.events": ("panel_read", frozenset({"memory"})),
+    "panel.media": ("panel_read", frozenset({"media", "operations"})),
+    "panel.memory_search": ("panel_read", frozenset({"memory", "operations"})),
+    "panel.models": ("panel_read", frozenset({"operations"})),
+    "panel.workspace": ("panel_read", frozenset({"operations", "workspace"})),
+    "panel.tasks": ("panel_read", frozenset({"operations"})),
+    "provider.refresh": ("approved_dispatch", frozenset({"credentials"})),
+    "scheduler.local": ("scheduled", frozenset({"operations", "workspace"})),
+    "workspace.scaffold": ("scheduled", frozenset({"workspace"})),
+}
 
 MESSAGE_TYPES = (
     "control",

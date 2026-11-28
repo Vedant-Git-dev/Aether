@@ -85,5 +85,9 @@ def configure_logging() -> None:
     # Quiet the chatty third-party loggers
     for name in ("httpx", "httpcore", "asyncio", "matplotlib"):
         logging.getLogger(name).setLevel(logging.WARNING)
+    # Provider SDK records can contain credentials, inbound content and URLs.
+    # Keep their diagnostics outside the log pipeline even at application DEBUG.
+    for name in ("telegram", "telegram.Bot", "discord", "discord.http"):
+        logging.getLogger(name).setLevel(logging.CRITICAL + 1)
     _redact_tokens_from_access_log()
     _redact_content_from_handlers()

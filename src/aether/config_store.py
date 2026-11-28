@@ -373,8 +373,8 @@ class ConfigManager:
             try:
                 resolved = self._resolve(path)
                 validated = self._validate_value(resolved, rows[path])
-            except ConfigError as exc:
-                log.warning("config override %r skipped: %s", path, exc)
+            except ConfigError:
+                log.warning("invalid stored config override skipped")
                 continue
             self._mutate(resolved, validated)
             applied += 1

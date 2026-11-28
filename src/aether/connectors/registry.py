@@ -26,6 +26,7 @@ from ..tools.grants import (
 )
 from ..tools.model import MAX_SUMMARY, ToolSpec
 from ..tools.result import ToolOutcome
+from ..vault.egress import require_unscoped
 from .base import UnknownToolError
 from .mail_allowlist import MailAllowlist
 from .mcp_host import MCPHost
@@ -151,6 +152,7 @@ class ToolRegistry:
         grants: CapabilityGrants | None = None,
         health: BackendHealth | None = None,
         max_loaded: int = 8,
+        local_tools: frozenset[str] = frozenset(),
     ) -> None:
         self._tools: dict[str, RegisteredTool] = {}
         self._aliases: dict[str, str] = {}
@@ -160,6 +162,7 @@ class ToolRegistry:
         self.grants = grants or ALL_GRANTED
         self.health = health or ALL_HEALTHY
         self.max_loaded = max_loaded
+        self._local_tools = local_tools
 
     # -- registration ----------------------------------------------------------
 
@@ -562,6 +565,8 @@ class ToolRegistry:
         # the model reached it through the prompt or a stale approval.
         if not self.available(tool.spec.id):
             raise UnknownToolError(f"tool not available: {name}")
+        if tool.kind != "native" or tool.spec.id not in self._local_tools:
+            require_unscoped()
         wire_name = tool.spec.wire_name
         if tool.kind in ("native", "provider"):
             assert tool.handler is not None

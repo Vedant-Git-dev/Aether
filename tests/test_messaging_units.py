@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import discord
+import httpx
 import pytest
 from fakes import FakeApprovals, FakeSurfaceConnector
 from telegram import Chat, Message, Update
@@ -211,7 +212,7 @@ class FlakyTelegramBot(FakeTelegramBot):
     ) -> SimpleNamespace:
         if self.failures > 0:
             self.failures -= 1
-            raise NetworkError("httpx.ConnectError: tls handshake failed")
+            raise NetworkError("connection failed") from httpx.ConnectError("TLS handshake failed")
         return await super().send_message(chat_id, text, reply_markup, **kwargs)
 
 
@@ -226,7 +227,6 @@ class FakeTelegramApp:
         self.initialized = False
         self.started = False
         self.stopped = False
-        self.shutdown = False
 
     async def _noop(self) -> None:
         pass
@@ -247,7 +247,7 @@ class FakeTelegramApp:
         self.stopped = True
 
     async def shutdown(self) -> None:
-        self.shutdown = True
+        pass
 
 
 class FakeProcessedLedger:
@@ -724,6 +724,22 @@ async def test_telegram_send_retries_through_network_blips() -> None:
     await connector.send_to_user("the deploy finished")
 
     assert app.bot.sent == [{"chat_id": 42, "text": "the deploy finished", "reply_markup": None}]
+
+
+async def test_telegram_lost_send_response_never_resends(monkeypatch) -> None:
+    connector, app = await _started_telegram()
+    connector._send_backoff = 0
+    await app.handlers[0].callback(_tg_update("hello"), None)
+    delivered = []
+
+    async def lose_response(*, chat_id, text, **kwargs):
+        delivered.append((chat_id, text))
+        raise NetworkError("response lost") from httpx.ReadTimeout("read timed out")
+
+    monkeypatch.setattr(app.bot, "send_message", lose_response)
+    with pytest.raises(NetworkError):
+        await connector.send_to_user("Aether is locked.")
+    assert delivered == [(42, "Aether is locked.")]
 
 
 async def test_telegram_send_gives_up_after_sustained_failure() -> None:

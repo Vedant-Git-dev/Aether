@@ -49,6 +49,19 @@ def _sodium() -> c.CDLL:
             "sodium_init": (c.c_int,),
             "sodium_mlock": (c.c_int, _POINTER, _SIZE),
             "sodium_memzero": (None, _POINTER, _SIZE),
+            "sodium_memcmp": (c.c_int, _POINTER, _POINTER, _SIZE),
+            "randombytes_buf": (None, _POINTER, _SIZE),
+            "sodium_base642bin": (
+                c.c_int,
+                _POINTER,
+                _SIZE,
+                _POINTER,
+                _SIZE,
+                _POINTER,
+                c.POINTER(_SIZE),
+                _POINTER,
+                c.c_int,
+            ),
             "crypto_kdf_hkdf_sha256_extract": (c.c_int, _POINTER, _POINTER, _SIZE, _POINTER, _SIZE),
             "crypto_kdf_hkdf_sha256_expand": (c.c_int, _POINTER, _SIZE, _POINTER, _SIZE, _POINTER),
             "crypto_auth_hmacsha256_statebytes": (_SIZE,),
@@ -100,22 +113,23 @@ def _sodium() -> c.CDLL:
 
 def _wipe_slot(lib: c.CDLL, page: mmap.mmap, address: int, pid: int) -> None:
     if getpid() == pid:
-        lib.sodium_memzero(address, mmap.PAGESIZE)
+        lib.sodium_memzero(address, len(page))
         page.close()
 
 
 class _KeySlot:
     """Own the category key, the HKDF PRK and the derived key in one page."""
 
-    def __init__(self) -> None:
+    def __init__(self, size: int = mmap.PAGESIZE) -> None:
         self.lib = _sodium()
         try:
-            page = mmap.mmap(-1, mmap.PAGESIZE, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
+            size = max(size, mmap.PAGESIZE)
+            page = mmap.mmap(-1, size, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
             try:
                 page.madvise(mmap.MADV_DONTDUMP)
                 page.madvise(mmap.MADV_DONTFORK)
                 address = c.addressof(c.c_char.from_buffer(page))
-                if self.lib.sodium_mlock(address, mmap.PAGESIZE) != 0:
+                if self.lib.sodium_mlock(address, size) != 0:
                     raise VaultLocked("could not lock native vault memory")
             except BaseException:
                 page.close()

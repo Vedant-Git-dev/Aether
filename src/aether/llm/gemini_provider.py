@@ -9,6 +9,7 @@ from typing import Any
 from google import genai
 from google.genai import types as gtypes
 
+from ..vault.egress import require_unscoped
 from .base import ProviderError
 from .types import (
     AudioBlock,
@@ -268,6 +269,7 @@ class GeminiProvider:
         messages: list[Message],
         tools: list[WireSpec],
     ) -> Turn:
+        require_unscoped()
         config_kwargs: dict[str, Any] = {
             "system_instruction": system,
             "max_output_tokens": self.max_tokens,

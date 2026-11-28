@@ -11,7 +11,31 @@ from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Settings(BaseSettings):
+class BootstrapSettings(BaseSettings):
+    """Only the infrastructure inputs needed before scoped work is admitted."""
+
+    model_config = SettingsConfigDict(extra="ignore", populate_by_name=True)
+
+    database_url: str = ""
+    vault_request_signing_key: str = Field(
+        default="", validation_alias="AETHER_VAULT_REQUEST_SIGNING_KEY", repr=False
+    )
+    vault_pending_wait_seconds: int = Field(
+        default=15, ge=0, le=30, validation_alias="AETHER_VAULT_PENDING_WAIT_SECONDS"
+    )
+    vault_ingress_quota_bytes: int = Field(
+        default=64 * 1024 * 1024, gt=0, validation_alias="AETHER_VAULT_INGRESS_QUOTA_BYTES"
+    )
+    vault_ingress_identity_key: str = Field(
+        default="", validation_alias="AETHER_VAULT_INGRESS_IDENTITY_KEY", repr=False
+    )
+    telegram_bot_token: str = Field(default="", repr=False)
+    telegram_ingress_owners: frozenset[int] = Field(default_factory=frozenset, repr=False)
+    discord_bot_token: str = Field(default="", repr=False)
+    discord_ingress_owners: frozenset[int] = Field(default_factory=frozenset, repr=False)
+
+
+class Settings(BootstrapSettings):
     """Secrets, loaded from the environment (and an optional .env file).
 
     Aether-specific secrets carry the AETHER_ prefix; everything shared
@@ -51,7 +75,6 @@ class Settings(BaseSettings):
     api_token: str = Field(default="", validation_alias="AETHER_TOKEN")
     dev_ephemeral_key: bool = Field(default=False, validation_alias="AETHER_DEV_EPHEMERAL_KEY")
 
-    database_url: str = ""
     port: int = 8000
 
     # LLM provider credentials
@@ -63,10 +86,6 @@ class Settings(BaseSettings):
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     groq_api_key: str = ""
     groq_base_url: str = "https://api.groq.com/openai/v1"
-
-    # Messaging connectors
-    telegram_bot_token: str = ""
-    discord_bot_token: str = ""
 
     # this deployment's public address (https://your-app.onrender.com) —
     # where externally-hosted flows would call back; reserved for a future

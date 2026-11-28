@@ -160,6 +160,7 @@ class MediaStore:
         width: int | None = None,
         height: int | None = None,
         duration_s: float | None = None,
+        evict: bool = True,
     ) -> MediaRef:
         """Store bytes (or return the existing row for the same bytes).
         Raises MediaStoreFull when the quota is spent with nothing
@@ -199,7 +200,13 @@ class MediaStore:
             # the new row is already in the table — make_room counts it in
             # the total, must never count it as eviction fodder, and on
             # refusal the surrounding transaction rolls the insert back
-            await self._make_room(conn, media_id)
+            if evict:
+                await self._make_room(conn, media_id)
+            elif (
+                await conn.fetchval("SELECT COALESCE(SUM(size), 0) FROM media_blobs")
+                > self.quota_bytes
+            ):
+                raise MediaStoreFull("media storage is full")
             blob = self._rows.seal_bytes(
                 data,
                 table="media_blobs",
@@ -253,10 +260,11 @@ class MediaStore:
                 raise
             log.warning("media %s is undecryptable — reading as no longer stored", media_id)
             return None
-        await self._pool.execute(
-            "UPDATE media_blobs SET last_used_at = now() WHERE id = $1",
-            media_id,
-        )
+        if not self._scoped:
+            await self._pool.execute(
+                "UPDATE media_blobs SET last_used_at = now() WHERE id = $1",
+                media_id,
+            )
         meta = self._meta(row, media_id)
         return MediaRecord(
             media_id=media_id,

@@ -12,6 +12,7 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
+import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyParameters, Update
 from telegram.error import Conflict, NetworkError
 from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filters
@@ -509,8 +510,17 @@ class TelegramConnector(MessagingConnector):
                     self._reply_message_id = None
                 # getattr so test fakes without a message_id still send fine
                 return str(getattr(sent, "message_id", "") or "") or None
-            except NetworkError:
-                if attempt == SEND_ATTEMPTS:
+            except NetworkError as exc:
+                # A text send has one request. Only a failure before it could
+                # reach Telegram is safe to retry. A file send can also have
+                # earlier successful requests (file followed by caption).
+                if (
+                    attachment is not None
+                    or attempt == SEND_ATTEMPTS
+                    or not isinstance(
+                        exc.__cause__, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+                    )
+                ):
                     raise
                 log.warning(
                     "telegram send failed (attempt %d/%d) — retrying", attempt, SEND_ATTEMPTS

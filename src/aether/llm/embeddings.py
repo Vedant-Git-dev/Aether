@@ -20,6 +20,7 @@ from typing import Literal, Protocol, runtime_checkable
 from google import genai
 from google.genai import types as gtypes
 
+from ..vault.egress import require_unscoped
 from .base import ProviderError
 
 # embed_content takes a list, but one giant request is a single 429 away
@@ -93,18 +94,22 @@ class GeminiEmbedder:
     ) -> list[list[float]]:
         # genai 2.x takes task_type as a plain string
         task_type = "RETRIEVAL_QUERY" if task == "query" else "RETRIEVAL_DOCUMENT"
+
+        async def send() -> gtypes.EmbedContentResponse:
+            return await self.client.aio.models.embed_content(
+                model=self.model,
+                contents=texts,
+                config=gtypes.EmbedContentConfig(
+                    output_dimensionality=self.dims, task_type=task_type
+                ),
+            )
+
         # free-tier 429s carry a "Please retry in Xs" hint — wait it out a
         # couple of times, same as the chat provider
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
-                response = await self.client.aio.models.embed_content(
-                    model=self.model,
-                    contents=texts,
-                    config=gtypes.EmbedContentConfig(
-                        output_dimensionality=self.dims, task_type=task_type
-                    ),
-                )
+                response = await send()
                 return [list(e.values) for e in response.embeddings]
             except Exception as exc:
                 last_exc = exc
@@ -115,8 +120,11 @@ class GeminiEmbedder:
         raise ProviderError(f"gemini embedding failed: {last_exc}") from last_exc
 
     async def embed(
-        self, texts: list[str], task: Literal["query", "document"] = "document"
+        self,
+        texts: list[str],
+        task: Literal["query", "document"] = "document",
     ) -> list[list[float]]:
+        require_unscoped()
         # batches fly concurrently — a 200-page pdf is four requests, not
         # four round trips. gather preserves the input order, so callers
         # can still zip results against their parts

@@ -163,6 +163,15 @@ class MemoryIndex:
 
     # -- lookups ------------------------------------------------------------
 
+    def clear(self) -> None:
+        self._events.clear()
+        self._order.clear()
+        self._by_entity.clear()
+        self._max_id = 0
+        self._covers_from = None
+        self._scan_from = None
+        self.skipped = 0
+
     def __len__(self) -> int:
         return len(self._events)
 
@@ -315,17 +324,13 @@ class MemoryIndex:
         rows = await pool.fetch(
             f"SELECT {_EVENT_COLUMNS} FROM events ORDER BY id DESC LIMIT $1", hot_limit
         )
-        self._events.clear()
-        self._order.clear()
-        self._by_entity.clear()
-        self._max_id = 0
-        self._covers_from = None
-        self._scan_from = None
-        self.skipped = 0
+        self.clear()
         for row in reversed(rows):
             try:
                 self.upsert(decode_event_row(event_rows, row))
             except Exception:
+                if event_rows.scoped:
+                    raise
                 self.skipped += 1
                 log.warning("event %s undecryptable — left out of the index", row["id"])
         self._trim(hot_limit)

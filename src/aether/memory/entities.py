@@ -50,6 +50,7 @@ ALIAS_CONFIRMED = "owner_alias"
 class Sender:
     platform: str
     handle: str
+    aliases: tuple[str, ...] = ()
 
 
 _PHONE_PLATFORMS = {"phone", "sms", "call"}

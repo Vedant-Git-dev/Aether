@@ -31,7 +31,7 @@ import asyncpg
 
 from .commitments import Commitment, Commitments
 from .crypto import Cipher
-from .event_rows import CipherEventRows
+from .event_rows import CipherEventRows, EventRows
 from .indexes import IndexedEvent, MemoryIndex
 
 log = logging.getLogger("aether.memory.views")
@@ -111,6 +111,7 @@ class Views:
         facts: Any = None,
         pool: asyncpg.Pool | None = None,
         cipher: Cipher | None = None,
+        event_rows: EventRows | None = None,
         timezone: str = "Asia/Kolkata",
         cold_batch: int = 500,
         core_facts_chars: int = 1_500,
@@ -119,7 +120,11 @@ class Views:
         self._commitments = commitments
         self._facts = facts
         self._pool = pool
-        self._cipher = cipher
+        self._event_rows = (
+            event_rows
+            if event_rows is not None
+            else (CipherEventRows(cipher) if cipher is not None else None)
+        )
         self._timezone = timezone
         self._cold_batch = cold_batch
         self._core_facts_chars = max(200, int(core_facts_chars))
@@ -283,11 +288,11 @@ class Views:
         what the index covers cold-scans in bounded batches until the window
         is complete, never the whole table for one question.
         """
-        if since is not None and self._pool is not None and self._cipher is not None:
+        if since is not None and self._pool is not None and self._event_rows is not None:
             with contextlib.suppress(Exception):
                 # a cold scan that fails still answers from the hot set
                 await self._index.ensure_since(
-                    self._pool, CipherEventRows(self._cipher), since, batch=self._cold_batch
+                    self._pool, self._event_rows, since, batch=self._cold_batch
                 )
         found = self._index.events_for_entity(entity_id)
         if since is not None:

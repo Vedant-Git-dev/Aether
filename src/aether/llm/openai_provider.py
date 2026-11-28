@@ -10,6 +10,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from ..vault.egress import require_unscoped
 from .base import ProviderError
 from .types import (
     AudioBlock,
@@ -189,6 +190,7 @@ class OpenAIProvider:
         messages: list[Message],
         tools: list[WireSpec],
     ) -> Turn:
+        require_unscoped()
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages_to_openai(system, messages),
